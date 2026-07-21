@@ -1,0 +1,33 @@
+[project]
+name = "futu-paper-quant"
+version = "0.1.0"
+description = "US stock paper-trading system backed by Futu OpenAPI"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "futu-api>=9.4.5608",
+  "pandas>=2.2",
+  "python-dotenv>=1.0",
+  "streamlit>=1.40",
+  "exchange-calendars>=4.7",
+  "pyarrow>=18",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.9"]
+postgres = ["psycopg[binary]>=3.2"]
+marketdata = ["yfinance>=0.2.65"]
+research = ["pyqlib>=0.9.7"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = [".venv", ".uv-cache"]

@@ -1,0 +1,10 @@
+.env
+.env.docker
+.secrets
+.git
+.venv
+.uv-cache
+data
+__pycache__
+*.pyc
+.pytest_cache

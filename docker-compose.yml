@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: futu_quant
+      POSTGRES_USER: futu_quant
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U futu_quant -d futu_quant"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  dashboard:
+    build: .
+    env_file: [.env.docker]
+    environment:
+      FUTU_HOST: host.docker.internal
+      ENABLE_PAPER_ORDERS: "false"
+      DATABASE_BACKEND: sqlite
+    volumes:
+      - ./data:/app/data
+    ports: ["8501:8501"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  trading-service:
+    build: .
+    profiles: ["paper-automation"]
+    env_file: [.env.docker]
+    environment:
+      FUTU_HOST: host.docker.internal
+      ENABLE_PAPER_ORDERS: "true"
+      DATABASE_BACKEND: sqlite
+    command: ["python", "scripts/run_service.py"]
+    volumes:
+      - ./data:/app/data
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+
+  volatility-radar:
+    build: .
+    profiles: ["paper-automation"]
+    env_file: [.env.docker]
+    environment:
+      FUTU_HOST: host.docker.internal
+      ENABLE_PAPER_ORDERS: "false"
+    command: ["python", "scripts/run_radar_service.py"]
+    volumes:
+      - ./data:/app/data
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped
+
+secrets:
+  postgres_password:
+    file: ./.secrets/postgres_password
+
+volumes:
+  postgres-data:
