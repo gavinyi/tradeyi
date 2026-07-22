@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from futu_quant.market_information import (
+    BENCHMARK_SYMBOLS,
     combined_watchlist,
     normalize_market_snapshots,
     parse_recent_sec_filings,
@@ -87,3 +88,7 @@ def test_option_market_ranking_prefers_liquid_tight_contracts():
     result = rank_option_market(frame, spot=100)
     assert result.iloc[0]["code"] == "TIGHT"
     assert result.iloc[0]["买卖价差"] == pytest.approx(0.1 / 1.5)
+
+
+def test_benchmark_symbols_skip_vix_for_futu_quotes():
+    assert "US.VIX" not in BENCHMARK_SYMBOLS

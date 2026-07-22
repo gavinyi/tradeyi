@@ -205,7 +205,10 @@ def render_sidebar(settings=None) -> None:
     st.markdown(MOBILE_RESPONSIVE_CSS, unsafe_allow_html=True)
     if settings is not None:
         st.sidebar.divider()
-        st.sidebar.success("SIMULATE ONLY · US")
+        if getattr(settings, "trading_env", "SIMULATE") == "REAL":
+            st.sidebar.error("REAL 实盘 · US")
+        else:
+            st.sidebar.success("SIMULATE 模拟盘 · US")
         st.sidebar.caption(f"OpenD: {settings.host}:{settings.port}")
         st.sidebar.warning(
             "策略下单已启用" if settings.enable_paper_orders else "策略下单关闭（仅观察）"

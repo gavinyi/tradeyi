@@ -33,11 +33,15 @@ class BrokerError(RuntimeError):
 
 
 class FutuPaperBroker:
-    """A deliberately simulation-only facade over Futu OpenAPI."""
+    """Guarded Futu OpenAPI facade.
+
+    Defaults to paper trading. REAL is only reachable when Settings has passed
+    the explicit live-trading safety gates.
+    """
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.trd_env = TrdEnv.SIMULATE
+        self.trd_env = TrdEnv.REAL if settings.trading_env == "REAL" else TrdEnv.SIMULATE
         self.market = TrdMarket.US
         try:
             self.security_firm = getattr(SecurityFirm, settings.security_firm)
@@ -98,12 +102,23 @@ class FutuPaperBroker:
             data = self._ok(ctx.get_acc_list(), "get accounts")
         if "trd_env" not in data.columns:
             raise BrokerError("Safety lock: account response has no trading environment")
-        simulated = data[data["trd_env"] == "SIMULATE"].copy()
-        if simulated.empty:
-            raise BrokerError("No US simulated account was returned by OpenD")
-        return simulated
+        selected = data[data["trd_env"].astype(str).str.upper() == self.settings.trading_env].copy()
+        if selected.empty:
+            raise BrokerError(f"No US {self.settings.trading_env} account was returned by OpenD")
+        if self.settings.trading_env == "REAL" and self.settings.real_account_id:
+            account_id = str(self.settings.real_account_id)
+            account_column = "acc_id" if "acc_id" in selected.columns else "acc_id_str"
+            if account_column in selected.columns:
+                selected = selected[selected[account_column].astype(str) == account_id].copy()
+            if selected.empty:
+                raise BrokerError("OpenD 未返回配置的实盘账户，请检查 REAL_ACCOUNT_ID")
+        return selected
 
     def _account_kwargs(self) -> dict:
+        if self.settings.trading_env == "REAL":
+            if not self.settings.real_account_id:
+                raise BrokerError("实盘环境必须配置 REAL_ACCOUNT_ID")
+            return {"acc_id": self.settings.real_account_id}
         return {"acc_id": self.settings.acc_id} if self.settings.acc_id else {}
 
     def account_info(self, refresh: bool = False) -> pd.DataFrame:
@@ -266,7 +281,8 @@ class FutuPaperBroker:
                     return
                 message = str(data).lower()
                 symbol_error = any(token in message for token in (
-                    "not support", "invalid", "不存在", "不支持", "otc",
+                    "not support", "invalid", "不存在", "不支持", "otc", "未知股票",
+                    "unknown stock", "unknown symbol",
                 ))
                 if not symbol_error:
                     raise BrokerError(f"snapshots failed: {data}")
@@ -288,18 +304,19 @@ class FutuPaperBroker:
 
     def place_limit_order(self, symbol: str, side: str, quantity: int, price: float) -> pd.DataFrame:
         if not self.settings.enable_paper_orders:
-            raise BrokerError("Paper order execution is disabled in .env")
+            raise BrokerError("券商下单开关未开启：ENABLE_PAPER_ORDERS=false")
         if not symbol.startswith("US.") or side not in {"BUY", "SELL"}:
             raise BrokerError("Safety lock rejected the order")
         trade_side = TrdSide.BUY if side == "BUY" else TrdSide.SELL
+        operation = "place real order" if self.settings.trading_env == "REAL" else "place simulated order"
         with self.trade_context() as ctx:
             return self._ok(
                 ctx.place_order(
                     price=round(float(price), 2), qty=max(1, int(quantity)), code=symbol,
                     trd_side=trade_side, order_type=OrderType.NORMAL,
-                    trd_env=TrdEnv.SIMULATE, **self._account_kwargs(),
+                    trd_env=self.trd_env, **self._account_kwargs(),
                 ),
-                "place simulated order",
+                operation,
             )
 
     def cancel_order(self, order_id: str) -> pd.DataFrame:
@@ -309,9 +326,9 @@ class FutuPaperBroker:
             return self._ok(
                 ctx.modify_order(
                     ModifyOrderOp.CANCEL, str(order_id), 0, 0,
-                    trd_env=TrdEnv.SIMULATE, **self._account_kwargs(),
+                    trd_env=self.trd_env, **self._account_kwargs(),
                 ),
-                "cancel simulated order",
+                "cancel real order" if self.settings.trading_env == "REAL" else "cancel simulated order",
             )
 
     def modify_limit_order(self, order_id: str, quantity: int, price: float) -> pd.DataFrame:
@@ -321,9 +338,9 @@ class FutuPaperBroker:
             return self._ok(
                 ctx.modify_order(
                     ModifyOrderOp.NORMAL, str(order_id), int(quantity), round(float(price), 2),
-                    trd_env=TrdEnv.SIMULATE, **self._account_kwargs(),
+                    trd_env=self.trd_env, **self._account_kwargs(),
                 ),
-                "modify simulated limit order",
+                "modify real limit order" if self.settings.trading_env == "REAL" else "modify simulated limit order",
             )
 
     @staticmethod

@@ -81,7 +81,7 @@ class RiskEngine:
         protected_short: bool = False,
     ) -> RiskDecision:
         if not symbol.startswith("US.") or side not in {"BUY", "SELL"}:
-            return RiskDecision(False, "仅允许美股模拟盘 BUY/SELL 指令", 0)
+            return RiskDecision(False, "仅允许美股 BUY/SELL 指令", 0)
         if quantity <= 0 or price <= 0:
             return RiskDecision(False, "数量和限价必须大于 0", 0)
         if side == "BUY" and self.store.get_setting("connectivity_degraded", "false") == "true":

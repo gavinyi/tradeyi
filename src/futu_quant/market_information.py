@@ -14,7 +14,7 @@ import pandas as pd
 from .data_quality import quote_freshness
 
 
-BENCHMARK_SYMBOLS = ("US.SPY", "US.QQQ", "US.DIA", "US.IWM", "US.VIX")
+BENCHMARK_SYMBOLS = ("US.SPY", "US.QQQ", "US.DIA", "US.IWM")
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 

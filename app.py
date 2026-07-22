@@ -57,6 +57,7 @@ navigation = {
     ],
     "风控与审批": [
         st.Page("pages/7_风控中心.py", title="风控中心", icon=":material/shield:"),
+        st.Page("pages/27_实盘交易控制.py", title="实盘交易控制", icon=":material/lock_open:"),
         st.Page("pages/14_组合风险.py", title="组合风险", icon=":material/donut_large:"),
         st.Page("pages/9_上线审批.py", title="上线审批", icon=":material/approval:"),
         st.Page("pages/17_策略验证中心.py", title="策略验证中心", icon=":material/fact_check:"),

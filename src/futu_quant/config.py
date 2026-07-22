@@ -335,6 +335,48 @@ def save_runtime_settings(values: dict[str, str]) -> None:
         _mirror_env(key, str(value))
 
 
+def save_real_trading_settings(
+    trading_env: str,
+    enabled: bool,
+    account_id: str,
+    allowed_strategies: list[str] | tuple[str, ...],
+    max_order_notional: float,
+    max_daily_notional: float,
+    require_manual_confirm: bool = True,
+) -> None:
+    """Persist guarded live-trading configuration.
+
+    This intentionally stores only non-secret controls. Futu trade passwords must
+    remain outside the app and be unlocked in OpenD.
+    """
+    env = str(trading_env).upper()
+    if env not in {"SIMULATE", "REAL"}:
+        raise RuntimeError("交易环境只能是 SIMULATE 或 REAL")
+    normalized_strategies = ",".join(
+        sorted({str(item).strip() for item in allowed_strategies if str(item).strip()})
+    )
+    if float(max_order_notional) <= 0 or float(max_daily_notional) <= 0:
+        raise RuntimeError("实盘额度必须大于 0")
+    if float(max_order_notional) > float(max_daily_notional):
+        raise RuntimeError("实盘单笔额度不能超过每日额度")
+    if env == "REAL":
+        if not enabled:
+            raise RuntimeError("切换 REAL 前必须开启实盘总开关")
+        if not str(account_id).strip():
+            raise RuntimeError("切换 REAL 前必须填写 REAL_ACCOUNT_ID")
+        if not normalized_strategies:
+            raise RuntimeError("切换 REAL 前必须至少选择一个实盘策略白名单")
+    save_runtime_settings({
+        "FUTU_TRADING_ENV": env,
+        "REAL_TRADING_ENABLED": "true" if enabled else "false",
+        "REAL_ACCOUNT_ID": str(account_id).strip(),
+        "REAL_ALLOWED_STRATEGIES": normalized_strategies,
+        "REAL_MAX_ORDER_NOTIONAL": f"{float(max_order_notional):.2f}",
+        "REAL_MAX_DAILY_NOTIONAL": f"{float(max_daily_notional):.2f}",
+        "REAL_REQUIRE_MANUAL_CONFIRM": "true" if require_manual_confirm else "false",
+    })
+
+
 def refresh_runtime_environment(override: bool = False) -> dict[str, str]:
     """Load file + SQLite dynamic settings into the current process."""
     values = {key: str(value) for key, value in dotenv_values(ENV_FILE).items() if value is not None}
@@ -345,12 +387,13 @@ def refresh_runtime_environment(override: bool = False) -> dict[str, str]:
         if saved is None:
             dynamic_prefixes = (
                 "CORE_", "GAMMA_", "VOLATILITY_", "RISK_", "EXEC_", "STRATEGY_",
-                "APPROVAL_", "SHADOW_", "SERVICE_", "ORDER_", "EARNINGS_",
+                "APPROVAL_", "SHADOW_", "SERVICE_", "ORDER_", "EARNINGS_", "REAL_",
             )
             explicit = {
                 "WATCHLIST", "ORDER_QUANTITIES", "ORDER_QUANTITY", "OPTION_CONTRACTS",
                 "ENABLE_PAPER_ORDERS", "EXECUTION_MODE", "ENFORCE_VIRTUAL_POSITIONS",
                 "REQUIRE_STRATEGY_APPROVAL", "DATA_RETENTION_DAYS", "BACKUP_RETENTION_DAYS",
+                "FUTU_TRADING_ENV",
             }
             migrated = {
                 key: value for key, value in values.items()
@@ -374,6 +417,12 @@ class Settings:
     trading_env: str
     market: str
     acc_id: int | None
+    real_trading_enabled: bool
+    real_account_id: int | None
+    real_allowed_strategies: tuple[str, ...]
+    real_max_order_notional: float
+    real_max_daily_notional: float
+    real_require_manual_confirm: bool
     enable_paper_orders: bool
     watchlist: tuple[str, ...]
     order_quantity: int
@@ -401,11 +450,33 @@ class Settings:
         refresh_runtime_environment(override=refresh)
         env = os.getenv("FUTU_TRADING_ENV", "SIMULATE").upper()
         market = os.getenv("FUTU_MARKET", "US").upper()
-        if env != "SIMULATE":
-            raise RuntimeError("Safety lock: FUTU_TRADING_ENV must be SIMULATE")
+        if env not in {"SIMULATE", "REAL"}:
+            raise RuntimeError("FUTU_TRADING_ENV must be SIMULATE or REAL")
         if market != "US":
             raise RuntimeError("This project is locked to the US paper market")
         raw_acc_id = os.getenv("FUTU_ACC_ID", "").strip()
+        raw_real_account_id = os.getenv("REAL_ACCOUNT_ID", "").strip()
+        real_enabled = os.getenv("REAL_TRADING_ENABLED", "false").lower() == "true"
+        real_allowed = tuple(
+            item.strip() for item in os.getenv("REAL_ALLOWED_STRATEGIES", "").split(",")
+            if item.strip()
+        )
+        real_max_order = float(os.getenv("REAL_MAX_ORDER_NOTIONAL", "500"))
+        real_max_daily = float(os.getenv("REAL_MAX_DAILY_NOTIONAL", "1000"))
+        real_require_confirm = (
+            os.getenv("REAL_REQUIRE_MANUAL_CONFIRM", "true").lower() == "true"
+        )
+        if real_max_order <= 0 or real_max_daily <= 0:
+            raise RuntimeError("REAL_MAX_ORDER_NOTIONAL and REAL_MAX_DAILY_NOTIONAL must be positive")
+        if real_max_order > real_max_daily:
+            raise RuntimeError("REAL_MAX_ORDER_NOTIONAL cannot exceed REAL_MAX_DAILY_NOTIONAL")
+        if env == "REAL":
+            if not real_enabled:
+                raise RuntimeError("实盘环境已选择，但 REAL_TRADING_ENABLED 未开启")
+            if not raw_real_account_id:
+                raise RuntimeError("实盘环境必须配置 REAL_ACCOUNT_ID")
+            if not real_allowed:
+                raise RuntimeError("实盘环境必须配置 REAL_ALLOWED_STRATEGIES 策略白名单")
         watchlist = tuple(
             symbol.strip().upper()
             for symbol in os.getenv("WATCHLIST", "US.SPY,US.QQQ,US.AAPL").split(",")
@@ -492,6 +563,12 @@ class Settings:
             trading_env=env,
             market=market,
             acc_id=int(raw_acc_id) if raw_acc_id else None,
+            real_trading_enabled=real_enabled,
+            real_account_id=int(raw_real_account_id) if raw_real_account_id else None,
+            real_allowed_strategies=real_allowed,
+            real_max_order_notional=real_max_order,
+            real_max_daily_notional=real_max_daily,
+            real_require_manual_confirm=real_require_confirm,
             enable_paper_orders=os.getenv("ENABLE_PAPER_ORDERS", "false").lower() == "true",
             watchlist=watchlist,
             order_quantity=default_quantity,

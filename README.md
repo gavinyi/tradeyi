@@ -1,14 +1,16 @@
-# Futu 美股模拟量化系统
+# Futu 美股量化交易系统
 
-基于富途官方开源 Python SDK `FutunnOpen/py-futu-api`。系统在配置层和券商层都固定使用
-`US + SIMULATE`，不会连接实盘账户。当前提供账户权益、持仓、今日/历史订单和三种基础信号：
-均线交叉、RSI 均值回归、20 日突破，以及组合级“核心—卫星”策略。
+基于富途官方开源 Python SDK `FutunnOpen/py-futu-api`。系统默认使用
+`US + SIMULATE` 模拟盘；实盘能力仅作为受控接入框架存在，必须经过独立页面配置、策略白名单、
+额度限制和短时人工确认会话才可能提交真实订单。当前提供账户权益、持仓、今日/历史订单、
+基础股票信号、组合级“核心—卫星”策略、财报 Gamma、波动率期权和期权组合执行能力。
 
 ## 前置条件
 
 1. 安装并启动 Futu OpenD，使用富途账号登录。
 2. 在富途客户端创建/确认美股模拟账户。
 3. OpenD 默认监听 `127.0.0.1:11111`。本项目不需要 API key；认证由 OpenD 登录会话负责。
+4. 如果未来连接实盘，真实交易解锁必须在富途 OpenD 或富途客户端中完成；本系统不保存富途交易密码。
 
 ## 安装与配置
 
@@ -25,7 +27,7 @@ uv sync --extra dev
 uv run python scripts/check_connection.py
 ```
 
-看到 `OK` 和 `SIMULATE` 后说明连接成功。
+看到 `OK` 和 `SIMULATE` 后说明模拟盘连接成功。
 
 ## 研究数据与回测 V2
 
@@ -71,12 +73,29 @@ uv run streamlit run app.py
 
 ## 安全说明
 
-- `FUTU_TRADING_ENV` 不是 `SIMULATE` 时程序立即退出。
+- 默认交易环境是 `SIMULATE`。实盘必须在“风控与审批 → 实盘交易控制”中完成独立配置。
+- `FUTU_TRADING_ENV=REAL` 只有在 `REAL_TRADING_ENABLED=true`、`REAL_ACCOUNT_ID`、策略白名单、
+  实盘额度和短时确认会话全部满足时才会放行。
+- 系统不会保存富途交易密码；真实账户交易解锁必须在富途 OpenD 或富途客户端内完成。
 - 只接受 `US.*` 标的。
 - `.env` 已被 Git 忽略。
 - 默认只计算策略信号，不会自动下单。
 - 所有策略和 Gamma 页面下单都经过统一执行层：幂等去重、限额检查和 SQLite 审计。
 - 主面板“一键急停”会先禁止新增仓位并撤销待成交订单；卖出平仓仍保持可用。
+
+受控实盘配置默认关闭：
+
+```env
+FUTU_TRADING_ENV=SIMULATE
+REAL_TRADING_ENABLED=false
+REAL_ACCOUNT_ID=
+REAL_ALLOWED_STRATEGIES=
+REAL_MAX_ORDER_NOTIONAL=500
+REAL_MAX_DAILY_NOTIONAL=1000
+REAL_REQUIRE_MANUAL_CONFIRM=true
+```
+
+详细操作见 `docs/实盘交易控制使用说明.md`。
 
 默认风控参数可在 `.env` 调整：`RISK_MAX_ORDER_NOTIONAL`（单笔名义金额）、
 `RISK_MAX_DAILY_NOTIONAL`（当日累计名义金额）和 `RISK_MAX_PENDING_ORDERS`（待成交笔数）。
@@ -90,7 +109,8 @@ uv run python scripts/run_strategies.py --strategy "SMA Cross" --loop
 ```
 
 去掉 `--loop` 只运行一次。策略只会对未持有标的买入、对已持有标的卖出，数量由
-配置页中与代码一一对应的数量控制；所有委托仍强制使用 `TrdEnv.SIMULATE`。
+配置页中与代码一一对应的数量控制；模拟盘委托使用 `TrdEnv.SIMULATE`。只有在实盘控制页完成
+全部实盘闸门并把策略执行模式设为 `REAL` 时，才会使用 `TrdEnv.REAL`。
 
 ## 核心—卫星策略
 

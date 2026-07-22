@@ -8,10 +8,26 @@ from futu_quant.core_satellite import (
 from futu_quant.strategies import Signal, breakout
 
 
-def test_real_environment_is_rejected(monkeypatch):
+def test_real_environment_requires_live_safety_gates(monkeypatch):
     monkeypatch.setenv("FUTU_TRADING_ENV", "REAL")
-    with pytest.raises(RuntimeError, match="SIMULATE"):
+    monkeypatch.setenv("REAL_TRADING_ENABLED", "false")
+    with pytest.raises(RuntimeError, match="REAL_TRADING_ENABLED"):
         Settings.load()
+
+
+def test_real_environment_loads_only_when_fully_configured(monkeypatch):
+    monkeypatch.setenv("FUTU_TRADING_ENV", "REAL")
+    monkeypatch.setenv("REAL_TRADING_ENABLED", "true")
+    monkeypatch.setenv("REAL_ACCOUNT_ID", "123456")
+    monkeypatch.setenv("REAL_ALLOWED_STRATEGIES", "core_satellite")
+    monkeypatch.setenv("REAL_MAX_ORDER_NOTIONAL", "500")
+    monkeypatch.setenv("REAL_MAX_DAILY_NOTIONAL", "1000")
+
+    settings = Settings.load()
+
+    assert settings.trading_env == "REAL"
+    assert settings.real_account_id == 123456
+    assert settings.real_allowed_strategies == ("core_satellite",)
 
 
 def test_non_us_symbol_is_rejected(monkeypatch):

@@ -13,6 +13,7 @@ from .alerts import AlertManager
 from .store import TradingStore
 from .approval import strategy_fingerprint, strategy_requires_approval
 from .fee_model import estimate_fees
+from .real_trading import check_real_trade
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ class ExecutionManager:
         mode = (override_mode or global_mode).upper()
         fingerprint = strategy_fingerprint(strategy_id)
         require_approval = os.getenv("REQUIRE_STRATEGY_APPROVAL", "true").lower() == "true"
-        if (mode == "PAPER" and side == "BUY" and require_approval
+        if (mode in {"PAPER", "REAL"} and side == "BUY" and require_approval
                 and strategy_requires_approval(strategy_id) and not self.store.strategy_approved(
             strategy_id, fingerprint
         )):
@@ -62,6 +63,24 @@ class ExecutionManager:
                 intent["id"], intent["status"], "重复交易意图已拦截",
                 intent.get("broker_order_id"),
             )
+        if mode == "REAL":
+            real_decision = check_real_trade(
+                self.store, self.broker.settings, strategy_id, symbol, side,
+                int(quantity), float(price), metadata,
+            )
+            if not real_decision.allowed:
+                self.store.update_intent(intent["id"], "REJECTED", error=real_decision.reason)
+                self.store.audit(
+                    "REAL_TRADE_REJECTED",
+                    {"intent_id": intent["id"], "reason": real_decision.reason,
+                     "details": real_decision.details},
+                    strategy_id,
+                )
+                self.alerts.send(
+                    "ERROR", "REAL_TRADE_REJECTED",
+                    f"{strategy_id} {symbol}: {real_decision.reason}",
+                )
+                return ExecutionResult(intent["id"], "REJECTED", real_decision.reason)
         try:
             decision = self.risk.check(
                 self.broker, symbol, side, int(quantity), float(price), metadata.get("multiplier"),
@@ -103,8 +122,9 @@ class ExecutionManager:
                 {"intent_id": intent["id"], "broker_order_id": order_id, "notional": decision.notional},
                 strategy_id,
             )
-            self.store.decision(strategy_id, symbol, side, "风控通过并提交模拟订单")
-            return ExecutionResult(intent["id"], "SUBMITTED", "模拟订单已提交", order_id, response)
+            order_label = "实盘订单" if mode == "REAL" else "模拟订单"
+            self.store.decision(strategy_id, symbol, side, f"风控通过并提交{order_label}")
+            return ExecutionResult(intent["id"], "SUBMITTED", f"{order_label}已提交", order_id, response)
         except Exception as exc:
             self.store.update_intent(intent["id"], "FAILED", error=str(exc))
             self.store.audit("ORDER_FAILED", {"intent_id": intent["id"], "error": str(exc)}, strategy_id)
