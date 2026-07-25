@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 import os
 import time
+from pandas.api.types import is_datetime64_any_dtype
 from zoneinfo import ZoneInfo
 
 from .admin_auth import (
@@ -17,7 +18,7 @@ CHINA_TZ = ZoneInfo("Asia/Shanghai")
 US_EASTERN_TZ = ZoneInfo("America/New_York")
 UTC_TIME_COLUMNS = {
     "created_at", "updated_at", "fetched_at", "approved_at", "last_broker_update",
-    "last_reprice_at", "intent_created_at",
+    "last_reprice_at", "intent_created_at", "open_time", "close_time",
 }
 MARKET_TIME_COLUMNS = {
     "time_key", "create_time", "updated_time", "update_time", "expire_time",
@@ -184,9 +185,20 @@ def china_time_columns(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     for column in result.columns:
         if column in UTC_TIME_COLUMNS:
-            values = pd.to_datetime(result[column], errors="coerce", utc=True)
+            if is_datetime64_any_dtype(result[column]):
+                values = pd.to_datetime(result[column], errors="coerce")
+                if values.dt.tz is None:
+                    continue
+                values = values.dt.tz_convert("UTC")
+            else:
+                values = pd.to_datetime(result[column], errors="coerce", utc=True)
         elif column in MARKET_TIME_COLUMNS:
-            values = pd.to_datetime(result[column], errors="coerce")
+            if is_datetime64_any_dtype(result[column]):
+                values = pd.to_datetime(result[column], errors="coerce")
+                if values.dt.tz is None:
+                    continue
+            else:
+                values = pd.to_datetime(result[column], errors="coerce")
             if values.dt.tz is None:
                 values = values.dt.tz_localize(US_EASTERN_TZ, ambiguous="NaT", nonexistent="shift_forward")
             else:
@@ -309,6 +321,7 @@ COLUMN_NAMES = {
     "order_market": "订单市场", "expire_time": "订单到期时间", "amount": "订单金额",
     "combo_legs": "组合腿信息",
     "asset_type": "资产类型", "result": "处理结果",
+    "notional": "估算名义金额",
     "cash_after": "交易后现金", "pnl": "本次盈亏", "reason": "原因",
     # Security directory and OHLCV
     "stock_type": "证券类型", "lot_size": "每手数量", "stock_id": "证券ID",
@@ -341,7 +354,34 @@ COLUMN_NAMES = {
     "contracts_per_stage": "每批合约数", "max_stages": "最大批数",
     "max_premium_per_stage": "每批最大权利金", "entry_hours": "入场窗口（小时）",
     "profit_target": "止盈比例", "stop_loss": "硬止损比例",
-    "trailing_stop": "峰值回撤退出比例", "trigger_mode": "触发模式",
+    "trailing_stop": "峰值价格回撤退出比例", "trigger_mode": "触发模式",
+    "profit_protection_start": "盈利保护启动阈值",
+    "profit_protection_drawdown": "盈利回吐阈值",
+    "minimum_locked_profit": "最低锁定盈利",
+    "profit_protection_start_normal": "常规启动阈值",
+    "near_expiry_protection_days": "临近到期保护天数",
+    "profit_protection_start_near_expiry": "临近到期启动阈值",
+    "profit_protection_giveback_near_expiry": "临近到期盈利回吐",
+    "minimum_locked_profit_near_expiry": "临近到期锁定盈利",
+    "profit_protection_giveback_normal": "常规盈利回吐",
+    "minimum_locked_profit_normal": "常规锁定盈利",
+    "profit_protection_start_dynamic": "动态波动启动阈值",
+    "profit_protection_giveback_dynamic": "动态波动盈利回吐",
+    "minimum_locked_profit_dynamic": "动态波动锁定盈利",
+    "profit_protection_start_strong": "强波动启动阈值",
+    "profit_protection_giveback_strong": "强波动盈利回吐",
+    "minimum_locked_profit_strong": "强波动锁定盈利",
+    "partial_profit_enabled": "启用分批止盈",
+    "partial_profit_tier1": "第一档止盈阈值",
+    "partial_profit_tier1_fraction": "第一档卖出比例",
+    "partial_profit_tier2": "第二档止盈阈值",
+    "partial_profit_tier2_fraction": "第二档卖出比例",
+    "cooldown_take_profit_hours": "止盈后冷却小时",
+    "cooldown_profit_protection_hours": "盈利保护后冷却小时",
+    "cooldown_stop_loss_hours": "硬止损后冷却小时",
+    "cooldown_expiry_hours": "到期风险退出后冷却小时",
+    "cooldown_decay_hours": "IV/Gamma衰减后冷却小时",
+    "cooldown_contraction_hours": "波动收缩后冷却小时",
     "minimum_underlying_move": "自动方向最低当日涨跌幅",
     "entry_zscore": "动态波动Z值门槛", "cooldown_hours": "退出冷却小时",
     "volatility_eligible": "波动率合约合格", "volatility_quality_score": "波动率合约质量分",
@@ -359,6 +399,12 @@ COLUMN_NAMES = {
     "intent_id": "交易意图ID", "previous_status": "原状态", "new_status": "新状态",
     "source": "来源",
     "filled_quantity": "已成交数量", "average_fill_price": "成交均价",
+    "lot_id": "批次ID", "open_time": "开仓时间（中国）",
+    "close_time": "平仓时间（中国）", "open_quantity": "开仓数量",
+    "closed_quantity": "平仓数量", "remaining_quantity": "剩余数量",
+    "avg_close_price": "平仓均价", "entry_tier": "入场层级",
+    "effective_premium_budget": "实际权利金预算", "order_amount": "订单金额",
+    "filled_amount": "成交金额", "return_ratio": "收益率",
     "details_json": "状态详情", "severity": "风险等级", "action": "建议动作",
     "intrinsic_value": "每份内在价值", "projected_cash_need": "预计资金需求",
     "projected_share_need": "预计正股变化",
@@ -489,6 +535,8 @@ STATUS_LABELS = {
     "CLOSING": "正在组合平仓", "ROLLBACK_PENDING": "正在失败回滚",
     "CLOSED": "已平仓", "WORKING": "待成交", "CLOSE_WORKING": "平仓待成交",
     "CLOSE_FAILED": "平仓失败",
+    "WAITING_EXIT_LIQUIDITY": "等待可退出盘口",
+    "PRE_TRADE_BLOCKED": "开仓前已阻断",
 }
 
 DECISION_LABELS = {"BUY": "买入", "SELL": "卖出", "HOLD": "观察", "BLOCKED": "阻断", "CLOSED": "已结束"}
@@ -534,6 +582,11 @@ EVENT_LABELS = {
     "VOLATILITY_SIGNAL_CONFIRMED": "波动率雷达信号已确认",
     "VOLATILITY_SHADOW_CAMPAIGN_AUTO_CREATED": "波动率自动策略已生成",
     "VOLATILITY_SYMBOL_AUTO_ADDED": "波动率标的已自动加入",
+    "VOLATILITY_EXPIRED_CAMPAIGNS_CLEANED": "过期/失效波动率策略已清理",
+    "OPTION_MARKET_DATA_BLOCKED": "期权行情/盘口阻断开仓",
+    "OPTION_MARKET_DATA_WAITING": "期权行情/盘口等待退出",
+    "OPTION_EXIT_WAITING_FOR_BID": "期权平仓等待买一价",
+    "OPTION_QUOTE_DEGRADED_ACCEPTED": "期权行情降级通过",
     "TASK_TIMEOUT": "调度任务执行超时",
     "COMBO_NAKED_EXPOSURE": "期权组合保护腿缺失",
     "COMBO_CLOSE_FAILED": "期权组合平仓失败",
@@ -554,7 +607,10 @@ PAYLOAD_LABELS = {
     "orders": "订单意图数", "filled": "有成交订单数", "rejected": "风控拒单数",
     "errors": "错误告警数", "shadow_orders": "Shadow 订单数", "service_pid": "服务进程号",
     "position_quantity": "当前持仓", "planned_order_quantity": "计划下单数量",
-    "position_source": "持仓来源", "pnl_ratio": "盈亏比例", "drawdown": "峰值回撤",
+    "position_source": "持仓来源", "pnl_ratio": "盈亏比例", "drawdown": "峰值价格回撤",
+    "profit_giveback": "盈利回吐比例",
+    "partial_exit_tier": "分批止盈档位",
+    "profit_protection_profile": "盈利保护档案",
     "trigger_mode": "触发模式", "validation_warnings": "校验提醒",
     "direction_reason": "自动方向依据", "entry_start": "入场开始时间", "event_time": "入场截止/事件时间",
     "direction_metrics": "方向指标",
@@ -576,6 +632,13 @@ PAYLOAD_LABELS = {
     "expected_move_edge": "历史相对隐含波动优势", "score_reason": "评分依据",
     "structure": "期权结构", "legs": "组合腿",
     "market_session": "期权市场状态", "option_quote_time": "期权报价时间",
+    "market_data_status": "行情/盘口处理状态",
+    "underlying_quote_age_seconds": "正股行情延迟（秒）",
+    "option_quote_age_seconds": "期权行情延迟（秒）",
+    "book_ok": "盘口是否可用",
+    "book_reason": "盘口检查结果",
+    "spread_pct": "盘口价差比例",
+    "quote_attempts": "行情刷新尝试",
     "volatility_regime": "动态波动状态", "regime": "动态波动状态",
 }
 
@@ -617,17 +680,21 @@ def readable_payload(value: object) -> str:
             shown = {"BUY": "买入", "SELL": "卖出"}.get(str(item).upper(), str(item))
         elif key in {"mode", "execution_mode"}:
             shown = {"PAPER": "富途模拟盘", "SHADOW": "Shadow 观察模式"}.get(str(item).upper(), str(item))
+        elif key == "partial_exit_tier":
+            shown = {"tier1": "第一档止盈", "tier2": "第二档止盈"}.get(str(item), str(item))
         elif isinstance(item, list):
             shown = "；".join(translate_reason(entry) for entry in item) if item else "无"
         elif isinstance(item, dict):
             shown = readable_payload(item)
-        elif key in {"pnl_ratio", "drawdown"} and item is not None:
+        elif key in {"pnl_ratio", "drawdown", "profit_giveback"} and item is not None:
             shown = f"{float(item):.2%}"
         else:
             shown = {
                 "OK": "正常", "HEALTHY": "正常", "SESSION_GAP": "当前非连续行情时段",
                 "RUNNING": "运行中", "STOPPED": "已停止", "PAPER": "富途模拟盘",
                 "SHADOW": "Shadow 观察模式", "TRUE": "是", "FALSE": "否",
+                "WAITING_EXIT_LIQUIDITY": "等待可退出盘口",
+                "PRE_TRADE_BLOCKED": "开仓前已阻断",
             }.get(str(item).upper(), str(item))
         parts.append(f"{label}：{shown}")
     return "；".join(parts)

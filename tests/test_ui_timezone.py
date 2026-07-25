@@ -14,6 +14,16 @@ def test_utc_database_timestamp_is_displayed_in_china_time():
     assert "创建时间（中国）" in chinese_columns(frame).columns
 
 
+def test_china_time_conversion_is_idempotent_for_display_frames():
+    frame = pd.DataFrame({"open_time": ["2026-07-23T14:03:35+00:00"]})
+
+    once = china_time_columns(frame)
+    twice = chinese_columns(once)
+
+    assert str(once.loc[0, "open_time"]) == "2026-07-23 22:03:35"
+    assert str(twice.loc[0, "开仓时间（中国）"]) == "2026-07-23 22:03:35"
+
+
 def test_eastern_market_timestamp_is_displayed_in_china_time():
     frame = pd.DataFrame({"time_key": ["2026-07-15 09:30:00"]})
 

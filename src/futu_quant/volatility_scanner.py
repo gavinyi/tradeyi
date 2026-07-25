@@ -148,10 +148,37 @@ def scan_volatility_watchlist(
                         "contracts_per_stage": 1, "max_stages": 3,
                         "max_premium_per_stage": premium_budget, "entry_hours": 6,
                         "profit_target": .5, "stop_loss": .4, "trailing_stop": .25,
-                        "max_hold_hours": 24, "minimum_hold_minutes": 30,
+                        "max_hold_hours": 24, "minimum_hold_minutes": 90,
                         "iv_decline_exit_ratio": .20,
                         "efficiency_decline_exit_ratio": .40,
                         "contraction_confirmations_required": 3,
+                        "profit_protection_start": .15,
+                        "profit_protection_drawdown": .25,
+                        "minimum_locked_profit": .08,
+                        "near_expiry_protection_days": 1,
+                        "profit_protection_start_near_expiry": .10,
+                        "profit_protection_giveback_near_expiry": .20,
+                        "minimum_locked_profit_near_expiry": .05,
+                        "profit_protection_start_normal": .10,
+                        "profit_protection_giveback_normal": .20,
+                        "minimum_locked_profit_normal": .05,
+                        "profit_protection_start_dynamic": .15,
+                        "profit_protection_giveback_dynamic": .25,
+                        "minimum_locked_profit_dynamic": .08,
+                        "profit_protection_start_strong": .20,
+                        "profit_protection_giveback_strong": .30,
+                        "minimum_locked_profit_strong": .10,
+                        "partial_profit_enabled": True,
+                        "partial_profit_tier1": .30,
+                        "partial_profit_tier1_fraction": .50,
+                        "partial_profit_tier2": .60,
+                        "partial_profit_tier2_fraction": .25,
+                        "cooldown_take_profit_hours": 4,
+                        "cooldown_profit_protection_hours": 8,
+                        "cooldown_stop_loss_hours": 24,
+                        "cooldown_expiry_hours": 0,
+                        "cooldown_decay_hours": 8,
+                        "cooldown_contraction_hours": 6,
                         "cooldown_hours": 24, "enabled": True,
                     }
                     rolled, roll_reason = _timed_call(
@@ -179,16 +206,18 @@ def scan_volatility_watchlist(
                             "campaign_reason": roll_reason,
                             "campaign_diagnostics": diagnostics,
                         })
-                        store.decision(
-                            "volatility_scanner", symbol, "CANDIDATE_BLOCKED",
-                            roll_reason, result,
-                        )
                         fingerprint = (
                             f"{datetime.now(NY).date().isoformat()}|{roll_reason}|"
                             f"{(diagnostics.get('top_candidates') or [{}])[0].get('code', '')}"
                         )
                         rejection_key = f"volatility_campaign_rejection:{symbol}"
                         if store.get_setting(rejection_key) != fingerprint:
+                            # 同一交易日、同一最高候选和同一阻塞原因只记录一次，
+                            # 防止雷达每个循环刷出大量重复诊断。
+                            store.decision(
+                                "volatility_scanner", symbol, "CANDIDATE_BLOCKED",
+                                roll_reason, result,
+                            )
                             store.audit("VOLATILITY_AUTO_CAMPAIGN_REJECTED", {
                                 "underlying": symbol, "reason": roll_reason,
                                 "diagnostics": diagnostics,

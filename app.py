@@ -7,6 +7,7 @@ from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.account_metrics import account_pnl_metrics
 from futu_quant.config import Settings
 from futu_quant.core_satellite import STRATEGY_NAME, build_rebalance_plan
+from futu_quant.option_lifecycle import parse_option_code
 from futu_quant.performance import performance_report
 from futu_quant.strategies import STRATEGIES
 from futu_quant.store import TradingStore
@@ -33,6 +34,7 @@ home_page = st.Page(
 navigation = {
     "账户与交易": [
         home_page,
+        st.Page("pages/29_策略复盘与执行质量.py", title="策略复盘与执行质量", icon=":material/summarize:"),
         st.Page("pages/26_交易诊断中心.py", title="交易诊断中心", icon=":material/troubleshoot:"),
         st.Page("pages/4_订单管理.py", title="订单管理", icon=":material/receipt_long:"),
         st.Page("pages/12_交易生命周期.py", title="交易生命周期", icon=":material/account_tree:"),
@@ -44,14 +46,16 @@ navigation = {
     ],
     "策略中心": [
         st.Page("pages/1_交易配置.py", title="交易配置", icon=":material/settings:"),
-        st.Page("pages/15_策略控制台.py", title="自动化控制中心", icon=":material/tune:"),
+        st.Page("pages/15_策略控制台.py", title="策略与资金控制", icon=":material/tune:"),
         st.Page("pages/11_策略活动中心.py", title="策略活动中心", icon=":material/hub:"),
         st.Page("pages/3_策略回测.py", title="股票策略回测", icon=":material/query_stats:"),
     ],
     "期权中心": [
+        st.Page("pages/30_波动率策略总览.py", title="波动率策略总览", icon=":material/dashboard:"),
         st.Page("pages/2_期权配置.py", title="期权配置", icon=":material/settings_suggest:"),
         st.Page("pages/5_财报Gamma策略.py", title="财报 Gamma 策略", icon=":material/bolt:"),
-        st.Page("pages/10_波动率期权策略.py", title="波动率期权策略", icon=":material/waves:"),
+        st.Page("pages/10_波动率期权策略.py", title="波动率策略高级配置", icon=":material/waves:"),
+        st.Page("pages/28_期权盈亏台账.py", title="期权盈亏台账", icon=":material/price_check:"),
         st.Page("pages/16_期权组合执行.py", title="期权组合执行", icon=":material/schema:"),
         st.Page("pages/13_期权数据回测.py", title="期权数据回测", icon=":material/analytics:"),
     ],
@@ -144,9 +148,61 @@ def load_strategy_pnl():
     return performance_report(TradingStore(), FutuPaperBroker(Settings.load()))
 
 
+def is_option_symbol(symbol: object) -> bool:
+    return parse_option_code(str(symbol)) is not None
+
+
+def numeric_sum(frame: pd.DataFrame, column: str) -> float:
+    if frame.empty or column not in frame.columns:
+        return 0.0
+    return float(pd.to_numeric(frame[column], errors="coerce").fillna(0.0).sum())
+
+
+def position_amount(frame: pd.DataFrame) -> float:
+    for column in ("market_val", "val", "amount"):
+        if column in frame.columns:
+            return numeric_sum(frame, column)
+    if {"qty", "nominal_price"}.issubset(frame.columns):
+        qty = pd.to_numeric(frame["qty"], errors="coerce").fillna(0.0)
+        price = pd.to_numeric(frame["nominal_price"], errors="coerce").fillna(0.0)
+        return float((qty * price).sum())
+    return 0.0
+
+
+def shadow_positions_frame(store: TradingStore) -> pd.DataFrame:
+    frame = pd.DataFrame(store.shadow_open_positions())
+    if frame.empty:
+        return frame
+    frame["asset_class"] = frame["symbol"].map(
+        lambda value: "期权" if is_option_symbol(value) else "股票/ETF"
+    )
+    frame["notional"] = (
+        pd.to_numeric(frame["quantity"], errors="coerce").fillna(0.0)
+        * pd.to_numeric(frame["average_cost"], errors="coerce").fillna(0.0)
+        * frame["symbol"].map(lambda value: 100 if is_option_symbol(value) else 1)
+    )
+    return frame
+
+
 try:
     accounts, info, positions, orders, history = load_account()
     st.success(f"已连接富途 OpenD；发现 {len(accounts)} 个美股模拟账户")
+    if not positions.empty and "code" in positions.columns:
+        option_mask = positions["code"].map(is_option_symbol)
+        option_positions = positions[option_mask].copy()
+        stock_positions = positions[~option_mask].copy()
+    else:
+        option_positions = pd.DataFrame()
+        stock_positions = positions.copy()
+    shadow_positions = shadow_positions_frame(store)
+    shadow_options = (
+        shadow_positions[shadow_positions["asset_class"] == "期权"].copy()
+        if not shadow_positions.empty else pd.DataFrame()
+    )
+    shadow_stocks = (
+        shadow_positions[shadow_positions["asset_class"] == "股票/ETF"].copy()
+        if not shadow_positions.empty else pd.DataFrame()
+    )
     if not info.empty:
         row = info.iloc[0]
         pnl = account_pnl_metrics(positions)
@@ -167,6 +223,39 @@ try:
             "损益按富途模拟账户持仓明细汇总；当日持仓盈亏不等于含已平仓交易的完整账户日收益，"
             "且不包含 SHADOW 虚拟成交。"
         )
+        with st.container(border=True):
+            st.subheader("当前持仓总览")
+            st.caption("富途模拟盘真实持仓和 Shadow 虚拟持仓分开展示；Shadow 不会出现在富途账户里。")
+            with st.container(horizontal=True):
+                st.metric(
+                    "股票/ETF 持仓",
+                    f"{len(stock_positions)} 个",
+                    f"${position_amount(stock_positions):,.2f}",
+                    border=True,
+                )
+                st.metric(
+                    "期权持仓",
+                    f"{len(option_positions)} 个",
+                    f"${position_amount(option_positions):,.2f}",
+                    border=True,
+                )
+                st.metric(
+                    "Shadow 股票/ETF",
+                    f"{len(shadow_stocks)} 个",
+                    f"${numeric_sum(shadow_stocks, 'notional'):,.2f}",
+                    border=True,
+                )
+                st.metric(
+                    "Shadow 期权",
+                    f"{len(shadow_options)} 个",
+                    f"${numeric_sum(shadow_options, 'notional'):,.2f}",
+                    border=True,
+                )
+            st.page_link(
+                "pages/28_期权盈亏台账.py",
+                label="打开期权盈亏台账查看逐笔期权盈亏",
+                icon=":material/price_check:",
+            )
         try:
             strategy_summary, strategy_detail, _ = load_strategy_pnl()
             if not strategy_summary.empty:
@@ -194,9 +283,46 @@ try:
         except BrokerError as exc:
             st.warning(f"策略盈亏暂不可用：{exc}")
     tabs = st.tabs(
-        ["持仓", "待成交订单", "今日订单", "历史订单", "执行审计", "策略信号", "账户原始数据"]
+        ["当前持仓", "待成交订单", "今日订单", "历史订单", "执行审计", "策略信号", "账户原始数据"]
     )
-    tabs[0].dataframe(chinese_columns(positions), hide_index=True)
+    with tabs[0]:
+        st.caption("这里是当前持仓主入口：股票/ETF、期权、Shadow 虚拟持仓都在这里看。")
+        stock_tab, option_tab, shadow_tab, all_position_tab = st.tabs(
+            ["股票/ETF 持仓", "期权持仓", "Shadow 虚拟持仓", "全部富途持仓"]
+        )
+        with stock_tab:
+            if stock_positions.empty:
+                st.info("当前富途模拟账户没有股票/ETF 持仓。")
+            else:
+                st.dataframe(chinese_columns(stock_positions), hide_index=True)
+        with option_tab:
+            if option_positions.empty:
+                st.info("当前富途模拟账户没有期权持仓。")
+            else:
+                st.dataframe(chinese_columns(option_positions), hide_index=True)
+                st.page_link(
+                    "pages/28_期权盈亏台账.py",
+                    label="查看期权逐笔盈亏和已平仓历史",
+                    icon=":material/price_check:",
+                )
+        with shadow_tab:
+            if shadow_positions.empty:
+                st.info("当前没有 Shadow 虚拟持仓。")
+            else:
+                shadow_view = shadow_positions.rename(columns={
+                    "strategy_id": "策略",
+                    "symbol": "代码",
+                    "quantity": "数量",
+                    "average_cost": "平均成本",
+                    "asset_class": "资产类型",
+                    "notional": "估算名义金额",
+                })
+                st.dataframe(shadow_view, hide_index=True)
+                st.caption(
+                    "Shadow 是本地虚拟撮合账本，用来验证策略；不是富途模拟账户真实持仓。"
+                )
+        with all_position_tab:
+            st.dataframe(chinese_columns(positions), hide_index=True)
     pending_orders = (
         orders[orders["order_status"].map(broker.is_cancellable_status)].copy()
         if not orders.empty else orders

@@ -25,8 +25,21 @@ def strategy_acceptance(store, strategy_id: str) -> dict:
     recent = (now - timedelta(days=max(min_days + 2, 7))).isoformat()
     observation_start = min((row["created_at"] for row in intents), default=now.isoformat())
     observation_start = max(recent, observation_start)
+    # 只把当前仍未确认/未恢复的错误作为上线阻塞项；历史已处理日志
+    # 继续保留用于审计，但不应永久卡住新版本审批。
+    # 审批检查当前运行健康度，不把数日前已经停止产生的历史告警永久
+    # 计入当前值；历史日志仍可在运行日志页查看。
+    error_window_start = max(
+        observation_start,
+        (now - timedelta(hours=max(1, int(os.getenv("APPROVAL_ERROR_WINDOW_HOURS", "24"))))).isoformat(),
+    )
     errors = [row for row in store.alerts(limit=10_000)
-              if row["created_at"] >= observation_start and row["severity"] == "ERROR"]
+              if row["created_at"] >= error_window_start
+              and row["severity"] == "ERROR"
+              and not bool(row.get("acknowledged", 0))
+              and str(row.get("action_status", "")).upper() not in {
+                  "RESOLVED", "RECOVERED", "CLOSED", "ACKNOWLEDGED",
+              }]
     latest_reconciliation = {}
     for row in store.reconciliation_reports(limit=10_000):
         latest_reconciliation.setdefault(row["symbol"], row)

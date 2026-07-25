@@ -73,6 +73,8 @@ current_tab, search_tab = st.tabs(
     key="trading_config_tab", on_change="rerun",
 )
 
+st.caption("使用建议：日常查看和调整 Core Satellite 在“当前配置”；新增标的时再进入“查找并添加”。各策略标的列表相互独立。")
+
 catalog = pd.DataFrame()
 if search_tab.open:
     try:
@@ -291,7 +293,7 @@ with current_tab:
             st.rerun()
         st.page_link(
             "pages/15_策略控制台.py",
-            label="前往自动化控制中心检查 Core 执行模式",
+            label="前往策略与资金控制检查 Core 执行模式",
             icon=":material/tune:",
         )
 

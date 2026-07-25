@@ -7,6 +7,8 @@ from pathlib import Path
 import time as clock
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_gamma_campaigns
 from futu_quant.execution import ExecutionManager
@@ -21,10 +23,13 @@ from futu_quant.option_signal import (
 )
 from futu_quant.volatility_optimizer import (
     decide_volatility_action, sync_volatility_position_cycle,
-    volatility_cooldown_hours, volatility_exit_reason, volatility_regime,
-    volatility_threshold_profile,
+    volatility_partial_exit_plan,
+    volatility_cooldown_hours, volatility_exit_reason,
+    volatility_profit_protection_profile, volatility_regime, volatility_threshold_profile,
 )
-from futu_quant.data_quality import option_quote_freshness, quote_freshness
+from futu_quant.data_quality import (
+    option_book_status, option_quote_freshness, quote_freshness,
+)
 from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.store import TradingStore
 
@@ -32,6 +37,46 @@ from futu_quant.store import TradingStore
 NY = ZoneInfo("America/New_York")
 MARKET_CALENDAR = USMarketCalendar()
 LEGACY_STATE_FILE = Path("data/gamma_state.json")
+
+
+def refreshed_trade_quotes(
+    broker: FutuPaperBroker, code: str, underlying: str, now: datetime,
+    maximum_spread_pct: float, retries: int = 2, wait_seconds: float = 1.5,
+) -> tuple[pd.Series, pd.Series, dict]:
+    attempts: list[dict] = []
+    last_option = None
+    last_owner = None
+    for attempt in range(retries + 1):
+        quote = broker.snapshots([code, underlying])
+        option = quote[quote["code"] == code].iloc[0]
+        owner = quote[quote["code"] == underlying].iloc[0]
+        option_fresh, option_reason, option_age, option_degraded = option_quote_freshness(
+            option, now, fresh_seconds=180, maximum_seconds=900,
+            maximum_spread_pct=maximum_spread_pct,
+        )
+        owner_fresh, owner_reason, owner_age = quote_freshness(owner, now)
+        book_ok, book_reason, spread_pct = option_book_status(option, maximum_spread_pct)
+        attempts.append({
+            "attempt": attempt + 1,
+            "option_fresh": option_fresh,
+            "option_reason": option_reason,
+            "option_age_seconds": option_age,
+            "option_degraded": option_degraded,
+            "underlying_fresh": owner_fresh,
+            "underlying_reason": owner_reason,
+            "underlying_age_seconds": owner_age,
+            "book_ok": book_ok,
+            "book_reason": book_reason,
+            "spread_pct": spread_pct,
+        })
+        last_option, last_owner = option, owner
+        if option_fresh and owner_fresh and book_ok:
+            break
+        if attempt < retries:
+            clock.sleep(wait_seconds)
+    latest = attempts[-1]
+    latest["attempts"] = attempts
+    return last_option, last_owner, latest
 
 
 def load_state() -> dict:
@@ -117,7 +162,15 @@ def run_campaign(
             state[f"volatility_cooldown:{campaign['underlying']}"] = now.isoformat()
             state[f"volatility_cooldown_hours:{campaign['underlying']}"] = (
                 volatility_cooldown_hours(
-                    reason, float(campaign.get("cooldown_hours", 24))
+                    reason, float(campaign.get("cooldown_hours", 24)),
+                    {
+                        "take_profit": float(campaign.get("cooldown_take_profit_hours", 4)),
+                        "profit_protection": float(campaign.get("cooldown_profit_protection_hours", 8)),
+                        "stop_loss": float(campaign.get("cooldown_stop_loss_hours", 24)),
+                        "expiry": float(campaign.get("cooldown_expiry_hours", 0)),
+                        "decay": float(campaign.get("cooldown_decay_hours", 8)),
+                        "contraction": float(campaign.get("cooldown_contraction_hours", 6)),
+                    },
                 )
             )
     campaign_prefix = f"{campaign.get('event_date', '')}:{campaign.get('campaign_id', code)}:"
@@ -147,9 +200,6 @@ def run_campaign(
         print(f"{code}: HOLD pending order {pending.iloc[0]['order_id']}")
         return
 
-    quote = broker.snapshots([code, campaign["underlying"]])
-    option = quote[quote["code"] == code].iloc[0]
-    owner = quote[quote["code"] == campaign["underlying"]].iloc[0]
     market_session = MARKET_CALENDAR.session(now)
     if not market_session.regular_open(now):
         reason = (
@@ -159,30 +209,54 @@ def run_campaign(
         executor.store.decision_if_changed(
             strategy_id, code, "HOLD", reason, {
                 "market_session": "OPTION_CLOSED",
-                "option_quote_time": option.get("update_time", option.get("updated_time", "")),
+                "option_quote_time": "",
             }, repeat_after_seconds=3600,
         )
         print(f"{code}: HOLD ({reason})")
         return
-    option_fresh, option_fresh_reason, option_age, option_degraded = option_quote_freshness(
-        option, now, fresh_seconds=180, maximum_seconds=900,
-        maximum_spread_pct=float(campaign.get(
-            "max_spread_pct", 12.0 if trigger_mode == "VOLATILITY" else 20.0
-        )),
+    max_quote_spread_pct = float(campaign.get(
+        "max_spread_pct", 12.0 if trigger_mode == "VOLATILITY" else 20.0
+    ))
+    option, owner, quote_check = refreshed_trade_quotes(
+        broker, code, campaign["underlying"], now, max_quote_spread_pct,
     )
-    owner_fresh, owner_fresh_reason, owner_age = quote_freshness(owner, now)
-    if not option_fresh or not owner_fresh:
-        reason = f"行情数据新鲜度检查未通过：正股 {owner_fresh_reason}；期权 {option_fresh_reason}"
-        executor.store.decision(strategy_id, code, "BLOCKED", reason, {
-            "underlying_quote_age_seconds": owner_age, "option_quote_age_seconds": option_age,
+    if not quote_check["option_fresh"] or not quote_check["underlying_fresh"] or not quote_check["book_ok"]:
+        reason = (
+            "行情/盘口检查未通过："
+            f"正股 {quote_check['underlying_reason']}；"
+            f"期权 {quote_check['option_reason']}；"
+            f"{quote_check['book_reason']}；已重试 {len(quote_check['attempts'])} 次"
+        )
+        decision = "HOLD" if quantity > 0 else "BLOCKED"
+        executor.store.decision(strategy_id, code, decision, reason, {
+            "market_data_status": "WAITING_EXIT_LIQUIDITY" if quantity > 0 else "PRE_TRADE_BLOCKED",
+            "underlying_quote_age_seconds": quote_check["underlying_age_seconds"],
+            "option_quote_age_seconds": quote_check["option_age_seconds"],
+            "book_ok": quote_check["book_ok"],
+            "book_reason": quote_check["book_reason"],
+            "spread_pct": quote_check["spread_pct"],
+            "quote_attempts": quote_check["attempts"],
+            "position_quantity": quantity,
+            "planned_order_quantity": 0,
+            "trigger_mode": trigger_mode,
         })
-        print(f"{code}: BLOCKED ({reason})")
+        executor.store.audit(
+            "OPTION_MARKET_DATA_WAITING" if quantity > 0 else "OPTION_MARKET_DATA_BLOCKED",
+            {
+                "symbol": code, "underlying": campaign["underlying"],
+                "strategy_id": strategy_id, "reason": reason,
+                "attempts": quote_check["attempts"],
+                "position_quantity": quantity,
+            },
+            strategy_id,
+        )
+        print(f"{code}: {decision} ({reason})")
         return
-    if option_degraded:
+    if quote_check["option_degraded"]:
         executor.store.audit("OPTION_QUOTE_DEGRADED_ACCEPTED", {
             "strategy_id": strategy_id, "symbol": code,
-            "option_quote_age_seconds": option_age,
-            "reason": option_fresh_reason,
+            "option_quote_age_seconds": quote_check["option_age_seconds"],
+            "reason": quote_check["option_reason"],
         }, strategy_id)
     last = float(option["last_price"] or 0)
     bid, ask = float(option["bid_price"] or 0), float(option["ask_price"] or 0)
@@ -203,6 +277,10 @@ def run_campaign(
     peak_pnl_ratio = (
         peak / cost - 1
         if quantity > 0 and cost > 0 else 0.0
+    )
+    profit_giveback = (
+        max(0.0, (peak_pnl_ratio - pnl_ratio) / peak_pnl_ratio)
+        if peak_pnl_ratio > 0 else 0.0
     )
     underlying_bars = broker.candles(campaign["underlying"], count=90)
     regime = None
@@ -318,24 +396,57 @@ def run_campaign(
                 float(campaign.get("iv_decline_exit_ratio", .20)),
                 float(campaign.get("efficiency_decline_exit_ratio", .40)),
                 int(campaign.get("contraction_confirmations_required", 3)),
+                pnl_ratio=pnl_ratio,
+                directional_confirmation=direction_ok,
             )
         opened_at = datetime.fromisoformat(str(
             campaign_state.get("position_opened_at", now.isoformat())
         ))
-        action, reason = decide_volatility_action(
-            now=now, opened_at=opened_at, quantity=quantity,
-            stages_filled=stages_filled, max_stages=int(campaign["max_stages"]),
-            pnl_ratio=pnl_ratio, peak_pnl_ratio=peak_pnl_ratio,
-            drawdown_from_peak=drawdown, directional_confirmation=direction_ok,
-            signal_active=bool(campaign_state.get("signal_active", False)),
-            profit_target=float(campaign["profit_target"]),
-            stop_loss=float(campaign["stop_loss"]),
-            trailing_stop=float(campaign["trailing_stop"]),
-            max_hold_hours=float(campaign.get("max_hold_hours", 24)),
-            decay_reason=decay_reason,
-            minimum_hold_minutes=float(campaign.get("minimum_hold_minutes", 30)),
+        partial_exit_quantity, partial_exit_tier, partial_exit_reason = (
+            volatility_partial_exit_plan(
+                quantity=quantity,
+                pnl_ratio=pnl_ratio,
+                campaign_state=campaign_state,
+                enabled=bool(campaign.get("partial_profit_enabled", True)),
+                tier1_profit=float(campaign.get("partial_profit_tier1", .30)),
+                tier1_fraction=float(campaign.get("partial_profit_tier1_fraction", .50)),
+                tier2_profit=float(campaign.get("partial_profit_tier2", .60)),
+                tier2_fraction=float(campaign.get("partial_profit_tier2_fraction", .25)),
+            )
         )
+        if partial_exit_quantity > 0 and partial_exit_reason:
+            action, reason = "SELL", partial_exit_reason
+        else:
+            protection_profile = volatility_profit_protection_profile(campaign, regime)
+            action, reason = decide_volatility_action(
+                now=now, opened_at=opened_at, quantity=quantity,
+                stages_filled=stages_filled, max_stages=int(campaign["max_stages"]),
+                pnl_ratio=pnl_ratio, peak_pnl_ratio=peak_pnl_ratio,
+                drawdown_from_peak=drawdown, directional_confirmation=direction_ok,
+                signal_active=bool(campaign_state.get("signal_active", False)),
+                profit_target=float(campaign["profit_target"]),
+                stop_loss=float(campaign["stop_loss"]),
+                trailing_stop=float(campaign["trailing_stop"]),
+                max_hold_hours=float(campaign.get("max_hold_hours", 24)),
+                decay_reason=decay_reason,
+                minimum_hold_minutes=float(campaign.get("minimum_hold_minutes", 90)),
+                profit_protection_start=float(
+                    protection_profile["profit_protection_start"]
+                ),
+                profit_protection_drawdown=float(
+                    protection_profile["profit_protection_giveback"]
+                ),
+                profit_giveback_from_peak=profit_giveback,
+                full_profit_target_enabled=not (
+                    bool(campaign.get("partial_profit_enabled", True)) and quantity > 1
+                ),
+                minimum_locked_profit=float(
+                    protection_profile["minimum_locked_profit"]
+                ),
+            )
     else:
+        partial_exit_quantity = 0
+        partial_exit_tier = None
         action, reason = decide_gamma_action(
             now, event_time, quantity, stages_filled, int(campaign["max_stages"]),
             int(campaign["entry_hours"]), pnl_ratio, drawdown, direction_ok,
@@ -348,11 +459,16 @@ def run_campaign(
         if now.date() > expiry or (now.date() == expiry and now.hour >= 15):
             action, reason = "SELL", "合约到期日临近收盘，强制退出以避免自动行权"
     print(f"{code}: {action} ({reason}) qty={quantity} pnl={pnl_ratio:.2%}")
-    planned_order_quantity = per_stage if action == "BUY" else quantity if action == "SELL" else 0
+    planned_order_quantity = (
+        per_stage if action == "BUY"
+        else (partial_exit_quantity or quantity) if action == "SELL"
+        else 0
+    )
     decision_payload = {
          "position_quantity": quantity, "planned_order_quantity": planned_order_quantity,
          "position_source": "SHADOW_LEDGER" if execution_mode == "SHADOW" else "FUTU_ACCOUNT",
          "pnl_ratio": pnl_ratio, "drawdown": drawdown, "trigger_mode": trigger_mode,
+         "profit_giveback": profit_giveback,
          "validation_warnings": issues, "direction_reason": direction_reason,
          "direction_metrics": direction_metrics,
          "volatility_regime": regime,
@@ -362,10 +478,20 @@ def run_campaign(
     }
     if trigger_mode == "VOLATILITY":
         decision_payload.update({
+            "entry_tier": campaign.get("entry_tier", campaign.get("adaptive_risk_tier")),
+            "base_premium_budget": campaign.get("base_premium_budget"),
+            "effective_premium_budget": campaign.get(
+                "effective_premium_budget", campaign.get("max_premium_per_stage")
+            ),
             "signal_started_at": campaign_state.get("signal_started_at"),
             "entry_window_end": event_time.isoformat(),
             "position_opened_at": campaign_state.get("position_opened_at"),
             "peak_pnl_ratio": peak_pnl_ratio,
+            "profit_protection_profile": (
+                volatility_profit_protection_profile(campaign, regime)
+                if regime is not None else {}
+            ),
+            "partial_exit_tier": partial_exit_tier,
             "entry_iv_actual": campaign_state.get("entry_iv_actual"),
             "entry_gamma_theta_efficiency_actual": campaign_state.get(
                 "entry_gamma_theta_efficiency_actual"
@@ -383,7 +509,9 @@ def run_campaign(
             strategy_id, code, action, reason, decision_payload, repeat_after_seconds=900,
         )
     else:
-        executor.store.decision(strategy_id, code, action, reason, decision_payload)
+        executor.store.decision_if_changed(
+            strategy_id, code, action, reason, decision_payload, repeat_after_seconds=900,
+        )
     if action == "BUY":
         def record_pretrade_block(check: str, block_reason: str, details: dict) -> None:
             payload = {**decision_payload, "pre_trade_check": check, **details}
@@ -452,13 +580,31 @@ def run_campaign(
                 leg["code"], side, per_stage * int(leg.get("ratio", 1)), leg_price,
                 {"multiplier": float(leg_quote.get("option_contract_multiplier", multiplier)),
                  "reason": reason, "underlying": campaign["underlying"],
-                 "structure": campaign.get("structure"), "combo_primary": code},
+                 "structure": campaign.get("structure"), "combo_primary": code,
+                 "entry_tier": campaign.get("entry_tier", campaign.get("adaptive_risk_tier")),
+                 "base_premium_budget": campaign.get("base_premium_budget"),
+                 "effective_premium_budget": campaign.get(
+                     "effective_premium_budget", campaign.get("max_premium_per_stage")
+                 )},
             )
             print(result)
     elif action == "SELL" and quantity > 0:
         if bid <= 0:
-            print(f"{code}: blocked because bid is unavailable")
+            reason = f"等待可卖出盘口：买一 {bid:.2f} 不可用，下一轮继续刷新尝试退出"
+            executor.store.decision(strategy_id, code, "HOLD", reason, {
+                **decision_payload,
+                "market_data_status": "WAITING_EXIT_LIQUIDITY",
+                "book_reason": reason,
+                "planned_order_quantity": int(planned_order_quantity or quantity),
+            })
+            executor.store.audit("OPTION_EXIT_WAITING_FOR_BID", {
+                "symbol": code, "strategy_id": strategy_id, "reason": reason,
+                "position_quantity": quantity,
+                "planned_order_quantity": int(planned_order_quantity or quantity),
+            }, strategy_id)
+            print(f"{code}: HOLD ({reason})")
             return
+        exit_quantity = int(planned_order_quantity or quantity)
         leg_quotes = broker.snapshots([leg["code"] for leg in legs]).set_index("code")
         cycle_suffix = (
             f":cycle{int(campaign_state.get('entry_cycle', 0))}"
@@ -473,19 +619,26 @@ def run_campaign(
                 strategy_id,
                 f"{campaign['event_date']}:{campaign.get('campaign_id', code)}"
                 f"{cycle_suffix}:CLOSE:{reason}:leg{leg_number}",
-                leg["code"], closing_side, quantity * int(leg.get("ratio", 1)), leg_price,
+                leg["code"], closing_side, exit_quantity * int(leg.get("ratio", 1)), leg_price,
                 {"multiplier": float(leg_quote.get("option_contract_multiplier", 100)),
                  "reason": reason, "urgent": True, "structure": campaign.get("structure"),
-                 "combo_primary": code},
+                 "combo_primary": code, "partial_exit_tier": partial_exit_tier,
+                 "planned_order_quantity": exit_quantity},
             )
             print(result)
             if trigger_mode == "VOLATILITY" and result.status in {
                 "SHADOW", "SHADOW_PART", "SHADOW_FILLED", "SUBMITTED",
                 "FILLED_PART", "FILLED",
             }:
-                # Do not start cooldown when an exit is merely submitted. The next
-                # observed position transition from positive to zero confirms it.
-                campaign_state["pending_exit_reason"] = reason
+                if partial_exit_tier:
+                    tiers = list(campaign_state.get("partial_exit_tiers") or [])
+                    if partial_exit_tier not in tiers:
+                        tiers.append(partial_exit_tier)
+                    campaign_state["partial_exit_tiers"] = tiers
+                else:
+                    # Do not start cooldown when an exit is merely submitted. The next
+                    # observed position transition from positive to zero confirms it.
+                    campaign_state["pending_exit_reason"] = reason
 
 
 def run_once(reconcile: bool = True) -> None:

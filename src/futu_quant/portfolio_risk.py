@@ -48,6 +48,7 @@ def portfolio_exposure(positions: pd.DataFrame, quotes: pd.DataFrame) -> dict:
 def projected_portfolio_allowed(
     broker, symbol: str, side: str, quantity: int, price: float, multiplier: float | None,
     underlying: str | None, store=None, execution_mode: str = "PAPER",
+    rebalance_reduction_delta: float = 0.0,
 ) -> tuple[bool, str, dict]:
     positions = broker.positions()
     if execution_mode == "SHADOW" and store is not None:
@@ -92,6 +93,9 @@ def projected_portfolio_allowed(
         clusters = {}
     correlated = set(clusters.get(family, [family]))
     correlated_value = sum(value for key, value in exposure["families"].items() if key in correlated)
+    # Core Satellite sends planned sells first.  During the same rebalance batch,
+    # credit that released Delta before judging the replacement BUY.
+    correlated_value = max(0.0, correlated_value - max(0.0, float(rebalance_reduction_delta)))
     correlated_value += abs(candidate_delta)
     max_correlated = float(os.getenv("RISK_MAX_CORRELATED_DELTA_PCT", "0.50"))
     if assets > 0 and correlated_value > assets * max_correlated:

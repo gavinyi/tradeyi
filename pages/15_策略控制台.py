@@ -16,18 +16,24 @@ from futu_quant.radar_control import (
 )
 from futu_quant.service_control import restart, start, status as service_status, stop
 from futu_quant.store import TradingStore
+from futu_quant.strategy_budgeting import (
+    budget_group_label,
+    recommended_active_budget_rows,
+)
 from futu_quant.strategy_plugins import strategy_plugins
 from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
 
 
-st.set_page_config(page_title="自动化控制中心", page_icon="🎛️", layout="wide")
+st.set_page_config(page_title="策略与资金控制", page_icon="🎛️", layout="wide")
 settings = Settings.load()
 render_sidebar(settings)
 store = TradingStore()
 admin = render_admin_login()
 
-st.title("自动化控制中心")
-st.caption("统一管理后台服务、全局执行模式、策略调度和独立策略模式。系统监控只负责观察。")
+st.title("策略与资金控制")
+st.caption(
+    "统一管理策略启停、执行模式、资金配额和后台服务。策略页面只负责各自参数，组合风险页面只负责压力测试。"
+)
 
 heartbeats = {row["strategy_id"]: row for row in store.heartbeats()}
 budgets = {row["strategy_id"]: row for row in store.strategy_risk_budgets()}
@@ -73,8 +79,8 @@ with st.container(horizontal=True):
     st.metric("版本漂移", int(control["version_drift"].sum()), border=True)
     st.metric("全局策略状态", "已暂停" if store.get_setting("strategies_paused", "false") == "true" else "运行", border=True)
 
-service_tab, overview_tab, attribution_tab, experiment_tab, protocol_tab = st.tabs(
-    ["服务控制", "策略调度", "收益归因", "实验版本", "插件协议"]
+service_tab, overview_tab, budget_tab, attribution_tab, experiment_tab, protocol_tab = st.tabs(
+    ["服务控制", "策略调度", "策略资金", "收益归因", "实验版本", "插件协议"]
 )
 
 with service_tab:
@@ -193,6 +199,10 @@ with service_tab:
         st.caption("暂停策略不会停止订单对账、风控、持仓监控和退出管理。")
 
 with overview_tab:
+    st.info(
+        "这里管策略是否运行、运行到 SHADOW 还是 PAPER；资金比例请到右侧“策略资金”Tab 调整。",
+        icon=":material/info:",
+    )
     editable = control[["strategy_id", "display_name", "enabled", "execution_mode"]].copy()
     edited = st.data_editor(
         editable, hide_index=True, width="stretch",
@@ -234,6 +244,85 @@ with overview_tab:
             "version_drift": st.column_config.CheckboxColumn("版本漂移"),
         },
     )
+
+with budget_tab:
+    st.subheader("策略资金")
+    st.caption(
+        "这是策略资金配额的主配置入口。资金配额合计不能超过 100%；未分配部分就是现金和风险缓冲。"
+    )
+    budget_rows = store.strategy_risk_budgets()
+    if not budget_rows:
+        st.info("策略预算尚未初始化，请先进入组合风险页面生成默认预算。")
+    else:
+        budget_frame = pd.DataFrame(budget_rows)
+        budget_frame["strategy_group"] = budget_frame["strategy_id"].map(budget_group_label)
+        enabled_total = float(
+            budget_frame[budget_frame["enabled"].astype(bool)]["capital_ratio"].sum()
+        )
+        with st.container(horizontal=True):
+            st.metric("启用资金配额", f"{enabled_total:.0%}", border=True)
+            st.metric("现金/未分配缓冲", f"{max(0.0, 1 - enabled_total):.0%}", border=True)
+            st.metric(
+                "波动率期权配额",
+                f"{float(budget_frame.loc[budget_frame['strategy_id'] == 'volatility_long_gamma', 'capital_ratio'].sum()):.0%}",
+                border=True,
+            )
+            st.metric(
+                "财报策略配额",
+                f"{float(budget_frame[budget_frame['strategy_id'].isin(['earnings_gamma', 'earnings_gamma_manual'])]['capital_ratio'].sum()):.0%}",
+                border=True,
+            )
+        if st.button(
+            "应用当前推荐：Core 65% + 波动率期权 25%",
+            type="primary",
+            disabled=not admin,
+            icon=":material/auto_fix_high:",
+        ):
+            rows_to_save = recommended_active_budget_rows(budget_rows)
+            store.save_strategy_risk_budgets(rows_to_save)
+            store.audit(
+                "STRATEGY_BUDGET_PRESET_APPLIED",
+                {"actor": "streamlit_admin", "preset": "core65_volatility25"},
+            )
+            st.success("推荐资金配置已应用：财报自动/手工策略资金已转给波动率期权。")
+            st.rerun()
+        edit_columns = [
+            "strategy_group", "strategy_id", "capital_ratio", "max_loss_ratio",
+            "option_premium_ratio", "enabled",
+        ]
+        edited_budget = st.data_editor(
+            budget_frame[edit_columns],
+            hide_index=True,
+            width="stretch",
+            disabled=["strategy_group", "strategy_id"],
+            column_config={
+                "strategy_group": st.column_config.TextColumn("策略分组"),
+                "strategy_id": st.column_config.TextColumn("策略ID", pinned=True),
+                "capital_ratio": st.column_config.NumberColumn(
+                    "资金配额", min_value=0.0, max_value=1.0, format="percent"
+                ),
+                "max_loss_ratio": st.column_config.NumberColumn(
+                    "最大损失预算", min_value=0.0, max_value=1.0, format="percent"
+                ),
+                "option_premium_ratio": st.column_config.NumberColumn(
+                    "期权权利金配额", min_value=0.0, max_value=1.0, format="percent"
+                ),
+                "enabled": st.column_config.CheckboxColumn("参与风控预算"),
+            },
+            key="strategy_budget_control_editor",
+        )
+        if st.button("保存策略资金配额", disabled=not admin):
+            rows_to_save = edited_budget.drop(columns=["strategy_group"]).to_dict("records")
+            try:
+                store.save_strategy_risk_budgets(rows_to_save)
+                st.success("策略资金配额已保存，统一下单风控立即生效。")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+        st.caption(
+            "建议当前阶段：Core Satellite 是股票主策略；volatility_long_gamma 是期权主策略；"
+            "earnings_gamma / earnings_gamma_manual 暂停资金配额，只保留页面和历史记录。"
+        )
 
 with attribution_tab:
     @st.cache_data(ttl=30, max_entries=2, show_spinner=False)

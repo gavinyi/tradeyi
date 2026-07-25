@@ -54,3 +54,22 @@ def option_quote_freshness(
         f"行情延迟 {age:.0f} 秒且盘口不可用：买一 {bid:.2f}、"
         f"卖一 {ask:.2f}、价差 {spread_pct:.1f}%"
     ), age, False
+
+
+def option_book_status(row, maximum_spread_pct: float = 20.0) -> tuple[bool, str, float]:
+    bid = float(row.get("bid_price") or 0)
+    ask = float(row.get("ask_price") or 0)
+    middle = (bid + ask) / 2
+    spread_pct = (ask - bid) / middle * 100 if middle > 0 and ask >= bid else float("inf")
+    if bid <= 0 or ask <= 0:
+        return False, f"盘口不可用：买一 {bid:.2f}、卖一 {ask:.2f}", spread_pct
+    if ask < bid:
+        return False, f"盘口倒挂：买一 {bid:.2f}、卖一 {ask:.2f}", spread_pct
+    if spread_pct > maximum_spread_pct:
+        return False, (
+            f"盘口价差过大：买一 {bid:.2f}、卖一 {ask:.2f}、"
+            f"价差 {spread_pct:.1f}% > {maximum_spread_pct:.1f}%"
+        ), spread_pct
+    return True, (
+        f"盘口可用：买一 {bid:.2f}、卖一 {ask:.2f}、价差 {spread_pct:.1f}%"
+    ), spread_pct

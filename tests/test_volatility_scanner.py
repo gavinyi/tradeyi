@@ -138,7 +138,7 @@ def test_active_signal_creates_campaign_and_enables_auto_monitor(monkeypatch):
     assert results[0]["campaign_code"] == "US.AMD260724C180000"
     assert saved_campaigns[0]["code"] == "US.AMD260724C180000"
     assert saved_campaigns[0]["max_hold_hours"] == 24
-    assert saved_campaigns[0]["minimum_hold_minutes"] == 30
+    assert saved_campaigns[0]["minimum_hold_minutes"] == 90
     assert saved_campaigns[0]["iv_decline_exit_ratio"] == .20
     assert saved_campaigns[0]["efficiency_decline_exit_ratio"] == .40
     assert saved_campaigns[0]["contraction_confirmations_required"] == 3

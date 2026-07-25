@@ -34,9 +34,11 @@ def test_post_event_profit_exit():
 
 
 def test_volatility_cooldown_depends_on_exit_reason():
-    assert volatility_cooldown_hours("达到止盈目标", 24) == 8
+    assert volatility_cooldown_hours("达到止盈目标", 24) == 4
+    assert volatility_cooldown_hours("盈利保护触发", 24) == 8
     assert volatility_cooldown_hours("实现波动开始收缩", 24) == 6
     assert volatility_cooldown_hours("触发硬止损", 24) == 24
+    assert volatility_cooldown_hours("合约到期日临近收盘，强制退出以避免自动行权", 24) == 0
 
 
 def test_shared_campaign_runner_dispatches_to_independent_volatility_decider():
@@ -44,3 +46,12 @@ def test_shared_campaign_runner_dispatches_to_independent_volatility_decider():
 
     assert "decide_volatility_action(" in source
     assert "if trigger_mode == \"VOLATILITY\":" in source
+
+
+def test_option_market_data_failures_are_tracked_instead_of_silent_prints():
+    source = Path("scripts/run_gamma_strategy.py").read_text()
+
+    assert "refreshed_trade_quotes(" in source
+    assert "OPTION_MARKET_DATA_WAITING" in source
+    assert "WAITING_EXIT_LIQUIDITY" in source
+    assert "OPTION_EXIT_WAITING_FOR_BID" in source

@@ -1,7 +1,9 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from futu_quant.data_quality import option_quote_freshness, quote_freshness
+from futu_quant.data_quality import (
+    option_book_status, option_quote_freshness, quote_freshness,
+)
 
 
 def test_quote_freshness_rejects_old_market_data():
@@ -35,3 +37,23 @@ def test_option_quote_freshness_rejects_stale_or_wide_book():
         now,
     )
     assert not allowed
+
+
+def test_option_book_status_explains_unusable_and_wide_books():
+    usable, reason, _ = option_book_status({"bid_price": 0, "ask_price": 1.2})
+    assert not usable
+    assert "盘口不可用" in reason
+
+    usable, reason, spread = option_book_status(
+        {"bid_price": 1.0, "ask_price": 1.5}, maximum_spread_pct=20,
+    )
+    assert not usable
+    assert spread > 20
+    assert "价差过大" in reason
+
+    usable, reason, spread = option_book_status(
+        {"bid_price": 1.0, "ask_price": 1.05}, maximum_spread_pct=20,
+    )
+    assert usable
+    assert spread < 20
+    assert "盘口可用" in reason

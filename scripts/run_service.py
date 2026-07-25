@@ -433,7 +433,11 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     if due(store, "last_run:storage_monitor", 300, now):
         def check_storage():
             report = storage_report()
-            store.operational_event("storage", "STORAGE_CAPACITY", report["status"], report)
+            previous_status = store.get_setting("storage_capacity_status", "")
+            # 仍然持续告警，但不每 5 分钟重复写一条完全相同的事件。
+            if previous_status != report["status"]:
+                store.operational_event("storage", "STORAGE_CAPACITY", report["status"], report)
+                store.set_setting("storage_capacity_status", report["status"])
             if report["status"] == "WARNING":
                 alerts.send(
                     "ERROR", "STORAGE_CAPACITY_WARNING",

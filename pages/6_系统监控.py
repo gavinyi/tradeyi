@@ -41,7 +41,7 @@ with st.container(border=True):
             "全局执行模式", store.get_setting("execution_mode", "PAPER").upper(), border=True,
         )
     st.page_link(
-        "pages/15_策略控制台.py", label="前往自动化控制中心",
+        "pages/15_策略控制台.py", label="前往策略与资金控制",
         icon=":material/tune:",
     )
 

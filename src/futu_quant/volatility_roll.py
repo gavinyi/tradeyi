@@ -6,10 +6,12 @@ import pandas as pd
 
 from .earnings_gamma import screen_gamma_contracts
 from .gamma_risk import contract_analysis, realized_volatility
+from .option_lifecycle import parse_option_code
 from .option_ranking import rank_long_option_candidates
 from .option_signal import automatic_option_direction
 from .volatility_optimizer import (
-    rank_volatility_contracts, volatility_regime, volatility_threshold_profile,
+    rank_volatility_contracts, tiered_premium_budget, volatility_regime,
+    volatility_threshold_profile,
 )
 
 
@@ -80,6 +82,14 @@ def should_replace_campaign(current: dict, candidate: dict) -> tuple[bool, str]:
 
 def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     underlying = campaign["underlying"]
+    # 活动策略不能继续持有或复核已到期合约；到期合约必须滚动到未来期限。
+    current_code = str(campaign.get("code", ""))
+    current_contract = parse_option_code(current_code) if current_code else None
+    if current_contract is not None and current_contract.expiration < date.today():
+        campaign = dict(campaign)
+        campaign["code"] = ""
+        campaign["status"] = "EXPIRED"
+        campaign["last_expired_code"] = current_code
     owner = broker.snapshots([underlying]).iloc[0]
     bars = broker.candles(underlying, count=120)
     profile = volatility_threshold_profile(bars)
@@ -106,7 +116,8 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     expirations = broker.option_expirations(underlying).copy()
     latest = date.today() + timedelta(days=21)
     valid = expirations[
-        (pd.to_datetime(expirations["strike_time"]).dt.date >= date.today())
+        # 当日到期合约在收盘后不再作为新入场表达，避免反复生成已过期代码。
+        (pd.to_datetime(expirations["strike_time"]).dt.date > date.today())
         & (pd.to_datetime(expirations["strike_time"]).dt.date <= latest)
     ].sort_values("strike_time").head(3)
     if valid.empty:
@@ -122,13 +133,16 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         candidates, spot, profit_target=float(campaign.get("profit_target", .5)),
         stop_loss=float(campaign.get("stop_loss", .4)),
     )
+    premium_budget, entry_tier = tiered_premium_budget(
+        float(campaign.get("max_premium_per_stage", 1000)), regime, store
+    )
     candidates = rank_volatility_contracts(
         candidates, spot, realized_volatility(bars),
         signal_active=bool(regime.get("active")),
         strong_signal=bool(
             regime.get("strong_signal_override") and regime.get("trigger_confirmed")
         ),
-        max_premium_per_stage=float(campaign.get("max_premium_per_stage", 1000)),
+        max_premium_per_stage=premium_budget,
         contracts_per_stage=int(campaign.get("contracts_per_stage", 1)),
     )
     if candidates.empty or "volatility_eligible" not in candidates:
@@ -159,6 +173,9 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         "volatility_quality_score": float(selected.get("volatility_quality_score", 0)),
         "volatility_filter_reason": str(selected.get("volatility_filter_reason", "")),
         "last_expression_review": date.today().isoformat(),
+        "entry_tier": entry_tier,
+        "base_premium_budget": float(campaign.get("max_premium_per_stage", 1000)),
+        "effective_premium_budget": premium_budget,
     })
     if float(selected.get("iv_rv_limit", 1.5)) > 1.5:
         # Relaxed entries are deliberately capped at one contract and one stage.

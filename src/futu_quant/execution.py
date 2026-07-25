@@ -86,6 +86,7 @@ class ExecutionManager:
                 self.broker, symbol, side, int(quantity), float(price), metadata.get("multiplier"),
                 metadata.get("underlying"), strategy_id, mode,
                 bool(metadata.get("protected_short", False)),
+                metadata,
             )
         except Exception as exc:
             self.store.update_intent(intent["id"], "FAILED", error=f"交易前检查异常：{exc}")

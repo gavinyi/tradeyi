@@ -4,9 +4,12 @@ from futu_quant.option_signal import configured_volatility_direction_allowed
 from futu_quant.volatility_optimizer import (
     decide_volatility_action, rank_volatility_contracts, volatility_exit_reason,
     sync_volatility_position_cycle, volatility_regime,
+    tiered_premium_budget, volatility_partial_exit_plan,
+    volatility_profit_protection_profile,
 )
 from futu_quant.volatility_roll import should_replace_campaign
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 
 def test_contract_rank_rejects_expensive_deep_itm_option():
@@ -19,6 +22,13 @@ def test_contract_rank_rejects_expensive_deep_itm_option():
     ranked = rank_volatility_contracts(rows, 100, .30, as_of=pd.Timestamp("2026-07-16").date())
     assert not bool(ranked.iloc[0].volatility_eligible)
     assert "Delta" in ranked.iloc[0].volatility_filter_reason
+
+
+def test_tiered_budget_scales_only_by_confirmed_signal_strength():
+    assert tiered_premium_budget(2000, {"active": False}) == (2000.0, "常规")
+    assert tiered_premium_budget(2000, {"active": True}) == (3000.0, "动态波动")
+    assert tiered_premium_budget(2000, {"active": True, "strong_signal_override": True,
+                                       "trigger_confirmed": True}) == (4000.0, "强波动")
 
 
 def test_empty_contract_rank_keeps_downstream_schema():
@@ -188,6 +198,199 @@ def test_volatility_trailing_exit_requires_position_to_have_been_profitable():
     assert decide_volatility_action(peak_pnl_ratio=.20, **common)[0] == "SELL"
 
 
+def test_profit_protection_does_not_sell_before_configured_start():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    action, reason = decide_volatility_action(
+        now=now,
+        opened_at=now - timedelta(hours=1),
+        quantity=1,
+        stages_filled=1,
+        max_stages=3,
+        pnl_ratio=.12,
+        peak_pnl_ratio=.14,
+        drawdown_from_peak=.30,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=.50,
+        stop_loss=.40,
+        trailing_stop=.25,
+        max_hold_hours=24,
+        profit_protection_start=.15,
+        profit_protection_drawdown=.25,
+    )
+
+    assert action != "SELL"
+
+
+def test_profit_protection_holds_winner_until_drawdown_threshold():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    common = dict(
+        now=now,
+        opened_at=now - timedelta(hours=1),
+        quantity=1,
+        stages_filled=3,
+        max_stages=3,
+        peak_pnl_ratio=.26,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=.50,
+        stop_loss=.40,
+        trailing_stop=.25,
+        max_hold_hours=24,
+        profit_protection_start=.15,
+        profit_protection_drawdown=.25,
+    )
+
+    action, reason = decide_volatility_action(
+        pnl_ratio=.206,
+        drawdown_from_peak=.04,
+        profit_giveback_from_peak=(.26 - .206) / .26,
+        **common,
+    )
+    assert action == "HOLD"
+    assert "浮盈20.6%" in reason
+
+    action, reason = decide_volatility_action(
+        pnl_ratio=.183,
+        drawdown_from_peak=.07,
+        profit_giveback_from_peak=(.26 - .183) / .26,
+        **common,
+    )
+    assert action == "SELL"
+    assert "盈利保护触发" in reason
+    assert "盈利回吐" in reason
+
+
+def test_profit_protection_uses_profit_giveback_not_option_price_drawdown():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    action, reason = decide_volatility_action(
+        now=now,
+        opened_at=now - timedelta(hours=1),
+        quantity=1,
+        stages_filled=1,
+        max_stages=3,
+        pnl_ratio=.071,
+        peak_pnl_ratio=.260,
+        drawdown_from_peak=.150,
+        profit_giveback_from_peak=(.260 - .071) / .260,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=.50,
+        stop_loss=.40,
+        trailing_stop=.25,
+        max_hold_hours=24,
+        profit_protection_start=.15,
+        profit_protection_drawdown=.25,
+    )
+
+    assert action == "SELL"
+    assert "当前盈利7.1%" in reason
+
+
+def test_profit_protection_minimum_locked_profit_exits_before_winner_turns_loss():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    action, reason = decide_volatility_action(
+        now=now,
+        opened_at=now - timedelta(hours=1),
+        quantity=1,
+        stages_filled=1,
+        max_stages=3,
+        pnl_ratio=.04,
+        peak_pnl_ratio=.22,
+        drawdown_from_peak=.10,
+        profit_giveback_from_peak=.10,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=.50,
+        stop_loss=.40,
+        trailing_stop=.25,
+        max_hold_hours=24,
+        profit_protection_start=.15,
+        profit_protection_drawdown=.25,
+        minimum_locked_profit=.08,
+    )
+
+    assert action == "SELL"
+    assert "最低锁定盈利" in reason
+
+
+def test_profit_protection_profile_uses_signal_tier_overrides():
+    campaign = {
+        "profit_protection_start_strong": .21,
+        "profit_protection_giveback_strong": .31,
+        "minimum_locked_profit_strong": .11,
+    }
+    profile = volatility_profit_protection_profile(
+        campaign, {"active": True, "strong_signal_override": True, "trigger_confirmed": True}
+    )
+
+    assert profile == {
+        "tier": "强波动",
+        "profit_protection_start": .21,
+        "profit_protection_giveback": .31,
+        "minimum_locked_profit": .11,
+    }
+
+
+def test_profit_protection_profile_uses_near_expiry_override():
+    tomorrow = (
+        datetime.now(ZoneInfo("America/New_York")) + timedelta(days=1)
+    ).date().isoformat()
+    campaign = {
+        "strike_time": tomorrow,
+        "near_expiry_protection_days": 1,
+        "profit_protection_start_near_expiry": .10,
+        "profit_protection_giveback_near_expiry": .20,
+        "minimum_locked_profit_near_expiry": .05,
+        "profit_protection_start_strong": .20,
+        "profit_protection_giveback_strong": .30,
+        "minimum_locked_profit_strong": .10,
+    }
+    profile = volatility_profit_protection_profile(
+        campaign, {"active": True, "strong_signal_override": True, "trigger_confirmed": True}
+    )
+
+    assert profile == {
+        "tier": "临近到期",
+        "profit_protection_start": .10,
+        "profit_protection_giveback": .20,
+        "minimum_locked_profit": .05,
+    }
+
+
+def test_volatility_partial_profit_plan_skips_single_contract():
+    qty, tier, reason = volatility_partial_exit_plan(
+        quantity=1, pnl_ratio=.40, campaign_state={},
+    )
+
+    assert qty == 0
+    assert tier is None
+    assert reason is None
+
+
+def test_volatility_partial_profit_plan_takes_first_tier_and_keeps_runner():
+    qty, tier, reason = volatility_partial_exit_plan(
+        quantity=3, pnl_ratio=.35, campaign_state={},
+        tier1_profit=.30, tier1_fraction=.50,
+    )
+
+    assert qty == 2
+    assert tier == "tier1"
+    assert "分批止盈第一档" in str(reason)
+
+
+def test_volatility_partial_profit_plan_does_not_repeat_filled_tier():
+    qty, tier, reason = volatility_partial_exit_plan(
+        quantity=2, pnl_ratio=.65, campaign_state={"partial_exit_tiers": ["tier1"]},
+        tier1_profit=.30, tier1_fraction=.50,
+        tier2_profit=.60, tier2_fraction=.25,
+    )
+
+    assert qty == 1
+    assert tier == "tier2"
+    assert "第二档" in str(reason)
+
+
 def test_volatility_decay_thresholds_are_strategy_configurable():
     assert volatility_exit_reason(
         {}, current_iv=.44, entry_iv=.50, current_efficiency=1, entry_efficiency=1,
@@ -195,8 +398,16 @@ def test_volatility_decay_thresholds_are_strategy_configurable():
     ) is None
     assert "隐含波动率" in volatility_exit_reason(
         {}, current_iv=.44, entry_iv=.50, current_efficiency=1, entry_efficiency=1,
-        iv_decline_ratio=.10,
+        iv_decline_ratio=.10, pnl_ratio=-.01,
     )
+
+
+def test_iv_decline_alone_does_not_exit_profitable_confirmed_position():
+    assert volatility_exit_reason(
+        {"active": True}, current_iv=.30, entry_iv=.50,
+        current_efficiency=1, entry_efficiency=1,
+        iv_decline_ratio=.20, pnl_ratio=.05, directional_confirmation=True,
+    ) is None
 
 
 def test_new_volatility_position_cycle_resets_peak_and_entry_baselines():

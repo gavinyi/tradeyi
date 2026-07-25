@@ -120,6 +120,7 @@ with approval_tab:
     else:
         st.success("全部自动验收项已通过，可以填写理由并批准当前版本。")
     st.caption("观察天数、订单数、成交率、滑点、服务错误和三账对账由系统自动计算。")
+    st.info("系统日志会永久保留用于审计；服务错误数只统计最近 24 小时仍未确认、未恢复的 ERROR，较早历史日志不会卡住当前审批。")
     evidence_cols = st.columns(3)
     if evidence_cols[0].button("管理员手动登记回测", disabled=not admin,
                                help="推荐从策略回测页保存实际结果；此按钮仅用于外部回测结果。"):

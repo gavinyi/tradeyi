@@ -79,6 +79,7 @@ class RiskEngine:
         multiplier: float | None = None, underlying: str | None = None,
         strategy_id: str | None = None, execution_mode: str = "PAPER",
         protected_short: bool = False,
+        metadata: dict | None = None,
     ) -> RiskDecision:
         if not symbol.startswith("US.") or side not in {"BUY", "SELL"}:
             return RiskDecision(False, "仅允许美股 BUY/SELL 指令", 0)
@@ -249,6 +250,7 @@ class RiskEngine:
             allowed, portfolio_reason, exposure = projected_portfolio_allowed(
                 broker, symbol, side, quantity, price, multiplier, underlying,
                 self.store, execution_mode,
+                rebalance_reduction_delta=float((metadata or {}).get("rebalance_reduction_delta", 0) or 0),
             )
             self.store.operational_event("portfolio_risk", "PRE_TRADE_CHECK",
                                          "HEALTHY" if allowed else "BLOCKED", exposure)

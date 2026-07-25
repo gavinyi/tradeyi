@@ -131,6 +131,9 @@ def run_once(
                 "core_satellite", None, "HOLD", "没有达到最低交易金额的调仓指令",
                 {"risk_on": risk_on, **validation_payload},
             )
+        planned_reduction_delta = sum(
+            float(order.order_notional) for order in orders if order.side == "SELL"
+        )
         for order in orders:
             print(
                 f"{order.symbol} {order.side} @ {order.price:.2f} qty={order.quantity} "
@@ -157,6 +160,8 @@ def run_once(
                             "planned_notional": order.order_notional,
                             "execution_slice": order.execution_slice,
                             "total_slices": order.total_slices,
+                            "rebalance_batch": True,
+                            "rebalance_reduction_delta": planned_reduction_delta,
                             "current_weight": order.current_weight,
                             "target_weight": order.target_weight,
                             **validation_payload,

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from math import sqrt
+from math import ceil, sqrt
+import os
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -9,12 +10,164 @@ import pandas as pd
 from .gamma_risk import market_number, normalize_iv, realized_volatility
 
 
-def volatility_cooldown_hours(reason: str, configured_hours: float = 24) -> float:
+VOLATILITY_EXIT_PRIORITY = [
+    ("到期/行权风险", "临近到期收盘先退出，避免自动行权或流动性塌陷。"),
+    ("硬止损", "单笔亏损超过硬止损立即退出，不等待最短持有时间。"),
+    ("整单止盈", "未启用分批或只剩 1 张时，到达目标盈利直接兑现。"),
+    ("分批止盈", "2 张以上先分批落袋，至少保留 1 张继续追踪趋势。"),
+    ("最低锁定盈利", "峰值盈利达标后，不允许盈利单回落到锁定线以下。"),
+    ("盈利回吐保护", "按峰值盈利回吐比例退出，不按期权价格回撤误判。"),
+    ("IV/Gamma 衰减", "只有价格或方向也不利时，才用 IV/效率衰减退出。"),
+    ("方向失效/最长持有", "方向不再支持或超过最长持有窗口后退出。"),
+]
+
+
+PROFIT_PROTECTION_DEFAULTS = {
+    "常规": {"start": .10, "giveback": .20, "lock": .05},
+    "动态波动": {"start": .15, "giveback": .25, "lock": .08},
+    "强波动": {"start": .20, "giveback": .30, "lock": .10},
+    "临近到期": {"start": .10, "giveback": .20, "lock": .05},
+}
+
+
+def _partial_exit_quantity(quantity: int, fraction: float) -> int:
+    """Return a safe partial-exit size that never turns a partial into a full exit."""
+    if quantity <= 1 or fraction <= 0:
+        return 0
+    planned = max(1, int(ceil(quantity * float(fraction))))
+    return min(planned, quantity - 1)
+
+
+def volatility_partial_exit_plan(
+    *,
+    quantity: int,
+    pnl_ratio: float,
+    campaign_state: dict,
+    enabled: bool = True,
+    tier1_profit: float = .30,
+    tier1_fraction: float = .50,
+    tier2_profit: float = .60,
+    tier2_fraction: float = .25,
+) -> tuple[int, str | None, str | None]:
+    """Plan professional staged profit taking for multi-contract long-gamma trades.
+
+    Returns ``(exit_quantity, tier_id, reason)``. A zero quantity means no partial
+    exit should be sent and the caller can continue with normal exit logic.
+    """
+    if not enabled or quantity <= 1:
+        return 0, None, None
+    filled = set(campaign_state.get("partial_exit_tiers") or [])
+    tiers = [
+        ("tier1", float(tier1_profit), float(tier1_fraction), "第一档"),
+        ("tier2", float(tier2_profit), float(tier2_fraction), "第二档"),
+    ]
+    for tier_id, threshold, fraction, label in tiers:
+        if tier_id in filled or pnl_ratio < threshold:
+            continue
+        exit_quantity = _partial_exit_quantity(quantity, fraction)
+        if exit_quantity <= 0:
+            continue
+        return (
+            exit_quantity,
+            tier_id,
+            f"分批止盈{label}：当前盈利{pnl_ratio:.1%} ≥ {threshold:.1%}，"
+            f"卖出{exit_quantity}张，剩余仓位继续盈利回吐保护",
+        )
+    return 0, None, None
+
+
+def volatility_profit_protection_profile(
+    campaign: dict[str, object], regime: dict[str, object] | None = None,
+) -> dict[str, object]:
+    tier = volatility_entry_tier(regime or {})
+    try:
+        expiry = pd.to_datetime(campaign.get("strike_time")).date()
+        days_to_expiry = (expiry - datetime.now(ZoneInfo("America/New_York")).date()).days
+    except (TypeError, ValueError):
+        days_to_expiry = 99
+    if days_to_expiry <= int(campaign.get("near_expiry_protection_days", 1)):
+        tier = "临近到期"
+    defaults = PROFIT_PROTECTION_DEFAULTS[tier]
+    suffix = {
+        "常规": "normal",
+        "动态波动": "dynamic",
+        "强波动": "strong",
+        "临近到期": "near_expiry",
+    }[tier]
+    start = float(campaign.get(
+        f"profit_protection_start_{suffix}",
+        campaign.get("profit_protection_start", defaults["start"]),
+    ))
+    giveback = float(campaign.get(
+        f"profit_protection_giveback_{suffix}",
+        campaign.get("profit_protection_drawdown", defaults["giveback"]),
+    ))
+    lock = float(campaign.get(
+        f"minimum_locked_profit_{suffix}",
+        campaign.get("minimum_locked_profit", defaults["lock"]),
+    ))
+    return {
+        "tier": tier,
+        "profit_protection_start": start,
+        "profit_protection_giveback": giveback,
+        "minimum_locked_profit": lock,
+    }
+
+
+def volatility_entry_tier(regime: dict[str, object]) -> str:
+    """Return the risk tier used for option expression selection."""
+    if bool(regime.get("strong_signal_override")) and bool(regime.get("trigger_confirmed")):
+        return "强波动"
+    if bool(regime.get("active")):
+        return "动态波动"
+    return "常规"
+
+
+def tiered_premium_budget(base_budget: float, regime: dict[str, object], store=None) -> tuple[float, str]:
+    """Scale budget by signal strength; hard risk gates remain unchanged."""
+    tier = volatility_entry_tier(regime)
+    defaults = {
+        "常规": ("volatility_tier_normal_budget_factor", "VOLATILITY_TIER_NORMAL_BUDGET_FACTOR", "1.0"),
+        "动态波动": ("volatility_tier_dynamic_budget_factor", "VOLATILITY_TIER_DYNAMIC_BUDGET_FACTOR", "1.5"),
+        "强波动": ("volatility_tier_strong_budget_factor", "VOLATILITY_TIER_STRONG_BUDGET_FACTOR", "2.0"),
+    }
+    key, env_key, fallback = defaults[tier]
+    configured = store.get_setting(key, "") if store is not None else ""
+    factors = {tier: float(configured or os.getenv(env_key, fallback))}
+    for other, (_, other_env, other_fallback) in defaults.items():
+        if other not in factors:
+            factors[other] = float(os.getenv(other_env, other_fallback))
+    factor = factors[tier]
+    return float(base_budget) * factor, tier
+
+
+def volatility_cooldown_hours(
+    reason: str, configured_hours: float = 24, overrides: dict[str, float] | None = None,
+) -> float:
+    values = {
+        "take_profit": 4.0,
+        "profit_protection": 8.0,
+        "stop_loss": configured_hours,
+        "expiry": 0.0,
+        "decay": 8.0,
+        "contraction": 6.0,
+        "default": configured_hours,
+    }
+    if overrides:
+        values.update({key: float(value) for key, value in overrides.items()})
+    if "分批止盈" in reason:
+        return 0.0
+    if "到期" in reason or "行权" in reason:
+        return values["expiry"]
+    if "硬止损" in reason:
+        return values["stop_loss"]
+    if "盈利保护" in reason or "最低锁定盈利" in reason:
+        return values["profit_protection"]
     if "止盈" in reason:
-        return min(configured_hours, 8.0)
+        return values["take_profit"]
     if any(marker in reason for marker in ("波动开始收缩", "隐含波动率", "Gamma/Theta")):
-        return min(configured_hours, 6.0)
-    return configured_hours
+        return values["contraction"] if "波动开始收缩" in reason else values["decay"]
+    return values["default"]
 
 
 def _session_progress() -> float:
@@ -243,22 +396,36 @@ def volatility_exit_reason(
     entry_efficiency: float, iv_decline_ratio: float = .20,
     efficiency_decline_ratio: float = .40,
     contraction_confirmations_required: int = 3,
+    pnl_ratio: float = 0.0,
+    directional_confirmation: bool = True,
 ) -> str | None:
-    if (
+    inactive_contraction_confirmed = (
         regime.get("contraction")
         and not regime.get("active", False)
         and int(regime.get("contraction_confirmations", 0))
         >= int(contraction_confirmations_required)
+    )
+    if (
+        inactive_contraction_confirmed
     ):
         return "实现波动开始收缩，退出波动率仓位"
-    if entry_iv > 0 and current_iv <= entry_iv * (1 - iv_decline_ratio):
-        return f"隐含波动率较实际入场下降{iv_decline_ratio:.0%}，退出波动率仓位"
+    adverse_context = pnl_ratio < 0 or not directional_confirmation or not regime.get("active", False)
+    if (
+        entry_iv > 0
+        and current_iv <= entry_iv * (1 - iv_decline_ratio)
+        and adverse_context
+    ):
+        return (
+            f"隐含波动率较实际入场下降{iv_decline_ratio:.0%}，且价格/方向未确认，"
+            "退出波动率仓位"
+        )
     if (
         entry_efficiency > 0
         and current_efficiency <= entry_efficiency * (1 - efficiency_decline_ratio)
+        and adverse_context
     ):
         return (
-            f"Gamma/Theta效率较实际入场下降{efficiency_decline_ratio:.0%}，"
+            f"Gamma/Theta效率较实际入场下降{efficiency_decline_ratio:.0%}，且价格/方向未确认，"
             "退出波动率仓位"
         )
     return None
@@ -270,7 +437,11 @@ def decide_volatility_action(
     drawdown_from_peak: float, directional_confirmation: bool,
     signal_active: bool, profit_target: float, stop_loss: float,
     trailing_stop: float, max_hold_hours: float, decay_reason: str | None = None,
-    minimum_hold_minutes: float = 30,
+    minimum_hold_minutes: float = 30, profit_protection_start: float = .15,
+    profit_protection_drawdown: float | None = None,
+    profit_giveback_from_peak: float | None = None,
+    full_profit_target_enabled: bool = True,
+    minimum_locked_profit: float = .0,
 ) -> tuple[str, str]:
     """Decide one volatility campaign action without earnings-event semantics."""
     if quantity <= 0:
@@ -279,10 +450,34 @@ def decide_volatility_action(
         return "HOLD", "动态波动或方向条件尚未确认"
     if pnl_ratio <= -stop_loss:
         return "SELL", "触发波动率策略硬止损"
-    if pnl_ratio >= profit_target:
+    if full_profit_target_enabled and pnl_ratio >= profit_target:
         return "SELL", "达到波动率策略止盈目标"
-    if peak_pnl_ratio > 0 and drawdown_from_peak >= trailing_stop:
-        return "SELL", "触发波动率策略盈利峰值回撤退出"
+    protection_drawdown = (
+        trailing_stop if profit_protection_drawdown is None else profit_protection_drawdown
+    )
+    protection_active = peak_pnl_ratio >= profit_protection_start
+    profit_giveback = (
+        max(0.0, (peak_pnl_ratio - pnl_ratio) / peak_pnl_ratio)
+        if profit_giveback_from_peak is None and peak_pnl_ratio > 0
+        else max(0.0, float(profit_giveback_from_peak or 0.0))
+    )
+    if protection_active and profit_giveback >= protection_drawdown:
+        return (
+            "SELL",
+            f"盈利保护触发：峰值盈利{peak_pnl_ratio:.1%}，"
+            f"当前盈利{pnl_ratio:.1%}，"
+            f"盈利回吐{profit_giveback:.1%} ≥ {protection_drawdown:.1%}",
+        )
+    if (
+        protection_active
+        and minimum_locked_profit > 0
+        and pnl_ratio <= minimum_locked_profit
+    ):
+        return (
+            "SELL",
+            f"最低锁定盈利触发：峰值盈利{peak_pnl_ratio:.1%}，"
+            f"当前盈利{pnl_ratio:.1%} ≤ 锁定线{minimum_locked_profit:.1%}",
+        )
     held = now - opened_at
     if held >= timedelta(hours=max_hold_hours):
         return "SELL", f"波动率仓位已持有{max_hold_hours:g}小时，触发最长持有退出"
@@ -295,6 +490,19 @@ def decide_volatility_action(
         and pnl_ratio >= .10
     ):
         return "BUY", "动态波动持续确认，仅对盈利持仓金字塔加仓"
+    if protection_active:
+        return (
+            "HOLD",
+            f"浮盈{pnl_ratio:.1%}，峰值盈利{peak_pnl_ratio:.1%}，"
+            f"盈利回吐{profit_giveback:.1%}未达保护阈值"
+            f"{protection_drawdown:.1%}，继续持有",
+        )
+    if pnl_ratio > 0:
+        return (
+            "HOLD",
+            f"浮盈{pnl_ratio:.1%}，尚未达到盈利保护启动阈值"
+            f"{profit_protection_start:.1%}，继续持有",
+        )
     return "HOLD", "波动率仓位继续监控，亏损持仓禁止摊低成本"
 
 
@@ -309,7 +517,7 @@ def sync_volatility_position_cycle(
         for key in (
             "position_opened_at", "peak", "entry_iv_actual",
             "entry_gamma_theta_efficiency_actual", "contraction_confirmations",
-            "pending_exit_reason",
+            "pending_exit_reason", "partial_exit_tiers",
         ):
             state.pop(key, None)
         state["previous_position_quantity"] = 0
@@ -320,6 +528,7 @@ def sync_volatility_position_cycle(
         state["entry_iv_actual"] = float(current_iv)
         state["entry_gamma_theta_efficiency_actual"] = float(current_efficiency)
         state["contraction_confirmations"] = 0
+        state["partial_exit_tiers"] = []
         transition = "OPENED"
     else:
         state["peak"] = max(float(state.get("peak", cost)), float(last))

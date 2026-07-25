@@ -18,7 +18,7 @@ ensure_default_budgets(store)
 admin = render_admin_login()
 
 st.title("组合资金分配与联合压力测试")
-st.caption("统一管理策略资金、最大可损失和期权权利金预算，并模拟价格、IV、时间与流动性联合冲击。")
+st.caption("查看策略资金占用，并模拟价格、IV、时间与流动性联合冲击。资金配置统一到“策略与资金控制”。")
 
 
 @st.cache_data(ttl=30, max_entries=2, show_spinner=False)
@@ -46,42 +46,19 @@ with st.container(horizontal=True):
     st.metric("策略归属资金占用", f"${used:,.2f}", border=True)
     st.metric("策略期权权利金", f"${option_used:,.2f}", border=True)
 
-budget_tab, stress_tab, holdings_tab = st.tabs(["策略风险预算", "联合压力矩阵", "组合持仓快照"])
+budget_tab, stress_tab, holdings_tab = st.tabs(["策略预算使用", "联合压力矩阵", "组合持仓快照"])
 
 with budget_tab:
-    st.caption(
-        "这里是策略预算的唯一配置入口。配额合计不能超过 100%；未分配部分作为现金和风险缓冲。"
-        "Core Satellite 的目标仓位上限与新增风险检查都会立即采用这里的资金配额。"
+    st.info(
+        "资金配额、策略启停和 SHADOW/PAPER 模式统一在“策略与资金控制”调整；本页只看风险占用和压力结果。",
+        icon=":material/info:",
     )
-    edit_columns = [
-        "strategy_id", "capital_ratio", "max_loss_ratio", "option_premium_ratio", "enabled",
-    ]
-    budget_editor = st.data_editor(
-        usage[edit_columns], hide_index=True, disabled=["strategy_id"], width="stretch",
-        column_config={
-            "strategy_id": st.column_config.TextColumn("策略"),
-            "capital_ratio": st.column_config.NumberColumn(
-                "资金配额", min_value=0.0, max_value=1.0, format="percent"
-            ),
-            "max_loss_ratio": st.column_config.NumberColumn(
-                "最大损失预算", min_value=0.0, max_value=1.0, format="percent"
-            ),
-            "option_premium_ratio": st.column_config.NumberColumn(
-                "期权权利金配额", min_value=0.0, max_value=1.0, format="percent"
-            ),
-            "enabled": st.column_config.CheckboxColumn("启用"),
-        },
-        key="portfolio_budget_editor",
+    st.page_link(
+        "pages/15_策略控制台.py",
+        label="前往策略与资金控制",
+        icon=":material/tune:",
     )
-    if st.button("保存三维策略预算", type="primary", disabled=not admin):
-        try:
-            store.save_strategy_risk_budgets(budget_editor.to_dict("records"))
-            st.cache_data.clear()
-            st.success("策略风险预算已保存，统一下单风控立即生效。")
-            st.rerun()
-        except ValueError as exc:
-            st.error(str(exc))
-    st.subheader("当前使用情况")
+    st.subheader("当前预算与使用情况")
     display = chinese_columns(usage.drop(columns=["updated_at"], errors="ignore"))
     st.dataframe(
         display, hide_index=True, width="stretch",
