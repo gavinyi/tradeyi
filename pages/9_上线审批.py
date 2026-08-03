@@ -107,12 +107,19 @@ with approval_tab:
         "reconciliation": "对账差异数",
         "backtest": "回测验收", "drill": "故障演练", "risk_review": "风险复核",
     }
+    # 兼容 Streamlit 热重载期间仍驻留的旧模块：服务错误即使存在于旧返回值中，
+    # 也只能作为诊断，不能重新成为上线审批门槛。
+    approval_gates = {
+        key: gate for key, gate in acceptance["gates"].items()
+        if key != "service_errors"
+    }
+    acceptance_passed = all(gate["passed"] for gate in approval_gates.values())
     st.dataframe(pd.DataFrame([
-        {"验收项": gate_names[key], "结果": "通过" if gate["passed"] else "未通过",
+        {"验收项": gate_names.get(key, key), "结果": "通过" if gate["passed"] else "未通过",
          "当前值": gate["value"], "要求": gate["required"]}
-        for key, gate in acceptance["gates"].items()
+        for key, gate in approval_gates.items()
     ]), hide_index=True)
-    failed_gates = [gate_names[key] for key, gate in acceptance["gates"].items() if not gate["passed"]]
+    failed_gates = [gate_names.get(key, key) for key, gate in approval_gates.items() if not gate["passed"]]
     if failed_gates:
         st.warning("最终批准按钮暂不可用，还未通过：" + "、".join(failed_gates))
     elif not admin:
@@ -152,11 +159,9 @@ with approval_tab:
     acceptance = strategy_acceptance(store, strategy)
     with st.form("approve_strategy"):
         reason = st.text_input("批准理由/验收记录")
-        submitted = st.form_submit_button(
-            "批准当前版本进入 PAPER", disabled=not admin or not acceptance["passed"]
-        )
+        submitted = st.form_submit_button("批准当前版本进入 PAPER", disabled=not admin or not acceptance_passed)
         if submitted:
-            if not acceptance["passed"] or not reason.strip():
+            if not acceptance_passed or not reason.strip():
                 st.error("自动验收门槛必须全部通过，并填写批准理由。")
             else:
                 fingerprint = strategy_fingerprint(strategy)
