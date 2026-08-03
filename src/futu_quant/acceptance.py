@@ -70,11 +70,18 @@ def strategy_acceptance(store, strategy_id: str) -> dict:
         "fill_rate": {"passed": fill_rate >= min_fill_rate, "value": fill_rate, "required": min_fill_rate},
         "slippage": {"passed": avg_slippage <= max_slippage, "value": avg_slippage,
                      "required": max_slippage},
-        "service_errors": {"passed": not errors, "value": len(errors), "required": 0},
         "reconciliation": {"passed": not mismatches, "value": len(mismatches), "required": 0},
         "backtest": {"passed": latest.get("BACKTEST", False), "value": None, "required": True},
         "drill": {"passed": latest.get("DRILL", False), "value": None, "required": True},
         "risk_review": {"passed": latest.get("RISK_REVIEW", False), "value": None, "required": True},
     }
     return {"strategy": strategy_id, "passed": all(g["passed"] for g in gates.values()), "gates": gates,
-            "details": {"reconciliation_symbols": sorted(reconciliation_symbols), "reconciliation_mismatches": mismatches}}
+            "details": {
+                "reconciliation_symbols": sorted(reconciliation_symbols),
+                "reconciliation_mismatches": mismatches,
+                # 服务错误仅作为运行健康度诊断，不再阻塞策略上线审批。
+                "service_errors": len(errors),
+                "service_error_window_hours": max(
+                    1, int(os.getenv("APPROVAL_ERROR_WINDOW_HOURS", "24"))
+                ),
+            }}

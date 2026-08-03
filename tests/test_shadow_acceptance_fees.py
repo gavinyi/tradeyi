@@ -131,6 +131,23 @@ def test_acceptance_is_automatic_and_requires_evidence(tmp_path, monkeypatch):
     assert strategy_acceptance(store, "sma")["passed"]
 
 
+def test_service_errors_are_diagnostic_and_do_not_block_acceptance(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPROVAL_MIN_SHADOW_DAYS", "1")
+    monkeypatch.setenv("APPROVAL_MIN_SHADOW_ORDERS", "1")
+    store = TradingStore(tmp_path / "service-errors.db")
+    intent, _ = store.create_intent("sma", "x", "US.NVDA", "BUY", 1, 100)
+    store.update_shadow_intent(intent["id"], "SHADOW_FILLED", 1, 100, 1)
+    store.add_alert("ERROR", "BROKER", "temporary diagnostic failure")
+    for evidence in ("BACKTEST", "DRILL", "RISK_REVIEW"):
+        store.record_acceptance_evidence("sma", evidence, True)
+
+    acceptance = strategy_acceptance(store, "sma")
+
+    assert acceptance["passed"]
+    assert "service_errors" not in acceptance["gates"]
+    assert acceptance["details"]["service_errors"] == 1
+
+
 def test_acceptance_uses_latest_reconciliation_state(tmp_path, monkeypatch):
     monkeypatch.setenv("APPROVAL_MIN_SHADOW_DAYS", "1")
     monkeypatch.setenv("APPROVAL_MIN_SHADOW_ORDERS", "1")

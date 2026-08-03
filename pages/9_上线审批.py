@@ -104,7 +104,7 @@ with approval_tab:
     gate_names = {
         "shadow_days": "Shadow 有效天数", "shadow_orders": "Shadow 订单数",
         "fill_rate": "Shadow 成交率", "slippage": "平均不利滑点",
-        "service_errors": "服务错误数", "reconciliation": "对账差异数",
+        "reconciliation": "对账差异数",
         "backtest": "回测验收", "drill": "故障演练", "risk_review": "风险复核",
     }
     st.dataframe(pd.DataFrame([
@@ -119,8 +119,17 @@ with approval_tab:
         st.warning("验收项已通过，但需要先完成管理员登录才能批准。")
     else:
         st.success("全部自动验收项已通过，可以填写理由并批准当前版本。")
-    st.caption("观察天数、订单数、成交率、滑点、服务错误和三账对账由系统自动计算。")
-    st.info("系统日志会永久保留用于审计；服务错误数只统计最近 24 小时仍未确认、未恢复的 ERROR，较早历史日志不会卡住当前审批。")
+    st.caption("观察天数、订单数、成交率、滑点和三账对账由系统自动计算。")
+    diagnostic = acceptance.get("details", {})
+    st.info(
+        "系统日志会永久保留用于审计；服务错误数仅作为运行健康度诊断，"
+        "不再作为上线审批的强制门槛。"
+    )
+    st.metric(
+        "服务错误数（仅诊断）",
+        int(diagnostic.get("service_errors", 0)),
+        help=f"最近 {int(diagnostic.get('service_error_window_hours', 24))} 小时内未确认且未恢复的 ERROR。",
+    )
     evidence_cols = st.columns(3)
     if evidence_cols[0].button("管理员手动登记回测", disabled=not admin,
                                help="推荐从策略回测页保存实际结果；此按钮仅用于外部回测结果。"):
