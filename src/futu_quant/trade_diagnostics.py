@@ -245,7 +245,10 @@ def build_diagnostic_report(store, window: DiagnosticWindow) -> dict:
         latest = group_decisions[-1] if group_decisions else {}
         latest_intent = group_intents[-1] if group_intents else {}
         auto_created = any(
-            row.get("event_type") == "VOLATILITY_SHADOW_CAMPAIGN_AUTO_CREATED"
+            row.get("event_type") in {
+                "VOLATILITY_SHADOW_CAMPAIGN_AUTO_CREATED",
+                "VOLATILITY_AUTO_CAMPAIGN_CREATED",
+            }
             for row in value["audits"]
         )
         scanner_trigger_count = sum(
@@ -319,7 +322,10 @@ def build_diagnostic_report(store, window: DiagnosticWindow) -> dict:
     scanner = [row for row in decisions if row["strategy_id"] == "volatility_scanner"]
     created_campaigns = [
         row for row in audits
-        if row.get("event_type") == "VOLATILITY_SHADOW_CAMPAIGN_AUTO_CREATED"
+        if row.get("event_type") in {
+            "VOLATILITY_SHADOW_CAMPAIGN_AUTO_CREATED",
+            "VOLATILITY_AUTO_CAMPAIGN_CREATED",
+        }
     ]
     rejected_intents = [row for row in intents if row.get("status") in {"REJECTED", "FAILED"}]
     active_intents = [row for row in intents if row.get("status") in ACTIVE_INTENT_STATUSES]

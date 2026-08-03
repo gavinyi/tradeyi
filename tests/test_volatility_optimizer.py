@@ -5,6 +5,8 @@ from futu_quant.volatility_optimizer import (
     decide_volatility_action, rank_volatility_contracts, volatility_exit_reason,
     sync_volatility_position_cycle, volatility_regime,
     tiered_premium_budget, volatility_partial_exit_plan,
+    volatility_direction_size_factor, volatility_entry_confirmation,
+    volatility_entry_quality_allowed, volatility_min_expected_return,
     volatility_profit_protection_profile,
 )
 from futu_quant.volatility_roll import should_replace_campaign
@@ -53,7 +55,7 @@ def _adaptive_candidate(**overrides):
 
 
 def test_iv_rv_gate_is_only_relaxed_for_confirmed_strong_signal():
-    rows = _adaptive_candidate()
+    rows = _adaptive_candidate(option_implied_volatility=.52)
 
     normal = rank_volatility_contracts(
         rows, 100, .30, as_of=pd.Timestamp("2026-07-20").date(),
@@ -66,7 +68,7 @@ def test_iv_rv_gate_is_only_relaxed_for_confirmed_strong_signal():
 
     assert normal.iloc[0].iv_rv_limit == 1.5
     assert not bool(normal.iloc[0].volatility_eligible)
-    assert strong.iloc[0].iv_rv_limit == 2.0
+    assert strong.iloc[0].iv_rv_limit == 1.8
     assert bool(strong.iloc[0].volatility_eligible)
 
 
@@ -86,6 +88,46 @@ def test_relaxed_iv_gate_still_requires_positive_return_and_premium_budget():
     assert "预期收益" in negative.iloc[0].volatility_filter_reason
     assert not bool(expensive.iloc[0].volatility_eligible)
     assert "权利金" in expensive.iloc[0].volatility_filter_reason
+
+
+def test_expected_return_gate_is_tiered_for_paper_validation():
+    assert volatility_min_expected_return(signal_active=False, strong_signal=False) == .02
+    assert volatility_min_expected_return(signal_active=True, strong_signal=False) == .005
+    assert volatility_min_expected_return(signal_active=True, strong_signal=True) == 0
+
+    strong = rank_volatility_contracts(
+        _adaptive_candidate(model_expected_return=.007, option_implied_volatility=.52), 100, .30,
+        signal_active=True, strong_signal=True, max_premium_per_stage=1000,
+        as_of=pd.Timestamp("2026-07-20").date(),
+    )
+    normal = rank_volatility_contracts(
+        _adaptive_candidate(model_expected_return=.007, option_implied_volatility=.52), 100, .30,
+        signal_active=False, strong_signal=False, max_premium_per_stage=1000,
+        as_of=pd.Timestamp("2026-07-20").date(),
+    )
+
+    assert bool(strong.iloc[0].volatility_eligible)
+    assert not bool(normal.iloc[0].volatility_eligible)
+    assert "低于常规门槛" in normal.iloc[0].volatility_filter_reason
+
+
+def test_budget_alternative_allows_slightly_lower_quality_when_signal_is_active():
+    low_quality = _adaptive_candidate(
+        option_implied_volatility=.52,
+        option_delta=.34,
+        option_gamma=.002,
+        option_theta=-.20,
+        model_expected_return=.01,
+    )
+    ranked = rank_volatility_contracts(
+        low_quality, 100, .30,
+        signal_active=True, strong_signal=True, max_premium_per_stage=1000,
+        as_of=pd.Timestamp("2026-07-20").date(),
+    )
+
+    assert bool(ranked.iloc[0].volatility_eligible)
+    assert bool(ranked.iloc[0].budget_alternative)
+    assert "预算替代表达放行" in ranked.iloc[0].volatility_filter_reason
 
 
 def test_best_expression_replaces_stale_lower_quality_contract():
@@ -370,8 +412,8 @@ def test_volatility_partial_profit_plan_skips_single_contract():
 
 def test_volatility_partial_profit_plan_takes_first_tier_and_keeps_runner():
     qty, tier, reason = volatility_partial_exit_plan(
-        quantity=3, pnl_ratio=.35, campaign_state={},
-        tier1_profit=.30, tier1_fraction=.50,
+        quantity=3, pnl_ratio=.20, campaign_state={},
+        tier1_profit=.18, tier1_fraction=.50,
     )
 
     assert qty == 2
@@ -469,7 +511,7 @@ def test_inactive_contraction_requires_three_confirmations():
 
 
 def test_strong_intraday_shock_overrides_lagging_trend_direction():
-    closes = pd.Series([90 + index * .2 for index in range(90)])
+    closes = pd.Series([90.0] * 90)
     bars = pd.DataFrame({
         "close": closes, "high": closes + .5, "low": closes - .5,
         "volume": [1_000_000] * 90,
@@ -483,3 +525,66 @@ def test_strong_intraday_shock_overrides_lagging_trend_direction():
     assert regime["strong_signal_override"]
     assert allowed
     assert "强波动方向覆盖" in reason
+
+
+def test_entry_confirmation_waits_before_first_open():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    regime = {"active": True, "reason": "全部动态波动条件已通过"}
+
+    allowed, reason = volatility_entry_confirmation(
+        now=now,
+        signal_started_at=(now - timedelta(minutes=2)).isoformat(),
+        regime=regime,
+        confirmation_minutes=5,
+    )
+    assert not allowed
+    assert "等待入场二次确认" in reason
+
+    allowed, reason = volatility_entry_confirmation(
+        now=now,
+        signal_started_at=(now - timedelta(minutes=6)).isoformat(),
+        regime=regime,
+        confirmation_minutes=5,
+    )
+    assert allowed
+    assert "通过" in reason
+
+
+def test_conflicted_strong_signal_downgrades_size():
+    factor, reason = volatility_direction_size_factor({
+        "strong_signal_override": True,
+        "trigger_confirmed": True,
+        "direction_confirmed": False,
+    })
+
+    assert factor == .5
+    assert "降级" in reason
+
+
+def test_saved_campaign_entry_quality_gate_blocks_stale_low_score():
+    allowed, reason, checks = volatility_entry_quality_allowed({
+        "adaptive_risk_tier": "强波动精选",
+        "volatility_quality_score": 42,
+        "spread_pct": 3.0,
+        "option_open_interest": 2000,
+        "volume": 200,
+        "model_expected_return": .05,
+    })
+
+    assert not allowed
+    assert "质量分" in reason
+    assert checks["quality_score"] == 42
+
+
+def test_saved_campaign_entry_quality_gate_allows_liquid_positive_edge():
+    allowed, reason, _ = volatility_entry_quality_allowed({
+        "adaptive_risk_tier": "强波动精选",
+        "volatility_quality_score": 61,
+        "spread_pct": 3.0,
+        "option_open_interest": 2000,
+        "volume": 200,
+        "model_expected_return": .05,
+    })
+
+    assert allowed
+    assert "通过" in reason

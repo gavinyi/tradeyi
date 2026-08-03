@@ -59,6 +59,48 @@ navigation = {
         st.Page("pages/16_期权组合执行.py", title="期权组合执行", icon=":material/schema:"),
         st.Page("pages/13_期权数据回测.py", title="期权数据回测", icon=":material/analytics:"),
     ],
+    "币量化": [
+        st.Page(
+            "pages/31_币量化总览.py",
+            title="币量化总览",
+            icon=":material/currency_bitcoin:",
+        ),
+        st.Page(
+            "pages/34_欧易账户总览.py",
+            title="欧易账户总览",
+            icon=":material/account_balance_wallet:",
+        ),
+        st.Page(
+            "pages/33_币策略复盘与执行质量.py",
+            title="策略复盘与执行质量",
+            icon=":material/summarize:",
+        ),
+        st.Page(
+            "pages/32_币策略配置与回测.py",
+            title="币策略配置与回测",
+            icon=":material/candlestick_chart:",
+        ),
+        st.Page(
+            "pages/38_合约量化总览.py",
+            title="合约量化总览",
+            icon=":material/radar:",
+        ),
+        st.Page(
+            "pages/35_合约账户总览.py",
+            title="合约账户总览",
+            icon=":material/account_balance:",
+        ),
+        st.Page(
+            "pages/36_永续合约策略.py",
+            title="永续合约策略",
+            icon=":material/swap_vert:",
+        ),
+        st.Page(
+            "pages/37_合约策略复盘.py",
+            title="合约策略复盘",
+            icon=":material/assessment:",
+        ),
+    ],
     "风控与审批": [
         st.Page("pages/7_风控中心.py", title="风控中心", icon=":material/shield:"),
         st.Page("pages/27_实盘交易控制.py", title="实盘交易控制", icon=":material/lock_open:"),

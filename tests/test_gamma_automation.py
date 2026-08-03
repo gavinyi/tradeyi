@@ -1,7 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
 from futu_quant.gamma_automation import decide_gamma_action
-from futu_quant.volatility_optimizer import volatility_cooldown_hours
+from futu_quant.volatility_optimizer import (
+    volatility_cooldown_bypass_allowed,
+    volatility_cooldown_hours,
+)
 from pathlib import Path
 
 
@@ -39,6 +42,54 @@ def test_volatility_cooldown_depends_on_exit_reason():
     assert volatility_cooldown_hours("实现波动开始收缩", 24) == 6
     assert volatility_cooldown_hours("触发硬止损", 24) == 24
     assert volatility_cooldown_hours("合约到期日临近收盘，强制退出以避免自动行权", 24) == 0
+
+
+def test_volatility_cooldown_bypass_allows_strong_non_stop_signal():
+    allowed, reason = volatility_cooldown_bypass_allowed(
+        "盈利保护触发",
+        {
+            "active": True,
+            "zscore_20d": 3.2,
+            "intraday_return": 0.02,
+            "atr_ratio": 1.4,
+            "volume_ratio": 1.8,
+        },
+    )
+
+    assert allowed
+    assert "提前解除冷却" in reason
+
+
+def test_volatility_cooldown_bypass_keeps_stop_loss_hard_by_default():
+    allowed, reason = volatility_cooldown_bypass_allowed(
+        "触发硬止损",
+        {
+            "active": True,
+            "zscore_20d": 5.0,
+            "intraday_return": 0.08,
+            "atr_ratio": 4.0,
+            "volume_ratio": 3.0,
+        },
+    )
+
+    assert not allowed
+    assert "硬止损" in reason
+
+
+def test_volatility_cooldown_bypass_requires_volume_and_strong_trigger():
+    allowed, reason = volatility_cooldown_bypass_allowed(
+        "达到止盈目标",
+        {
+            "active": True,
+            "zscore_20d": 2.1,
+            "intraday_return": 0.02,
+            "atr_ratio": 1.4,
+            "volume_ratio": 1.2,
+        },
+    )
+
+    assert not allowed
+    assert "量比" in reason
 
 
 def test_shared_campaign_runner_dispatches_to_independent_volatility_decider():

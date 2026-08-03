@@ -145,6 +145,27 @@ def test_acceptance_uses_latest_reconciliation_state(tmp_path, monkeypatch):
     assert strategy_acceptance(store, "sma")["gates"]["reconciliation"]["passed"]
 
 
+def test_acceptance_reconciliation_is_scoped_to_strategy_symbols(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPROVAL_MIN_SHADOW_DAYS", "1")
+    monkeypatch.setenv("APPROVAL_MIN_SHADOW_ORDERS", "1")
+    store = TradingStore(tmp_path / "scoped-reconciliation.db")
+    intent, _ = store.create_intent(
+        "volatility_long_gamma", "x", "US.NVDA260729P205000", "BUY", 1, 2,
+    )
+    store.update_shadow_intent(intent["id"], "SHADOW_FILLED", 1, 2, 0)
+    store.record_reconciliation("US.NVDA260729P205000", 1, 1, "MATCHED")
+    store.record_reconciliation("DOGE-USDT-SWAP", 0, 13.68, "MISMATCH")
+    store.record_reconciliation("AVAX-USDT-SWAP", 0, 149.5, "MISMATCH")
+    for evidence in ("BACKTEST", "DRILL", "RISK_REVIEW"):
+        store.record_acceptance_evidence("volatility_long_gamma", evidence, True)
+
+    acceptance = strategy_acceptance(store, "volatility_long_gamma")
+
+    assert acceptance["gates"]["reconciliation"]["passed"]
+    assert acceptance["gates"]["reconciliation"]["value"] == 0
+    assert "DOGE-USDT-SWAP" not in acceptance["details"]["reconciliation_symbols"]
+
+
 def test_fee_model_is_conservative(monkeypatch):
     monkeypatch.setenv("FEE_STOCK_MINIMUM", "1")
     monkeypatch.setenv("FEE_OPTION_PER_CONTRACT", "0.65")

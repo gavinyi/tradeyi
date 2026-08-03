@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
-from futu_quant.broker import FutuPaperBroker
+import pytest
+
+import futu_quant.broker as broker_module
+from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.store import TradingStore
 import futu_quant.radar_control as radar_control
 import futu_quant.service_control as service_control
@@ -79,3 +83,60 @@ def test_broker_sets_bounded_sync_connect_timeout(monkeypatch):
     FutuPaperBroker._set_connect_timeout(Context())
 
     assert values == [4.0]
+
+
+def _broker():
+    return FutuPaperBroker(SimpleNamespace(
+        trading_env="SIMULATE", security_firm="FUTUSECURITIES",
+        host="127.0.0.1", port=11111,
+    ))
+
+
+def test_broker_does_not_construct_futu_context_when_opend_is_offline(monkeypatch):
+    monkeypatch.setattr(
+        broker_module.socket, "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionRefusedError()),
+    )
+    monkeypatch.setattr(
+        broker_module, "OpenQuoteContext",
+        lambda **_kwargs: pytest.fail("OpenD 离线时不应创建富途 context"),
+    )
+
+    with pytest.raises(BrokerError, match="OpenD 当前不可连接"):
+        with _broker().quote_context():
+            pass
+
+
+def test_quote_context_uses_async_constructor_and_is_closed(monkeypatch):
+    class Socket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class Context:
+        closed = False
+
+        def set_sync_query_connect_timeout(self, _value):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    captured = {}
+    monkeypatch.setattr(
+        broker_module.socket, "create_connection",
+        lambda *_args, **_kwargs: Socket(),
+    )
+
+    def make_context(**kwargs):
+        captured.update(kwargs)
+        return Context()
+
+    monkeypatch.setattr(broker_module, "OpenQuoteContext", make_context)
+    with _broker().quote_context() as context:
+        assert context.closed is False
+
+    assert captured["is_async_connect"] is True
+    assert context.closed is True

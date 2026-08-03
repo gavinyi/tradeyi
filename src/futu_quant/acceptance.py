@@ -3,6 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 
+from .config import load_gamma_campaigns, load_volatility_campaigns
+
+
+def strategy_reconciliation_symbols(store, strategy_id: str) -> set[str]:
+    """Limit approval reconciliation to symbols owned by the selected strategy."""
+    symbols = {str(row["symbol"]) for row in store.intents(limit=50_000) if row["strategy_id"] == strategy_id and row.get("symbol")}
+    symbols.update(str(row["symbol"]) for row in store.shadow_fills(limit=50_000) if row["strategy_id"] == strategy_id and row.get("symbol"))
+    symbols.update(str(row["symbol"]) for row in store.virtual_allocations() if row["strategy_id"] == strategy_id and row.get("symbol"))
+    if strategy_id in {"earnings_gamma", "earnings_gamma_manual"}:
+        symbols.update(str(item.get("code", "")) for item in load_gamma_campaigns())
+    if strategy_id == "volatility_long_gamma":
+        symbols.update(str(item.get("code", "")) for item in load_volatility_campaigns())
+    return {symbol for symbol in symbols if symbol}
+
 
 def strategy_acceptance(store, strategy_id: str) -> dict:
     now = datetime.now(timezone.utc)
@@ -43,7 +57,9 @@ def strategy_acceptance(store, strategy_id: str) -> dict:
     latest_reconciliation = {}
     for row in store.reconciliation_reports(limit=10_000):
         latest_reconciliation.setdefault(row["symbol"], row)
-    mismatches = [row for row in latest_reconciliation.values() if row["status"] == "MISMATCH"]
+    reconciliation_symbols = strategy_reconciliation_symbols(store, strategy_id)
+    scoped_reconciliation = [row for symbol, row in latest_reconciliation.items() if not reconciliation_symbols or symbol in reconciliation_symbols]
+    mismatches = [row for row in scoped_reconciliation if row["status"] == "MISMATCH"]
     evidence = store.acceptance_evidence(strategy_id)
     latest = {}
     for row in evidence:
@@ -60,5 +76,5 @@ def strategy_acceptance(store, strategy_id: str) -> dict:
         "drill": {"passed": latest.get("DRILL", False), "value": None, "required": True},
         "risk_review": {"passed": latest.get("RISK_REVIEW", False), "value": None, "required": True},
     }
-    return {"strategy": strategy_id, "passed": all(g["passed"] for g in gates.values()),
-            "gates": gates}
+    return {"strategy": strategy_id, "passed": all(g["passed"] for g in gates.values()), "gates": gates,
+            "details": {"reconciliation_symbols": sorted(reconciliation_symbols), "reconciliation_mismatches": mismatches}}

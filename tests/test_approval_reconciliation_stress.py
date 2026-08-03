@@ -83,6 +83,20 @@ def test_reconciliation_blocks_mismatched_symbol(tmp_path):
     assert store.get_setting("strategy_enabled:core") == "false"
 
 
+def test_futu_reconciliation_ignores_crypto_swap_allocations(tmp_path):
+    store = TradingStore(tmp_path / "test.db")
+    store.set_virtual_allocation("crypto_volatility_swap", "AVAX-USDT-SWAP", 149.5, 6.686)
+    store.set_virtual_allocation("crypto_volatility_swap", "DOGE-USDT-SWAP", 13.68, 0.073)
+    store.set_setting("symbol_blocked:AVAX-USDT-SWAP", "true")
+
+    report = reconcile_ledgers(store, Broker())
+
+    assert "AVAX-USDT-SWAP" not in set(report.get("symbol", []))
+    assert "DOGE-USDT-SWAP" not in set(report.get("symbol", []))
+    assert store.get_setting("symbol_blocked:AVAX-USDT-SWAP") == "false"
+    assert store.get_setting("strategy_enabled:crypto_volatility_swap", "true") == "true"
+
+
 def test_virtual_allocation_can_be_updated_from_zero_and_deleted(tmp_path):
     store = TradingStore(tmp_path / "test.db")
     store.set_virtual_allocation("core", "US.QQQ", 0, 100)

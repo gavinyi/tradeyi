@@ -5,14 +5,16 @@ from datetime import date, timedelta
 import pandas as pd
 
 from .earnings_gamma import screen_gamma_contracts
-from .gamma_risk import contract_analysis, realized_volatility
+from .gamma_risk import contract_analysis, market_number, realized_volatility
 from .option_lifecycle import parse_option_code
+from .option_expectancy import add_iv_history_percentiles
 from .option_ranking import rank_long_option_candidates
 from .option_signal import automatic_option_direction
 from .volatility_optimizer import (
     rank_volatility_contracts, tiered_premium_budget, volatility_regime,
-    volatility_threshold_profile,
+    volatility_threshold_profile, volatility_min_expected_return,
 )
+from .volatility_structures import build_volatility_structure_candidates
 
 
 MAINTAIN_SCORE_IMPROVEMENT = 8.0
@@ -129,27 +131,46 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     quotes = broker.snapshots(chain["code"].tolist())
     spot = float(owner["last_price"])
     candidates = screen_gamma_contracts(chain, quotes, spot, direction, 500, 12, 10)
+    option_history = pd.DataFrame(store.option_history_for_underlying(underlying))
+    rv = realized_volatility(bars)
     candidates = rank_long_option_candidates(
         candidates, spot, profit_target=float(campaign.get("profit_target", .5)),
         stop_loss=float(campaign.get("stop_loss", .4)),
+        realized_volatility=rv, regime=regime,
+        holding_hours=float(campaign.get("expectancy_horizon_hours", 4)),
+        option_history=option_history,
     )
+    candidates = add_iv_history_percentiles(candidates, option_history)
     premium_budget, entry_tier = tiered_premium_budget(
         float(campaign.get("max_premium_per_stage", 1000)), regime, store
     )
     candidates = rank_volatility_contracts(
-        candidates, spot, realized_volatility(bars),
+        candidates, spot, rv,
         signal_active=bool(regime.get("active")),
         strong_signal=bool(
             regime.get("strong_signal_override") and regime.get("trigger_confirmed")
         ),
         max_premium_per_stage=premium_budget,
         contracts_per_stage=int(campaign.get("contracts_per_stage", 1)),
+        store=store,
     )
     if candidates.empty or "volatility_eligible" not in candidates:
         return _with_diagnostics(
             campaign, candidates, regime, "基础流动性筛选后没有可评分的新合约"
         )
-    eligible = candidates[candidates["volatility_eligible"]]
+    minimum_expected_return = volatility_min_expected_return(
+        signal_active=bool(regime.get("active")),
+        strong_signal=bool(
+            regime.get("strong_signal_override") and regime.get("trigger_confirmed")
+        ),
+        store=store,
+    )
+    structures = build_volatility_structure_candidates(
+        candidates, direction,
+        minimum_expected_return=minimum_expected_return,
+        premium_budget=premium_budget,
+    )
+    eligible = structures[structures["volatility_eligible"]] if not structures.empty else structures
     if eligible.empty:
         top_reason = str(candidates.iloc[0].get("volatility_filter_reason", ""))
         message = "没有合约同时通过成本、流动性、Delta、预期收益和权利金预算"
@@ -157,20 +178,54 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
             message += f"；最高分候选：{top_reason}"
         return _with_diagnostics(campaign, candidates, regime, message)
     selected = eligible.iloc[0]
+    selected_contract = pd.Series(selected.get("primary_row") or selected.to_dict())
     analysis = contract_analysis(
-        selected, spot, realized_volatility(bars), store, peer_contracts=candidates
+        selected_contract, spot, rv, store, peer_contracts=candidates
     )
     updated = dict(campaign)
     updated.update({
         "code": str(selected["code"]), "option_type": str(selected["option_type"]),
+        "structure": str(selected.get("structure", "LONG_OPTION")),
+        "structure_label": str(selected.get("structure_label", "单腿买方期权")),
+        "legs": list(selected.get("legs") or []),
+        "structure_net_debit": float(selected.get(
+            "structure_net_debit", selected_contract.get("ask_price", 0)
+        )),
+        "structure_max_loss": float(selected.get(
+            "structure_max_loss", market_number(selected_contract.get("ask_price")) * 100
+        )),
         "event_date": date.today().isoformat(), "strike_time": str(selected["strike_time"]),
         "entry_iv": float(analysis["隐含波动率"]),
-        "entry_gamma_theta_efficiency": float(selected.get("gamma_theta_efficiency", 0)),
+        "entry_gamma_theta_efficiency": float(selected_contract.get("gamma_theta_efficiency", 0)),
         "regime_profile": regime, "optimizer_version": 2, "enabled": True,
         "adaptive_risk_tier": str(selected.get("adaptive_risk_tier", "常规")),
         "entry_iv_rv": float(selected.get("iv_rv", 0)),
         "entry_iv_rv_limit": float(selected.get("iv_rv_limit", 1.5)),
         "volatility_quality_score": float(selected.get("volatility_quality_score", 0)),
+        "minimum_entry_quality_score": float(selected.get("volatility_min_quality_score", 54)),
+        "model_expected_return": float(selected.get("model_expected_return", 0)),
+        "estimated_profit_probability": float(selected.get("estimated_profit_probability", 0)),
+        "expectancy_model_version": str(selected_contract.get("expectancy_model_version", "")),
+        "expectancy_horizon_hours": float(campaign.get("expectancy_horizon_hours", 4)),
+        "expectancy_empirical_samples": int(selected_contract.get("expectancy_empirical_samples", 0)),
+        "iv_history_percentile": float(selected_contract.get("iv_history_percentile", 1)),
+        "iv_percentile_status": str(selected_contract.get("iv_percentile_status", "CHAIN_PROXY")),
+        "iv_history_samples": int(selected_contract.get("iv_history_samples", 0)),
+        "maximum_entry_spread_pct": 6.0,
+        "minimum_entry_open_interest": 800,
+        "minimum_entry_volume": 10,
+        "minimum_model_expected_return": float(selected.get(
+            "minimum_model_expected_return",
+            volatility_min_expected_return(
+                signal_active=bool(regime.get("active")),
+                strong_signal=bool(
+                    regime.get("strong_signal_override") and regime.get("trigger_confirmed")
+                ),
+                store=store,
+            ),
+        )),
+        "expected_return_policy": "TIERED",
+        "budget_alternative": bool(selected_contract.get("budget_alternative", False)),
         "volatility_filter_reason": str(selected.get("volatility_filter_reason", "")),
         "last_expression_review": date.today().isoformat(),
         "entry_tier": entry_tier,
@@ -188,9 +243,12 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         "option_delta", "option_gamma", "option_theta", "option_vega", "option_rho",
         "option_contract_multiplier",
     ):
-        if column in selected:
-            updated[column] = selected[column]
+        if column in selected_contract:
+            updated[column] = selected_contract[column]
     updated["_roll_diagnostics"] = _roll_diagnostics(
-        candidates, regime, f"已自动滚动到 {updated['code']}；{direction_reason}"
+        structures, regime,
+        f"已自动滚动到 {updated['code']}（{updated['structure_label']}）；{direction_reason}"
     )
-    return updated, f"已自动滚动到 {updated['code']}；{direction_reason}"
+    return updated, (
+        f"已自动滚动到 {updated['code']}（{updated['structure_label']}）；{direction_reason}"
+    )

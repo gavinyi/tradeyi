@@ -24,8 +24,8 @@ VOLATILITY_EXIT_PRIORITY = [
 
 PROFIT_PROTECTION_DEFAULTS = {
     "常规": {"start": .10, "giveback": .20, "lock": .05},
-    "动态波动": {"start": .15, "giveback": .25, "lock": .08},
-    "强波动": {"start": .20, "giveback": .30, "lock": .10},
+    "动态波动": {"start": .12, "giveback": .22, "lock": .07},
+    "强波动": {"start": .10, "giveback": .18, "lock": .10},
     "临近到期": {"start": .10, "giveback": .20, "lock": .05},
 }
 
@@ -44,9 +44,9 @@ def volatility_partial_exit_plan(
     pnl_ratio: float,
     campaign_state: dict,
     enabled: bool = True,
-    tier1_profit: float = .30,
+    tier1_profit: float = .18,
     tier1_fraction: float = .50,
-    tier2_profit: float = .60,
+    tier2_profit: float = .35,
     tier2_fraction: float = .25,
 ) -> tuple[int, str | None, str | None]:
     """Plan professional staged profit taking for multi-contract long-gamma trades.
@@ -123,6 +123,151 @@ def volatility_entry_tier(regime: dict[str, object]) -> str:
     return "常规"
 
 
+def volatility_entry_confirmation(
+    *,
+    now: datetime,
+    signal_started_at: str | None,
+    regime: dict[str, object],
+    confirmation_minutes: float = 5,
+) -> tuple[bool, str]:
+    """Require a short persistence check before opening a new long-gamma trade.
+
+    Buying options immediately after a price shock often means paying the peak IV
+    and widest spread. This gate keeps exits unchanged, but delays new entries
+    until the dynamic signal has survived one short confirmation window.
+    """
+    minutes = max(0.0, float(confirmation_minutes or 0))
+    if not bool(regime.get("active")):
+        return False, f"动态波动状态未激活：{regime.get('reason', '')}"
+    if minutes <= 0:
+        return True, "已关闭入场二次确认"
+    if not signal_started_at:
+        return False, f"等待入场二次确认：信号刚触发，需要持续 {minutes:g} 分钟"
+    try:
+        started = datetime.fromisoformat(str(signal_started_at))
+    except ValueError:
+        return False, f"等待入场二次确认：信号开始时间无效，需要重新记录后持续 {minutes:g} 分钟"
+    elapsed = (now - started).total_seconds() / 60
+    if elapsed < minutes:
+        return (
+            False,
+            f"等待入场二次确认：已持续 {elapsed:.1f} 分钟，目标 ≥ {minutes:g} 分钟",
+        )
+    return True, f"入场二次确认通过：信号已持续 {elapsed:.1f} 分钟 ≥ {minutes:g} 分钟"
+
+
+def volatility_direction_size_factor(regime: dict[str, object]) -> tuple[float, str]:
+    """Return a size factor for conflicted strong intraday signals.
+
+    If a sharp intraday move overrides lagging 5d/20d direction, keep the trade
+    alive but treat it as lower conviction. This avoids turning every spike into
+    a full-sized position.
+    """
+    if (
+        bool(regime.get("strong_signal_override"))
+        and bool(regime.get("trigger_confirmed"))
+        and not bool(regime.get("direction_confirmed"))
+    ):
+        return 0.5, "强波动方向覆盖但中短趋势分歧，按半档/单张降级执行"
+    return 1.0, "方向一致性正常，不降级仓位"
+
+
+def volatility_entry_quality_allowed(
+    campaign: dict[str, object],
+    *,
+    default_min_score: float = 54.0,
+    default_min_expected_return: float = 0.02,
+) -> tuple[bool, str, dict[str, float]]:
+    """Final pre-trade quality gate for saved volatility campaigns.
+
+    Candidate ranking happens when an activity is created or rolled. This guard
+    prevents stale low-quality saved activities from continuing to open trades
+    after the optimizer has become stricter.
+    """
+    tier = str(campaign.get("adaptive_risk_tier", campaign.get("entry_tier", "")))
+    tiered_min_expected = volatility_min_expected_return(
+        signal_active="动态" in tier or "强" in tier,
+        strong_signal="强" in tier,
+    )
+    min_score = float(campaign.get(
+        "minimum_entry_quality_score",
+        54.0 if "强波动" in tier else 58.0 if "动态" in tier else default_min_score,
+    ) or default_min_score)
+    configured_min_expected = float(campaign.get(
+        "minimum_model_expected_return", default_min_expected_return,
+    ) or default_min_expected_return)
+    expected_policy = str(campaign.get("expected_return_policy", "TIERED")).upper()
+    min_expected = (
+        configured_min_expected
+        if expected_policy == "STRICT"
+        else min(configured_min_expected, tiered_min_expected)
+    )
+    score = market_number(campaign.get("volatility_quality_score"), 0.0)
+    expected_return = campaign.get("model_expected_return")
+    expected = market_number(expected_return, 0.0)
+    spread = market_number(campaign.get("spread_pct"), 100.0)
+    oi = market_number(campaign.get("option_open_interest"), 0.0)
+    volume = market_number(campaign.get("volume"), 0.0)
+    max_spread = float(campaign.get("maximum_entry_spread_pct", 6.0) or 6.0)
+    min_oi = float(campaign.get("minimum_entry_open_interest", 800) or 800)
+    min_volume = float(campaign.get("minimum_entry_volume", 10) or 10)
+    checks = {
+        "quality_score": score, "minimum_quality_score": min_score,
+        "model_expected_return": expected,
+        "minimum_model_expected_return": min_expected,
+        "spread_pct": spread, "maximum_spread_pct": max_spread,
+        "open_interest": oi, "minimum_open_interest": min_oi,
+        "volume": volume, "minimum_volume": min_volume,
+    }
+    failed = []
+    if score < min_score:
+        failed.append(f"质量分 {score:.1f} 低于 {min_score:.1f}")
+    # Older campaigns may not have model_expected_return stored; do not block
+    # solely because the historical field is absent.
+    if expected_return is not None and expected < min_expected:
+        failed.append(f"模型预期收益 {expected:.2%} 低于 {min_expected:.2%}")
+    if spread > max_spread:
+        failed.append(f"价差 {spread:.1f}% 超过 {max_spread:.1f}%")
+    if oi < min_oi:
+        failed.append(f"未平仓量 {oi:.0f} 低于 {min_oi:.0f}")
+    if volume < min_volume:
+        failed.append(f"成交量 {volume:.0f} 低于 {min_volume:.0f}")
+    if failed:
+        return False, "入场质量闸门未通过：" + "；".join(failed), checks
+    return True, "入场质量闸门通过", checks
+
+
+def volatility_min_expected_return(
+    *, signal_active: bool = False, strong_signal: bool = False, store=None,
+) -> float:
+    """Minimum model expected return by volatility tier.
+
+    In paper-trading validation we still reject negative expectancy, but a
+    confirmed strong-volatility setup should not be blocked by the same 2% bar
+    used for ordinary trades.
+    """
+    if strong_signal:
+        key, env_key, fallback = (
+            "volatility_expected_return_min_strong",
+            "VOLATILITY_EXPECTED_RETURN_MIN_STRONG",
+            "0.0",
+        )
+    elif signal_active:
+        key, env_key, fallback = (
+            "volatility_expected_return_min_dynamic",
+            "VOLATILITY_EXPECTED_RETURN_MIN_DYNAMIC",
+            "0.005",
+        )
+    else:
+        key, env_key, fallback = (
+            "volatility_expected_return_min_normal",
+            "VOLATILITY_EXPECTED_RETURN_MIN_NORMAL",
+            "0.02",
+        )
+    configured = store.get_setting(key, "") if store is not None else ""
+    return float(configured or os.getenv(env_key, fallback))
+
+
 def tiered_premium_budget(base_budget: float, regime: dict[str, object], store=None) -> tuple[float, str]:
     """Scale budget by signal strength; hard risk gates remain unchanged."""
     tier = volatility_entry_tier(regime)
@@ -168,6 +313,51 @@ def volatility_cooldown_hours(
     if any(marker in reason for marker in ("波动开始收缩", "隐含波动率", "Gamma/Theta")):
         return values["contraction"] if "波动开始收缩" in reason else values["decay"]
     return values["default"]
+
+
+def volatility_cooldown_bypass_allowed(
+    reason: str,
+    regime: dict,
+    *,
+    enabled: bool = True,
+    allow_stop_loss: bool = False,
+    min_zscore: float = 3.0,
+    min_intraday_move: float = 0.035,
+    min_atr_ratio: float = 2.0,
+    min_volume_ratio: float = 1.50,
+) -> tuple[bool, str]:
+    """Decide whether a fresh volatility shock can override an exit cooldown."""
+    if not enabled:
+        return False, "强信号冷却豁免未开启"
+    if "硬止损" in str(reason) and not allow_stop_loss:
+        return False, "上次为硬止损退出，默认不允许强信号豁免冷却"
+    if not bool(regime.get("active")):
+        return False, "动态波动状态未激活"
+    volume_ratio = float(regime.get("volume_ratio", 0) or 0)
+    if volume_ratio < min_volume_ratio:
+        return False, f"量比 {volume_ratio:.2f} 未达到强信号豁免门槛 {min_volume_ratio:.2f}"
+    zscore = float(regime.get("zscore_20d", 0) or 0)
+    intraday = abs(float(regime.get("intraday_return", 0) or 0))
+    atr_ratio = float(regime.get("atr_ratio", 0) or 0)
+    strong_checks = [
+        zscore >= min_zscore,
+        intraday >= min_intraday_move,
+        atr_ratio >= min_atr_ratio,
+    ]
+    if not any(strong_checks):
+        return (
+            False,
+            "强信号豁免未达标："
+            f"Z值 {zscore:.2f}/{min_zscore:.2f}，"
+            f"日内波动 {intraday:.2%}/{min_intraday_move:.2%}，"
+            f"ATR倍数 {atr_ratio:.2f}/{min_atr_ratio:.2f}",
+        )
+    return (
+        True,
+        "强波动信号提前解除冷却："
+        f"Z值 {zscore:.2f}，日内波动 {intraday:.2%}，"
+        f"ATR倍数 {atr_ratio:.2f}，量比 {volume_ratio:.2f}",
+    )
 
 
 def _session_progress() -> float:
@@ -284,10 +474,11 @@ def volatility_regime(
 
 
 def rank_volatility_contracts(
-    candidates: pd.DataFrame, spot: float, rv: float, iv_percentile: float = 0.5,
+    candidates: pd.DataFrame, spot: float, rv: float, iv_percentile: float | None = None,
     as_of: date | None = None,
     *, signal_active: bool = False, strong_signal: bool = False,
     max_premium_per_stage: float | None = None, contracts_per_stage: int = 1,
+    store=None,
 ) -> pd.DataFrame:
     if candidates.empty:
         result = candidates.copy()
@@ -299,18 +490,24 @@ def rank_volatility_contracts(
         result["iv_rv"] = pd.Series(dtype=float)
         result["iv_rv_limit"] = pd.Series(dtype=float)
         result["premium_per_stage"] = pd.Series(dtype=float)
+        result["minimum_model_expected_return"] = pd.Series(dtype=float)
+        result["budget_alternative"] = pd.Series(dtype=bool)
         result["adaptive_risk_tier"] = pd.Series(dtype=str)
         return result
     today = as_of or date.today()
     result = candidates.copy()
     if strong_signal:
-        iv_rv_limit, risk_tier = 2.0, "强波动放宽"
+        iv_rv_limit, risk_tier = 1.8, "强波动精选"
     elif signal_active:
-        iv_rv_limit, risk_tier = 1.8, "动态波动放宽"
+        iv_rv_limit, risk_tier = 1.65, "动态波动精选"
     else:
         iv_rv_limit, risk_tier = 1.5, "常规"
+    min_expected_return = volatility_min_expected_return(
+        signal_active=signal_active, strong_signal=strong_signal, store=store,
+    )
     scores, eligible, reasons, dtes, iv_rv_values = [], [], [], [], []
     premiums, expected_return_flags, premium_flags = [], [], []
+    budget_alternatives: list[bool] = []
     for _, row in result.iterrows():
         expiry = pd.to_datetime(row.get("strike_time"), errors="coerce")
         dte = max(0, (expiry.date() - today).days) if not pd.isna(expiry) else 0
@@ -319,9 +516,12 @@ def rank_volatility_contracts(
         oi = market_number(row.get("option_open_interest"))
         volume = market_number(row.get("volume"))
         iv = normalize_iv(row.get("option_implied_volatility", 0))
+        raw_iv_percentile = row.get("iv_history_percentile", iv_percentile)
+        row_iv_percentile = market_number(raw_iv_percentile, float("nan"))
+        has_iv_percentile = pd.notna(row_iv_percentile)
         iv_rv = iv / rv if rv > 0 else 99.0
         expected_return = market_number(row.get("model_expected_return"), -99.0)
-        expected_return_ok = expected_return > 0
+        expected_return_ok = expected_return >= min_expected_return
         multiplier = market_number(row.get("option_contract_multiplier"), 100.0)
         ask = market_number(row.get("ask_price"), market_number(row.get("mid_price")))
         premium = ask * multiplier * max(1, int(contracts_per_stage))
@@ -329,13 +529,17 @@ def rank_volatility_contracts(
             max_premium_per_stage is None
             or (ask > 0 and premium <= float(max_premium_per_stage))
         )
-        max_spread = 12.0 if dte == 0 else 8.0
-        liquid = spread <= max_spread and oi >= 500 and volume >= 1
-        cost_ok = iv_rv <= iv_rv_limit and iv_percentile <= .75
-        delta_ok = .30 <= delta <= .80
-        is_eligible = bool(
-            liquid and cost_ok and delta_ok and expected_return_ok and premium_ok
+        max_spread = 8.0 if dte == 0 else 6.0 if strong_signal else 5.0
+        min_oi = 800 if strong_signal else 1000
+        min_volume = 10 if strong_signal else 15
+        liquid = spread <= max_spread and oi >= min_oi and volume >= min_volume
+        # Missing history must be visible as insufficient evidence, but must not
+        # be silently converted into a fake 100th percentile rejection. The
+        # scanner normally supplies a real-history or same-chain proxy value.
+        cost_ok = iv_rv <= iv_rv_limit and (
+            not has_iv_percentile or row_iv_percentile <= .75
         )
+        delta_ok = .30 <= delta <= .80
         delta_score = max(0.0, 30 - abs(delta - .525) * 100)
         dte_score = 25 if 7 <= dte <= 21 else 15 if 2 <= dte <= 30 else 5
         liquidity_score = max(0.0, 20 - spread) + min(10.0, oi / 500)
@@ -344,27 +548,53 @@ def rank_volatility_contracts(
         efficiency_score = min(15.0, (gamma / theta if theta > 0 else 0) * 50)
         cost_score = max(0.0, 15 * (1.5 - min(1.5, iv_rv)) / 1.5)
         score = delta_score + dte_score + liquidity_score + efficiency_score + cost_score
+        min_score = 54.0 if strong_signal else 58.0 if signal_active else 60.0
+        alternative_min_score = min_score - (6.0 if strong_signal else 4.0 if signal_active else 0.0)
+        budget_alternative = bool(
+            signal_active
+            and liquid and cost_ok and delta_ok and expected_return_ok and premium_ok
+            and score >= alternative_min_score
+            and score < min_score
+        )
+        is_eligible = bool(
+            liquid and cost_ok and delta_ok and expected_return_ok and premium_ok
+            and (score >= min_score or budget_alternative)
+        )
         reason_parts = []
         if spread > max_spread:
             reason_parts.append(f"价差 {spread:.1f}% 超过 {max_spread:.0f}%")
-        if oi < 500:
-            reason_parts.append(f"未平仓量 {oi:.0f} 低于 500")
-        if volume < 1:
-            reason_parts.append("当日无成交量")
+        if oi < min_oi:
+            reason_parts.append(f"未平仓量 {oi:.0f} 低于 {min_oi}")
+        if volume < min_volume:
+            reason_parts.append(f"成交量 {volume:.0f} 低于 {min_volume}")
         if iv_rv > iv_rv_limit:
             reason_parts.append(
                 f"IV/RV {iv_rv:.2f} 超过{risk_tier}门槛 {iv_rv_limit:.2f}"
             )
-        if iv_percentile > .75:
-            reason_parts.append(f"IV百分位 {iv_percentile:.0%} 超过 75%")
+        if has_iv_percentile and row_iv_percentile > .75:
+            source_label = (
+                "历史" if str(row.get("iv_percentile_status")) == "HISTORICAL"
+                else "期权链代理"
+            )
+            reason_parts.append(
+                f"IV{source_label}百分位 {row_iv_percentile:.0%} 超过 75%"
+            )
         if not delta_ok:
             reason_parts.append(f"Delta {delta:.2f} 不在 0.30–0.80")
         if not expected_return_ok:
-            reason_parts.append(f"模型预期收益 {expected_return:.2%} 不大于 0")
+            reason_parts.append(
+                f"模型预期收益 {expected_return:.2%} 低于{risk_tier}门槛 {min_expected_return:.2%}"
+            )
         if not premium_ok:
             reason_parts.append(
                 f"本批权利金 ${premium:,.0f} 超过预算 ${float(max_premium_per_stage):,.0f}"
             )
+        if budget_alternative:
+            reason_parts.append(
+                f"预算替代表达放行：质量分 {score:.1f} 低于精选 {min_score:.0f}，但高于替代门槛 {alternative_min_score:.0f}"
+            )
+        elif score < min_score:
+            reason_parts.append(f"综合质量分 {score:.1f} 低于 {min_score:.0f}")
         scores.append(score)
         eligible.append(is_eligible)
         reasons.append("；".join(reason_parts) or "全部条件通过")
@@ -373,6 +603,7 @@ def rank_volatility_contracts(
         premiums.append(premium)
         expected_return_flags.append(expected_return_ok)
         premium_flags.append(premium_ok)
+        budget_alternatives.append(budget_alternative)
     result["volatility_quality_score"] = scores
     result["volatility_eligible"] = eligible
     result["volatility_filter_reason"] = reasons
@@ -380,14 +611,24 @@ def rank_volatility_contracts(
     result["iv_rv"] = iv_rv_values
     result["iv_rv_limit"] = iv_rv_limit
     result["premium_per_stage"] = premiums
+    result["minimum_model_expected_return"] = min_expected_return
     result["expected_return_ok"] = expected_return_flags
     result["premium_budget_ok"] = premium_flags
+    result["budget_alternative"] = budget_alternatives
+    result["volatility_min_quality_score"] = [
+        54.0 if strong_signal else 58.0 if signal_active else 60.0
+    ] * len(result)
     result["adaptive_risk_tier"] = risk_tier
-    sort_columns = ["volatility_eligible", "volatility_quality_score"]
+    sort_columns = [
+        "volatility_eligible", "premium_budget_ok",
+        "budget_alternative", "volatility_quality_score",
+    ]
+    ascending = [False, False, True, False]
     if "model_expected_return" in result:
         sort_columns.append("model_expected_return")
+        ascending.append(False)
     return result.sort_values(
-        sort_columns, ascending=[False] * len(sort_columns),
+        sort_columns, ascending=ascending,
     ).reset_index(drop=True)
 
 

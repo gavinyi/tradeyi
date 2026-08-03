@@ -72,6 +72,70 @@ def test_transient_risk_rejection_can_retry_after_recovery(tmp_path):
     assert retried["limit_price"] == 101
 
 
+def test_recovery_block_does_not_block_shadow_buy(tmp_path):
+    broker = FakeBroker()
+    broker.positions = lambda: pd.DataFrame(columns=["code", "qty", "market_val"])
+    broker.account_info = lambda: pd.DataFrame([{"total_assets": 1000, "power": 800, "unrealized_pl": 0}])
+    broker.snapshots = lambda symbols: pd.DataFrame([
+        {
+            "code": symbol, "last_price": 2.0, "option_delta": -0.10,
+            "option_gamma": 0.01, "option_vega": 0.05, "option_theta": -0.02,
+            "option_contract_multiplier": 100,
+        }
+        for symbol in symbols
+    ])
+    store = TradingStore(tmp_path / "test.db")
+    store.set_setting("recovery_blocked", "true")
+    store.set_setting("strategy_execution_mode:volatility_long_gamma", "SHADOW")
+    executor = ExecutionManager(broker, store)
+
+    result = executor.submit_limit(
+        "volatility_long_gamma",
+        "cycle0:OPEN:stage1",
+        "US.NVDA260729P205000",
+        "BUY",
+        1,
+        2,
+        {"multiplier": 100, "underlying": "US.NVDA"},
+    )
+
+    assert result.status == "SHADOW"
+    assert broker.calls == 0
+
+
+def test_recovery_block_still_blocks_paper_buy(tmp_path):
+    broker = FakeBroker()
+    store = TradingStore(tmp_path / "test.db")
+    store.set_setting("recovery_blocked", "true")
+    executor = ExecutionManager(broker, store)
+
+    result = executor.submit_limit("sma", "buy", "US.NVDA", "BUY", 1, 100)
+
+    assert result.status == "REJECTED"
+    assert "三账差异" in result.message
+    assert broker.calls == 0
+
+
+def test_submit_limit_can_override_execution_mode_for_manual_close(tmp_path):
+    broker = FakeBroker()
+    broker.positions = lambda: pd.DataFrame([{"code": "US.NVDA260729P205000", "qty": 1}])
+    broker.account_info = lambda: pd.DataFrame()
+    store = TradingStore(tmp_path / "test.db")
+    store.set_setting("strategy_execution_mode:volatility_long_gamma", "SHADOW")
+    store.set_virtual_allocation("volatility_long_gamma", "US.NVDA260729P205000", 1, 7.7)
+    executor = ExecutionManager(broker, store)
+
+    result = executor.submit_limit(
+        "volatility_long_gamma", "manual-close",
+        "US.NVDA260729P205000", "SELL", 1, 7.7,
+        {"multiplier": 100, "underlying": "US.NVDA"},
+        execution_mode_override="PAPER",
+    )
+
+    assert result.status == "SUBMITTED"
+    assert broker.calls == 1
+
+
 def test_daily_equity_kill_switch_rejection_can_retry_after_reset(tmp_path):
     store = TradingStore(tmp_path / "test.db")
     intent, _ = store.create_intent("gamma", "daily-loss", "US.TEST", "BUY", 1, 100)

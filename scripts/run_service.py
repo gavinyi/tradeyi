@@ -24,6 +24,7 @@ from futu_quant.order_push import open_order_push
 from futu_quant.recovery import daily_operations_report, startup_recovery
 from futu_quant.correlation_risk import update_correlation_clusters
 from futu_quant.config import load_gamma_campaigns, upsert_campaign
+from futu_quant.campaign_cleanup import cleanup_expired_campaigns
 from futu_quant.account_metrics import account_pnl_metrics
 from futu_quant.risk import RiskLimits, ny_trading_day_start_utc
 from futu_quant.option_lifecycle import execute_disposition_plans, monitor_option_lifecycle
@@ -85,6 +86,7 @@ TASK_TIMEOUTS = {
     "earnings_gamma": 120,
     "volatility_long_gamma": 120,
     "core_satellite": 120,
+    "campaign_cleanup": 45,
     "system_health": 90,
     "earnings_calendar": 180,
     "daily_report": 60,
@@ -365,6 +367,12 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     if due(store, "last_run:maintenance", 300, now):
         run_task(store, alerts, "system_health", lambda: maintenance(store, broker))
         mark_run(store, "last_run:maintenance", now)
+    if due(store, "last_run:campaign_cleanup", 300, now):
+        run_task(
+            store, alerts, "campaign_cleanup",
+            lambda: cleanup_expired_campaigns(store, broker),
+        )
+        mark_run(store, "last_run:campaign_cleanup", now)
     if (due(store, "last_success:earnings_calendar", 20 * 60 * 60, now)
             and due(store, "last_attempt:earnings_calendar", 10 * 60, now)):
         def refresh_calendar():

@@ -55,6 +55,14 @@ def fetch_earnings_events(symbols: tuple[str, ...], days: int = 45) -> list[dict
     workers = min(10, max(1, int(os.getenv("EARNINGS_SOURCE_WORKERS", "6"))))
     dates = [start + timedelta(days=offset) for offset in range(max(1, days))]
     dates = [day for day in dates if day.weekday() < 5]
+    # A short window requested during a weekend can contain no trading day at
+    # all. Keep the API useful (and deterministic) by including the next US
+    # business day rather than reporting an unrelated source outage.
+    if not dates:
+        next_business_day = start
+        while next_business_day.weekday() >= 5:
+            next_business_day += timedelta(days=1)
+        dates = [next_business_day]
     executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="earnings-calendar")
     futures = {executor.submit(_fetch_day, day, request_timeout): day for day in dates}
     done, pending = wait(futures, timeout=overall_timeout)

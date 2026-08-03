@@ -74,9 +74,13 @@ def configured_volatility_direction_allowed(
     )
     if strong_override:
         direction = "CALL" if intraday > 0 else "PUT"
-        reason = (
-            f"强波动方向覆盖：日内 {intraday:+.2%}，忽略滞后的5日/20日趋势"
-        )
+        if bool(regime.get("direction_confirmed")):
+            reason = f"强波动方向确认：日内 {intraday:+.2%}，且方向分 {score:+d}"
+        else:
+            reason = (
+                f"强波动方向覆盖：日内 {intraday:+.2%}，但5日/20日方向分歧，"
+                "本轮按低置信度处理"
+            )
     elif regime.get("active"):
         direction = "CALL" if score >= 2 else "PUT" if score <= -2 else None
         reason = f"雷达动态状态与方向分共同确认：方向分 {score:+d}"

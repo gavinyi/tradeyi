@@ -9,6 +9,7 @@ from futu_quant.option_event_backtest import run_option_event_backtest
 from futu_quant.option_history import collect_option_snapshots, history_frame
 from futu_quant.option_evidence import assess_option_evidence, option_research_buckets
 from futu_quant.store import TradingStore
+from futu_quant.volatility_validation import volatility_walk_forward
 from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
 
 
@@ -53,7 +54,9 @@ with st.container(horizontal=True):
         border=True,
     )
 
-coverage_tab, backtest_tab = st.tabs(["数据覆盖", "事件驱动回测"])
+coverage_tab, backtest_tab, walk_forward_tab = st.tabs(
+    ["数据覆盖", "事件驱动回测", "波动率走步验证"]
+)
 with coverage_tab:
     if coverage.empty:
         st.info("尚无历史期权快照。配置期权策略后，服务会在常规交易时段开始积累。")
@@ -125,6 +128,72 @@ with backtest_tab:
             except ValueError as exc:
                 st.error(str(exc))
                 st.info("继续保持统一服务运行，系统会按分钟积累真实历史盘口。")
+
+with walk_forward_tab:
+    st.subheader("与实际持有周期一致的逐笔验证")
+    st.caption(
+        "按 Ask 开仓、未来 Bid 平仓，使用 90 分钟至 24 小时的真实持有窗口；"
+        "结果按时间切成多个窗口，避免只看单次首尾收益。"
+    )
+    with st.form("volatility_walk_forward_form", border=True):
+        holding_hours = st.number_input(
+            "验证持有小时", min_value=1.5, max_value=24.0,
+            value=4.0, step=0.5,
+        )
+        windows_count = st.number_input(
+            "走步窗口数", min_value=2, max_value=8, value=3,
+        )
+        minimum_returns = st.number_input(
+            "最低可配对样本", min_value=20, max_value=5000, value=30,
+        )
+        run_walk_forward = st.form_submit_button(
+            "运行波动率逐笔走步验证", type="primary"
+        )
+    if run_walk_forward:
+        histories = {
+            str(row["code"]): history_frame(store, str(row["code"]))
+            for _, row in coverage.iterrows()
+        }
+        windows_result, validation_summary = volatility_walk_forward(
+            histories, holding_hours=float(holding_hours),
+            windows=int(windows_count), minimum_returns=int(minimum_returns),
+        )
+        st.session_state["volatility_walk_forward_result"] = windows_result
+        st.session_state["volatility_walk_forward_summary"] = validation_summary
+    validation_summary = st.session_state.get("volatility_walk_forward_summary")
+    windows_result = st.session_state.get("volatility_walk_forward_result")
+    if validation_summary:
+        with st.container(horizontal=True):
+            st.metric("状态", validation_summary["status"], border=True)
+            st.metric("可配对样本", validation_summary["sample_count"], border=True)
+            st.metric("验证窗口", validation_summary["window_count"], border=True)
+            st.metric(
+                "平均净收益", f"{validation_summary.get('mean_return', 0):.2%}",
+                border=True,
+            )
+            st.metric(
+                "胜率", f"{validation_summary.get('win_rate', 0):.1%}",
+                border=True,
+            )
+        if validation_summary["passed"]:
+            st.success(validation_summary["reason"])
+        else:
+            st.warning(validation_summary["reason"])
+        if isinstance(windows_result, pd.DataFrame) and not windows_result.empty:
+            st.dataframe(
+                chinese_columns(windows_result), hide_index=True, width="stretch",
+            )
+        st.session_state["pending_option_backtest_evidence"] = {
+            "strategy_id": "volatility_long_gamma",
+            "symbol": "VOLATILITY_PORTFOLIO",
+            "passed": bool(validation_summary["passed"]),
+            "summary": validation_summary,
+            "windows": (
+                windows_result.to_dict("records")
+                if isinstance(windows_result, pd.DataFrame) else []
+            ),
+            "kind": "波动率短周期逐笔走步验证",
+        }
 
 pending_evidence = st.session_state.get("pending_option_backtest_evidence")
 if pending_evidence:

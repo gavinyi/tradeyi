@@ -107,7 +107,8 @@ ledger_tab, closed_tab, orders_tab, rejected_tab = st.tabs(
 
 ledger_columns = [
     "strategy_id", "underlying", "symbol", "option_type", "strike", "expiration",
-    "status", "open_time", "close_time", "open_quantity", "closed_quantity",
+    "status", "open_time", "open_time_source", "close_time", "close_time_source",
+    "open_quantity", "closed_quantity",
     "remaining_quantity", "open_price", "avg_close_price", "last_price",
     "realized_pnl", "unrealized_pnl", "total_pnl", "return_ratio", "fees",
     "entry_tier", "trigger_mode", "reason",

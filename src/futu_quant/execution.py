@@ -35,11 +35,12 @@ class ExecutionManager:
     def submit_limit(
         self, strategy_id: str, intent_key: str, symbol: str, side: str,
         quantity: int, price: float, metadata: dict[str, Any] | None = None,
+        execution_mode_override: str | None = None,
     ) -> ExecutionResult:
         metadata = metadata or {}
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
         override_mode = self.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
-        mode = (override_mode or global_mode).upper()
+        mode = (execution_mode_override or override_mode or global_mode).upper()
         fingerprint = strategy_fingerprint(strategy_id)
         require_approval = os.getenv("REQUIRE_STRATEGY_APPROVAL", "true").lower() == "true"
         if (mode in {"PAPER", "REAL"} and side == "BUY" and require_approval

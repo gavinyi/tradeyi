@@ -7,6 +7,7 @@ import os
 import pandas as pd
 
 from futu_quant.gamma_risk import market_number, normalize_iv
+from futu_quant.option_expectancy import short_horizon_option_expectancy
 
 
 def _normal_cdf(value: float) -> float:
@@ -41,6 +42,11 @@ def rank_long_option_candidates(
     as_of: date | None = None,
     profit_target: float = 0.50,
     stop_loss: float = 0.40,
+    *,
+    realized_volatility: float | None = None,
+    regime: dict[str, object] | None = None,
+    holding_hours: float = 4.0,
+    option_history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Add explainable long-option probability fields and rank highest first.
 
@@ -57,6 +63,10 @@ def rank_long_option_candidates(
     confidences: list[str] = []
     expected_returns: list[float] = []
     gamma_theta_efficiencies: list[float] = []
+    model_versions: list[str] = []
+    empirical_samples: list[int] = []
+    expected_exit_bids: list[float] = []
+    expected_exit_asks: list[float] = []
     for _, row in ranked.iterrows():
         expiry = pd.to_datetime(row.get("strike_time"), errors="coerce")
         dte = max(0.5, float((expiry.date() - today).days) + 0.5) if not pd.isna(expiry) else 0.5
@@ -73,11 +83,33 @@ def rank_long_option_candidates(
         open_interest = market_number(row.get("option_open_interest"))
         confidence = "高" if spread <= 5 and open_interest >= 500 else "中" if spread <= 10 and open_interest >= 100 else "低"
         half_spread_cost = max(0.0, spread) / 200.0
-        expected_return = (
-            probability * float(profit_target)
-            - (1 - probability) * float(stop_loss)
-            - half_spread_cost
-        )
+        if realized_volatility is not None:
+            code_history = pd.DataFrame()
+            if option_history is not None and not option_history.empty and "code" in option_history:
+                code_history = option_history[
+                    option_history["code"].astype(str) == str(row.get("code", ""))
+                ]
+            horizon = short_horizon_option_expectancy(
+                row, spot, float(realized_volatility), regime,
+                holding_hours=holding_hours, profit_target=profit_target,
+                stop_loss=stop_loss, history=code_history,
+            )
+            expected_return = float(horizon["expected_return"])
+            probability = float(horizon["profit_probability"])
+            model_versions.append(str(horizon["model_version"]))
+            empirical_samples.append(int(horizon["empirical_samples"]))
+            expected_exit_bids.append(float(horizon["expected_exit_bid"]))
+            expected_exit_asks.append(float(horizon["expected_exit_ask"]))
+        else:
+            expected_return = (
+                probability * float(profit_target)
+                - (1 - probability) * float(stop_loss)
+                - half_spread_cost
+            )
+            model_versions.append("EXPIRY_BREAKEVEN_LEGACY")
+            empirical_samples.append(0)
+            expected_exit_bids.append(float(row.get("bid_price", 0) or 0))
+            expected_exit_asks.append(float(row.get("ask_price", 0) or 0))
         gamma = abs(market_number(row.get("option_gamma")))
         theta = abs(market_number(row.get("option_theta")))
         gamma_theta_efficiency = gamma / theta if theta > 0 else 0.0
@@ -91,6 +123,10 @@ def rank_long_option_candidates(
     ranked["probability_confidence"] = confidences
     ranked["model_expected_return"] = expected_returns
     ranked["gamma_theta_efficiency"] = gamma_theta_efficiencies
+    ranked["expectancy_model_version"] = model_versions
+    ranked["expectancy_empirical_samples"] = empirical_samples
+    ranked["expected_exit_bid"] = expected_exit_bids
+    ranked["expected_exit_ask"] = expected_exit_asks
     return ranked.sort_values(
         ["model_expected_return", "estimated_profit_probability", "gamma_theta_efficiency", "spread_pct"],
         ascending=[False, False, False, True],

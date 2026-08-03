@@ -56,8 +56,18 @@ def calculate_backtest_metrics(
     maximum_drawdown = float(drawdown.min())
     calmar = cagr / abs(maximum_drawdown) if maximum_drawdown < 0 else 0.0
 
-    closed = trades[trades["side"].astype(str).eq("SELL")].copy() if not trades.empty and "side" in trades else pd.DataFrame()
-    pnls = pd.to_numeric(closed.get("pnl", pd.Series(dtype=float)), errors="coerce").dropna()
+    if not trades.empty and "pnl" in trades:
+        pnl_series = pd.to_numeric(trades["pnl"], errors="coerce")
+        closed = trades[pnl_series.notna()].copy()
+        pnls = pnl_series[pnl_series.notna()]
+    elif not trades.empty and "side" in trades:
+        closed = trades[trades["side"].astype(str).eq("SELL")].copy()
+        pnls = pd.to_numeric(
+            closed.get("pnl", pd.Series(dtype=float)), errors="coerce"
+        ).dropna()
+    else:
+        closed = pd.DataFrame()
+        pnls = pd.Series(dtype=float)
     gains = float(pnls[pnls > 0].sum())
     losses = abs(float(pnls[pnls < 0].sum()))
     profit_factor = gains / losses if losses > 0 else gains if gains > 0 else 0.0

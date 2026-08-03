@@ -87,7 +87,11 @@ class RiskEngine:
             return RiskDecision(False, "数量和限价必须大于 0", 0)
         if side == "BUY" and self.store.get_setting("connectivity_degraded", "false") == "true":
             return RiskDecision(False, "连接恢复尚未完成对账，暂时禁止新增风险", 0)
-        if side == "BUY" and self.store.get_setting("recovery_blocked", "false") == "true":
+        if (
+            side == "BUY"
+            and execution_mode != "SHADOW"
+            and self.store.get_setting("recovery_blocked", "false") == "true"
+        ):
             return RiskDecision(False, "启动恢复发现三账差异，请先完成持仓归属与对账", 0)
         contract_multiplier = multiplier or (100.0 if OPTION_PATTERN.match(symbol) else 1.0)
         notional = float(quantity) * float(price) * contract_multiplier

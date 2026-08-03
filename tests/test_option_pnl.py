@@ -69,3 +69,36 @@ def test_option_pnl_ledger_fifo_realized_pnl_after_close(tmp_path):
     assert row["unrealized_pnl"] == 99
     assert row["total_pnl"] == 297
     assert option_pnl_summary(ledger)["open_contracts"] == 1
+
+
+def test_option_pnl_ledger_uses_shadow_fill_time_as_open_time(tmp_path, monkeypatch):
+    store = TradingStore(tmp_path / "shadow_time.db")
+    monkeypatch.setattr(store, "now", lambda: "2026-07-24T01:00:00+00:00")
+    intent, _ = store.create_intent(
+        "volatility_long_gamma", "shadow-open", "US.TSLA260727P340000", "BUY", 1, 14,
+    )
+    monkeypatch.setattr(store, "now", lambda: "2026-07-24T01:08:30+00:00")
+    store.update_shadow_intent(intent["id"], "SHADOW_FILLED", 1, 14, 1.0)
+    store.record_shadow_fill(intent["id"], 1, 14, 1.0, {"code": intent["symbol"]})
+
+    ledger, _, _ = build_option_pnl_ledger(store, QuoteBroker(15))
+
+    assert ledger.iloc[0]["open_time"] == "2026-07-24T01:08:30+00:00"
+    assert ledger.iloc[0]["open_time_source"] == "Shadow 成交时间"
+
+
+def test_option_pnl_ledger_uses_broker_update_time_for_paper_fill(tmp_path, monkeypatch):
+    store = TradingStore(tmp_path / "paper_time.db")
+    monkeypatch.setattr(store, "now", lambda: "2026-07-24T01:00:00+00:00")
+    intent, _ = store.create_intent(
+        "volatility_long_gamma", "paper-open", "US.GOOG260724P325000", "BUY", 1, 12,
+    )
+    broker_id = f"order-{intent['id']}"
+    store.update_intent(intent["id"], "SUBMITTED", broker_id)
+    monkeypatch.setattr(store, "now", lambda: "2026-07-24T01:11:45+00:00")
+    store.update_by_broker_order(broker_id, "FILLED", 1, 12, 1.0)
+
+    ledger, _, _ = build_option_pnl_ledger(store, QuoteBroker(13))
+
+    assert ledger.iloc[0]["open_time"] == "2026-07-24T01:11:45+00:00"
+    assert ledger.iloc[0]["open_time_source"] == "富途成交更新时间"

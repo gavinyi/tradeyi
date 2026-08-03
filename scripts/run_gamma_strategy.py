@@ -12,6 +12,8 @@ import pandas as pd
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_gamma_campaigns
 from futu_quant.execution import ExecutionManager
+from futu_quant.combo_analytics import combo_market_snapshot
+from futu_quant.combo_execution import ComboExecutionManager, create_combo
 from futu_quant.gamma_automation import decide_gamma_action
 from futu_quant.gamma_debug import diagnose_campaign, hard_campaign_issues
 from futu_quant.gamma_risk import (
@@ -25,8 +27,11 @@ from futu_quant.volatility_optimizer import (
     decide_volatility_action, sync_volatility_position_cycle,
     volatility_partial_exit_plan,
     volatility_cooldown_hours, volatility_exit_reason,
-    volatility_profit_protection_profile, volatility_regime, volatility_threshold_profile,
+    volatility_cooldown_bypass_allowed, volatility_profit_protection_profile,
+    volatility_direction_size_factor, volatility_entry_confirmation,
+    volatility_entry_quality_allowed, volatility_regime, volatility_threshold_profile,
 )
+from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.data_quality import (
     option_book_status, option_quote_freshness, quote_freshness,
 )
@@ -37,6 +42,27 @@ from futu_quant.store import TradingStore
 NY = ZoneInfo("America/New_York")
 MARKET_CALENDAR = USMarketCalendar()
 LEGACY_STATE_FILE = Path("data/gamma_state.json")
+
+
+def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float]:
+    combo = store.option_combo(combo_id)
+    if not combo or combo.get("status") != "OPEN":
+        return 0, 0.0, 0.0
+    legs = store.option_combo_legs(combo_id)
+    if not legs:
+        return 0, 0.0, 0.0
+    quotes = broker.snapshots([leg["symbol"] for leg in legs])
+    detail, package = combo_market_snapshot(legs, quotes)
+    if detail.empty:
+        return 1, 0.0, 0.0
+    entry_debit = sum(
+        (1 if leg["side"] == "BUY" else -1)
+        * float(leg.get("filled_quantity", 0) or 0)
+        * float(leg.get("average_fill_price", 0) or 0)
+        for leg in legs
+    )
+    current_value = float(package.get("executable_net_debit", 0) or 0)
+    return 1, max(0.01, entry_debit), current_value
 
 
 def refreshed_trade_quotes(
@@ -138,14 +164,27 @@ def run_campaign(
     cost = float(position.iloc[0]["cost_price"]) if not position.empty else 0.0
     global_mode = executor.store.get_setting("execution_mode", "PAPER")
     strategy_mode = executor.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
-    execution_mode = (strategy_mode or global_mode).upper()
-    if len(legs) > 1:
-        reason = "多腿组合尚未接入原子组合订单，已禁止自动逐腿交易"
-        executor.store.decision(strategy_id, code, "BLOCKED", reason, {
-            "structure": campaign.get("structure"), "legs": legs,
-        })
-        print(f"{code}: BLOCKED {reason}")
+    campaign_mode = str(campaign.get("execution_mode_override") or "").strip()
+    execution_mode = (campaign_mode or strategy_mode or global_mode).upper()
+    combo_last = 0.0
+    combo_id = automatic_combo_id(
+        strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
+    ) if len(legs) > 1 else ""
+    combo = executor.store.option_combo(combo_id) if combo_id else None
+    if combo and combo.get("status") in {"EXECUTING", "CLOSING", "ROLLBACK_PENDING"}:
+        ComboExecutionManager(broker, executor.store, executor).advance(combo_id)
+        combo = executor.store.option_combo(combo_id)
+        executor.store.decision_if_changed(
+            strategy_id, code, "HOLD",
+            f"组合订单正在执行：{combo.get('status', 'UNKNOWN')}",
+            {"combo_id": combo_id, "structure": campaign.get("structure")},
+            repeat_after_seconds=300,
+        )
         return
+    if combo and combo.get("status") == "OPEN":
+        quantity, cost, combo_last = combo_position_mark(
+            executor.store, broker, combo_id
+        )
     if execution_mode == "SHADOW":
         shadow_quantity, shadow_cost = executor.store.shadow_position(strategy_id, code)
         quantity, cost = int(shadow_quantity), float(shadow_cost)
@@ -160,6 +199,7 @@ def run_campaign(
             campaign_state["entry_cycle"] = int(campaign_state.get("entry_cycle", 0)) + 1
             campaign_state["last_exit_at"] = now.isoformat()
             state[f"volatility_cooldown:{campaign['underlying']}"] = now.isoformat()
+            state[f"volatility_cooldown_reason:{campaign['underlying']}"] = reason
             state[f"volatility_cooldown_hours:{campaign['underlying']}"] = (
                 volatility_cooldown_hours(
                     reason, float(campaign.get("cooldown_hours", 24)),
@@ -264,6 +304,8 @@ def run_campaign(
     theta_now = abs(market_number(option.get("option_theta", 0)))
     current_efficiency = gamma_now / theta_now if theta_now > 0 else 0.0
     current_iv = normalize_iv(option.get("option_implied_volatility", 0))
+    if combo and combo.get("status") == "OPEN" and combo_last > 0:
+        last = combo_last
     if trigger_mode == "VOLATILITY":
         sync_volatility_position_cycle(
             campaign_state, quantity=quantity, cost=cost, last=last,
@@ -330,6 +372,42 @@ def run_campaign(
             executor.store.decision(strategy_id, code, "HOLD", reason, {"regime": regime})
             print(f"{code}: HOLD ({reason})")
             return
+        if quantity <= 0:
+            entry_confirmed, confirmation_reason = volatility_entry_confirmation(
+                now=now,
+                signal_started_at=campaign_state.get("signal_started_at"),
+                regime=regime,
+                confirmation_minutes=float(
+                    campaign.get("entry_confirmation_minutes", 5)
+                ),
+            )
+            direction_reason = f"{direction_reason}；{confirmation_reason}"
+            if not entry_confirmed:
+                executor.store.decision_if_changed(
+                    strategy_id,
+                    code,
+                    "HOLD",
+                    confirmation_reason,
+                    {
+                        "position_quantity": quantity,
+                        "planned_order_quantity": 0,
+                        "position_source": (
+                            "SHADOW_LEDGER" if execution_mode == "SHADOW"
+                            else "FUTU_ACCOUNT"
+                        ),
+                        "pnl_ratio": pnl_ratio,
+                        "drawdown": drawdown,
+                        "trigger_mode": trigger_mode,
+                        "validation_warnings": issues,
+                        "direction_reason": direction_reason,
+                        "direction_metrics": direction_metrics,
+                        "volatility_regime": regime,
+                        "signal_started_at": campaign_state.get("signal_started_at"),
+                    },
+                    repeat_after_seconds=300,
+                )
+                print(f"{code}: HOLD ({confirmation_reason})")
+                return
         cooldown_key = f"volatility_cooldown:{campaign['underlying']}"
         last_exit = state.get(cooldown_key)
         if quantity <= 0 and last_exit:
@@ -341,10 +419,38 @@ def run_campaign(
                 now - datetime.fromisoformat(str(last_exit))
             ).total_seconds() / 3600
             if remaining > 0:
-                reason = f"同一标的退出冷却中，剩余约 {remaining:.1f} 小时"
-                executor.store.decision(strategy_id, code, "HOLD", reason, {"regime": regime})
-                print(f"{code}: HOLD ({reason})")
-                return
+                cooldown_reason = str(state.get(
+                    f"volatility_cooldown_reason:{campaign['underlying']}", "未记录退出原因",
+                ))
+                bypass_allowed, bypass_reason = volatility_cooldown_bypass_allowed(
+                    cooldown_reason, regime,
+                    enabled=bool(campaign.get("cooldown_bypass_enabled", True)),
+                    allow_stop_loss=bool(campaign.get("cooldown_bypass_stop_loss", False)),
+                    min_zscore=float(campaign.get("cooldown_bypass_min_zscore", 3.0)),
+                    min_intraday_move=float(campaign.get("cooldown_bypass_min_intraday_move", 0.035)),
+                    min_atr_ratio=float(campaign.get("cooldown_bypass_min_atr_ratio", 2.0)),
+                    min_volume_ratio=float(campaign.get("cooldown_bypass_min_volume_ratio", 1.5)),
+                )
+                if bypass_allowed:
+                    for key in (
+                        cooldown_key,
+                        f"volatility_cooldown_hours:{campaign['underlying']}",
+                        f"volatility_cooldown_reason:{campaign['underlying']}",
+                    ):
+                        state.pop(key, None)
+                    executor.store.decision(strategy_id, code, "COOLDOWN_BYPASS", bypass_reason, {
+                        "regime": regime, "cooldown_reason": cooldown_reason,
+                        "remaining_cooldown_hours": remaining,
+                    })
+                    print(f"{code}: COOLDOWN_BYPASS ({bypass_reason})")
+                else:
+                    reason = f"同一标的退出冷却中，剩余约 {remaining:.1f} 小时；{bypass_reason}"
+                    executor.store.decision(strategy_id, code, "HOLD", reason, {
+                        "regime": regime, "cooldown_reason": cooldown_reason,
+                        "remaining_cooldown_hours": remaining,
+                    })
+                    print(f"{code}: HOLD ({reason})")
+                    return
     if quantity <= 0 and trigger_mode == "EARNINGS" and (
         campaign.get("optimizer_version") != 1 or not campaign.get("trade_allowed", False)
     ):
@@ -362,15 +468,16 @@ def run_campaign(
         })
         print(f"{code}: HOLD ({reason})")
         return
-    if len(legs) > 1 and execution_mode == "PAPER":
-        reason = "多腿结构需要券商原子组合下单；当前富途接口仅支持拆腿，为避免裸腿风险只允许 Shadow 验证"
-        executor.store.decision(strategy_id, code, "BLOCKED", reason, {
-            "structure": campaign.get("structure"), "legs": legs,
-        })
-        print(f"{code}: BLOCKED ({reason})")
-        return
     per_stage = int(campaign["contracts_per_stage"])
-    stages_filled = quantity // per_stage
+    size_factor = 1.0
+    size_reason = ""
+    effective_max_stages = int(campaign["max_stages"])
+    if trigger_mode == "VOLATILITY":
+        size_factor, size_reason = volatility_direction_size_factor(regime)
+        if size_factor < 1:
+            per_stage = max(1, int(per_stage * size_factor))
+            effective_max_stages = min(effective_max_stages, 1)
+    stages_filled = quantity // max(1, per_stage)
     if trigger_mode == "VOLATILITY":
         decay_reason = None
         if quantity > 0:
@@ -420,7 +527,7 @@ def run_campaign(
             protection_profile = volatility_profit_protection_profile(campaign, regime)
             action, reason = decide_volatility_action(
                 now=now, opened_at=opened_at, quantity=quantity,
-                stages_filled=stages_filled, max_stages=int(campaign["max_stages"]),
+                stages_filled=stages_filled, max_stages=effective_max_stages,
                 pnl_ratio=pnl_ratio, peak_pnl_ratio=peak_pnl_ratio,
                 drawdown_from_peak=drawdown, directional_confirmation=direction_ok,
                 signal_active=bool(campaign_state.get("signal_active", False)),
@@ -472,6 +579,8 @@ def run_campaign(
          "validation_warnings": issues, "direction_reason": direction_reason,
          "direction_metrics": direction_metrics,
          "volatility_regime": regime,
+         "size_factor": size_factor,
+         "size_reason": size_reason,
          "structure": campaign.get("structure", "LONG_OPTION"),
          "opportunity_score": campaign.get("opportunity_score"),
          "expected_move_edge": campaign.get("expected_move_edge"),
@@ -556,6 +665,20 @@ def run_campaign(
             realized_volatility(underlying_bars),
             executor.store,
         )
+        if trigger_mode == "VOLATILITY":
+            quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
+                campaign,
+                default_min_score=float(campaign.get("minimum_entry_quality_score", 55)),
+                default_min_expected_return=float(
+                    campaign.get("minimum_model_expected_return", .02)
+                ),
+            )
+            if not quality_allowed:
+                record_pretrade_block("ENTRY_QUALITY", quality_reason, {
+                    "entry_quality_checks": quality_checks,
+                })
+                print(f"{code}: BLOCKED ({quality_reason})")
+                return
         allowed, iv_reason = iv_entry_allowed(analysis, trigger_mode)
         if not allowed:
             block_reason = f"交易前 IV 风控未通过：{iv_reason}"
@@ -563,6 +686,60 @@ def run_campaign(
                 "iv_reason": iv_reason, "analysis": analysis,
             })
             print(f"{code}: BLOCKED ({block_reason})")
+            return
+        if len(legs) > 1 and execution_mode != "SHADOW":
+            active_combo_id = automatic_combo_id(
+                strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
+            )
+            existing_combo = executor.store.option_combo(active_combo_id)
+            if existing_combo and existing_combo.get("status") == "OPEN":
+                executor.store.decision_if_changed(
+                    strategy_id, code, "HOLD", "定义风险组合已经完成开仓",
+                    {"combo_id": active_combo_id, "structure": campaign.get("structure")},
+                    repeat_after_seconds=300,
+                )
+                return
+            quotes = broker.snapshots([leg["code"] for leg in legs]).set_index("code")
+            combo_legs = []
+            for leg in legs:
+                quote = quotes.loc[leg["code"]]
+                side = str(leg["side"]).upper()
+                combo_legs.append({
+                    "role": str(leg.get("role") or (
+                        "RISK" if side == "SELL" else "PROTECTIVE"
+                    )),
+                    "symbol": str(leg["code"]),
+                    "side": side,
+                    "quantity": per_stage * int(leg.get("ratio", 1)),
+                    "limit_price": float(
+                        quote["ask_price"] if side == "BUY" else quote["bid_price"]
+                    ),
+                })
+            manager = ComboExecutionManager(broker, executor.store, executor)
+            if existing_combo is None:
+                create_combo(executor.store, {
+                    "combo_id": active_combo_id,
+                    "strategy_id": strategy_id,
+                    "name": f"自动波动率表达 {campaign.get('underlying')}",
+                    "underlying": campaign["underlying"],
+                    "structure": campaign.get("structure", "DEFINED_RISK"),
+                    "max_net_debit": float(campaign["max_premium_per_stage"]) / 100,
+                    "min_net_credit": 0,
+                    "assembly_timeout_seconds": 300,
+                    "naked_timeout_seconds": 15,
+                    "auto_rollback": True,
+                }, combo_legs)
+            manager.start(active_combo_id)
+            executor.store.audit("VOLATILITY_COMBO_SUBMITTED", {
+                "combo_id": active_combo_id, "symbol": code,
+                "underlying": campaign["underlying"],
+                "structure": campaign.get("structure"), "legs": combo_legs,
+            }, strategy_id)
+            executor.store.decision(
+                strategy_id, code, "BUY",
+                f"已提交定义风险组合：{campaign.get('structure_label', campaign.get('structure'))}",
+                {**decision_payload, "combo_id": active_combo_id, "legs": combo_legs},
+            )
             return
         leg_quotes = broker.snapshots([leg["code"] for leg in legs]).set_index("code")
         cycle_suffix = (
@@ -603,6 +780,26 @@ def run_campaign(
                 "planned_order_quantity": int(planned_order_quantity or quantity),
             }, strategy_id)
             print(f"{code}: HOLD ({reason})")
+            return
+        if len(legs) > 1 and execution_mode != "SHADOW":
+            active_combo_id = automatic_combo_id(
+                strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
+            )
+            active_combo = executor.store.option_combo(active_combo_id)
+            if not active_combo:
+                executor.store.decision(
+                    strategy_id, code, "BLOCKED",
+                    "组合平仓失败：未找到对应的自动组合账本",
+                    {**decision_payload, "combo_id": active_combo_id},
+                )
+                return
+            ComboExecutionManager(
+                broker, executor.store, executor
+            ).request_close(active_combo_id)
+            campaign_state["pending_exit_reason"] = reason
+            executor.store.audit("VOLATILITY_COMBO_CLOSE_REQUESTED", {
+                "combo_id": active_combo_id, "symbol": code, "reason": reason,
+            }, strategy_id)
             return
         exit_quantity = int(planned_order_quantity or quantity)
         leg_quotes = broker.snapshots([leg["code"] for leg in legs]).set_index("code")

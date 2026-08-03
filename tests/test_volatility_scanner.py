@@ -142,10 +142,10 @@ def test_active_signal_creates_campaign_and_enables_auto_monitor(monkeypatch):
     assert saved_campaigns[0]["iv_decline_exit_ratio"] == .20
     assert saved_campaigns[0]["efficiency_decline_exit_ratio"] == .40
     assert saved_campaigns[0]["contraction_confirmations_required"] == 3
-    assert store.settings["strategy_execution_mode:volatility_long_gamma"] == "SHADOW"
+    assert "strategy_execution_mode:volatility_long_gamma" not in store.settings
     assert store.settings["strategy_enabled:Volatility Long Gamma"] == "true"
     assert any(
-        item["event_type"] == "VOLATILITY_SHADOW_CAMPAIGN_AUTO_CREATED"
+        item["event_type"] == "VOLATILITY_AUTO_CAMPAIGN_CREATED"
         for item in store.audits
     )
 

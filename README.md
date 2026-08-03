@@ -3,7 +3,8 @@
 基于富途官方开源 Python SDK `FutunnOpen/py-futu-api`。系统默认使用
 `US + SIMULATE` 模拟盘；实盘能力仅作为受控接入框架存在，必须经过独立页面配置、策略白名单、
 额度限制和短时人工确认会话才可能提交真实订单。当前提供账户权益、持仓、今日/历史订单、
-基础股票信号、组合级“核心—卫星”策略、财报 Gamma、波动率期权和期权组合执行能力。
+基础股票信号、组合级“核心—卫星”策略、财报 Gamma、波动率期权、期权组合执行，以及
+欧易现货 Demo Trading 的币波动率策略与回测能力。
 
 ## 前置条件
 
@@ -28,6 +29,50 @@ uv run python scripts/check_connection.py
 ```
 
 看到 `OK` 和 `SIMULATE` 后说明模拟盘连接成功。
+
+## 欧易币量化（仅 Demo Trading）
+
+在欧易的 Demo Trading 页面创建模拟交易 API Key，然后只把模拟凭证写入 `.env`：
+
+```env
+OKX_TRADING_MODE=DEMO
+OKX_API_KEY=你的模拟盘Key
+OKX_SECRET_KEY=你的模拟盘Secret
+OKX_PASSPHRASE=你的模拟盘Passphrase
+OKX_ENABLE_DEMO_ORDERS=false
+CRYPTO_EXECUTION_MODE=SHADOW
+CRYPTO_VOLATILITY_SYMBOLS=BTC-USDT,ETH-USDT
+```
+
+先运行一轮 Shadow 观察：
+
+```bash
+uv run python scripts/run_crypto_strategy.py
+```
+
+持续运行：
+
+```bash
+uv run python scripts/run_crypto_strategy.py --loop --interval 300
+```
+
+确认模拟账户、策略诊断和风险额度都正确后，可在“币量化 → 币策略配置与回测”把执行模式
+改为 `OKX_DEMO` 并开启“允许提交欧易模拟订单”。两道开关缺一不可。当前版本没有欧易实盘
+路径，也不支持永续、杠杆或做空。公开行情无需 API Key；私有账户和订单请求固定携带
+`x-simulated-trading: 1`。
+
+欧易 Demo API Key、Secret、Passphrase 可以直接在“币策略配置与回测 → 配置中心”填写，
+敏感字段保存到 macOS 系统钥匙串，页面不会回显。标的、运行模式、扫描间隔、预算、波动窗口、
+扩张倍数、Z 值、量比、目标波动率和硬止损也在同一配置页维护。回测与循环服务读取同一组参数。
+
+币策略还提供两档分批止盈、峰值盈利保护、最长持有、趋势反转、波动收缩退出、标的冷却、
+最大同时持仓数、组合敞口和最大回撤熔断。OKX Demo 模式会读取待成交订单避免重复提交，并按
+本系统 `cq` 客户端订单号聚合成交和重建策略持仓。回测页面同时输出 Walk-forward、Monte Carlo
+和前视偏差检查。
+
+设计与 TDD 计划见
+`docs/superpowers/specs/2026-07-26-okx-crypto-volatility-design.md` 和
+`docs/superpowers/plans/2026-07-26-okx-crypto-volatility.md`。
 
 ## 研究数据与回测 V2
 
@@ -291,5 +336,13 @@ uv run python scripts/check_streamlit_pages.py --runtime
 ## 长期模拟验证
 
 “长期验证”页面展示账户和策略的 7/30/90 天指标、FIFO 已实现收益、手续费与滑点、按时段分层的执行质量、稳定性评分、组合 Greeks、候选评分和容量校准。后台每天执行一次长期验证。
+
+## 欧易 Demo 永续合约
+
+币量化菜单包含独立的“合约账户总览”“永续合约策略”和“合约策略复盘”。
+首版仅支持 `*-USDT-SWAP`、逐仓、净持仓和 1–3 倍杠杆，并继续强制使用
+欧易 Demo Trading。先在“永续合约策略 → 账户初始化”设置净持仓与逐仓杠杆，
+再保持 `SHADOW` 完成验证；需要提交欧易模拟订单时，才切换 `OKX_DEMO` 并开启
+已有的欧易模拟下单开关。平仓订单始终强制 `reduceOnly=true`。
 
 自动治理只能将发生显著走样的策略从 `PAPER` 降为 `SHADOW`，永远不会自动升级。恢复到 `PAPER` 必须由管理员在页面选择策略并填写人工复核原因。样本不足始终显示为不足，不会自动放宽验收条件。

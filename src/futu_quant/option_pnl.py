@@ -59,6 +59,7 @@ class OptionLot:
     strike: float
     expiration: str
     open_time: Any
+    open_time_source: str
     open_quantity: float
     remaining_quantity: float
     open_price: float
@@ -68,6 +69,7 @@ class OptionLot:
     close_notional: float = 0.0
     close_fees: float = 0.0
     close_time: Any = None
+    close_time_source: str = ""
     realized_pnl: float = 0.0
 
     @property
@@ -91,6 +93,46 @@ def _fetch_quote_map(broker, symbols: list[str]) -> tuple[dict[str, dict], str]:
         for _, row in snapshots.iterrows()
         if str(row.get("code", "")).startswith("US.")
     }, "行情已刷新"
+
+
+def _shadow_fill_times(store, limit: int) -> dict[int, str]:
+    """Return the first Shadow fill timestamp for each intent.
+
+    The PnL ledger should reflect when a lot actually got filled. For Shadow
+    orders, `order_intents.created_at` is only the order creation time; the
+    virtual fill can happen minutes later after liquidity/reprice checks.
+    """
+    try:
+        rows = store.shadow_fills(limit=limit)
+    except Exception:
+        return {}
+    first_by_intent: dict[int, str] = {}
+    for row in rows:
+        try:
+            intent_id = int(row["intent_id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        created_at = str(row.get("created_at") or "")
+        if not created_at:
+            continue
+        previous = first_by_intent.get(intent_id)
+        if previous is None or created_at < previous:
+            first_by_intent[intent_id] = created_at
+    return first_by_intent
+
+
+def _fill_time(order: pd.Series, shadow_times: dict[int, str]) -> tuple[Any, str]:
+    try:
+        intent_id = int(order["id"])
+    except (TypeError, ValueError, KeyError):
+        intent_id = -1
+    if intent_id in shadow_times:
+        return shadow_times[intent_id], "Shadow 成交时间"
+    if str(order.get("status", "")).upper() in FILLED_STATUSES:
+        broker_time = order.get("last_broker_update") or order.get("updated_at")
+        if broker_time:
+            return broker_time, "富途成交更新时间"
+    return order.get("created_at"), "订单创建时间"
 
 
 def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd.DataFrame, pd.DataFrame, str]:
@@ -126,6 +168,7 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
 
     symbols = sorted(option_orders["symbol"].astype(str).unique())
     quote_map, quote_status = _fetch_quote_map(broker, symbols)
+    shadow_times = _shadow_fill_times(store, limit)
 
     lots_by_key: dict[tuple[str, str], deque[OptionLot]] = defaultdict(deque)
     all_lots: list[OptionLot] = []
@@ -144,6 +187,7 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
             continue
 
         if str(order["side"]).upper() == "BUY":
+            open_time, open_time_source = _fill_time(order, shadow_times)
             lot = OptionLot(
                 lot_id=f"{int(order['id'])}-{symbol}",
                 strategy_id=strategy_id,
@@ -152,7 +196,8 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
                 option_type=contract.option_type,
                 strike=contract.strike,
                 expiration=contract.expiration.isoformat(),
-                open_time=order.get("created_at"),
+                open_time=open_time,
+                open_time_source=open_time_source,
                 open_quantity=quantity,
                 remaining_quantity=quantity,
                 open_price=price,
@@ -165,6 +210,7 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
 
         remaining = quantity
         sell_fee_remaining = fees
+        close_time, close_time_source = _fill_time(order, shadow_times)
         while remaining > 0 and lots_by_key[key]:
             lot = lots_by_key[key][0]
             matched = min(remaining, lot.remaining_quantity)
@@ -180,7 +226,8 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
             lot.close_fees += sell_fee_alloc
             lot.open_fees_remaining -= open_fee_alloc
             lot.remaining_quantity -= matched
-            lot.close_time = order.get("created_at")
+            lot.close_time = close_time
+            lot.close_time_source = close_time_source
 
             remaining -= matched
             sell_fee_remaining -= sell_fee_alloc
@@ -197,7 +244,9 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
                 "strike": contract.strike,
                 "expiration": contract.expiration.isoformat(),
                 "open_time": None,
-                "close_time": order.get("created_at"),
+                "open_time_source": "",
+                "close_time": close_time,
+                "close_time_source": close_time_source,
                 "open_quantity": 0.0,
                 "closed_quantity": remaining,
                 "remaining_quantity": 0.0,
@@ -245,7 +294,9 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
             "strike": lot.strike,
             "expiration": lot.expiration,
             "open_time": lot.open_time,
+            "open_time_source": lot.open_time_source,
             "close_time": lot.close_time,
+            "close_time_source": lot.close_time_source,
             "open_quantity": lot.open_quantity,
             "closed_quantity": lot.closed_quantity,
             "remaining_quantity": lot.remaining_quantity,

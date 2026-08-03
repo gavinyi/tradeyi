@@ -3,13 +3,23 @@ from __future__ import annotations
 import pandas as pd
 
 
+def futu_reconciliation_symbol(symbol: str) -> bool:
+    """Futu ledger reconciliation only covers US stocks/options."""
+    return str(symbol).startswith("US.")
+
+
 def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
     positions = broker.positions()
+    if not positions.empty and "code" in positions.columns:
+        positions = positions[positions["code"].astype(str).map(futu_reconciliation_symbol)].copy()
     broker_qty = (
         positions.groupby("code")["qty"].sum().astype(float).to_dict()
         if not positions.empty else {}
     )
-    virtual_rows = store.virtual_positions()
+    virtual_rows = [
+        row for row in store.virtual_positions()
+        if futu_reconciliation_symbol(row["symbol"])
+    ]
     ledger_qty: dict[str, float] = {}
     owners: dict[str, set[str]] = {}
     for row in virtual_rows:
@@ -21,7 +31,7 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
     current_symbols = set(broker_qty) | set(ledger_qty)
     for key in store.settings_with_prefix("symbol_blocked:"):
         symbol = key.removeprefix("symbol_blocked:")
-        if symbol not in current_symbols:
+        if symbol not in current_symbols or not futu_reconciliation_symbol(symbol):
             store.set_setting(key, "false")
     for symbol in sorted(current_symbols):
         actual = broker_qty.get(symbol, 0.0)

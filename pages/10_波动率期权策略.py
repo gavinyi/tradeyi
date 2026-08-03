@@ -27,6 +27,8 @@ from futu_quant.radar_schedule import (
 )
 from futu_quant.volatility_scanner import scan_volatility_watchlist
 from futu_quant.volatility_optimizer import rank_volatility_contracts, volatility_regime
+from futu_quant.option_expectancy import add_iv_history_percentiles
+from futu_quant.volatility_structures import build_volatility_structure_candidates
 from futu_quant.campaign_timing import campaign_time_display
 from futu_quant.store import TradingStore
 from futu_quant.security_search import search_securities, security_label
@@ -851,12 +853,22 @@ with config_tab:
                 ) if any(not frame.empty for frame in screened_frames) else pd.DataFrame()
                 screened_count = len(candidates)
                 if not candidates.empty:
+                    option_history = pd.DataFrame(
+                        store.option_history_for_underlying(underlying)
+                    )
+                    candidates = add_iv_history_percentiles(
+                        candidates, option_history, minimum_samples=30,
+                    )
                     candidates = rank_long_option_candidates(
-                        candidates, spot, profit_target=float(profit_target),
-                        stop_loss=float(stop_loss),
+                        candidates, spot,
+                        realized_volatility=realized_volatility(bars),
+                        regime=regime,
+                        holding_hours=float(st.session_state.get("volatility_expectancy_horizon_hours", 4)),
+                        option_history=option_history,
+                        profit_target=float(profit_target), stop_loss=float(stop_loss),
                     )
                     candidates = rank_volatility_contracts(
-                        candidates, spot, realized_volatility(bars), iv_percentile=0.5,
+                        candidates, spot, realized_volatility(bars),
                         signal_active=bool(regime.get("active")),
                         strong_signal=bool(
                             regime.get("strong_signal_override")
@@ -865,6 +877,12 @@ with config_tab:
                         max_premium_per_stage=float(max_premium),
                         contracts_per_stage=int(contracts_per_stage),
                     )
+                    structures = build_volatility_structure_candidates(
+                        candidates, spot,
+                        max_premium_per_stage=float(max_premium),
+                        contracts_per_stage=int(contracts_per_stage),
+                    )
+                    st.session_state.volatility_structure_candidates = structures
                     delta = pd.to_numeric(
                         candidates.get("option_delta"), errors="coerce"
                     ).abs().fillna(0)
@@ -948,6 +966,24 @@ with config_tab:
             "模型期望收益": st.column_config.NumberColumn("模型期望收益", format="percent"),
             "盈亏平衡价": st.column_config.NumberColumn("盈亏平衡价", format="$%.2f"),
         })
+        structures = st.session_state.get("volatility_structure_candidates", pd.DataFrame())
+        if not structures.empty:
+            st.subheader("最佳期权表达")
+            structure_columns = [column for column in (
+                "structure_label", "code", "legs", "structure_net_debit",
+                "structure_max_loss", "structure_expected_return", "structure_eligible",
+                "structure_filter_reason", "net_gamma", "iv_history_percentile",
+            ) if column in structures]
+            structure_view = structures[structure_columns].copy()
+            if "legs" in structure_view.columns:
+                structure_view["legs"] = structure_view["legs"].map(
+                    lambda value: json.dumps(value, ensure_ascii=False, default=str)
+                    if isinstance(value, (list, dict, tuple)) else str(value)
+                )
+            st.dataframe(
+                chinese_columns(structure_view),
+                hide_index=True, height=260,
+            )
         eligible_codes = candidates.loc[candidates["volatility_eligible"], "code"].tolist()
         selected_code = st.selectbox("选择合约", eligible_codes or candidates["code"].tolist())
         selected = candidates[candidates["code"] == selected_code].iloc[0]

@@ -1425,6 +1425,21 @@ class TradingStore:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(query, params).fetchall()]
 
+    def option_history_for_underlying(
+        self, underlying: str, start: str | None = None, end: str | None = None,
+    ) -> list[dict]:
+        query = "SELECT * FROM option_history WHERE underlying=?"
+        params: list = [underlying]
+        if start:
+            query += " AND time_key>=?"
+            params.append(start)
+        if end:
+            query += " AND time_key<=?"
+            params.append(end)
+        query += " ORDER BY time_key,code"
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(query, params).fetchall()]
+
     def option_history_coverage(self) -> list[dict]:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(

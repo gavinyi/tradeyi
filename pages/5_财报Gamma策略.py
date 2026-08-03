@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
 import sys
@@ -56,40 +56,331 @@ def load_upcoming_earnings() -> tuple[pd.DataFrame, pd.DataFrame]:
     return pd.DataFrame(accepted), pd.DataFrame(rejected)
 
 
+def _decision_payload(value: object) -> dict:
+    try:
+        payload = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _ratio(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_date_value(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    parsed = pd.to_datetime(value, errors="coerce")
+    if not pd.isna(parsed):
+        return parsed.strftime("%Y-%m-%d")
+    return str(value).replace("T", " ")
+
+
+def _format_china_time_value(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return str(value).replace("T", " ")
+    return parsed.tz_convert("Asia/Shanghai").strftime("%Y-%m-%d %H:%M")
+
+
+def _polish_time_display(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    time_markers = ("时间", "创建", "更新", "抓取", "入场开始", "入场截止")
+    date_markers = ("日期", "到期日", "财报日")
+    for column in result.columns:
+        label = str(column)
+        if label in {"发布时间", "时间已确认"}:
+            continue
+        if any(marker in label for marker in time_markers):
+            result[column] = result[column].map(_format_china_time_value)
+        elif any(marker in label for marker in date_markers):
+            result[column] = result[column].map(_format_date_value)
+    return result
+
+
+def _event_timestamp(campaign: dict) -> pd.Timestamp | None:
+    try:
+        event_day = pd.to_datetime(campaign.get("event_date"), errors="raise").date()
+    except (TypeError, ValueError):
+        return None
+    hour = 8 if campaign.get("event_session") == "盘前" else 16
+    minute = 0 if campaign.get("event_session") == "盘前" else 5
+    return pd.Timestamp(
+        datetime.combine(event_day, datetime.min.time()).replace(hour=hour, minute=minute),
+        tz="America/New_York",
+    ).tz_convert("Asia/Shanghai")
+
+
+def _distance_text(target: pd.Timestamp | None) -> str:
+    if target is None:
+        return "时间无效"
+    now = pd.Timestamp.now(tz="Asia/Shanghai")
+    hours = (target - now).total_seconds() / 3600
+    if hours >= 24:
+        return f"约 {hours / 24:.1f} 天后"
+    if hours >= 0:
+        return f"约 {hours:.1f} 小时后"
+    if hours >= -24:
+        return f"已过去 {abs(hours):.1f} 小时"
+    return f"已过去 {abs(hours) / 24:.1f} 天"
+
+
+def _gamma_decision_frame(rows: list[dict]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    payloads = frame.get("payload_json", pd.Series(["{}"] * len(frame))).map(_decision_payload)
+    details = pd.DataFrame([{
+        "当前持仓": payload.get("position_quantity", payload.get("quantity", 0)),
+        "计划下单": payload.get("planned_order_quantity", 0),
+        "盈亏比例": _ratio(payload.get("pnl_ratio")),
+        "峰值回撤": _ratio(payload.get("drawdown")),
+        "触发模式": "波动行情" if payload.get("trigger_mode") == "VOLATILITY" else "财报事件",
+        "自动方向依据": payload.get("direction_reason", ""),
+        "机会评分": payload.get("opportunity_score"),
+        "历史波动优势": payload.get("expected_move_edge"),
+    } for payload in payloads])
+    display = pd.concat([
+        frame.drop(columns=["id", "strategy_id", "payload_json"], errors="ignore"),
+        details,
+    ], axis=1).rename(columns={
+        "symbol": "期权代码", "decision": "决策", "reason": "原因",
+        "created_at": "时间（中国）",
+    })
+    return _polish_time_display(translate_common_values(china_time_columns(display)))
+
+
+def _shadow_position_frame() -> pd.DataFrame:
+    rows = []
+    for strategy_id, label in (
+        ("earnings_gamma", "自动策略"),
+        ("earnings_gamma_manual", "手动单"),
+    ):
+        for symbol, (quantity, cost) in store.shadow_positions_for_strategy(strategy_id).items():
+            if abs(float(quantity)) <= 1e-9:
+                continue
+            rows.append({
+                "来源": label, "期权代码": symbol, "当前持仓": float(quantity),
+                "Shadow 平均成本": float(cost),
+            })
+    return pd.DataFrame(rows)
+
+
 data_tab, config_tab = st.tabs(["常用数据", "参数配置"])
 
 with data_tab:
-    st.subheader("常用数据")
-    st.caption("日常先看已保存策略和最近执行；标的、候选生成和规则参数放在第二个页签。")
+    st.subheader("策略总览")
+    st.caption("日常先看这里：运行状态、策略质量、最近决策、财报日历和 Shadow 持仓。低频参数放在第二个页签。")
     campaigns = load_gamma_campaigns()
     decisions = [
         row for row in store.decisions(limit=200)
         if row.get("strategy_id") in {"earnings_gamma", "earnings_gamma_manual"}
     ]
-    with st.container(horizontal=True):
-        st.metric("Gamma 标的", len(settings.gamma_symbols), border=True)
-        st.metric("自动策略", len(campaigns), border=True)
-        st.metric("最近执行记录", len(decisions), border=True)
-    if campaigns:
-        campaign_view = pd.DataFrame([{
-            "期权代码": item.get("code", ""),
-            "正股代码": item.get("underlying", ""),
-            "财报日期": item.get("event_date", ""),
-            "发布时间": item.get("event_session", ""),
-            "方向": item.get("option_type", ""),
-            "启用": "是" if item.get("enabled", True) else "否",
-        } for item in campaigns])
-        st.dataframe(campaign_view, hide_index=True, height=320)
-    else:
-        st.info("暂无已保存的财报 Gamma 自动策略。")
-    if decisions:
-        decision_view = pd.DataFrame(decisions[:30]).rename(columns={
-            "symbol": "期权代码", "decision": "决策", "reason": "原因",
-            "created_at": "时间（中国）",
-        }).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
-        st.dataframe(translate_common_values(china_time_columns(decision_view)), hide_index=True, height=360)
-    else:
-        st.info("暂无财报 Gamma 执行记录。")
+    intents = [
+        row for row in store.intents(limit=1000)
+        if row.get("strategy_id") in {"earnings_gamma", "earnings_gamma_manual"}
+    ]
+    events = pd.DataFrame(store.earnings_events(limit=1000))
+    campaign_issues = {}
+    campaign_rows = []
+    campaign_event_times: list[tuple[pd.Timestamp, dict]] = []
+    for campaign in campaigns:
+        issues = diagnose_campaign(campaign, events.to_dict("records") if not events.empty else [])
+        hard_issues = hard_campaign_issues(campaign, issues)
+        campaign_issues[str(campaign.get("code", ""))] = issues
+        time_info = campaign_time_display(campaign)
+        event_at = _event_timestamp(campaign)
+        if event_at is not None:
+            campaign_event_times.append((event_at, campaign))
+        campaign_rows.append({
+            "期权代码": campaign.get("code", ""),
+            "正股代码": campaign.get("underlying", ""),
+            "财报日期": campaign.get("event_date", ""),
+            "发布时间": campaign.get("event_session", ""),
+            "期权结构": campaign.get("structure_label", campaign.get("structure", "LONG_OPTION")),
+            "方向": campaign.get("option_type", ""),
+            "机会评分": campaign.get("opportunity_score", 0),
+            "最低评分": campaign.get("minimum_score", 0),
+            "允许自动交易": "是" if campaign.get("trade_allowed", False) else "否",
+            "事件已确认": "是" if campaign.get("event_confirmed", False) else "否",
+            "执行状态": "阻断" if hard_issues else "提醒" if issues else "正常",
+            "诊断": "；".join(issues) or "无",
+            "启用": "是" if campaign.get("enabled", True) else "否",
+            **time_info,
+        })
+    gamma_mode = store.get_setting("strategy_execution_mode:earnings_gamma", "") or "INHERIT"
+    manual_mode = store.get_setting("strategy_execution_mode:earnings_gamma_manual", "") or "INHERIT"
+    gamma_enabled = store.get_setting("strategy_enabled:Earnings Gamma", "false") == "true"
+    pending_intents = [
+        row for row in intents
+        if str(row.get("status", "")).upper() in {"SUBMITTED", "WORKING", "SHADOW", "SHADOW_PART"}
+    ]
+    blocked_recent = [
+        row for row in decisions
+        if str(row.get("decision", "")).upper() in {"BLOCKED", "REJECTED"}
+    ]
+    shadow_positions = _shadow_position_frame()
+    now_cn = pd.Timestamp.now(tz="Asia/Shanghai")
+    future_events = sorted(
+        (item for item in campaign_event_times if item[0] >= now_cn),
+        key=lambda item: item[0],
+    )
+    next_event_time, next_event_campaign = future_events[0] if future_events else (None, None)
+
+    with st.container(border=True):
+        st.subheader("今天先看")
+        with st.container(horizontal=True):
+            st.metric("Gamma 标的", len(settings.gamma_symbols), border=True)
+            st.metric("自动策略", len(campaigns), border=True)
+            st.metric("可自动交易", sum(bool(item.get("trade_allowed", False)) for item in campaigns), border=True)
+            st.metric("阻断/异常", len(blocked_recent), border=True)
+            st.metric("Shadow 持仓", len(shadow_positions), border=True)
+        with st.container(horizontal=True):
+            st.metric("自动策略模式", gamma_mode, border=True)
+            st.metric("手动单模式", manual_mode, border=True)
+            st.metric("自动调度", "已启用" if gamma_enabled else "已关闭", border=True)
+            st.metric("待处理订单", len(pending_intents), border=True)
+        with st.container(horizontal=True):
+            st.metric(
+                "下一场财报",
+                (
+                    f"{next_event_campaign.get('underlying')} · {next_event_campaign.get('event_session')}"
+                    if next_event_campaign else "暂无未来策略"
+                ),
+                border=True,
+            )
+            st.metric(
+                "财报时间（中国）",
+                next_event_time.strftime("%Y-%m-%d %H:%M") if next_event_time is not None else "—",
+                border=True,
+            )
+            st.metric("距离财报", _distance_text(next_event_time), border=True)
+            st.metric(
+                "校验方式",
+                (
+                    "人工确认调试"
+                    if next_event_campaign
+                    and next_event_campaign.get("event_validation_policy") == "MANUAL_OVERRIDE"
+                    else "双源强校验"
+                    if next_event_campaign else "—"
+                ),
+                border=True,
+            )
+        with st.container(horizontal=True):
+            st.page_link("pages/15_策略控制台.py", label="执行模式/资金配置", icon=":material/tune:")
+            st.page_link("pages/26_交易诊断中心.py", label="执行诊断", icon=":material/troubleshoot:")
+            st.page_link("pages/28_期权盈亏台账.py", label="期权盈亏台账", icon=":material/price_check:")
+            st.page_link("pages/4_订单管理.py", label="订单管理/撤单", icon=":material/receipt_long:")
+
+    overview_tab, campaign_tab, decision_tab, calendar_tab, position_tab = st.tabs([
+        "一屏概览", "已保存策略", "最近决策", "财报日历", "持仓与订单",
+    ])
+    with overview_tab:
+        latest_decision = decisions[0] if decisions else None
+        if latest_decision:
+            st.info(
+                f"最近决策：{latest_decision.get('symbol', '—')} · "
+                f"{latest_decision.get('decision', '—')} · "
+                f"{latest_decision.get('reason', '暂无原因')}"
+            )
+        else:
+            st.info("暂无财报 Gamma 决策记录。")
+        if campaign_rows:
+            compact = _polish_time_display(pd.DataFrame(campaign_rows))[[
+                "期权代码", "正股代码", "财报日期", "发布时间", "机会评分",
+                "允许自动交易", "执行状态", "诊断",
+            ]]
+            st.dataframe(
+                compact,
+                hide_index=True,
+                height=260,
+                column_config={
+                    "机会评分": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
+                },
+            )
+        else:
+            st.info("暂无已保存自动策略；到“参数配置”页签生成候选并保存。")
+
+    with campaign_tab:
+        if campaign_rows:
+            campaign_view = _polish_time_display(pd.DataFrame(campaign_rows))
+            st.dataframe(
+                campaign_view,
+                hide_index=True,
+                height=420,
+                column_config={
+                    "机会评分": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
+                    "最低评分": st.column_config.NumberColumn(format="%.1f"),
+                },
+            )
+            st.caption("执行状态为“阻断”的策略不会有效自动开仓；展开诊断列可以看到原因。")
+        else:
+            st.info("暂无已保存的财报 Gamma 自动策略。")
+
+    with decision_tab:
+        decision_view = _gamma_decision_frame(decisions[:80])
+        if not decision_view.empty:
+            st.dataframe(
+                decision_view,
+                hide_index=True,
+                height=460,
+                column_config={
+                    "盈亏比例": st.column_config.NumberColumn(format="percent"),
+                    "峰值回撤": st.column_config.NumberColumn(format="percent"),
+                    "机会评分": st.column_config.NumberColumn(format="%.1f"),
+                    "历史波动优势": st.column_config.NumberColumn(format="percent"),
+                },
+            )
+        else:
+            st.info("暂无财报 Gamma 执行记录。")
+
+    with calendar_tab:
+        if events.empty:
+            st.info("暂无财报日历缓存。可到“参数配置 / 自动财报日历”刷新。")
+        else:
+            event_display = events.rename(columns={
+                "symbol": "正股代码", "event_date": "财报日期", "session": "发布时间",
+                "source": "来源", "confirmed": "时间已确认", "fetched_at": "抓取时间（中国）",
+            })
+            st.dataframe(
+                _polish_time_display(china_time_columns(event_display)).sort_values(
+                    ["财报日期", "正股代码"], ascending=[True, True],
+                ),
+                hide_index=True,
+                height=420,
+            )
+
+    with position_tab:
+        if shadow_positions.empty:
+            st.info("暂无财报 Gamma Shadow 持仓。")
+        else:
+            st.dataframe(
+                shadow_positions,
+                hide_index=True,
+                column_config={
+                    "Shadow 平均成本": st.column_config.NumberColumn(format="$%.2f"),
+                    "当前持仓": st.column_config.NumberColumn(format="%.0f"),
+                },
+            )
+        if intents:
+            intent_view = pd.DataFrame(intents[:80]).rename(columns={
+                "symbol": "期权代码", "side": "方向", "quantity": "数量",
+                "limit_price": "限价", "status": "状态", "error": "错误",
+                "created_at": "创建时间（中国）",
+            }).drop(columns=["metadata_json", "updated_at"], errors="ignore")
+            st.dataframe(
+                _polish_time_display(translate_common_values(china_time_columns(intent_view))),
+                hide_index=True,
+                height=360,
+            )
+        else:
+            st.info("暂无财报 Gamma 订单意图。")
 
 
 with config_tab:
@@ -151,7 +442,7 @@ with config_tab:
                 "qualified_contracts": "合格合约数", "nearest_qualified_expiration": "最近合格到期日",
             })
             display["已在标的列表"] = display["正股代码"].isin(settings.gamma_symbols)
-            st.dataframe(display, hide_index=True)
+            st.dataframe(_polish_time_display(display), hide_index=True)
             records = upcoming.to_dict("records")
             by_symbol = {str(item["symbol"]): item for item in records}
             selected_symbols = st.multiselect(
@@ -203,7 +494,7 @@ with config_tab:
                     column for column in ("正股代码", "公司名称", "财报日期", "发布时间", "过滤原因")
                     if column in filtered_display.columns
                 ]
-                st.dataframe(filtered_display[filtered_columns], hide_index=True)
+                st.dataframe(_polish_time_display(filtered_display[filtered_columns]), hide_index=True)
 
         calendar_add_result = st.session_state.pop("calendar_add_result", None)
         if calendar_add_result:
@@ -221,15 +512,15 @@ with config_tab:
         if events.empty:
             st.info("暂无缓存事件。启动统一服务或点击刷新后显示。")
         else:
-            st.dataframe(china_time_columns(events).rename(columns={
+            st.dataframe(_polish_time_display(china_time_columns(events).rename(columns={
                 "symbol": "正股代码", "event_date": "财报日期", "session": "发布时间",
                 "source": "来源", "confirmed": "时间已确认", "fetched_at": "抓取时间（中国）",
-            }), hide_index=True)
+            })), hide_index=True)
 
     with st.expander("策略规则", expanded=True):
         st.markdown(
             "1. **财报事件**：必须通过富途与 Nasdaq 双源日期/时段校验，合约必须覆盖财报日。\n"
-            "2. **波动行情**：不依赖财报日，可按当前行情独立触发和管理持仓。\n"
+            "2. **人工确认调试**：当双源日历缺失或异常时，可由人工确认财报时间后保存调试；系统会保留风险提醒。\n"
             "3. 两种模式都过滤低未平仓量和过宽价差，并执行权利金、IV、Greeks 与组合风控。\n"
             "4. 分批入场，只使用限价单；按止盈、硬止损、峰值回撤或最长24小时退出。\n"
             "5. 自动比较历史跳空与期权隐含波动，低于60分或波动优势为负时放弃交易。\n"
@@ -242,6 +533,15 @@ with config_tab:
     underlying = left.selectbox("正股", settings.gamma_symbols)
     event_date = middle.date_input("财报日期", date.today())
     event_session = right.radio("发布时间", ["盘前", "盘后"], horizontal=True)
+    validation_choice = st.segmented_control(
+        "财报时间校验方式",
+        ["双源强校验", "人工确认调试"],
+        default="双源强校验",
+        help=(
+            "双源强校验：要求富途与 Nasdaq 财报时间一致，适合正式自动财报事件。"
+            "人工确认调试：允许双源缺失/不一致时保存，但会保留风险提醒。"
+        ),
+    )
     event_source = st.text_input("财报时间来源", placeholder="例如：公司投资者关系页面 URL 或已核对的来源")
     event_confirmed = st.checkbox("我已核对财报日期与盘前/盘后时间")
     direction_choice = left.segmented_control("方向", ["自动判断", "CALL", "PUT"], default="自动判断")
@@ -316,6 +616,10 @@ with config_tab:
         structures = st.session_state.get("gamma_structures", pd.DataFrame())
         if not structures.empty:
             st.subheader("财报机会评分与结构建议")
+            st.caption(
+                "单腿买方可按策略执行模式运行；跨式、宽跨式、借方价差等多腿结构目前只允许 Shadow 自动验证，"
+                "不会提交富途模拟盘。"
+            )
             profile = st.session_state.get("gamma_profile", {})
             with st.container(horizontal=True):
                 st.metric("历史跳空中位数", f"{profile.get('median_gap', 0):.2%}", border=True)
@@ -329,7 +633,7 @@ with config_tab:
                 "max_loss": "每组最大亏损", "spread_pct": "最宽价差(%)",
                 "open_interest": "最低未平仓量",
             })
-            st.dataframe(structure_view, hide_index=True, column_config={
+            st.dataframe(_polish_time_display(structure_view), hide_index=True, column_config={
                 "机会评分": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
                 "历史波动优势": st.column_config.NumberColumn(format="percent"),
                 "期权隐含波动": st.column_config.NumberColumn(format="percent"),
@@ -364,7 +668,7 @@ with config_tab:
         ]
         visible = [column for column in columns if column in candidates]
         st.caption("已按模型期望收益从高到低排序：结合盈利概率、止盈/止损和半个买卖价差成本。")
-        candidate_view = chinese_columns(candidates[visible])
+        candidate_view = _polish_time_display(chinese_columns(candidates[visible]))
         st.dataframe(candidate_view, hide_index=True, column_config={
             "模型盈利概率": st.column_config.ProgressColumn(
                 "模型盈利概率", min_value=0.0, max_value=1.0, format="percent"
@@ -428,18 +732,35 @@ with config_tab:
                 st.error(result.message)
 
         if st.button("保存为自动 Gamma 策略", disabled=not admin):
-            if not event_confirmed or not event_source.strip():
-                st.error("保存自动策略前必须填写来源并确认财报发布时间。")
+            validation_policy = (
+                "MANUAL_OVERRIDE"
+                if validation_choice == "人工确认调试"
+                else "STRICT_DOUBLE_SOURCE"
+            )
+            if not event_confirmed:
+                st.error("保存自动策略前必须人工确认财报发布时间。")
+                st.stop()
+            if validation_policy == "STRICT_DOUBLE_SOURCE" and not event_source.strip():
+                st.error("双源强校验模式下，保存前必须填写财报时间来源。")
                 st.stop()
             if selected_structure is None:
                 st.error("没有可保存的有限风险结构。")
                 st.stop()
             structure_legs = selected_structure["legs"]
-            if len(structure_legs) > 1:
-                st.error("多腿结构尚未接入原子组合订单，当前只能保存单腿买方自动策略。")
-                st.stop()
             primary_code = next((leg["code"] for leg in structure_legs if leg["side"] == "BUY"), selected_code)
             primary_contract = candidates[candidates["code"] == primary_code].iloc[0]
+            execution_mode_override = None
+            if len(structure_legs) > 1:
+                execution_mode_override = "SHADOW"
+                st.warning(
+                    "已保存为多腿 Shadow 验证策略：系统会逐腿虚拟撮合，不会提交富途模拟盘。"
+                    "等期权组合原子订单接入后，才允许多腿进入 PAPER。"
+                )
+            if validation_policy == "MANUAL_OVERRIDE":
+                st.warning(
+                    "已按人工确认调试模式保存：双源日历缺失或不一致不会阻断运行，"
+                    "但策略诊断会持续显示校验提醒。"
+                )
             saved_timing = recommend_timing(
                 selected_structure["opportunity_score"], selected_structure["expected_move_edge"], event_session,
             ) if automatic_timing else {
@@ -470,9 +791,24 @@ with config_tab:
                     "minimum_underlying_move": float(minimum_move),
                     "event_source": event_source.strip(), "event_confirmed": bool(event_confirmed),
                     "trigger_mode": trigger_mode,
+                    "event_validation_policy": validation_policy,
+                    "execution_mode_override": execution_mode_override,
+                    "multi_leg_shadow_only": bool(len(structure_legs) > 1),
                 }
             )
             upsert_campaign("GAMMA_CAMPAIGNS", campaigns[-1])
+            if len(structure_legs) > 1:
+                store.audit(
+                    "GAMMA_MULTI_LEG_SHADOW_CAMPAIGN_SAVED",
+                    {
+                        "campaign_id": campaigns[-1]["campaign_id"],
+                        "code": primary_code,
+                        "structure": selected_structure["structure"],
+                        "legs": structure_legs,
+                        "execution_mode": "SHADOW",
+                    },
+                    "earnings_gamma",
+                )
             st.success("自动策略已保存。启动常驻运行器后才会开始监控和模拟交易。")
 
     st.subheader("已保存的自动 Gamma 策略")
@@ -485,9 +821,13 @@ with config_tab:
             issues = diagnose_campaign(campaign, event_rows)
             hard_issues = hard_campaign_issues(campaign, issues)
             all_issues[campaign["code"]] = issues
-            campaign_rows.append({**campaign, **campaign_time_display(campaign), "调试状态": "阻断" if hard_issues else "警告" if issues else "正常",
-                                  "诊断": "；".join(issues)})
-        st.dataframe(chinese_columns(pd.DataFrame(campaign_rows)), hide_index=True)
+            campaign_rows.append({
+                **campaign,
+                **campaign_time_display(campaign),
+                "调试状态": "阻断" if hard_issues else "警告" if issues else "正常",
+                "诊断": "；".join(issues),
+            })
+        st.dataframe(_polish_time_display(chinese_columns(pd.DataFrame(campaign_rows))), hide_index=True)
         remove_campaign = st.selectbox("删除自动策略", [item["code"] for item in campaigns])
         if st.button("删除选中的自动策略", disabled=not admin):
             shadow_quantity, _ = store.shadow_position("earnings_gamma", remove_campaign)
@@ -578,10 +918,10 @@ with config_tab:
 
         details = gamma_decisions["payload_json"].apply(decision_detail)
         gamma_display = pd.concat([gamma_decisions.drop(columns=["payload_json"]), details], axis=1)
-        localized_gamma_display = translate_common_values(china_time_columns(gamma_display).rename(columns={
+        localized_gamma_display = _polish_time_display(translate_common_values(china_time_columns(gamma_display).rename(columns={
             "symbol": "期权代码", "decision": "决策", "reason": "原因",
             "created_at": "时间（中国）",
-        }).drop(columns=["id", "strategy_id"], errors="ignore"))
+        }).drop(columns=["id", "strategy_id"], errors="ignore")))
         st.dataframe(localized_gamma_display, hide_index=True,
             column_config={
                 "盈亏比例": st.column_config.NumberColumn(format="percent"),

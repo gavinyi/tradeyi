@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 import os
+import socket
 import time
 
 import pandas as pd
@@ -66,6 +67,7 @@ class FutuPaperBroker:
             ctx.close()
 
     def new_trade_context(self) -> OpenSecTradeContext:
+        self._ensure_opend_available()
         ctx = OpenSecTradeContext(
             filter_trdmarket=self.market,
             host=self.settings.host,
@@ -75,6 +77,21 @@ class FutuPaperBroker:
         self._set_connect_timeout(ctx)
         return ctx
 
+    def _ensure_opend_available(self) -> None:
+        timeout = max(
+            0.1, min(2.0, float(os.getenv("FUTU_PREFLIGHT_TIMEOUT_SECONDS", "0.5")))
+        )
+        try:
+            with socket.create_connection(
+                (self.settings.host, self.settings.port), timeout=timeout
+            ):
+                return
+        except OSError as exc:
+            raise BrokerError(
+                f"富途 OpenD 当前不可连接：{self.settings.host}:{self.settings.port}；"
+                "已停止本次查询，不会启动 SDK 后台重连线程"
+            ) from exc
+
     @staticmethod
     def _set_connect_timeout(ctx) -> None:
         setter = getattr(ctx, "set_sync_query_connect_timeout", None)
@@ -83,7 +100,13 @@ class FutuPaperBroker:
 
     @contextmanager
     def quote_context(self) -> Iterator[OpenQuoteContext]:
-        ctx = OpenQuoteContext(host=self.settings.host, port=self.settings.port)
+        self._ensure_opend_available()
+        ctx = OpenQuoteContext(
+            host=self.settings.host,
+            port=self.settings.port,
+            security_firm=self.security_firm,
+            is_async_connect=True,
+        )
         self._set_connect_timeout(ctx)
         try:
             yield ctx

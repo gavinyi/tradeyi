@@ -4,10 +4,23 @@ import hashlib
 import os
 from pathlib import Path
 
+from .store import TradingStore
+
 
 ROOT = Path(__file__).resolve().parents[2]
 GLOBAL_PREFIXES = ("EXEC_", "RISK_", "STRATEGY_")
 DEFAULT_APPROVAL_EXEMPT_STRATEGIES = ("core_satellite",)
+
+# These values are live strategy state, not a strategy release.  The volatility
+# radar updates them whenever it adds a symbol, creates a campaign, or rolls a
+# contract. Including them in the release fingerprint made a valid approval
+# expire immediately after the first automatic campaign was generated.
+MUTABLE_RUNTIME_KEYS = {
+    "VOLATILITY_CAMPAIGNS",
+    "VOLATILITY_SYMBOLS",
+    "VOLATILITY_RADAR_BUDGETS",
+    "GAMMA_CAMPAIGNS",
+}
 
 
 def strategy_requires_approval(strategy_id: str) -> bool:
@@ -21,7 +34,6 @@ def strategy_requires_approval(strategy_id: str) -> bool:
 
 def strategy_fingerprint(strategy_id: str) -> str:
     from .config import refresh_runtime_environment
-    from .store import TradingStore
     refresh_runtime_environment()
     digest = hashlib.sha256(strategy_id.encode())
     strategy_prefixes = {
@@ -31,21 +43,19 @@ def strategy_fingerprint(strategy_id: str) -> str:
         "volatility_long_gamma": ("VOLATILITY_",),
     }.get(strategy_id, ())
     for key, value in sorted(os.environ.items()):
-        if key.startswith((*GLOBAL_PREFIXES, *strategy_prefixes)):
+        if (
+            key not in MUTABLE_RUNTIME_KEYS
+            and key.startswith((*GLOBAL_PREFIXES, *strategy_prefixes))
+        ):
             digest.update(f"{key}={value}\n".encode())
     store = TradingStore()
-    config_keys = {
-        "earnings_gamma": ("GAMMA_CAMPAIGNS",),
-        "earnings_gamma_manual": ("GAMMA_CAMPAIGNS",),
-        "volatility_long_gamma": ("VOLATILITY_CAMPAIGNS", "VOLATILITY_SYMBOLS"),
-    }.get(strategy_id, ())
-    for key in config_keys:
-        value = store.get_runtime_config(key)
-        if value is not None:
-            import json
-            digest.update(
-                f"{key}={json.dumps(value[0], sort_keys=True, separators=(',', ':'), default=str)}\n".encode()
-            )
+    # A manually bumped policy revision is stable across campaign lifecycle
+    # changes while still allowing risk/model policy releases to invalidate an
+    # approval deliberately.
+    policy_revision = store.get_setting(
+        f"strategy_policy_revision:{strategy_id}", "1"
+    )
+    digest.update(f"POLICY_REVISION={policy_revision}\n".encode())
     for relative in (
         "src/futu_quant/strategies.py", "src/futu_quant/core_satellite.py",
         "src/futu_quant/gamma_automation.py", "src/futu_quant/execution.py",

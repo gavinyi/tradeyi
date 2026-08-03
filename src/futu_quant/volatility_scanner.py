@@ -22,6 +22,18 @@ class RadarCallTimeout(TimeoutError):
     pass
 
 
+def _setting_float(store, key: str, default: float) -> float:
+    try:
+        return float(store.get_setting(key, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _setting_bool(store, key: str, default: bool) -> bool:
+    raw = store.get_setting(key, str(default).lower())
+    return str(raw).lower() in {"1", "true", "yes", "y", "是"}
+
+
 def _timed_call(callback, timeout_seconds: float | None = None):
     """Bound Futu calls so one symbol cannot freeze the entire radar cycle."""
     timeout = max(1.0, float(
@@ -147,7 +159,14 @@ def scan_volatility_watchlist(
                         "minimum_underlying_move": move_target, "entry_zscore": z_target,
                         "contracts_per_stage": 1, "max_stages": 3,
                         "max_premium_per_stage": premium_budget, "entry_hours": 6,
-                        "profit_target": .5, "stop_loss": .4, "trailing_stop": .25,
+                        "entry_confirmation_minutes": _setting_float(
+                            store, "volatility_default_entry_confirmation_minutes", 5,
+                        ),
+                        "profit_target": .5,
+                        "stop_loss": _setting_float(
+                            store, "volatility_default_stop_loss", .35,
+                        ),
+                        "trailing_stop": .25,
                         "max_hold_hours": 24, "minimum_hold_minutes": 90,
                         "iv_decline_exit_ratio": .20,
                         "efficiency_decline_exit_ratio": .40,
@@ -162,16 +181,32 @@ def scan_volatility_watchlist(
                         "profit_protection_start_normal": .10,
                         "profit_protection_giveback_normal": .20,
                         "minimum_locked_profit_normal": .05,
-                        "profit_protection_start_dynamic": .15,
-                        "profit_protection_giveback_dynamic": .25,
-                        "minimum_locked_profit_dynamic": .08,
-                        "profit_protection_start_strong": .20,
-                        "profit_protection_giveback_strong": .30,
-                        "minimum_locked_profit_strong": .10,
+                        "profit_protection_start_dynamic": _setting_float(
+                            store, "volatility_default_profit_protection_start_dynamic", .12,
+                        ),
+                        "profit_protection_giveback_dynamic": _setting_float(
+                            store, "volatility_default_profit_protection_giveback_dynamic", .22,
+                        ),
+                        "minimum_locked_profit_dynamic": _setting_float(
+                            store, "volatility_default_minimum_locked_profit_dynamic", .07,
+                        ),
+                        "profit_protection_start_strong": _setting_float(
+                            store, "volatility_default_profit_protection_start_strong", .10,
+                        ),
+                        "profit_protection_giveback_strong": _setting_float(
+                            store, "volatility_default_profit_protection_giveback_strong", .18,
+                        ),
+                        "minimum_locked_profit_strong": _setting_float(
+                            store, "volatility_default_minimum_locked_profit_strong", .10,
+                        ),
                         "partial_profit_enabled": True,
-                        "partial_profit_tier1": .30,
+                        "partial_profit_tier1": _setting_float(
+                            store, "volatility_default_partial_profit_tier1", .18,
+                        ),
                         "partial_profit_tier1_fraction": .50,
-                        "partial_profit_tier2": .60,
+                        "partial_profit_tier2": _setting_float(
+                            store, "volatility_default_partial_profit_tier2", .35,
+                        ),
                         "partial_profit_tier2_fraction": .25,
                         "cooldown_take_profit_hours": 4,
                         "cooldown_profit_protection_hours": 8,
@@ -179,6 +214,24 @@ def scan_volatility_watchlist(
                         "cooldown_expiry_hours": 0,
                         "cooldown_decay_hours": 8,
                         "cooldown_contraction_hours": 6,
+                        "cooldown_bypass_enabled": _setting_bool(
+                            store, "volatility_default_cooldown_bypass_enabled", True,
+                        ),
+                        "cooldown_bypass_stop_loss": _setting_bool(
+                            store, "volatility_default_cooldown_bypass_stop_loss", False,
+                        ),
+                        "cooldown_bypass_min_zscore": _setting_float(
+                            store, "volatility_default_cooldown_bypass_min_zscore", 3.0,
+                        ),
+                        "cooldown_bypass_min_intraday_move": _setting_float(
+                            store, "volatility_default_cooldown_bypass_min_intraday_move", 0.035,
+                        ),
+                        "cooldown_bypass_min_atr_ratio": _setting_float(
+                            store, "volatility_default_cooldown_bypass_min_atr_ratio", 2.0,
+                        ),
+                        "cooldown_bypass_min_volume_ratio": _setting_float(
+                            store, "volatility_default_cooldown_bypass_min_volume_ratio", 1.5,
+                        ),
                         "cooldown_hours": 24, "enabled": True,
                     }
                     rolled, roll_reason = _timed_call(
@@ -186,11 +239,14 @@ def scan_volatility_watchlist(
                     )
                     if rolled.get("code") != symbol:
                         upsert_campaign("VOLATILITY_CAMPAIGNS", rolled)
-                        store.set_setting("strategy_execution_mode:volatility_long_gamma", "SHADOW")
                         store.set_setting("strategy_enabled:Volatility Long Gamma", "true")
-                        store.audit("VOLATILITY_SHADOW_CAMPAIGN_AUTO_CREATED", {
+                        execution_mode = (
+                            store.get_setting("strategy_execution_mode:volatility_long_gamma", "")
+                            or store.get_setting("execution_mode", "PAPER")
+                        )
+                        store.audit("VOLATILITY_AUTO_CAMPAIGN_CREATED", {
                             "underlying": symbol, "code": rolled["code"], "reason": roll_reason,
-                            "execution_mode": "SHADOW", "auto_monitor_enabled": True,
+                            "execution_mode": execution_mode, "auto_monitor_enabled": True,
                         }, "volatility_scanner")
                         result.update({
                             "campaign_created": True,
