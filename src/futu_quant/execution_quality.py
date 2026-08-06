@@ -41,12 +41,25 @@ def execution_quality_report(store) -> tuple[pd.DataFrame, pd.DataFrame]:
         / denominator * direction
     )
     frame["filled"] = frame["filled_quantity"] > 0
+    requested = frame["quantity"] if "quantity" in frame else frame["filled_quantity"]
+    frame["requested_quantity"] = pd.to_numeric(requested, errors="coerce").fillna(0)
+    frame["partial_fill"] = frame["filled_quantity"].between(0.000001, frame["requested_quantity"] - 0.000001)
+    frame["cancelled"] = frame["status"].astype(str).str.contains("CANCEL", case=False, na=False)
+    fee_values = frame["fees"] if "fees" in frame else pd.Series(0.0, index=frame.index)
+    frame["fees"] = pd.to_numeric(fee_values, errors="coerce").fillna(0)
+    frame["notional"] = frame["average_fill_price"].fillna(0) * frame["filled_quantity"]
     summary = frame.groupby("strategy_id", as_index=False).agg(
         交易意图数=("id", "count"), 已成交订单=("filled", "sum"),
         平均等待秒数=("wait_seconds", "mean"), 平均不利滑点=("slippage", "mean"),
         平均追价次数=("reprice_count", "mean"),
+        部分成交数=("partial_fill", "sum"), 撤单数=("cancelled", "sum"),
+        手续费=("fees", "sum"), 成交名义金额=("notional", "sum"),
     )
     summary["成交率"] = summary["已成交订单"] / summary["交易意图数"]
+    summary["部分成交率"] = summary["部分成交数"] / summary["交易意图数"]
+    summary["撤单率"] = summary["撤单数"] / summary["交易意图数"]
+    p95 = frame.groupby("strategy_id")["wait_seconds"].quantile(.95)
+    summary["等待秒数P95"] = summary["strategy_id"].map(p95)
 
     shadow = frame[frame["status"].astype(str).str.startswith("SHADOW")].groupby(
         ["strategy_id", "symbol", "side"], as_index=False

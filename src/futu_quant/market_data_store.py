@@ -172,6 +172,24 @@ class CanonicalMarketDataStore:
             return pd.DataFrame(columns=[field.name for field in DatasetManifest.__dataclass_fields__.values()])
         return pd.DataFrame(rows).sort_values(["symbol", "start"]).reset_index(drop=True)
 
+    def freshness_report(self, symbols: list[str] | None = None, max_age_hours: float = 36) -> pd.DataFrame:
+        """Return a compact freshness/quality report for research data partitions."""
+        catalog = self.catalog()
+        if catalog.empty:
+            return pd.DataFrame(columns=["symbol", "latest_session", "age_hours", "quality_grade", "status"])
+        if symbols:
+            wanted = {normalize_us_symbol(item) for item in symbols}
+            catalog = catalog[catalog["symbol"].isin(wanted)]
+        now = datetime.now(timezone.utc)
+        catalog = catalog.copy()
+        catalog["latest_session"] = pd.to_datetime(catalog["end"], errors="coerce", utc=True)
+        catalog["age_hours"] = (now - catalog["latest_session"]).dt.total_seconds() / 3600
+        catalog["status"] = catalog.apply(
+            lambda row: "STALE" if pd.isna(row["latest_session"]) or row["age_hours"] > max_age_hours
+            else "GOOD", axis=1,
+        )
+        return catalog[["symbol", "latest_session", "age_hours", "quality_grade", "status", "source"]]
+
 
 def reconcile_sources(
     primary: pd.DataFrame, secondary: pd.DataFrame, tolerance: float = 0.03
