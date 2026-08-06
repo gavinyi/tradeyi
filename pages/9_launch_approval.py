@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import os
-
 import pandas as pd
 import streamlit as st
 
-from futu_quant.approval import approval_version_status
+from futu_quant.approval import approval_enforcement_enabled, approval_version_status
 from futu_quant.acceptance import strategy_acceptance
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, save_runtime_settings
@@ -37,10 +35,10 @@ strategies = [
 ]
 
 with approval_tab:
-    enforced = os.getenv("REQUIRE_STRATEGY_APPROVAL", "true").lower() == "true"
+    enforced = approval_enforcement_enabled(store)
     selected_enforcement = st.toggle(
-        "PAPER 新增仓位强制要求当前版本审批", value=enforced, disabled=not admin,
-        help="审批失效时禁止 BUY/加仓，但仍允许已有仓位 SELL 退出。",
+        "PAPER/REAL 新增仓位强制要求当前版本审批", value=enforced, disabled=not admin,
+        help="只控制策略版本审批门槛；急停、风控、实盘白名单和额度限制仍然独立生效。",
     )
     if selected_enforcement != enforced:
         save_runtime_settings({"REQUIRE_STRATEGY_APPROVAL": str(selected_enforcement).lower()})
@@ -49,6 +47,10 @@ with approval_tab:
             {"actor": "streamlit_admin", "enabled": selected_enforcement},
         )
         st.rerun()
+    if selected_enforcement:
+        st.info("上线审批当前开启：PAPER/REAL 新增 BUY 会要求当前运行版本已批准。")
+    else:
+        st.success("上线审批当前关闭：策略会直接进入当前执行模式，急停、风控和交易环境限制仍然生效。")
     approvals = {row["strategy_id"]: row for row in store.approvals()}
 
     with st.container(border=True):
@@ -92,6 +94,7 @@ with approval_tab:
             "已批准版本": version["approved_fingerprint"][:12] or "未批准",
             "版本一致": "是" if version["exempt"] or version["runtime_aligned"] else "否",
             "审批状态": (
+                "审批总开关关闭" if not version["enforcement_enabled"] else
                 "免审批" if version["exempt"] else
                 "当前运行版本已批准" if version["approved"] else
                 "服务需要重启" if version["runtime_fingerprint"] and not version["runtime_aligned"] else
@@ -106,11 +109,14 @@ with approval_tab:
     selected_version = approval_version_status(store, strategy)
     selected_service = service_status()
     runtime_ready = bool(
-        selected_version["exempt"] or (
+        not selected_version["enforcement_enabled"]
+        or selected_version["exempt"] or (
             selected_service.running and selected_version["runtime_aligned"]
         )
     )
-    if not selected_version["exempt"] and not selected_service.running:
+    if not selected_version["enforcement_enabled"]:
+        st.info("审批总开关已关闭；本页验收结果只作为诊断，不会拦截策略进入 PAPER。")
+    elif not selected_version["exempt"] and not selected_service.running:
         st.error("统一交易服务未运行，无法确认将要批准的实际运行版本。请先启动服务。")
     elif not selected_version["exempt"] and not selected_version["runtime_aligned"]:
         st.error(
@@ -139,14 +145,19 @@ with approval_tab:
         key: gate for key, gate in acceptance["gates"].items()
         if key != "service_errors"
     }
-    acceptance_passed = all(gate["passed"] for gate in approval_gates.values())
+    acceptance_passed = (
+        True if not selected_version["enforcement_enabled"]
+        else all(gate["passed"] for gate in approval_gates.values())
+    )
     st.dataframe(pd.DataFrame([
         {"验收项": gate_names.get(key, key), "结果": "通过" if gate["passed"] else "未通过",
          "当前值": gate["value"], "要求": gate["required"]}
         for key, gate in approval_gates.items()
     ]), hide_index=True)
     failed_gates = [gate_names.get(key, key) for key, gate in approval_gates.items() if not gate["passed"]]
-    if failed_gates:
+    if not selected_version["enforcement_enabled"]:
+        st.success("审批总开关已关闭；未通过项目不会阻塞 PAPER 下单。")
+    elif failed_gates:
         st.warning("最终批准按钮暂不可用，还未通过：" + "、".join(failed_gates))
     elif not admin:
         st.warning("验收项已通过，但需要先完成管理员登录才能批准。")
@@ -187,7 +198,10 @@ with approval_tab:
         reason = st.text_input("批准理由/验收记录")
         submitted = st.form_submit_button(
             "批准当前运行版本进入 PAPER",
-            disabled=not admin or not acceptance_passed or not runtime_ready,
+            disabled=(
+                not selected_version["enforcement_enabled"]
+                or not admin or not acceptance_passed or not runtime_ready
+            ),
         )
         if submitted:
             selected_version = approval_version_status(store, strategy)

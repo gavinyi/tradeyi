@@ -12,7 +12,7 @@ from .risk import RiskEngine
 from .alerts import AlertManager
 from .store import TradingStore
 from .approval import (
-    approval_runtime_manifest, runtime_strategy_fingerprint,
+    approval_enforcement_enabled, approval_runtime_manifest, runtime_strategy_fingerprint,
     strategy_fingerprint, strategy_requires_approval,
 )
 from .fee_model import estimate_fees
@@ -46,7 +46,7 @@ class ExecutionManager:
         mode = (execution_mode_override or override_mode or global_mode).upper()
         fingerprint = runtime_strategy_fingerprint(strategy_id, self.store)
         current_source_fingerprint = strategy_fingerprint(strategy_id, self.store)
-        require_approval = os.getenv("REQUIRE_STRATEGY_APPROVAL", "true").lower() == "true"
+        require_approval = approval_enforcement_enabled(self.store)
         if (mode in {"PAPER", "REAL"} and side == "BUY" and require_approval
                 and strategy_requires_approval(strategy_id) and not self.store.strategy_approved(
             strategy_id, fingerprint

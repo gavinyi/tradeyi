@@ -58,6 +58,22 @@ def test_paper_requires_current_strategy_approval(tmp_path, monkeypatch):
     assert broker.calls == 1
 
 
+def test_runtime_switch_can_disable_strategy_approval_without_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("REQUIRE_STRATEGY_APPROVAL", "true")
+    broker = Broker()
+    store = TradingStore(tmp_path / "test.db")
+    store.set_runtime_config(
+        "ENV_SETTINGS", {"REQUIRE_STRATEGY_APPROVAL": "false"}, "test"
+    )
+
+    result = ExecutionManager(broker, store).submit_limit(
+        "sma", "runtime-disabled", "US.QQQ", "BUY", 1, 100,
+    )
+
+    assert result.status == "SUBMITTED"
+    assert broker.calls == 1
+
+
 def test_core_satellite_is_exempt_from_version_approval(tmp_path, monkeypatch):
     monkeypatch.setenv("REQUIRE_STRATEGY_APPROVAL", "true")
     monkeypatch.delenv("APPROVAL_EXEMPT_STRATEGIES", raising=False)

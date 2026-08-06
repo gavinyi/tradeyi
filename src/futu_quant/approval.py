@@ -45,6 +45,20 @@ def strategy_requires_approval(strategy_id: str) -> bool:
     return strategy_id not in exempt
 
 
+def approval_enforcement_enabled(store: TradingStore | None = None) -> bool:
+    """Return the live approval enforcement switch.
+
+    The Streamlit page persists runtime settings to SQLite so the already
+    running trading service can see them without a process restart.
+    """
+    configured = os.getenv("REQUIRE_STRATEGY_APPROVAL", "true")
+    store = store or TradingStore()
+    saved = store.get_runtime_config("ENV_SETTINGS")
+    if saved is not None and isinstance(saved[0], dict):
+        configured = str(saved[0].get("REQUIRE_STRATEGY_APPROVAL", configured))
+    return configured.lower() == "true"
+
+
 def strategy_fingerprint(
     strategy_id: str, store: TradingStore | None = None,
 ) -> str:
@@ -136,6 +150,7 @@ def approval_runtime_manifest(store: TradingStore) -> dict:
 
 
 def approval_version_status(store: TradingStore, strategy_id: str) -> dict:
+    enforcement_enabled = approval_enforcement_enabled(store)
     current = strategy_fingerprint(strategy_id, store)
     manifest = approval_runtime_manifest(store)
     runtime = str((manifest.get("fingerprints") or {}).get(strategy_id, ""))
@@ -157,8 +172,13 @@ def approval_version_status(store: TradingStore, strategy_id: str) -> dict:
         "runtime_fingerprint": runtime,
         "approved_fingerprint": approved,
         "runtime_aligned": aligned,
-        "approved": bool(exempt or (aligned and approved == runtime and checks_passed)),
+        "approved": bool(
+            not enforcement_enabled
+            or exempt
+            or (aligned and approved == runtime and checks_passed)
+        ),
         "exempt": exempt,
+        "enforcement_enabled": enforcement_enabled,
         "service_pid": manifest.get("pid"),
         "service_started_at": manifest.get("started_at"),
     }
