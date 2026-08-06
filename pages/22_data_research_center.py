@@ -52,7 +52,7 @@ def providers():
 
 view = st.segmented_control(
     "研究功能",
-    ["数据源状态", "数据目录", "数据质量", "回测 V2"],
+    ["数据源状态", "行情数据健康", "数据目录", "数据质量", "回测 V2"],
     default="数据源状态",
     selection_mode="single",
 )
@@ -83,6 +83,34 @@ if view == "数据源状态":
     st.subheader("数据源状态")
     st.dataframe(pd.DataFrame(source_rows), hide_index=True, width="stretch")
     st.info("Alpaca 免费股票数据是 IEX 口径；不能直接替换富途全市场成交量或期权盘口。")
+
+elif view == "行情数据健康":
+    st.subheader("行情数据健康")
+    st.caption("检查本地研究行情的来源、最新交易日、数据年龄和质量等级；不代表富途实时盘口状态。")
+    catalog = load_catalog()
+    if catalog.empty:
+        st.info("尚未建立本地行情分区。请先到“数据目录”执行历史数据补全。")
+    else:
+        max_age = st.number_input("允许最大数据年龄（小时）", 1.0, 720.0, 36.0, step=1.0)
+        health = warehouse.freshness_report(max_age_hours=float(max_age))
+        good = int(health["status"].eq("GOOD").sum())
+        stale = int(health["status"].eq("STALE").sum())
+        with st.container(horizontal=True):
+            st.metric("检查分区", len(health), border=True)
+            st.metric("正常", good, border=True)
+            st.metric("已过期", stale, border=True)
+            st.metric("质量 A", int(health["quality_grade"].eq("A").sum()), border=True)
+        display = health.rename(columns={
+            "symbol": "代码", "latest_session": "最新交易日", "age_hours": "数据年龄（小时）",
+            "quality_grade": "质量等级", "status": "状态", "source": "数据源",
+        }).copy()
+        display["状态"] = display["状态"].map({"GOOD": "正常", "STALE": "过期"}).fillna(display["状态"])
+        display["数据年龄（小时）"] = pd.to_numeric(display["数据年龄（小时）"], errors="coerce").round(1)
+        st.dataframe(display, hide_index=True, width="stretch")
+        if stale:
+            st.warning(f"有 {stale} 个数据分区超过 {max_age:g} 小时，建议在“数据目录”重新补全。")
+        else:
+            st.success("当前本地研究行情均在允许新鲜度范围内。")
 
 elif view == "数据目录":
     st.subheader("数据目录")
