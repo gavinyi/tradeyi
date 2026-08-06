@@ -75,7 +75,9 @@ if not visible.empty:
         visible["最后时间"], errors="coerce", utc=True,
     ).dt.tz_convert("Asia/Shanghai").dt.tz_localize(None)
     preferred_columns = [
-        "策略", "代码", "交易方向", "完整目标数量", "当前执行批次", "总批数",
+        "策略", "代码", "交易方向", "组合分区", "择时/择标的依据",
+        "当前权重", "目标权重", "分区预算", "现金缓冲",
+        "完整目标数量", "当前执行批次", "总批数",
         "计划/订单数量", "限价", "计划名义金额", "完整目标金额", "执行节奏原因",
         "已成交数量", "成交均价", "实际成交金额", "最终阶段", "最终结果", "最终原因",
         "买卖信号次数", "阻断次数", "订单意图数", "Shadow成交数", "最后时间",
@@ -98,6 +100,10 @@ st.dataframe(
         "已成交数量": st.column_config.NumberColumn(format="%.0f"),
         "成交均价": st.column_config.NumberColumn(format="$%.2f"),
         "实际成交金额": st.column_config.NumberColumn(format="$%.2f"),
+        "当前权重": st.column_config.NumberColumn(format="percent"),
+        "目标权重": st.column_config.NumberColumn(format="percent"),
+        "分区预算": st.column_config.NumberColumn(format="percent"),
+        "现金缓冲": st.column_config.NumberColumn(format="percent"),
         "最后时间": st.column_config.DatetimeColumn(format="YYYY-MM-DD HH:mm:ss"),
     },
 )
@@ -115,19 +121,19 @@ with right:
     with st.container(border=True):
         st.subheader("下一步去哪里处理")
         st.page_link(
-            "pages/10_波动率期权策略.py", label="调整波动率候选与预算",
+            "pages/10_volatility_options_strategy.py", label="调整波动率候选与预算",
             icon=":material/waves:",
         )
         st.page_link(
-            "pages/7_风控中心.py", label="检查全局风控与急停",
+            "pages/7_risk_center.py", label="检查全局风控与急停",
             icon=":material/shield:",
         )
         st.page_link(
-            "pages/4_订单管理.py", label="查看订单、Shadow 与撤单",
+            "pages/4_order_management.py", label="查看订单、Shadow 与撤单",
             icon=":material/receipt_long:",
         )
         st.page_link(
-            "pages/1_交易配置.py", label="调整 Core Satellite 参数",
+            "pages/1_trading_config.py", label="调整 Core Satellite 参数",
             icon=":material/settings:",
         )
 

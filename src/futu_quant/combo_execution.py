@@ -248,14 +248,21 @@ class ComboExecutionManager:
             return
         field = "close_intent_id" if closing else "intent_id"
         status = "CLOSE_WORKING" if closing else ("WORKING" if result.status in WORKING else "FAILED")
-        values = {field: result.intent_id, "status": status, "error": result.message}
+        # Approval/risk rejections happen before an order intent exists and use
+        # intent_id=0. Persisting 0 into a foreign-key column caused the unified
+        # service to fail its whole combo-monitor task.
+        values = {
+            field: result.intent_id if result.intent_id > 0 else None,
+            "status": status,
+            "error": result.message,
+        }
         if closing:
             values["close_attempts"] = int(leg.get("close_attempts", 0)) + 1
         self.store.update_option_combo_leg(leg["id"], **values)
         self.store.option_combo_event(
             combo["combo_id"], "LEG_CLOSE_SUBMITTED" if closing else "LEG_OPEN_SUBMITTED",
             result.status, f"{leg['symbol']} {side} {quantity}：{result.message}",
-            {"leg_id": leg["id"], "intent_id": result.intent_id},
+            {"leg_id": leg["id"], "intent_id": result.intent_id or None},
         )
 
     def _marketable_price(self, symbol: str, side: str, fallback: float) -> float:

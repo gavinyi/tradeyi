@@ -54,7 +54,7 @@ with budget_tab:
         icon=":material/info:",
     )
     st.page_link(
-        "pages/15_策略控制台.py",
+        "pages/15_strategy_control_center.py",
         label="前往策略与资金控制",
         icon=":material/tune:",
     )

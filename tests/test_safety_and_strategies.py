@@ -50,6 +50,10 @@ def test_normalize_us_symbol(raw, expected):
     assert normalize_us_symbol(raw) == expected
 
 
+def test_normalize_legacy_berkshire_symbol_keeps_futu_dot():
+    assert normalize_us_symbol("BRKB") == "US.BRK.B"
+
+
 def test_invalid_symbol_is_rejected():
     with pytest.raises(ValueError, match="有效美股代码"):
         normalize_us_symbol("HK.00700")

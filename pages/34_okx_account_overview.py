@@ -59,7 +59,7 @@ with st.container(horizontal=True):
 if not settings.credentials_configured:
     st.warning("尚未配置欧易 Demo API 凭证。请到“币策略配置与回测 → 配置中心”填写。")
     st.page_link(
-        "pages/32_币策略配置与回测.py",
+        "pages/32_crypto_strategy_config_backtest.py",
         label="打开币策略配置",
         icon=":material/settings:",
     )

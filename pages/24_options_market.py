@@ -162,10 +162,10 @@ else:
 
 with st.container(horizontal=True):
     st.page_link(
-        "pages/2_期权配置.py", label="前往期权配置保存候选",
+        "pages/2_options_config.py", label="前往期权配置保存候选",
         icon=":material/settings_suggest:",
     )
     st.page_link(
-        "pages/10_波动率期权策略.py", label="前往波动率策略生成决策",
+        "pages/10_volatility_options_strategy.py", label="前往波动率策略生成决策",
         icon=":material/waves:",
     )

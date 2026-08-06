@@ -73,7 +73,8 @@ control = pd.DataFrame(rows)
 service = service_status()
 radar = radar_status()
 with st.container(horizontal=True):
-    st.metric("统一服务", "运行中" if service.running else "未运行", border=True)
+    service_label = "重启中" if service.restart_pending else ("运行中" if service.running else "未运行")
+    st.metric("统一服务", service_label, border=True)
     st.metric("已注册策略", len(control), border=True)
     st.metric("启用自动策略", int(control["enabled"].sum()), border=True)
     st.metric("版本漂移", int(control["version_drift"].sum()), border=True)
@@ -121,7 +122,7 @@ with service_tab:
                 st.toast(result.message)
                 st.rerun()
             if st.button(
-                "重启统一服务", disabled=not admin,
+                "重启统一服务", disabled=not admin or service.restart_pending,
                 icon=":material/restart_alt:", key="automation_restart_service",
             ):
                 result = restart()
@@ -136,7 +137,13 @@ with service_tab:
     with st.container(border=True):
         st.markdown("**独立波动率雷达**")
         if radar.running:
-            st.success(f"{radar.message} · PID {radar.pid}")
+            if service.running and not service.restart_pending:
+                st.success(f"{radar.message} · PID {radar.pid} · 扫描与交易执行链均在线")
+            else:
+                st.warning(
+                    f"{radar.message} · PID {radar.pid} · 当前仅扫描，不会执行自动交易；"
+                    "请先恢复统一交易服务"
+                )
         else:
             st.warning(radar.message or "雷达未运行")
         st.caption("启动统一服务时会一并启动雷达；这里保留独立启停，用于只运行自选标的扫描。")

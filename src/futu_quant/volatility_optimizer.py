@@ -136,13 +136,29 @@ def volatility_entry_confirmation(
     and widest spread. This gate keeps exits unchanged, but delays new entries
     until the dynamic signal has survived one short confirmation window.
     """
-    minutes = max(0.0, float(confirmation_minutes or 0))
+    configured_minutes = max(0.0, float(confirmation_minutes or 0))
     if not bool(regime.get("active")):
         return False, f"动态波动状态未激活：{regime.get('reason', '')}"
+    strong = bool(
+        regime.get("strong_signal_override")
+        and regime.get("trigger_confirmed")
+        and regime.get("volume_confirmed")
+    )
+    fully_confirmed = bool(
+        regime.get("trigger_confirmed")
+        and regime.get("volume_confirmed")
+        and (regime.get("direction_confirmed") or regime.get("strong_signal_override"))
+    )
+    if strong:
+        minutes, tier = min(configured_minutes, 1.0), "强信号"
+    elif fully_confirmed:
+        minutes, tier = min(configured_minutes, 2.5), "确认信号"
+    else:
+        minutes, tier = configured_minutes, "边缘信号"
     if minutes <= 0:
         return True, "已关闭入场二次确认"
     if not signal_started_at:
-        return False, f"等待入场二次确认：信号刚触发，需要持续 {minutes:g} 分钟"
+        return False, f"等待入场二次确认：{tier}刚触发，需要持续 {minutes:g} 分钟"
     try:
         started = datetime.fromisoformat(str(signal_started_at))
     except ValueError:
@@ -151,9 +167,9 @@ def volatility_entry_confirmation(
     if elapsed < minutes:
         return (
             False,
-            f"等待入场二次确认：已持续 {elapsed:.1f} 分钟，目标 ≥ {minutes:g} 分钟",
+            f"等待入场二次确认：{tier}已持续 {elapsed:.1f} 分钟，目标 ≥ {minutes:g} 分钟",
         )
-    return True, f"入场二次确认通过：信号已持续 {elapsed:.1f} 分钟 ≥ {minutes:g} 分钟"
+    return True, f"入场二次确认通过：{tier}已持续 {elapsed:.1f} 分钟 ≥ {minutes:g} 分钟"
 
 
 def volatility_direction_size_factor(regime: dict[str, object]) -> tuple[float, str]:
@@ -639,6 +655,10 @@ def volatility_exit_reason(
     contraction_confirmations_required: int = 3,
     pnl_ratio: float = 0.0,
     directional_confirmation: bool = True,
+    current_delta: float | None = None,
+    minimum_effective_delta: float = .18,
+    adverse_signal_confirmations: int = 0,
+    adverse_signal_confirmations_required: int = 2,
 ) -> str | None:
     inactive_contraction_confirmed = (
         regime.get("contraction")
@@ -650,6 +670,23 @@ def volatility_exit_reason(
         inactive_contraction_confirmed
     ):
         return "实现波动开始收缩，退出波动率仓位"
+    adverse_confirmed = (
+        int(adverse_signal_confirmations)
+        >= int(adverse_signal_confirmations_required)
+    )
+    if adverse_confirmed and not directional_confirmation and pnl_ratio < 0:
+        return (
+            f"正股方向连续{int(adverse_signal_confirmations)}轮与持仓表达相反，"
+            "提前退出，避免等到期权价格硬止损"
+        )
+    if (
+        adverse_confirmed and current_delta is not None and pnl_ratio < 0
+        and abs(float(current_delta)) < float(minimum_effective_delta)
+    ):
+        return (
+            f"期权有效 Delta 已降至 {abs(float(current_delta)):.2f}，低于 "
+            f"{float(minimum_effective_delta):.2f}，方向表达失效"
+        )
     adverse_context = pnl_ratio < 0 or not directional_confirmation or not regime.get("active", False)
     if (
         entry_iv > 0

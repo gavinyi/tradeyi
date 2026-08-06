@@ -273,10 +273,10 @@ with data_tab:
                 border=True,
             )
         with st.container(horizontal=True):
-            st.page_link("pages/15_策略控制台.py", label="执行模式/资金配置", icon=":material/tune:")
-            st.page_link("pages/26_交易诊断中心.py", label="执行诊断", icon=":material/troubleshoot:")
-            st.page_link("pages/28_期权盈亏台账.py", label="期权盈亏台账", icon=":material/price_check:")
-            st.page_link("pages/4_订单管理.py", label="订单管理/撤单", icon=":material/receipt_long:")
+            st.page_link("pages/15_strategy_control_center.py", label="执行模式/资金配置", icon=":material/tune:")
+            st.page_link("pages/26_trade_diagnostics_center.py", label="执行诊断", icon=":material/troubleshoot:")
+            st.page_link("pages/28_options_pnl_ledger.py", label="期权盈亏台账", icon=":material/price_check:")
+            st.page_link("pages/4_order_management.py", label="订单管理/撤单", icon=":material/receipt_long:")
 
     overview_tab, campaign_tab, decision_tab, calendar_tab, position_tab = st.tabs([
         "一屏概览", "已保存策略", "最近决策", "财报日历", "持仓与订单",
@@ -866,7 +866,7 @@ with config_tab:
         st.metric("Gamma 执行模式", gamma_mode, border=True)
         st.metric("自动调度", "已启用" if gamma_enabled else "已关闭", border=True)
     st.page_link(
-        "pages/15_策略控制台.py", label="前往策略与资金控制设置 Gamma",
+        "pages/15_strategy_control_center.py", label="前往策略与资金控制设置 Gamma",
         icon=":material/tune:",
     )
     blocking_issues = [

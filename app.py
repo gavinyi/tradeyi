@@ -34,88 +34,88 @@ home_page = st.Page(
 navigation = {
     "账户与交易": [
         home_page,
-        st.Page("pages/29_策略复盘与执行质量.py", title="策略复盘与执行质量", icon=":material/summarize:"),
-        st.Page("pages/26_交易诊断中心.py", title="交易诊断中心", icon=":material/troubleshoot:"),
-        st.Page("pages/4_订单管理.py", title="订单管理", icon=":material/receipt_long:"),
-        st.Page("pages/12_交易生命周期.py", title="交易生命周期", icon=":material/account_tree:"),
+        st.Page("pages/29_strategy_review_execution_quality.py", title="策略复盘与执行质量", icon=":material/summarize:"),
+        st.Page("pages/26_trade_diagnostics_center.py", title="交易诊断中心", icon=":material/troubleshoot:"),
+        st.Page("pages/4_order_management.py", title="订单管理", icon=":material/receipt_long:"),
+        st.Page("pages/12_trade_lifecycle.py", title="交易生命周期", icon=":material/account_tree:"),
     ],
     "行情与资讯": [
-        st.Page("pages/23_市场总览.py", title="市场与自选行情", icon=":material/monitoring:"),
-        st.Page("pages/24_期权市场.py", title="期权市场", icon=":material/travel_explore:"),
-        st.Page("pages/25_事件与公告.py", title="事件与公告", icon=":material/event_note:"),
+        st.Page("pages/23_market_overview.py", title="市场与自选行情", icon=":material/monitoring:"),
+        st.Page("pages/24_options_market.py", title="期权市场", icon=":material/travel_explore:"),
+        st.Page("pages/25_events_announcements.py", title="事件与公告", icon=":material/event_note:"),
     ],
     "策略中心": [
-        st.Page("pages/1_交易配置.py", title="交易配置", icon=":material/settings:"),
-        st.Page("pages/15_策略控制台.py", title="策略与资金控制", icon=":material/tune:"),
-        st.Page("pages/11_策略活动中心.py", title="策略活动中心", icon=":material/hub:"),
-        st.Page("pages/3_策略回测.py", title="股票策略回测", icon=":material/query_stats:"),
+        st.Page("pages/1_trading_config.py", title="交易配置", icon=":material/settings:"),
+        st.Page("pages/15_strategy_control_center.py", title="策略与资金控制", icon=":material/tune:"),
+        st.Page("pages/11_strategy_activity_center.py", title="策略活动中心", icon=":material/hub:"),
+        st.Page("pages/3_stock_backtest.py", title="股票策略回测", icon=":material/query_stats:"),
     ],
     "期权中心": [
-        st.Page("pages/30_波动率策略总览.py", title="波动率策略总览", icon=":material/dashboard:"),
-        st.Page("pages/2_期权配置.py", title="期权配置", icon=":material/settings_suggest:"),
-        st.Page("pages/5_财报Gamma策略.py", title="财报 Gamma 策略", icon=":material/bolt:"),
-        st.Page("pages/10_波动率期权策略.py", title="波动率策略高级配置", icon=":material/waves:"),
-        st.Page("pages/28_期权盈亏台账.py", title="期权盈亏台账", icon=":material/price_check:"),
-        st.Page("pages/16_期权组合执行.py", title="期权组合执行", icon=":material/schema:"),
-        st.Page("pages/13_期权数据回测.py", title="期权数据回测", icon=":material/analytics:"),
+        st.Page("pages/30_volatility_strategy_overview.py", title="波动率策略总览", icon=":material/dashboard:"),
+        st.Page("pages/2_options_config.py", title="期权配置", icon=":material/settings_suggest:"),
+        st.Page("pages/5_earnings_gamma_strategy.py", title="财报 Gamma 策略", icon=":material/bolt:"),
+        st.Page("pages/10_volatility_options_strategy.py", title="波动率策略高级配置", icon=":material/waves:"),
+        st.Page("pages/28_options_pnl_ledger.py", title="期权盈亏台账", icon=":material/price_check:"),
+        st.Page("pages/16_options_combo_execution.py", title="期权组合执行", icon=":material/schema:"),
+        st.Page("pages/13_options_data_backtest.py", title="期权数据回测", icon=":material/analytics:"),
     ],
     "币量化": [
         st.Page(
-            "pages/31_币量化总览.py",
+            "pages/31_crypto_quant_overview.py",
             title="币量化总览",
             icon=":material/currency_bitcoin:",
         ),
         st.Page(
-            "pages/34_欧易账户总览.py",
+            "pages/34_okx_account_overview.py",
             title="欧易账户总览",
             icon=":material/account_balance_wallet:",
         ),
         st.Page(
-            "pages/33_币策略复盘与执行质量.py",
+            "pages/33_crypto_strategy_review.py",
             title="策略复盘与执行质量",
             icon=":material/summarize:",
         ),
         st.Page(
-            "pages/32_币策略配置与回测.py",
+            "pages/32_crypto_strategy_config_backtest.py",
             title="币策略配置与回测",
             icon=":material/candlestick_chart:",
         ),
         st.Page(
-            "pages/38_合约量化总览.py",
+            "pages/38_futures_quant_overview.py",
             title="合约量化总览",
             icon=":material/radar:",
         ),
         st.Page(
-            "pages/35_合约账户总览.py",
+            "pages/35_futures_account_overview.py",
             title="合约账户总览",
             icon=":material/account_balance:",
         ),
         st.Page(
-            "pages/36_永续合约策略.py",
+            "pages/36_perpetual_futures_strategy.py",
             title="永续合约策略",
             icon=":material/swap_vert:",
         ),
         st.Page(
-            "pages/37_合约策略复盘.py",
+            "pages/37_futures_strategy_review.py",
             title="合约策略复盘",
             icon=":material/assessment:",
         ),
     ],
     "风控与审批": [
-        st.Page("pages/7_风控中心.py", title="风控中心", icon=":material/shield:"),
-        st.Page("pages/27_实盘交易控制.py", title="实盘交易控制", icon=":material/lock_open:"),
-        st.Page("pages/14_组合风险.py", title="组合风险", icon=":material/donut_large:"),
-        st.Page("pages/9_上线审批.py", title="上线审批", icon=":material/approval:"),
-        st.Page("pages/17_策略验证中心.py", title="策略验证中心", icon=":material/fact_check:"),
-        st.Page("pages/20_长期验证.py", title="长期验证", icon=":material/timeline:"),
+        st.Page("pages/7_risk_center.py", title="风控中心", icon=":material/shield:"),
+        st.Page("pages/27_live_trading_control.py", title="实盘交易控制", icon=":material/lock_open:"),
+        st.Page("pages/14_portfolio_risk.py", title="组合风险", icon=":material/donut_large:"),
+        st.Page("pages/9_launch_approval.py", title="上线审批", icon=":material/approval:"),
+        st.Page("pages/17_strategy_validation_center.py", title="策略验证中心", icon=":material/fact_check:"),
+        st.Page("pages/20_long_term_validation.py", title="长期验证", icon=":material/timeline:"),
     ],
     "研究与系统": [
-        st.Page("pages/21_研究与证据中心.py", title="研究与证据中心", icon=":material/lab_profile:"),
-        st.Page("pages/22_数据研究中心.py", title="数据研究中心", icon=":material/science:"),
-        st.Page("pages/6_系统监控.py", title="系统监控", icon=":material/monitoring:"),
-        st.Page("pages/8_运行日志.py", title="运行日志", icon=":material/article:"),
-        st.Page("pages/19_稳定性运营中心.py", title="稳定性运营中心", icon=":material/monitor_heart:"),
-        st.Page("pages/18_基础设施与灾备.py", title="基础设施与灾备", icon=":material/dns:"),
+        st.Page("pages/21_research_evidence_center.py", title="研究与证据中心", icon=":material/lab_profile:"),
+        st.Page("pages/22_data_research_center.py", title="数据研究中心", icon=":material/science:"),
+        st.Page("pages/6_system_monitor.py", title="系统监控", icon=":material/monitoring:"),
+        st.Page("pages/8_runtime_log.py", title="运行日志", icon=":material/article:"),
+        st.Page("pages/19_stability_operations_center.py", title="稳定性运营中心", icon=":material/monitor_heart:"),
+        st.Page("pages/18_infrastructure_disaster_recovery.py", title="基础设施与灾备", icon=":material/dns:"),
     ],
 }
 current_page = st.navigation(navigation, position="sidebar")
@@ -165,14 +165,14 @@ with st.container(border=True):
     else:
         st.caption("当前交易日没有发现阻断或失败记录。")
     st.page_link(
-        "pages/26_交易诊断中心.py", label="打开交易诊断中心",
+        "pages/26_trade_diagnostics_center.py", label="打开交易诊断中心",
         icon=":material/troubleshoot:",
     )
 with st.container(border=True):
     st.subheader("推荐工作入口")
     st.caption("如果你今天主要是调策略、看证据、查问题，先打开这里。")
     st.page_link(
-        "pages/21_研究与证据中心.py",
+        "pages/21_research_evidence_center.py",
         label="打开研究与证据中心",
         icon=":material/lab_profile:",
     )
@@ -209,6 +209,23 @@ def position_amount(frame: pd.DataFrame) -> float:
         price = pd.to_numeric(frame["nominal_price"], errors="coerce").fillna(0.0)
         return float((qty * price).sum())
     return 0.0
+
+
+def option_position_display(frame: pd.DataFrame) -> pd.DataFrame:
+    """Keep the option P/L and cost fields adjacent in the account overview."""
+    display = chinese_columns(frame)
+    if display.empty:
+        return display
+    columns = display.columns.tolist()
+    if "盈亏比例" not in columns:
+        return display
+    insert_at = columns.index("盈亏比例") + 1
+    for column in ("盈亏金额", "成本价"):
+        if column in columns:
+            columns.remove(column)
+            columns.insert(insert_at, column)
+            insert_at += 1
+    return display[columns]
 
 
 def shadow_positions_frame(store: TradingStore) -> pd.DataFrame:
@@ -294,7 +311,7 @@ try:
                     border=True,
                 )
             st.page_link(
-                "pages/28_期权盈亏台账.py",
+                "pages/28_options_pnl_ledger.py",
                 label="打开期权盈亏台账查看逐笔期权盈亏",
                 icon=":material/price_check:",
             )
@@ -341,9 +358,9 @@ try:
             if option_positions.empty:
                 st.info("当前富途模拟账户没有期权持仓。")
             else:
-                st.dataframe(chinese_columns(option_positions), hide_index=True)
+                st.dataframe(option_position_display(option_positions), hide_index=True)
                 st.page_link(
-                    "pages/28_期权盈亏台账.py",
+                    "pages/28_options_pnl_ledger.py",
                     label="查看期权逐笔盈亏和已平仓历史",
                     icon=":material/price_check:",
                 )
@@ -351,15 +368,27 @@ try:
             if shadow_positions.empty:
                 st.info("当前没有 Shadow 虚拟持仓。")
             else:
-                shadow_view = shadow_positions.rename(columns={
-                    "strategy_id": "策略",
-                    "symbol": "代码",
-                    "quantity": "数量",
-                    "average_cost": "平均成本",
-                    "asset_class": "资产类型",
-                    "notional": "估算名义金额",
-                })
-                st.dataframe(shadow_view, hide_index=True)
+                shadow_stock_tab, shadow_option_tab, shadow_all_tab = st.tabs([
+                    "Shadow 股票/ETF", "Shadow 期权", "全部 Shadow 持仓",
+                ])
+                for tab, frame, empty_message in (
+                    (shadow_stock_tab, shadow_stocks, "当前没有 Shadow 股票/ETF 持仓。"),
+                    (shadow_option_tab, shadow_options, "当前没有 Shadow 期权持仓。"),
+                    (shadow_all_tab, shadow_positions, "当前没有 Shadow 虚拟持仓。"),
+                ):
+                    with tab:
+                        if frame.empty:
+                            st.info(empty_message)
+                        else:
+                            view = frame.rename(columns={
+                                "strategy_id": "策略",
+                                "symbol": "代码",
+                                "quantity": "数量",
+                                "average_cost": "平均成本",
+                                "asset_class": "资产类型",
+                                "notional": "估算名义金额",
+                            })
+                            st.dataframe(view, hide_index=True)
                 st.caption(
                     "Shadow 是本地虚拟撮合账本，用来验证策略；不是富途模拟账户真实持仓。"
                 )

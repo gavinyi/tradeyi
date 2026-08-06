@@ -5,7 +5,9 @@ import time
 
 from futu_quant.broker import FutuPaperBroker
 from futu_quant.config import Settings
-from futu_quant.core_satellite import STRATEGY_NAME, build_rebalance_plan, rebalance_due
+from futu_quant.core_satellite import (
+    CORE_MAX_WEIGHTS, STRATEGY_NAME, build_rebalance_plan, rebalance_due,
+)
 from futu_quant.core_validation import (
     record_core_validation_session,
     resolve_core_rebalance_settings,
@@ -164,6 +166,15 @@ def run_once(
                             "rebalance_reduction_delta": planned_reduction_delta,
                             "current_weight": order.current_weight,
                             "target_weight": order.target_weight,
+                            "portfolio_bucket": (
+                                "CORE" if order.symbol in CORE_MAX_WEIGHTS else "SATELLITE"
+                            ),
+                            "bucket_budget": (
+                                settings.core_satellite_core_budget
+                                if order.symbol in CORE_MAX_WEIGHTS else
+                                settings.core_satellite_satellite_budget
+                            ),
+                            "cash_buffer": settings.core_satellite_cash_buffer,
                             **validation_payload,
                         },
                     )

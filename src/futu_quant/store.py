@@ -11,6 +11,34 @@ from typing import Iterator
 DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "trading.db"
 
 
+def _json_safe(value, active: set[int] | None = None):
+    """Return a JSON-compatible copy and cut accidental object cycles."""
+    active = active if active is not None else set()
+    if isinstance(value, dict):
+        identity = id(value)
+        if identity in active:
+            return "<循环引用>"
+        active.add(identity)
+        result = {str(key): _json_safe(item, active) for key, item in value.items()}
+        active.remove(identity)
+        return result
+    if isinstance(value, (list, tuple, set)):
+        identity = id(value)
+        if identity in active:
+            return "<循环引用>"
+        active.add(identity)
+        result = [_json_safe(item, active) for item in value]
+        active.remove(identity)
+        return result
+    return value
+
+
+def _json_dumps(value) -> str:
+    return json.dumps(
+        _json_safe(value), separators=(",", ":"), ensure_ascii=False, default=str,
+    )
+
+
 class TradingStore:
     def __init__(self, path: Path | str = DEFAULT_DB):
         self.path = Path(path)
@@ -719,7 +747,7 @@ class TradingStore:
         with self.connection() as connection:
             connection.execute(
                 "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at) VALUES(?,?,?,?)",
-                (event_type, strategy_id, json.dumps(payload, separators=(",", ":")), self.now()),
+                (event_type, strategy_id, _json_dumps(payload), self.now()),
             )
 
     def intents(self, limit: int = 500) -> list[dict]:
@@ -1543,7 +1571,7 @@ class TradingStore:
                 """INSERT INTO decision_logs
                 (strategy_id,symbol,decision,reason,payload_json,created_at) VALUES(?,?,?,?,?,?)""",
                 (strategy_id, symbol, decision, reason,
-                 json.dumps(payload or {}, separators=(",", ":")), self.now()),
+                 _json_dumps(payload or {}), self.now()),
             )
 
     def decision_if_changed(
@@ -1826,7 +1854,7 @@ class TradingStore:
         with self.connection() as connection:
             connection.execute(
                 "INSERT INTO operational_events(component,event_type,status,payload_json,created_at) VALUES(?,?,?,?,?)",
-                (component, event_type, status, json.dumps(payload or {}, separators=(",", ":"), default=str), self.now()),
+                (component, event_type, status, _json_dumps(payload or {}), self.now()),
             )
 
     def operational_events(self, limit: int = 500) -> list[dict]:

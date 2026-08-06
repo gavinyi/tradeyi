@@ -11,7 +11,8 @@ import time
 from zoneinfo import ZoneInfo
 
 from futu_quant.alerts import AlertManager
-from futu_quant.broker import FutuPaperBroker
+from futu_quant.approval import publish_approval_runtime_manifest
+from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings
 from futu_quant.execution import ExecutionManager
 from futu_quant.market_calendar import USMarketCalendar
@@ -23,6 +24,7 @@ from futu_quant.earnings_calendar import refresh_earnings_events, sync_campaign_
 from futu_quant.order_push import open_order_push
 from futu_quant.recovery import daily_operations_report, startup_recovery
 from futu_quant.correlation_risk import update_correlation_clusters
+from futu_quant.core_validation import load_core_daily_validation
 from futu_quant.config import load_gamma_campaigns, upsert_campaign
 from futu_quant.campaign_cleanup import cleanup_expired_campaigns
 from futu_quant.account_metrics import account_pnl_metrics
@@ -112,6 +114,27 @@ def mark_run(store: TradingStore, key: str, now: datetime) -> None:
     store.set_setting(key, now.isoformat())
 
 
+def core_rebalance_window(store: TradingStore, session, now: datetime) -> tuple[bool, str]:
+    """Select the normal pre-close run or a missed daily-validation catch-up."""
+    key = "last_run:core_satellite"
+    if session.pre_close(now, 15):
+        return due(store, key, 20 * 60 * 60, now), "收盘前 15 分钟调仓窗口"
+    validation = load_core_daily_validation(store, now)
+    catchup_delay = max(5, int(os.getenv("CORE_CATCHUP_AFTER_OPEN_MINUTES", "30")))
+    if not validation.active or not session.regular_open(now):
+        return False, "等待收盘前 15 分钟调仓窗口"
+    if now < session.market_open + timedelta(minutes=catchup_delay):
+        return False, f"每日验证补偿将在开盘 {catchup_delay} 分钟后启用"
+    raw = store.get_setting(key, "")
+    try:
+        last_run = datetime.fromisoformat(raw).astimezone(NY) if raw else None
+    except ValueError:
+        last_run = None
+    if last_run is None or last_run.date() < now.date():
+        return True, "检测到每日加速验证漏跑，本交易日执行一次补偿调仓"
+    return False, "本交易日每日加速验证已执行"
+
+
 def run_task(
     store: TradingStore, alerts: AlertManager, strategy_id: str, callback,
     timeout_seconds: float | None = None,
@@ -149,6 +172,20 @@ def run_task(
             incident_key=f"STRATEGY_ERROR:{strategy_id}",
         )
         return True
+    except BrokerError as exc:
+        duration = time.monotonic() - started
+        message = str(exc)
+        store.finish_task_run(run_id, "DEGRADED", duration, message)
+        store.set_setting(
+            f"task_backoff_until:{strategy_id}",
+            (datetime.now(NY) + timedelta(seconds=15)).isoformat(),
+        )
+        store.heartbeat(strategy_id, "DEGRADED", message, os.getpid())
+        alerts.send(
+            "WARNING", "OPEND_UNAVAILABLE",
+            "富途 OpenD 暂不可用，相关券商任务已统一进入退避并会自动恢复",
+        )
+        return False
     except Exception as exc:
         duration = time.monotonic() - started
         store.finish_task_run(run_id, "ERROR", duration, str(exc))
@@ -300,8 +337,8 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
                     "ERROR", "LEDGER_MISMATCH",
                     f"三账对账发现 {len(mismatches)} 个标的差异，相关策略已暂停",
                 )
-        run_task(store, alerts, "ledger_reconciliation", ledger_check)
-        mark_run(store, "last_run:ledger_reconciliation", now)
+        if run_task(store, alerts, "ledger_reconciliation", ledger_check):
+            mark_run(store, "last_run:ledger_reconciliation", now)
 
     configured_env = {
         value.strip() for value in os.getenv(
@@ -353,16 +390,23 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
             )
             mark_run(store, key, now)
 
-    if "Core Satellite" in configured and session.pre_close(now, 15):
+    core_due, core_reason = core_rebalance_window(store, session, now)
+    if "Core Satellite" in configured and core_due:
         key = "last_run:core_satellite"
-        if due(store, key, 20 * 60 * 60, now):
-            run_task(
-                store, alerts, "core_satellite",
-                lambda: run_strategy_once(broker, "Core Satellite", executor),
-            )
+        succeeded = run_task(
+            store, alerts, "core_satellite",
+            lambda: run_strategy_once(broker, "Core Satellite", executor),
+        )
+        if succeeded:
             mark_run(store, key, now)
+            if "补偿调仓" in core_reason:
+                store.audit(
+                    "CORE_DAILY_VALIDATION_CATCHUP",
+                    {"trading_date_ny": now.date().isoformat(), "reason": core_reason},
+                    "core_satellite",
+                )
     elif "Core Satellite" in configured:
-        store.heartbeat("core_satellite", "HEALTHY", "等待收盘前 15 分钟调仓窗口", os.getpid())
+        store.heartbeat("core_satellite", "HEALTHY", core_reason, os.getpid())
     store.heartbeat("trading_service", "HEALTHY", f"调度循环完成 · {now:%F %T %Z}", os.getpid())
     if due(store, "last_run:maintenance", 300, now):
         run_task(store, alerts, "system_health", lambda: maintenance(store, broker))
@@ -514,16 +558,30 @@ def main() -> None:
         lock.flush()
         PID_FILE.write_text(str(os.getpid()))
         store = TradingStore()
+        runtime_manifest = publish_approval_runtime_manifest(store, os.getpid())
         ensure_default_budgets(store)
         sync_strategy_experiments(store, settings)
-        store.operational_event("trading_service", "PROCESS_START", "STARTING", {"pid": os.getpid()})
+        store.operational_event(
+            "trading_service", "PROCESS_START", "STARTING",
+            {"pid": os.getpid(), "approval_runtime_manifest": runtime_manifest},
+        )
+        try:
+            from futu_quant.radar_control import start as start_radar
+            start_radar()
+        except Exception as exc:
+            store.operational_event(
+                "volatility_scanner", "AUTO_START", "DEGRADED", {"error": str(exc)},
+            )
         push_context = None
         try:
             try:
                 push_context = open_order_push(FutuPaperBroker(settings), store)
             except Exception as exc:
                 store.set_setting("order_push_connected", "false")
-                store.heartbeat("order_push", "ERROR", f"推送连接失败，已启用轮询兜底：{exc}", os.getpid())
+                store.heartbeat(
+                    "order_push", "DEGRADED",
+                    f"推送连接失败，已启用轮询兜底：{exc}", os.getpid(),
+                )
             try:
                 broker = FutuPaperBroker(settings)
                 startup_recovery(store, broker, ExecutionManager(broker, store))
@@ -537,7 +595,9 @@ def main() -> None:
                         push_context = open_order_push(FutuPaperBroker(settings), store)
                     except Exception as exc:
                         store.set_setting("order_push_connected", "false")
-                        store.heartbeat("order_push", "ERROR", f"等待自动重连：{exc}", os.getpid())
+                        store.heartbeat(
+                            "order_push", "DEGRADED", f"等待自动重连：{exc}", os.getpid(),
+                        )
                 try:
                     settings = Settings.load(refresh=True)
                     service_cycle(settings, store)

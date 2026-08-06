@@ -31,7 +31,7 @@
 ### Task 2: Upgrade the strategy console
 
 **Files:**
-- Modify: `pages/15_策略控制台.py`
+- Modify: `pages/15_strategy_control_center.py`
 - Modify: `app.py`
 
 **Interfaces:** Consumes `service_control`, `radar_control`, and existing TradingStore settings.
@@ -45,11 +45,11 @@
 ### Task 3: Make monitoring and strategy pages read-only
 
 **Files:**
-- Modify: `pages/6_系统监控.py`
-- Modify: `pages/5_财报Gamma策略.py`
-- Modify: `pages/10_波动率期权策略.py`
+- Modify: `pages/6_system_monitor.py`
+- Modify: `pages/5_earnings_gamma_strategy.py`
+- Modify: `pages/10_volatility_options_strategy.py`
 
-**Interfaces:** These pages display status and link to `pages/15_策略控制台.py`.
+**Interfaces:** These pages display status and link to `pages/15_strategy_control_center.py`.
 
 - [ ] Remove duplicate write controls and now-unused imports/admin dependencies.
 - [ ] Add status summaries and page links.

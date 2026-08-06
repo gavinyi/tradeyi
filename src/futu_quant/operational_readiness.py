@@ -43,6 +43,17 @@ def audit_streamlit_pages(root: Path | str = ROOT) -> dict:
         form_keys: dict[str, int] = {}
         state_assignments: dict[str, int] = {}
         for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.IfExp)
+                and _contains_streamlit_render_call(node.value)
+            ):
+                issues.append({
+                    "页面": relative,
+                    "行号": node.lineno,
+                    "级别": "错误",
+                    "问题": "禁止用裸三元表达式调用 Streamlit 渲染函数；其返回值会被 magic 再次输出",
+                })
             if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
@@ -80,6 +91,14 @@ def audit_streamlit_pages(root: Path | str = ROOT) -> dict:
     return {"passed": errors == 0, "pages_checked": checked, "errors": errors,
             "warnings": len(issues) - errors, "issues": issues,
             "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _contains_streamlit_render_call(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Call)
+        and _call_name(child.func).startswith(("st.", "streamlit."))
+        for child in ast.walk(node)
+    )
 
 
 def _call_name(node: ast.AST) -> str:

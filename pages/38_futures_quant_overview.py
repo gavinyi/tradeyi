@@ -29,11 +29,17 @@ if not settings.credentials_configured:
 overview_tab, shadow_tab, action_tab = st.tabs(["运行总览", "Shadow 合约持仓", "常用入口"])
 with overview_tab:
     st.subheader("雷达托管标的")
-    st.dataframe({"合约": managed, "来源": ["合约雷达托管"] * len(managed)}, hide_index=True) if managed else st.info("当前没有雷达托管标的。")
+    if managed:
+        st.dataframe({"合约": managed, "来源": ["合约雷达托管"] * len(managed)}, hide_index=True)
+    else:
+        st.info("当前没有雷达托管标的。")
 with shadow_tab:
     st.subheader("Shadow 合约持仓")
-    st.dataframe(shadow, hide_index=True) if shadow else st.info("当前没有 Shadow 合约持仓。")
+    if shadow:
+        st.dataframe(shadow, hide_index=True)
+    else:
+        st.info("当前没有 Shadow 合约持仓。")
 with action_tab:
-    st.page_link("pages/36_永续合约策略.py", label="打开永续合约策略", icon=":material/swap_vert:")
-    st.page_link("pages/37_合约策略复盘.py", label="打开合约策略复盘", icon=":material/assessment:")
-    st.page_link("pages/35_合约账户总览.py", label="打开合约账户总览", icon=":material/account_balance:")
+    st.page_link("pages/36_perpetual_futures_strategy.py", label="打开永续合约策略", icon=":material/swap_vert:")
+    st.page_link("pages/37_futures_strategy_review.py", label="打开合约策略复盘", icon=":material/assessment:")
+    st.page_link("pages/35_futures_account_overview.py", label="打开合约账户总览", icon=":material/account_balance:")

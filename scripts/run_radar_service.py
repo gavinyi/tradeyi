@@ -20,6 +20,7 @@ from futu_quant.radar_schedule import (
     save_radar_schedule_state,
 )
 from futu_quant.store import TradingStore
+from futu_quant.service_control import status as trading_service_status
 from futu_quant.volatility_scanner import scan_volatility_watchlist
 
 
@@ -96,11 +97,18 @@ def main() -> None:
                         created_count = sum(
                             1 for item in results if item.get("campaign_created")
                         )
+                        trading_service = trading_service_status()
+                        execution_state = (
+                            "扫描与交易执行链在线"
+                            if trading_service.running and not trading_service.restart_pending
+                            else "仅扫描，不交易：统一交易服务未就绪"
+                        )
                         store.heartbeat(
                             "volatility_scanner", "HEALTHY",
                             f"已扫描 {len(symbols)} 个自选标的，触发 {active_count} 个，"
                             f"新增自动期权 {created_count} 个；"
-                            f"耗时 {scan_duration:.1f} 秒，下次间隔 {next_wait_seconds} 秒",
+                            f"耗时 {scan_duration:.1f} 秒，下次间隔 {next_wait_seconds} 秒；"
+                            f"{execution_state}",
                             os.getpid(),
                         )
                     except Exception as exc:

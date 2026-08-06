@@ -195,3 +195,43 @@ def test_active_signal_records_visible_rejection_when_no_contract_passes(monkeyp
         item["event_type"] == "VOLATILITY_AUTO_CAMPAIGN_REJECTED"
         for item in store.audits
     )
+
+
+def test_rejected_candidate_enters_cooldown_until_signal_strengthens(monkeypatch):
+    broker = FakeBroker()
+    store = FakeStore()
+    roll_calls = []
+
+    class FakeAlertManager:
+        def __init__(self, _store):
+            pass
+
+        def send(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda: [])
+    monkeypatch.setattr(scanner, "AlertManager", FakeAlertManager)
+    monkeypatch.setattr(
+        scanner, "volatility_threshold_profile",
+        lambda _bars: {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
+    )
+    monkeypatch.setattr(
+        scanner, "volatility_regime",
+        lambda *_args: {
+            "active": True, "reason": "全部条件通过", "checks": [],
+            "intraday_return": .04, "zscore_20d": 2.5, "atr_ratio": 2,
+            "volume_ratio": 2, "direction_score": 3,
+        },
+    )
+
+    def reject(_broker, seed, _store):
+        roll_calls.append(seed)
+        return {**seed, "_roll_diagnostics": {}}, "IV 成本过高"
+
+    monkeypatch.setattr(scanner, "roll_campaign", reject)
+
+    scanner.scan_volatility_watchlist(broker, store, ("US.AMD",))
+    second = scanner.scan_volatility_watchlist(broker, store, ("US.AMD",))
+
+    assert len(roll_calls) == 1
+    assert "冷却中" in second[0]["campaign_reason"]

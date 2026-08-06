@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PID_FILE = ROOT / "data" / "trading-service.pid"
 LOG_FILE = ROOT / "data" / "service.log"
 STOP_FILE = ROOT / "data" / "trading-service.stop"
+RESTART_FILE = ROOT / "data" / "trading-service.restart"
+LAUNCHD_LABEL = "com.futu.paperquant"
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,7 @@ class ServiceStatus:
     pid: int | None = None
     message: str = ""
     uptime_seconds: float = 0
+    restart_pending: bool = False
 
 
 def _pid_alive(pid: int) -> bool:
@@ -36,6 +39,18 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+def _launchd_target() -> str:
+    return f"gui/{os.getuid()}/{LAUNCHD_LABEL}"
+
+
+def _launchd_registered() -> bool:
+    result = subprocess.run(  # noqa: S603
+        ["launchctl", "print", _launchd_target()],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+    return result.returncode == 0
+
+
 def status() -> ServiceStatus:
     if not PID_FILE.exists():
         return ServiceStatus(False, message="服务未启动")
@@ -44,8 +59,13 @@ def status() -> ServiceStatus:
         if not _pid_alive(pid):
             return ServiceStatus(False, message="服务未运行")
         uptime = max(0, datetime.now(timezone.utc).timestamp() - PID_FILE.stat().st_mtime)
-        message = "服务正在停止；当前任务结束后会退出" if STOP_FILE.exists() else "服务运行中"
-        return ServiceStatus(True, pid, message, uptime)
+        if RESTART_FILE.exists():
+            message = "服务正在重启；旧进程退出后会自动接棒"
+        elif STOP_FILE.exists():
+            message = "服务正在停止；当前任务结束后会退出"
+        else:
+            message = "服务运行中"
+        return ServiceStatus(True, pid, message, uptime, RESTART_FILE.exists())
     except ValueError:
         return ServiceStatus(False, message="服务未运行")
 
@@ -60,7 +80,18 @@ def start() -> ServiceStatus:
             pass
         return current
     STOP_FILE.unlink(missing_ok=True)
+    RESTART_FILE.unlink(missing_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if _launchd_registered():
+        subprocess.run(  # noqa: S603
+            ["launchctl", "kickstart", _launchd_target()],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        for _ in range(30):
+            time.sleep(0.1)
+            current = status()
+            if current.running:
+                return current
     log = LOG_FILE.open("a")
     process = subprocess.Popen(  # noqa: S603
         [sys.executable, str(ROOT / "scripts" / "run_service.py")], cwd=ROOT,
@@ -83,15 +114,16 @@ def start() -> ServiceStatus:
     return current
 
 
-def stop() -> ServiceStatus:
+def stop(*, stop_radar: bool = True) -> ServiceStatus:
     current = status()
     if not current.running or current.pid is None:
         PID_FILE.unlink(missing_ok=True)
-        try:
-            from .radar_control import stop as stop_radar
-            stop_radar()
-        except Exception:
-            pass
+        if stop_radar:
+            try:
+                from .radar_control import stop as stop_radar_service
+                stop_radar_service()
+            except Exception:
+                pass
         return ServiceStatus(False, message="服务已经停止")
     STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
     STOP_FILE.touch()
@@ -108,19 +140,61 @@ def stop() -> ServiceStatus:
         )
     PID_FILE.unlink(missing_ok=True)
     STOP_FILE.unlink(missing_ok=True)
-    try:
-        from .radar_control import stop as stop_radar
-        stop_radar()
-    except Exception:
-        pass
+    if stop_radar:
+        try:
+            from .radar_control import stop as stop_radar_service
+            stop_radar_service()
+        except Exception:
+            pass
     return ServiceStatus(False, message="服务已停止")
 
 
 def restart() -> ServiceStatus:
-    stopped = stop()
-    if stopped.running:
+    current = status()
+    if RESTART_FILE.exists():
         return ServiceStatus(
-            True, stopped.pid, "旧服务仍在停止中；为防止双实例，暂未启动新服务",
-            stopped.uptime_seconds,
+            current.running, current.pid, "重启请求已排队，请勿重复点击",
+            current.uptime_seconds, True,
         )
+    if not current.running or current.pid is None:
+        return start()
+    RESTART_FILE.parent.mkdir(parents=True, exist_ok=True)
+    RESTART_FILE.write_text(str(current.pid))
+    stopped = stop(stop_radar=False)
+    if stopped.running:
+        with LOG_FILE.open("a") as log:
+            subprocess.Popen(  # noqa: S603
+                [sys.executable, "-m", "futu_quant.service_control", "handoff", str(current.pid)],
+                cwd=ROOT, stdout=log, stderr=log, start_new_session=True,
+            )
+        return ServiceStatus(
+            True, stopped.pid, "旧服务正在停止；退出后会自动启动新服务",
+            stopped.uptime_seconds, True,
+        )
+    RESTART_FILE.unlink(missing_ok=True)
     return start()
+
+
+def _handoff(previous_pid: int, timeout_seconds: float = 180) -> ServiceStatus:
+    """Wait for the previous singleton to exit, then start exactly one successor."""
+    deadline = time.monotonic() + max(10, timeout_seconds)
+    while time.monotonic() < deadline and _pid_alive(previous_pid):
+        time.sleep(0.25)
+    if _pid_alive(previous_pid):
+        RESTART_FILE.unlink(missing_ok=True)
+        return ServiceStatus(
+            True, previous_pid, "旧服务超时未退出，已取消自动接棒以避免双实例",
+        )
+    PID_FILE.unlink(missing_ok=True)
+    STOP_FILE.unlink(missing_ok=True)
+    RESTART_FILE.unlink(missing_ok=True)
+    return start()
+
+
+def _main() -> None:
+    if len(sys.argv) == 3 and sys.argv[1] == "handoff":
+        _handoff(int(sys.argv[2]))
+
+
+if __name__ == "__main__":
+    _main()

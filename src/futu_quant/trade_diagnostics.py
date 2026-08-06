@@ -141,6 +141,15 @@ def _trade_amounts(
     )
     return {
         "交易方向": _side_label(side),
+        "组合分区": {
+            "CORE": "Core 核心仓",
+            "SATELLITE": "Satellite 增强仓",
+        }.get(str(metadata.get("portfolio_bucket", "")).upper(), ""),
+        "择时/择标的依据": metadata.get("trade_reason", metadata.get("reason", "")),
+        "当前权重": _optional_number(metadata.get("current_weight")),
+        "目标权重": _optional_number(metadata.get("target_weight")),
+        "分区预算": _optional_number(metadata.get("bucket_budget")),
+        "现金缓冲": _optional_number(metadata.get("cash_buffer")),
         "完整目标数量": _quantity(metadata.get("desired_quantity")),
         "当前执行批次": metadata.get("execution_slice"),
         "总批数": metadata.get("total_slices"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from numbers import Number
 
 import pandas as pd
 import streamlit as st
@@ -502,6 +503,33 @@ def chinese_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
             result[column] = result[column].map(translate)
     result = result.rename(columns={column: COLUMN_NAMES.get(column, column) for column in result.columns})
+    # Futu may return a number for one option row and a placeholder such as
+    # "--" for another. Arrow rejects object columns containing both types.
+    # Normalize only mixed display columns and retain genuine numeric columns.
+    for column in result.columns:
+        if not pd.api.types.is_object_dtype(result[column]):
+            continue
+        values = result[column].dropna()
+        if values.empty or all(
+            isinstance(value, Number) and not isinstance(value, bool)
+            for value in values
+        ):
+            result[column] = pd.to_numeric(result[column], errors="coerce")
+        elif any(
+            isinstance(value, Number) and not isinstance(value, bool)
+            for value in values
+        ):
+            def display_value(value: object) -> str:
+                if value is None:
+                    return ""
+                missing = pd.isna(value)
+                if isinstance(missing, bool) and missing:
+                    return ""
+                return str(value)
+
+            result[column] = result[column].map(
+                display_value
+            )
     if not result.columns.duplicated().any():
         return result
     merged: dict[str, pd.Series] = {}

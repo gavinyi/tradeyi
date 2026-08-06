@@ -190,7 +190,7 @@ Expected: all tests pass and Ruff reports no errors.
 ### Task 3: Streamlit schedule visibility
 
 **Files:**
-- Modify: `pages/10_波动率期权策略.py`
+- Modify: `pages/10_volatility_options_strategy.py`
 - Modify: `tests/test_radar_schedule.py`
 
 **Interfaces:**
@@ -201,7 +201,7 @@ Expected: all tests pass and Ruff reports no errors.
 
 ```python
 def test_volatility_page_exposes_adaptive_schedule_state():
-    source = (Path(__file__).parents[1] / "pages" / "10_波动率期权策略.py").read_text()
+    source = (Path(__file__).parents[1] / "pages" / "10_volatility_options_strategy.py").read_text()
     assert "load_radar_schedule_state" in source
     assert "预计下次扫描" in source
     assert "2 至 15 分钟" in source
@@ -224,7 +224,7 @@ Convert `next_scan_at` from UTC to `Asia/Shanghai` before displaying “预计�
 
 - [ ] **Step 5: Validate the Streamlit page**
 
-Run: `UV_CACHE_DIR=.uv-cache uv run pytest -q tests/test_radar_schedule.py && UV_CACHE_DIR=.uv-cache uv run ruff check pages/10_波动率期权策略.py && UV_CACHE_DIR=.uv-cache uv run python scripts/check_streamlit_pages.py`
+Run: `UV_CACHE_DIR=.uv-cache uv run pytest -q tests/test_radar_schedule.py && UV_CACHE_DIR=.uv-cache uv run ruff check pages/10_volatility_options_strategy.py && UV_CACHE_DIR=.uv-cache uv run python scripts/check_streamlit_pages.py`
 
 Expected: schedule tests pass, Ruff is clean, and the 22-page static巡检 reports 0 errors and 0 warnings.
 
@@ -248,7 +248,7 @@ Expected: all tests pass.
 
 - [ ] **Step 2: Run full lint and Streamlit巡检**
 
-Run: `UV_CACHE_DIR=.uv-cache uv run ruff check src/futu_quant/radar_schedule.py scripts/run_radar_service.py pages/10_波动率期权策略.py tests/test_radar_schedule.py && UV_CACHE_DIR=.uv-cache uv run python scripts/check_streamlit_pages.py`
+Run: `UV_CACHE_DIR=.uv-cache uv run ruff check src/futu_quant/radar_schedule.py scripts/run_radar_service.py pages/10_volatility_options_strategy.py tests/test_radar_schedule.py && UV_CACHE_DIR=.uv-cache uv run python scripts/check_streamlit_pages.py`
 
 Expected: no lint errors; all 22 pages report 0 errors and 0 warnings.
 

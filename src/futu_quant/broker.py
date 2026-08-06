@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from typing import Iterator
 import os
 import socket
+import threading
 import time
 
 import pandas as pd
@@ -31,6 +32,11 @@ from .option_chain_cache import (
 
 class BrokerError(RuntimeError):
     pass
+
+
+_OPEND_HEALTH_LOCK = threading.Lock()
+_OPEND_FAILURES = 0
+_OPEND_BACKOFF_UNTIL = 0.0
 
 
 class FutuPaperBroker:
@@ -78,6 +84,15 @@ class FutuPaperBroker:
         return ctx
 
     def _ensure_opend_available(self) -> None:
+        global _OPEND_FAILURES, _OPEND_BACKOFF_UNTIL
+        now = time.monotonic()
+        with _OPEND_HEALTH_LOCK:
+            remaining = _OPEND_BACKOFF_UNTIL - now
+        if remaining > 0:
+            raise BrokerError(
+                f"富途 OpenD 连接处于自动退避，约 {remaining:.1f} 秒后重试；"
+                "本轮不会反复创建 SDK 连接"
+            )
         timeout = max(
             0.1, min(2.0, float(os.getenv("FUTU_PREFLIGHT_TIMEOUT_SECONDS", "0.5")))
         )
@@ -85,11 +100,25 @@ class FutuPaperBroker:
             with socket.create_connection(
                 (self.settings.host, self.settings.port), timeout=timeout
             ):
+                with _OPEND_HEALTH_LOCK:
+                    _OPEND_FAILURES = 0
+                    _OPEND_BACKOFF_UNTIL = 0.0
                 return
         except OSError as exc:
+            with _OPEND_HEALTH_LOCK:
+                _OPEND_FAILURES += 1
+                backoff = (
+                    min(
+                        60.0,
+                        float(os.getenv("FUTU_OPEND_MAX_BACKOFF_SECONDS", "60")),
+                        float(2 ** min(_OPEND_FAILURES - 2, 6)),
+                    )
+                    if _OPEND_FAILURES >= 2 else 0.0
+                )
+                _OPEND_BACKOFF_UNTIL = time.monotonic() + backoff
             raise BrokerError(
                 f"富途 OpenD 当前不可连接：{self.settings.host}:{self.settings.port}；"
-                "已停止本次查询，不会启动 SDK 后台重连线程"
+                f"已停止本次查询并退避 {backoff:.0f} 秒，不会启动 SDK 后台重连线程"
             ) from exc
 
     @staticmethod

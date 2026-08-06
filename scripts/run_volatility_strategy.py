@@ -4,6 +4,7 @@ from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_volatility_campaigns, upsert_campaign, delete_campaign
 from futu_quant.execution import ExecutionManager
 from futu_quant.volatility_roll import roll_campaign, should_replace_campaign
+from futu_quant.volatility_optimizer import volatility_entry_quality_allowed
 from datetime import date, datetime, timezone
 import os
 import pandas as pd
@@ -68,11 +69,24 @@ def run_once(reconcile: bool = True) -> None:
                 due_for_review = True
         expiry = pd.to_datetime(campaign.get("strike_time"), errors="coerce")
         needs_expiry_roll = pd.isna(expiry) or expiry.date() <= date.today()
+        quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
+            campaign,
+            default_min_score=float(campaign.get("minimum_entry_quality_score", 54)),
+            default_min_expected_return=float(
+                campaign.get("minimum_model_expected_return", .02)
+            ),
+        )
+        needs_quality_replacement = bool(
+            campaign.get("optimizer_version") == 2
+            and quantity <= 0
+            and pending.empty
+            and not quality_allowed
+        )
         should_review_expression = (
             campaign.get("enabled", True)
             and quantity <= 0
             and pending.empty
-            and due_for_review
+            and (due_for_review or needs_quality_replacement)
         )
         if needs_expiry_roll or should_review_expression:
             rolled, reason = roll_campaign(broker, campaign, executor.store)
@@ -80,6 +94,14 @@ def run_once(reconcile: bool = True) -> None:
                 (True, reason) if needs_expiry_roll
                 else should_replace_campaign(campaign, rolled)
             )
+            if needs_quality_replacement:
+                executor.store.audit("VOLATILITY_QUALITY_REPLACEMENT_REQUESTED", {
+                    "old_code": campaign.get("code"),
+                    "underlying": underlying,
+                    "quality_reason": quality_reason,
+                    "quality_checks": quality_checks,
+                    "roll_reason": reason,
+                }, "volatility_long_gamma")
             state[maintenance_key] = now.isoformat()
             if replace and rolled.get("code") != campaign.get("code"):
                 rolled_pairs.append((campaign.get("campaign_id", campaign.get("code")), rolled))
@@ -87,7 +109,9 @@ def run_once(reconcile: bool = True) -> None:
                     "old_code": campaign.get("code"), "new_code": rolled.get("code"),
                     "reason": reason, "replace_reason": replace_reason,
                     "maintenance_type": (
-                        "EXPIRY_ROLL" if needs_expiry_roll else "BEST_EXPRESSION_REVIEW"
+                        "EXPIRY_ROLL" if needs_expiry_roll else
+                        "QUALITY_REPLACEMENT" if needs_quality_replacement else
+                        "BEST_EXPRESSION_REVIEW"
                     ),
                 }, "volatility_long_gamma")
                 executor.store.decision(

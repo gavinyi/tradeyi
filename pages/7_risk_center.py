@@ -43,7 +43,7 @@ with data_tab:
         st.metric("单笔名义上限", f"${float(os.getenv('RISK_MAX_ORDER_NOTIONAL', '20000')):,.0f}", border=True)
         st.metric("高相关组合上限", f"{float(os.getenv('RISK_MAX_CORRELATED_DELTA_PCT', '0.50')):.0%}", border=True)
         st.metric("最大待成交订单", int(os.getenv("RISK_MAX_PENDING_ORDERS", "20")), border=True)
-    st.page_link("pages/14_组合风险.py", label="查看组合风险", icon=":material/donut_large:")
+    st.page_link("pages/14_portfolio_risk.py", label="查看组合风险", icon=":material/donut_large:")
 
 with config_tab:
     st.subheader("参数配置")
@@ -308,7 +308,7 @@ with config_tab:
             },
         )
     st.page_link(
-        "pages/15_策略控制台.py", label="前往策略与资金控制统一调整策略预算",
+        "pages/15_strategy_control_center.py", label="前往策略与资金控制统一调整策略预算",
         icon=":material/tune:",
     )
 
@@ -405,7 +405,10 @@ with config_tab:
     st.caption("系统只根据模拟成交生成建议，不会自动放宽或修改阈值；必须由管理员逐条确认。")
     if st.button("根据模拟数据生成校准建议"):
         generated = generate_recommendations(store)
-        st.success(f"已生成 {len(generated)} 条建议。") if generated else st.info("数据不足，暂时无法生成建议。")
+        if generated:
+            st.success(f"已生成 {len(generated)} 条建议。")
+        else:
+            st.info("数据不足，暂时无法生成建议。")
     recommendations = pd.DataFrame(store.risk_recommendations())
     pending_recommendations = recommendations[recommendations["status"] == "PENDING"] if not recommendations.empty else recommendations
     if pending_recommendations.empty:

@@ -550,6 +550,44 @@ def test_entry_confirmation_waits_before_first_open():
     assert "通过" in reason
 
 
+def test_strong_signal_uses_one_minute_dynamic_confirmation():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    regime = {
+        "active": True,
+        "strong_signal_override": True,
+        "trigger_confirmed": True,
+        "volume_confirmed": True,
+        "direction_confirmed": False,
+    }
+
+    allowed, reason = volatility_entry_confirmation(
+        now=now,
+        signal_started_at=(now - timedelta(minutes=1.1)).isoformat(),
+        regime=regime,
+        confirmation_minutes=5,
+    )
+
+    assert allowed
+    assert "强信号" in reason
+    assert "1 分钟" in reason
+
+
+def test_confirmed_adverse_direction_exits_before_option_hard_stop():
+    reason = volatility_exit_reason(
+        {"active": True, "contraction": False},
+        .50, .50, 1, 1,
+        pnl_ratio=-.12,
+        directional_confirmation=False,
+        current_delta=.25,
+        adverse_signal_confirmations=2,
+        adverse_signal_confirmations_required=2,
+    )
+
+    assert reason is not None
+    assert "方向连续2轮" in reason
+    assert "硬止损" in reason
+
+
 def test_conflicted_strong_signal_downgrades_size():
     factor, reason = volatility_direction_size_factor({
         "strong_signal_override": True,

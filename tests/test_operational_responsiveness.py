@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 import futu_quant.broker as broker_module
+from futu_quant.alerts import AlertManager
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.store import TradingStore
 import futu_quant.radar_control as radar_control
 import futu_quant.service_control as service_control
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from run_service import run_task  # noqa: E402
 
 
 def test_service_status_is_local_and_reports_stopping(tmp_path: Path, monkeypatch):
@@ -19,6 +24,7 @@ def test_service_status_is_local_and_reports_stopping(tmp_path: Path, monkeypatc
     stop_file.touch()
     monkeypatch.setattr(service_control, "PID_FILE", pid_file)
     monkeypatch.setattr(service_control, "STOP_FILE", stop_file)
+    monkeypatch.setattr(service_control, "RESTART_FILE", tmp_path / "service.restart")
     monkeypatch.setattr(service_control, "_pid_alive", lambda _pid: True)
 
     result = service_control.status()
@@ -26,6 +32,33 @@ def test_service_status_is_local_and_reports_stopping(tmp_path: Path, monkeypatc
     assert result.running is True
     assert result.pid == 12345
     assert "正在停止" in result.message
+
+
+def test_service_restart_is_debounced_and_queues_handoff(tmp_path: Path, monkeypatch):
+    restart_file = tmp_path / "service.restart"
+    log_file = tmp_path / "service.log"
+    launches = []
+    current = service_control.ServiceStatus(True, 12345, "服务运行中", 60)
+    monkeypatch.setattr(service_control, "RESTART_FILE", restart_file)
+    monkeypatch.setattr(service_control, "LOG_FILE", log_file)
+    monkeypatch.setattr(service_control, "status", lambda: current)
+    monkeypatch.setattr(
+        service_control, "stop",
+        lambda **_kwargs: service_control.ServiceStatus(True, 12345, "正在停止", 60),
+    )
+    monkeypatch.setattr(
+        service_control.subprocess, "Popen",
+        lambda *args, **kwargs: launches.append((args, kwargs)),
+    )
+
+    first = service_control.restart()
+    second = service_control.restart()
+
+    assert first.restart_pending is True
+    assert "自动启动" in first.message
+    assert second.restart_pending is True
+    assert "请勿重复点击" in second.message
+    assert len(launches) == 1
 
 
 def test_radar_status_reports_stopping_without_process_lookup(tmp_path: Path, monkeypatch):
@@ -72,6 +105,24 @@ def test_task_run_ledger_records_completion(tmp_path: Path):
     assert row["finished_at"] is not None
 
 
+def test_opend_task_failure_is_degraded_not_strategy_error(tmp_path: Path):
+    store = TradingStore(tmp_path / "opend.db")
+
+    result = run_task(
+        store, AlertManager(store), "system_health",
+        lambda: (_ for _ in ()).throw(BrokerError("OpenD 暂不可用")),
+    )
+
+    heartbeat = next(
+        row for row in store.heartbeats() if row["strategy_id"] == "system_health"
+    )
+    alerts = store.alerts(limit=20)
+    assert result is False
+    assert heartbeat["status"] == "DEGRADED"
+    assert any(row["event_type"] == "OPEND_UNAVAILABLE" for row in alerts)
+    assert not any(row["event_type"] == "STRATEGY_ERROR" for row in alerts)
+
+
 def test_broker_sets_bounded_sync_connect_timeout(monkeypatch):
     values: list[float] = []
 
@@ -105,6 +156,28 @@ def test_broker_does_not_construct_futu_context_when_opend_is_offline(monkeypatc
     with pytest.raises(BrokerError, match="OpenD 当前不可连接"):
         with _broker().quote_context():
             pass
+
+
+def test_repeated_opend_failures_enter_shared_backoff(monkeypatch):
+    calls = 0
+
+    def refuse(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise ConnectionRefusedError()
+
+    monkeypatch.setattr(broker_module, "_OPEND_FAILURES", 0)
+    monkeypatch.setattr(broker_module, "_OPEND_BACKOFF_UNTIL", 0.0)
+    monkeypatch.setattr(broker_module.socket, "create_connection", refuse)
+
+    with pytest.raises(BrokerError, match="当前不可连接"):
+        _broker()._ensure_opend_available()
+    with pytest.raises(BrokerError, match="当前不可连接"):
+        _broker()._ensure_opend_available()
+    with pytest.raises(BrokerError, match="自动退避"):
+        _broker()._ensure_opend_available()
+
+    assert calls == 2
 
 
 def test_quote_context_uses_async_constructor_and_is_closed(monkeypatch):

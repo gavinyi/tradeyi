@@ -6,14 +6,15 @@
   <key>Label</key><string>com.futu.paperquant</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/gavinyi/.local/bin/uv</string>
-    <string>run</string>
-    <string>python</string>
+    <string>/Users/gavinyi/Documents/My/trade/.venv/bin/python</string>
     <string>scripts/run_service.py</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/gavinyi/Documents/My/trade</string>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>/Users/gavinyi/Documents/My/trade/data/service.log</string>
   <key>StandardErrorPath</key><string>/Users/gavinyi/Documents/My/trade/data/service-error.log</string>

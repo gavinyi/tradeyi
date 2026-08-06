@@ -41,7 +41,7 @@
 ### Task 3: 独立配置入口
 
 **Files:**
-- Modify: `pages/10_波动率期权策略.py`
+- Modify: `pages/10_volatility_options_strategy.py`
 - Modify: `src/futu_quant/volatility_scanner.py`
 - Test: `tests/test_volatility_scanner.py`
 

@@ -57,10 +57,10 @@ with st.container(border=True):
     st.subheader("当前工作位置")
     st.caption("这里用于修改策略和执行操作；只查看运行状态请返回总览。")
     with st.container(horizontal=True):
-        st.page_link("pages/30_波动率策略总览.py", label="返回波动率策略总览", icon=":material/dashboard:")
-        st.page_link("pages/26_交易诊断中心.py", label="查看执行诊断", icon=":material/troubleshoot:")
-        st.page_link("pages/28_期权盈亏台账.py", label="查看期权盈亏", icon=":material/price_check:")
-        st.page_link("pages/15_策略控制台.py", label="设置执行模式", icon=":material/tune:")
+        st.page_link("pages/30_volatility_strategy_overview.py", label="返回波动率策略总览", icon=":material/dashboard:")
+        st.page_link("pages/26_trade_diagnostics_center.py", label="查看执行诊断", icon=":material/troubleshoot:")
+        st.page_link("pages/28_options_pnl_ledger.py", label="查看期权盈亏", icon=":material/price_check:")
+        st.page_link("pages/15_strategy_control_center.py", label="设置执行模式", icon=":material/tune:")
     with st.container(horizontal=True):
         _current_mode = store.get_setting("strategy_execution_mode:volatility_long_gamma", "INHERIT") or "INHERIT"
         _current_enabled = store.get_setting("strategy_enabled:Volatility Long Gamma", "false") == "true"
@@ -159,10 +159,10 @@ with data_tab:
         st.metric("最近执行记录", len(decisions), border=True)
         st.metric("最近扫描记录", len(scanner_rows), border=True)
     with st.container(horizontal=True):
-        st.page_link("pages/30_波动率策略总览.py", label="打开波动率策略总览", icon=":material/dashboard:")
-        st.page_link("pages/28_期权盈亏台账.py", label="查看期权盈亏", icon=":material/price_check:")
-        st.page_link("pages/26_交易诊断中心.py", label="查看执行诊断", icon=":material/troubleshoot:")
-        st.page_link("pages/4_订单管理.py", label="查看订单", icon=":material/receipt_long:")
+        st.page_link("pages/30_volatility_strategy_overview.py", label="打开波动率策略总览", icon=":material/dashboard:")
+        st.page_link("pages/28_options_pnl_ledger.py", label="查看期权盈亏", icon=":material/price_check:")
+        st.page_link("pages/26_trade_diagnostics_center.py", label="查看执行诊断", icon=":material/troubleshoot:")
+        st.page_link("pages/4_order_management.py", label="查看订单", icon=":material/receipt_long:")
     if campaigns:
         campaign_view = pd.DataFrame([{
             "期权代码": item.get("code", ""),
@@ -185,14 +185,14 @@ with data_tab:
     else:
         st.info("暂无已保存的波动率自动策略。")
     if decisions:
-        decision_view = pd.DataFrame(decisions[:30]).rename(columns={
+        decision_view = china_time_columns(pd.DataFrame(decisions[:30])).rename(columns={
             "symbol": "期权代码",
             "decision": "决策",
             "reason": "原因",
             "created_at": "时间（中国）",
         }).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
         st.dataframe(
-            translate_common_values(china_time_columns(decision_view)),
+            translate_common_values(decision_view),
             hide_index=True,
             height=360,
         )
@@ -582,6 +582,28 @@ with config_tab:
             value=setting_float("volatility_default_efficiency_decline_exit_ratio", 0.40),
             step=0.05,
         )
+        minimum_effective_delta = exit_right.number_input(
+            "最低有效 Delta", 0.05, 0.50,
+            value=setting_float("volatility_default_minimum_effective_delta", 0.18),
+            step=0.01,
+            help="亏损持仓的绝对 Delta 低于该值，且方向连续失效后，视为期权表达衰减。",
+        )
+        adverse_confirmations = exit_left.number_input(
+            "方向失效连续确认次数", 1, 10,
+            value=setting_int("volatility_default_adverse_signal_confirmations_required", 2),
+            help="正股方向与期权表达连续不一致达到该次数后，允许提前退出。",
+        )
+        adverse_exit_hold = exit_middle.number_input(
+            "方向失效退出最短持有分钟", 0, 1440,
+            value=setting_int("volatility_default_adverse_exit_minimum_hold_minutes", 20),
+            help="只用于连续方向失效或 Delta 衰减；硬止损仍立即生效。",
+        )
+        entry_confirmation_minutes = exit_right.number_input(
+            "入场二次确认基准分钟", 0.0, 30.0,
+            value=setting_float("volatility_default_entry_confirmation_minutes", 5.0),
+            step=0.5,
+            help="强信号自动缩短到最多1分钟，完整确认信号最多2.5分钟，边缘信号使用这里的基准值。",
+        )
         profit_protection_start = exit_left.number_input(
             "盈利保护启动阈值", 0.01, 2.0,
             value=setting_float("volatility_default_profit_protection_start", 0.15),
@@ -678,6 +700,10 @@ with config_tab:
         "iv_decline_exit_ratio": float(iv_decline_exit_ratio),
         "efficiency_decline_exit_ratio": float(efficiency_decline_exit_ratio),
         "contraction_confirmations_required": int(contraction_confirmations),
+        "minimum_effective_delta": float(minimum_effective_delta),
+        "adverse_signal_confirmations_required": int(adverse_confirmations),
+        "adverse_exit_minimum_hold_minutes": int(adverse_exit_hold),
+        "entry_confirmation_minutes": float(entry_confirmation_minutes),
         "profit_protection_start": float(profit_protection_start),
         "profit_protection_drawdown": float(profit_protection_drawdown),
         "minimum_locked_profit": float(minimum_locked_profit),
@@ -713,6 +739,10 @@ with config_tab:
         "volatility_default_iv_decline_exit_ratio": float(iv_decline_exit_ratio),
         "volatility_default_efficiency_decline_exit_ratio": float(efficiency_decline_exit_ratio),
         "volatility_default_contraction_confirmations_required": int(contraction_confirmations),
+        "volatility_default_minimum_effective_delta": float(minimum_effective_delta),
+        "volatility_default_adverse_signal_confirmations_required": int(adverse_confirmations),
+        "volatility_default_adverse_exit_minimum_hold_minutes": int(adverse_exit_hold),
+        "volatility_default_entry_confirmation_minutes": float(entry_confirmation_minutes),
         "volatility_default_profit_protection_start": float(profit_protection_start),
         "volatility_default_profit_protection_drawdown": float(profit_protection_drawdown),
         "volatility_default_minimum_locked_profit": float(minimum_locked_profit),
@@ -1324,7 +1354,7 @@ with config_tab:
         st.metric("执行模式", mode, border=True)
         st.metric("自动调度", "已启用" if enabled else "已关闭", border=True)
     st.page_link(
-        "pages/15_策略控制台.py", label="前往策略与资金控制设置波动率策略",
+        "pages/15_strategy_control_center.py", label="前往策略与资金控制设置波动率策略",
         icon=":material/tune:",
     )
     if st.button("立即运行一次波动率策略", disabled=not admin or not enabled or not campaigns):

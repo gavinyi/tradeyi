@@ -78,7 +78,7 @@ def test_radar_service_uses_adaptive_schedule_and_persists_state() -> None:
 
 def test_volatility_page_exposes_adaptive_schedule_state() -> None:
     source = (
-        Path(__file__).parents[1] / "pages" / "10_波动率期权策略.py"
+        Path(__file__).parents[1] / "pages" / "10_volatility_options_strategy.py"
     ).read_text(encoding="utf-8")
 
     assert "load_radar_schedule_state" in source

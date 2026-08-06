@@ -66,6 +66,14 @@ class FakeExecutor:
         return SimpleNamespace(intent_id=intent["id"], status="SUBMITTED", message="模拟订单已提交")
 
 
+class ApprovalBlockedExecutor:
+    @staticmethod
+    def submit_limit(*_args, **_kwargs):
+        return SimpleNamespace(
+            intent_id=0, status="APPROVAL_REQUIRED", message="策略运行版本未批准",
+        )
+
+
 def fill(store, intent_id):
     intent = store.intent(intent_id)
     store.update_shadow_intent(intent_id, "FILLED", intent["quantity"], intent["limit_price"], 0)
@@ -99,6 +107,21 @@ def test_combo_opens_protection_first_and_closes_short_first(tmp_path):
     fill(store, executor.calls[-1][5])
     manager.advance(combo_id)
     assert executor.calls[-1][0:2] == ("US.NVDA260717C220000", "SELL")
+
+
+def test_combo_approval_rejection_does_not_write_invalid_foreign_key(tmp_path):
+    store = TradingStore(tmp_path / "combo-approval.db")
+    combo_id = create_combo(store, combo_config(), vertical_legs())
+    manager = ComboExecutionManager(
+        FakeBroker(), store, ApprovalBlockedExecutor(),
+    )
+
+    result = manager.start(combo_id)
+    first_leg = store.option_combo_legs(combo_id)[0]
+
+    assert result["status"] == "EXECUTING"
+    assert first_leg["status"] == "FAILED"
+    assert first_leg["intent_id"] is None
 
 
 def test_protected_option_short_has_explicit_risk_path(tmp_path):

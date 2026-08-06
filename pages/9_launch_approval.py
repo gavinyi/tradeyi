@@ -5,7 +5,7 @@ import os
 import pandas as pd
 import streamlit as st
 
-from futu_quant.approval import strategy_fingerprint, strategy_requires_approval
+from futu_quant.approval import approval_version_status
 from futu_quant.acceptance import strategy_acceptance
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, save_runtime_settings
@@ -14,6 +14,7 @@ from futu_quant.reconciliation import reconcile_ledgers
 from futu_quant.store import TradingStore
 from futu_quant.stress import stress_test
 from futu_quant.replay import run_resilience_drill
+from futu_quant.service_control import restart as restart_service, status as service_status
 from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar
 
 
@@ -83,23 +84,48 @@ with approval_tab:
             st.warning("全局策略暂停当前已开启；请先到风控中心恢复策略调度。")
     status_rows = []
     for strategy in strategies:
-        fingerprint = strategy_fingerprint(strategy)
-        approval = approvals.get(strategy)
-        exempt = not strategy_requires_approval(strategy)
-        valid = bool(exempt or (approval and approval["version_hash"] == fingerprint and all(
-            approval[key] for key in (
-                "backtest_passed", "shadow_passed", "drill_passed", "risk_confirmed"
-            )
-        )))
+        version = approval_version_status(store, strategy)
         status_rows.append({
-            "策略": strategy, "当前指纹": fingerprint[:12],
-            "审批状态": "免审批" if exempt else "当前版本已批准" if valid else "未批准或版本已变化",
-            "批准时间": approval.get("approved_at") if approval else None,
+            "策略": strategy,
+            "当前代码版本": version["current_fingerprint"][:12],
+            "服务运行版本": version["runtime_fingerprint"][:12] or "未上报",
+            "已批准版本": version["approved_fingerprint"][:12] or "未批准",
+            "版本一致": "是" if version["exempt"] or version["runtime_aligned"] else "否",
+            "审批状态": (
+                "免审批" if version["exempt"] else
+                "当前运行版本已批准" if version["approved"] else
+                "服务需要重启" if version["runtime_fingerprint"] and not version["runtime_aligned"] else
+                "未批准或服务未上报版本"
+            ),
+            "批准时间": approvals.get(strategy, {}).get("approved_at"),
         })
     st.dataframe(china_time_columns(pd.DataFrame(status_rows).rename(
         columns={"批准时间": "approved_at"}
     )).rename(columns={"approved_at": "批准时间（中国）"}), hide_index=True)
     strategy = st.selectbox("选择策略", strategies)
+    selected_version = approval_version_status(store, strategy)
+    selected_service = service_status()
+    runtime_ready = bool(
+        selected_version["exempt"] or (
+            selected_service.running and selected_version["runtime_aligned"]
+        )
+    )
+    if not selected_version["exempt"] and not selected_service.running:
+        st.error("统一交易服务未运行，无法确认将要批准的实际运行版本。请先启动服务。")
+    elif not selected_version["exempt"] and not selected_version["runtime_aligned"]:
+        st.error(
+            "当前代码与交易服务运行版本不一致。必须重启服务后再审批，"
+            "否则页面批准与实际下单版本会再次错位。"
+        )
+        if st.button(
+            "重启统一交易服务并同步版本", type="primary",
+            icon=":material/restart_alt:", disabled=not admin,
+        ):
+            restarted = restart_service()
+            if restarted.running:
+                st.success(f"交易服务已重启，PID {restarted.pid}；请刷新后批准当前运行版本。")
+            else:
+                st.error(restarted.message)
     acceptance = strategy_acceptance(store, strategy)
     gate_names = {
         "shadow_days": "Shadow 有效天数", "shadow_orders": "Shadow 订单数",
@@ -159,23 +185,34 @@ with approval_tab:
     acceptance = strategy_acceptance(store, strategy)
     with st.form("approve_strategy"):
         reason = st.text_input("批准理由/验收记录")
-        submitted = st.form_submit_button("批准当前版本进入 PAPER", disabled=not admin or not acceptance_passed)
+        submitted = st.form_submit_button(
+            "批准当前运行版本进入 PAPER",
+            disabled=not admin or not acceptance_passed or not runtime_ready,
+        )
         if submitted:
-            if not acceptance_passed or not reason.strip():
-                st.error("自动验收门槛必须全部通过，并填写批准理由。")
+            selected_version = approval_version_status(store, strategy)
+            approval_fingerprint = (
+                selected_version["runtime_fingerprint"]
+                or selected_version["current_fingerprint"]
+            )
+            if not acceptance_passed or not reason.strip() or not approval_fingerprint:
+                st.error("自动验收门槛、运行版本同步和批准理由必须全部满足。")
+            elif not selected_version["runtime_aligned"]:
+                st.error("提交前检测到版本再次变化，请重启统一交易服务后重试。")
             else:
-                fingerprint = strategy_fingerprint(strategy)
                 store.approve_strategy(
-                    strategy, fingerprint, "streamlit_admin",
+                    strategy, approval_fingerprint, "streamlit_admin",
                     True, True, True, True,
                 )
                 store.audit(
                     "STRATEGY_APPROVED",
                     {"actor": "streamlit_admin", "strategy": strategy,
-                     "version_hash": fingerprint, "reason": reason.strip()},
+                     "version_hash": approval_fingerprint,
+                     "service_pid": selected_version["service_pid"],
+                     "reason": reason.strip()},
                     strategy,
                 )
-                st.success("当前代码与参数版本已批准；任何相关变更都会使审批自动失效。")
+                st.success("交易服务当前实际运行版本已批准；相关代码变化后必须重启并重新审批。")
                 st.rerun()
 
 with reconcile_tab:

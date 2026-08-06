@@ -26,6 +26,18 @@ def test_duplicate_translated_names_are_coalesced():
     assert localized["正股代码"].tolist() == ["US.NVDA", "US.AAPL"]
 
 
+def test_mixed_numeric_option_columns_are_arrow_compatible():
+    frame = pd.DataFrame({
+        "option_open_interest": [120, "--", 0],
+        "volume": [3, "N/A", 1],
+    })
+
+    localized = chinese_columns(frame)
+
+    assert localized["未平仓量"].tolist() == ["120", "--", "0"]
+    assert localized["成交量"].tolist() == ["3", "N/A", "1"]
+
+
 def test_option_market_data_events_and_statuses_are_localized():
     frame = pd.DataFrame({
         "event_type": [

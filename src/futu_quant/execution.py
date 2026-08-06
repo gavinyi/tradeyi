@@ -11,7 +11,10 @@ import pandas as pd
 from .risk import RiskEngine
 from .alerts import AlertManager
 from .store import TradingStore
-from .approval import strategy_fingerprint, strategy_requires_approval
+from .approval import (
+    approval_runtime_manifest, runtime_strategy_fingerprint,
+    strategy_fingerprint, strategy_requires_approval,
+)
 from .fee_model import estimate_fees
 from .real_trading import check_real_trade
 
@@ -41,15 +44,27 @@ class ExecutionManager:
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
         override_mode = self.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
         mode = (execution_mode_override or override_mode or global_mode).upper()
-        fingerprint = strategy_fingerprint(strategy_id)
+        fingerprint = runtime_strategy_fingerprint(strategy_id, self.store)
+        current_source_fingerprint = strategy_fingerprint(strategy_id, self.store)
         require_approval = os.getenv("REQUIRE_STRATEGY_APPROVAL", "true").lower() == "true"
         if (mode in {"PAPER", "REAL"} and side == "BUY" and require_approval
                 and strategy_requires_approval(strategy_id) and not self.store.strategy_approved(
             strategy_id, fingerprint
         )):
-            reason = "策略尚未完成当前版本审批，只允许 Shadow 运行"
+            source_drifted = current_source_fingerprint != fingerprint
+            reason = (
+                "交易服务运行版本与当前代码不一致，请重启统一交易服务后重新审批"
+                if source_drifted else
+                "策略尚未完成当前运行版本审批，只允许 Shadow 运行"
+            )
             self.store.audit(
-                "APPROVAL_REQUIRED", {"strategy": strategy_id, "version_hash": fingerprint},
+                "APPROVAL_REQUIRED", {
+                    "strategy": strategy_id,
+                    "version_hash": fingerprint,
+                    "current_source_hash": current_source_fingerprint,
+                    "source_drifted": source_drifted,
+                    "runtime_manifest": approval_runtime_manifest(self.store),
+                },
                 strategy_id,
             )
             self.store.decision(strategy_id, symbol, "BLOCKED", reason)

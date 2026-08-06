@@ -74,6 +74,9 @@ def normalize_us_symbol(value: str) -> str:
     symbol = value.strip().upper()
     if symbol.startswith("US."):
         symbol = symbol[3:]
+    # 兼容历史配置里被错误压平的 Berkshire B 股代码。富途要求保留点号。
+    if symbol == "BRKB":
+        symbol = "BRK.B"
     elif symbol.startswith(("HK.", "SH.", "SZ.", "JP.", "SG.")):
         raise ValueError("请输入有效美股代码，例如 AAPL、BRK.B 或 US.TSLA")
     if not SYMBOL_PATTERN.fullmatch(symbol):

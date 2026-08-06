@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import signal
 import threading
@@ -151,6 +151,30 @@ def scan_volatility_watchlist(
                     }, "volatility_scanner")
                 campaigns = load_volatility_campaigns()
                 if not any(item.get("underlying") == symbol and item.get("enabled", True) for item in campaigns):
+                    retry_until_raw = store.get_setting(
+                        f"volatility_candidate_retry_until:{symbol}", "",
+                    )
+                    retry_signal_z = _setting_float(
+                        store, f"volatility_candidate_retry_z:{symbol}", 0,
+                    )
+                    try:
+                        retry_until = datetime.fromisoformat(str(retry_until_raw))
+                    except (TypeError, ValueError):
+                        retry_until = None
+                    now = datetime.now(NY)
+                    if (
+                        retry_until is not None
+                        and now < retry_until
+                        and float(regime["zscore_20d"]) < retry_signal_z + .5
+                    ):
+                        remaining = max(1, int((retry_until - now).total_seconds() // 60) + 1)
+                        result.update({
+                            "campaign_created": False,
+                            "campaign_code": "",
+                            "campaign_reason": f"候选合约冷却中，约 {remaining} 分钟后重试",
+                            "candidate_retry_at": retry_until.isoformat(),
+                        })
+                        continue
                     premium_budget = resolve_volatility_radar_budget(symbol)
                     result["campaign_premium_budget"] = premium_budget
                     seed = {
@@ -238,6 +262,8 @@ def scan_volatility_watchlist(
                         lambda: roll_campaign(broker, seed, store), timeout_seconds=45,
                     )
                     if rolled.get("code") != symbol:
+                        store.set_setting(f"volatility_candidate_retry_until:{symbol}", "")
+                        store.set_setting(f"volatility_candidate_retry_z:{symbol}", "0")
                         upsert_campaign("VOLATILITY_CAMPAIGNS", rolled)
                         store.set_setting("strategy_enabled:Volatility Long Gamma", "true")
                         execution_mode = (
@@ -267,6 +293,17 @@ def scan_volatility_watchlist(
                             f"{(diagnostics.get('top_candidates') or [{}])[0].get('code', '')}"
                         )
                         rejection_key = f"volatility_campaign_rejection:{symbol}"
+                        retry_seconds = max(
+                            300, int(os.getenv("VOLATILITY_CANDIDATE_RETRY_SECONDS", "1200"))
+                        )
+                        store.set_setting(
+                            f"volatility_candidate_retry_until:{symbol}",
+                            (datetime.now(NY) + timedelta(seconds=retry_seconds)).isoformat(),
+                        )
+                        store.set_setting(
+                            f"volatility_candidate_retry_z:{symbol}",
+                            str(regime["zscore_20d"]),
+                        )
                         if store.get_setting(rejection_key) != fingerprint:
                             # 同一交易日、同一最高候选和同一阻塞原因只记录一次，
                             # 防止雷达每个循环刷出大量重复诊断。

@@ -226,7 +226,7 @@ Expected: all tests pass without pyqlib installed.
 - Create: `src/futu_quant/option_evidence.py`
 - Create: `tests/test_option_evidence.py`
 - Modify: `src/futu_quant/option_event_backtest.py`
-- Modify: `pages/13_期权数据回测.py`
+- Modify: `pages/13_options_data_backtest.py`
 
 **Interfaces:**
 - Produces `OptionEvidence`, `assess_option_evidence(frame, min_samples=5, min_days=1)`, and `option_research_buckets(frame)`.
@@ -262,7 +262,7 @@ Expected: all tests pass.
 ### Task 7: Chinese data research center and navigation
 
 **Files:**
-- Create: `pages/22_数据研究中心.py`
+- Create: `pages/22_data_research_center.py`
 - Modify: `app.py`
 - Create: `tests/test_research_data_ui.py`
 - Modify: `tests/test_streamlit_navigation.py`
@@ -275,10 +275,10 @@ Expected: all tests pass.
 ```python
 def test_navigation_contains_data_research_center():
     source = Path("app.py").read_text()
-    assert "pages/22_数据研究中心.py" in source
+    assert "pages/22_data_research_center.py" in source
 
 def test_research_page_has_lazy_actions_and_chinese_sections():
-    source = Path("pages/22_数据研究中心.py").read_text()
+    source = Path("pages/22_data_research_center.py").read_text()
     assert "数据源状态" in source and "数据目录" in source and "数据质量" in source
     assert "st.form" in source
 ```

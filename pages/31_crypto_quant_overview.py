@@ -29,11 +29,17 @@ if not settings.credentials_configured:
 overview_tab, shadow_tab, action_tab = st.tabs(["运行总览", "Shadow 策略持仓", "常用入口"])
 with overview_tab:
     st.subheader("当前币策略自选")
-    st.dataframe({"代码": watchlist, "来源": ["币策略自选"] * len(watchlist)}, hide_index=True) if watchlist else st.info("当前没有币策略自选标的。")
+    if watchlist:
+        st.dataframe({"代码": watchlist, "来源": ["币策略自选"] * len(watchlist)}, hide_index=True)
+    else:
+        st.info("当前没有币策略自选标的。")
 with shadow_tab:
     st.subheader("Shadow 虚拟持仓")
-    st.dataframe(shadow, hide_index=True) if shadow else st.info("当前没有币策略 Shadow 持仓。")
+    if shadow:
+        st.dataframe(shadow, hide_index=True)
+    else:
+        st.info("当前没有币策略 Shadow 持仓。")
 with action_tab:
-    st.page_link("pages/32_币策略配置与回测.py", label="打开币策略配置与回测", icon=":material/tune:")
-    st.page_link("pages/33_币策略复盘与执行质量.py", label="打开币策略复盘", icon=":material/summarize:")
-    st.page_link("pages/34_欧易账户总览.py", label="打开欧易账户总览", icon=":material/account_balance_wallet:")
+    st.page_link("pages/32_crypto_strategy_config_backtest.py", label="打开币策略配置与回测", icon=":material/tune:")
+    st.page_link("pages/33_crypto_strategy_review.py", label="打开币策略复盘", icon=":material/summarize:")
+    st.page_link("pages/34_okx_account_overview.py", label="打开欧易账户总览", icon=":material/account_balance_wallet:")

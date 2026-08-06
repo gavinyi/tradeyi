@@ -80,8 +80,8 @@ transport 测试签名与协议；复用 SQLite 审计、回测指标和中文 U
 
 **Files:**
 - Modify: `app.py`
-- Create: `pages/31_币量化总览.py`
-- Create: `pages/32_币策略配置与回测.py`
+- Create: `pages/31_crypto_quant_overview.py`
+- Create: `pages/32_crypto_strategy_config_backtest.py`
 - Modify: `tests/test_streamlit_navigation.py`
 
 - [ ] 先写导航与中文页面存在性测试。

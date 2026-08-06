@@ -9,6 +9,7 @@ import streamlit as st
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_volatility_campaigns, load_volatility_symbols
 from futu_quant.radar_control import start as radar_start, status as radar_status, stop as radar_stop
+from futu_quant.service_control import status as service_status
 from futu_quant.store import TradingStore
 from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar, translate_common_values
 
@@ -77,6 +78,8 @@ def build_position_map(frame: pd.DataFrame) -> dict[str, dict[str, float]]:
 def build_shadow_map(store: TradingStore) -> dict[str, dict[str, float]]:
     result: dict[str, dict[str, float]] = {}
     for item in store.shadow_open_positions():
+        if str(item.get("strategy_id", "")) != "volatility_long_gamma":
+            continue
         code = str(item.get("symbol", ""))
         if code:
             result[code] = {
@@ -180,6 +183,7 @@ for item in decisions:
     latest_by_code.setdefault(str(item.get("symbol", "")), item)
 
 radar = radar_status()
+service = service_status()
 page_loaded_at = datetime.now().astimezone()
 positions, orders, broker_error = load_broker_snapshot()
 position_map = build_position_map(positions)
@@ -194,7 +198,16 @@ with st.container(horizontal=True):
     st.metric("模拟盘持仓策略", paper_position_count, border=True)
     st.metric("Shadow 持仓策略", shadow_position_count, border=True)
     st.metric("待成交订单", pending_count, border=True)
-    st.metric("雷达状态", "运行中" if radar.running else "未运行", border=True)
+    radar_label = (
+        "扫描与交易在线" if radar.running and service.running and not service.restart_pending
+        else "仅扫描，不交易" if radar.running else "未运行"
+    )
+    st.metric("雷达状态", radar_label, border=True)
+
+if radar.running and (not service.running or service.restart_pending):
+    st.warning(
+        "独立雷达仍会扫描自选标的，但统一交易服务未就绪，当前不会执行策略决策或提交模拟单。"
+    )
 
 with st.container(border=True):
     st.caption("运行一次会完成：持仓/订单对账 → 最佳期权表达维护 → 策略决策 → 模拟下单或 Shadow → 退出检查。")
@@ -221,10 +234,10 @@ overview_tabs = st.tabs([
 with overview_tabs[0]:
     st.caption("雷达只扫描已配置的自选标的，不会扫描应用市场。")
     if scanner_decisions:
-        scan_view = pd.DataFrame(scanner_decisions[:100]).rename(columns={
+        scan_view = china_time_columns(pd.DataFrame(scanner_decisions[:100])).rename(columns={
             "symbol": "正股代码", "decision": "决策", "reason": "原因", "created_at": "时间（中国）",
         }).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
-        st.dataframe(china_time_columns(translate_common_values(scan_view)), hide_index=True, height=360)
+        st.dataframe(translate_common_values(scan_view), hide_index=True, height=360)
     else:
         st.info("暂无雷达扫描记录。")
 with overview_tabs[1]:
@@ -245,8 +258,8 @@ with overview_tabs[1]:
 with overview_tabs[2]:
     decision_view = pd.DataFrame(decisions[:100]) if decisions else pd.DataFrame()
     if not decision_view.empty:
-        decision_view = decision_view.rename(columns={"symbol": "期权代码", "decision": "决策", "reason": "原因", "created_at": "时间（中国）"}).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
-        st.dataframe(china_time_columns(translate_common_values(decision_view)), hide_index=True, height=420)
+        decision_view = china_time_columns(decision_view).rename(columns={"symbol": "期权代码", "decision": "决策", "reason": "原因", "created_at": "时间（中国）"}).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
+        st.dataframe(translate_common_values(decision_view), hide_index=True, height=420)
     else:
         st.info("暂无策略决策记录。")
 with overview_tabs[3]:
@@ -255,24 +268,93 @@ with overview_tabs[3]:
         code = str(campaign.get("code", ""))
         paper = position_map.get(code, {})
         shadow = shadow_map.get(code, {})
-        holding_rows.append({"期权代码": code, "正股代码": campaign.get("underlying", ""), "富途持仓": paper.get("quantity", 0), "Shadow持仓": shadow.get("quantity", 0), "开仓价": paper.get("cost", 0) or shadow.get("cost", 0), "状态": "有持仓" if paper.get("quantity", 0) or shadow.get("quantity", 0) else "无持仓"})
-    st.dataframe(pd.DataFrame(holding_rows), hide_index=True, height=360) if holding_rows else st.info("暂无已保存策略。")
+        paper_quantity = float(paper.get("quantity", 0) or 0)
+        shadow_quantity = float(shadow.get("quantity", 0) or 0)
+        if paper_quantity and shadow_quantity:
+            source = "模拟盘 + Shadow"
+        elif paper_quantity:
+            source = "富途模拟盘"
+        elif shadow_quantity:
+            source = "Shadow 虚拟账本"
+        else:
+            source = "无持仓"
+        holding_rows.append({
+            "期权代码": code,
+            "正股代码": campaign.get("underlying", ""),
+            "富途模拟盘数量": paper_quantity,
+            "模拟盘开仓价": float(paper.get("cost", 0) or 0),
+            "Shadow 数量": shadow_quantity,
+            "Shadow 开仓价": float(shadow.get("cost", 0) or 0),
+            "合计数量": paper_quantity + shadow_quantity,
+            "持仓归类": source,
+        })
+    if not holding_rows:
+        st.info("暂无已保存的波动率策略。")
+    else:
+        holdings = pd.DataFrame(holding_rows)
+        paper_holdings = holdings[holdings["富途模拟盘数量"] != 0]
+        shadow_holdings = holdings[holdings["Shadow 数量"] != 0]
+        dual_holdings = holdings[
+            (holdings["富途模拟盘数量"] != 0)
+            & (holdings["Shadow 数量"] != 0)
+        ]
+        inactive_holdings = holdings[holdings["合计数量"] == 0]
+        with st.container(horizontal=True):
+            st.metric("模拟盘持仓", len(paper_holdings), border=True)
+            st.metric("Shadow 持仓", len(shadow_holdings), border=True)
+            st.metric("双账并存", len(dual_holdings), border=True)
+            st.metric("未持仓配置", len(inactive_holdings), border=True)
+        paper_tab, shadow_tab, dual_tab, inactive_tab, all_tab = st.tabs([
+            "富途模拟盘", "Shadow 虚拟账本", "双账并存", "未持仓配置", "全部策略",
+        ])
+        holding_config = {
+            "富途模拟盘数量": st.column_config.NumberColumn(format="%.0f"),
+            "模拟盘开仓价": st.column_config.NumberColumn(format="$%.2f"),
+            "Shadow 数量": st.column_config.NumberColumn(format="%.0f"),
+            "Shadow 开仓价": st.column_config.NumberColumn(format="$%.2f"),
+            "合计数量": st.column_config.NumberColumn(format="%.0f"),
+        }
+        holding_views = (
+            (paper_tab, paper_holdings, "当前没有富途模拟盘持仓。"),
+            (shadow_tab, shadow_holdings, "当前没有该策略的 Shadow 持仓。"),
+            (dual_tab, dual_holdings, "当前没有模拟盘与 Shadow 双账并存的合约。"),
+            (inactive_tab, inactive_holdings, "当前没有未持仓的策略配置。"),
+            (all_tab, holdings, "暂无策略。"),
+        )
+        for tab, frame, empty_message in holding_views:
+            with tab:
+                if frame.empty:
+                    st.info(empty_message)
+                else:
+                    st.dataframe(
+                        frame,
+                        hide_index=True,
+                        height=360,
+                        column_config=holding_config,
+                    )
 with overview_tabs[4]:
     if orders.empty:
         st.info("暂无待成交订单。")
     else:
         pending = orders[orders.get("order_status", pd.Series(dtype=str)).astype(str).str.contains("待|提交|未成交|SUBMITTED|SUBMIT", case=False, na=False)]
-        st.dataframe(translate_common_values(china_time_columns(pending)), hide_index=True, height=360) if not pending.empty else st.info("暂无待成交订单。")
+        if pending.empty:
+            st.info("暂无待成交订单。")
+        else:
+            st.dataframe(
+                translate_common_values(china_time_columns(pending)),
+                hide_index=True,
+                height=360,
+            )
 with overview_tabs[5]:
     blocked_decisions = [item for item in decisions if str(item.get("decision", "")).upper() in {"BLOCKED", "REJECTED", "ERROR"}]
     if blocked_decisions:
-        diag = pd.DataFrame(blocked_decisions[:100]).rename(columns={"symbol": "期权代码", "decision": "决策", "reason": "原因", "created_at": "时间（中国）"}).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
-        st.dataframe(china_time_columns(translate_common_values(diag)), hide_index=True, height=320)
+        diag = china_time_columns(pd.DataFrame(blocked_decisions[:100])).rename(columns={"symbol": "期权代码", "decision": "决策", "reason": "原因", "created_at": "时间（中国）"}).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
+        st.dataframe(translate_common_values(diag), hide_index=True, height=320)
     else:
         st.success("当前没有需要处理的阻断或异常。")
 with overview_tabs[6]:
     st.caption("详细 CSV 和 Markdown 下载保留在页面下方的导出复盘区域。")
-    st.page_link("pages/10_波动率期权策略.py", label="进入高级配置与执行", icon=":material/tune:")
+    st.page_link("pages/10_volatility_options_strategy.py", label="进入高级配置与执行", icon=":material/tune:")
 
 with st.container(border=True):
     st.subheader("数据健康状态")
@@ -365,10 +447,10 @@ with st.container(border=True):
     else:
         st.success("当前没有需要优先处理的事项。")
     with st.container(horizontal=True):
-        st.page_link("pages/4_订单管理.py", label="订单管理", icon=":material/receipt_long:")
-        st.page_link("pages/26_交易诊断中心.py", label="交易诊断", icon=":material/troubleshoot:")
-        st.page_link("pages/6_系统监控.py", label="系统监控", icon=":material/monitoring:")
-        st.page_link("pages/28_期权盈亏台账.py", label="期权盈亏", icon=":material/price_check:")
+        st.page_link("pages/4_order_management.py", label="订单管理", icon=":material/receipt_long:")
+        st.page_link("pages/26_trade_diagnostics_center.py", label="交易诊断", icon=":material/troubleshoot:")
+        st.page_link("pages/6_system_monitor.py", label="系统监控", icon=":material/monitoring:")
+        st.page_link("pages/28_options_pnl_ledger.py", label="期权盈亏", icon=":material/price_check:")
 
 if broker_error:
     st.warning(f"富途模拟盘读取失败，当前只显示策略账本：{broker_error}")
@@ -490,10 +572,10 @@ with st.container(border=True):
                 except (TypeError, ValueError, json.JSONDecodeError):
                     return ""
             frame["校验提醒"] = frame["payload_json"].map(payload_reason)
-        frame = frame.rename(columns={
+        frame = china_time_columns(frame).rename(columns={
             "symbol": "期权代码", "decision": "决策", "reason": "原因", "created_at": "时间（中国）",
         }).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
-        st.dataframe(china_time_columns(translate_common_values(frame)), hide_index=True, height=380)
+        st.dataframe(translate_common_values(frame), hide_index=True, height=380)
     else:
         st.info("暂无执行记录。")
 
@@ -581,9 +663,9 @@ with st.container(border=True):
         )
 
 with st.container(horizontal=True):
-    st.page_link("pages/10_波动率期权策略.py", label="进入高级配置与执行", icon=":material/tune:")
-    st.page_link("pages/28_期权盈亏台账.py", label="查看期权盈亏台账", icon=":material/price_check:")
-    st.page_link("pages/26_交易诊断中心.py", label="打开交易诊断中心", icon=":material/troubleshoot:")
+    st.page_link("pages/10_volatility_options_strategy.py", label="进入高级配置与执行", icon=":material/tune:")
+    st.page_link("pages/28_options_pnl_ledger.py", label="查看期权盈亏台账", icon=":material/price_check:")
+    st.page_link("pages/26_trade_diagnostics_center.py", label="打开交易诊断中心", icon=":material/troubleshoot:")
     if st.button("刷新数据", icon=":material/refresh:"):
         st.rerun()
     if st.button("强制刷新账户缓存", icon=":material/sync:"):

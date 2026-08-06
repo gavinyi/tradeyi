@@ -260,7 +260,9 @@ def run_campaign(
     option, owner, quote_check = refreshed_trade_quotes(
         broker, code, campaign["underlying"], now, max_quote_spread_pct,
     )
-    if not quote_check["option_fresh"] or not quote_check["underlying_fresh"] or not quote_check["book_ok"]:
+    quote_stale = not quote_check["option_fresh"] or not quote_check["underlying_fresh"]
+    entry_book_blocked = not quote_check["book_ok"] and quantity <= 0
+    if quote_stale or entry_book_blocked:
         reason = (
             "行情/盘口检查未通过："
             f"正股 {quote_check['underlying_reason']}；"
@@ -292,6 +294,13 @@ def run_campaign(
         )
         print(f"{code}: {decision} ({reason})")
         return
+    if quantity > 0 and not quote_check["book_ok"]:
+        executor.store.audit("OPTION_EXIT_BOOK_DEGRADED", {
+            "strategy_id": strategy_id, "symbol": code,
+            "reason": quote_check["book_reason"],
+            "spread_pct": quote_check["spread_pct"],
+            "position_quantity": quantity,
+        }, strategy_id)
     if quote_check["option_degraded"]:
         executor.store.audit("OPTION_QUOTE_DEGRADED_ACCEPTED", {
             "strategy_id": strategy_id, "symbol": code,
@@ -490,6 +499,14 @@ def run_campaign(
             regime["contraction_confirmations"] = campaign_state[
                 "contraction_confirmations"
             ]
+            adverse_signal = bool(
+                not direction_ok
+                or (not regime.get("active", False) and pnl_ratio < 0)
+            )
+            campaign_state["adverse_signal_confirmations"] = (
+                int(campaign_state.get("adverse_signal_confirmations", 0)) + 1
+                if adverse_signal else 0
+            )
             decay_reason = volatility_exit_reason(
                 regime, current_iv,
                 float(campaign_state.get(
@@ -505,6 +522,16 @@ def run_campaign(
                 int(campaign.get("contraction_confirmations_required", 3)),
                 pnl_ratio=pnl_ratio,
                 directional_confirmation=direction_ok,
+                current_delta=market_number(option.get("option_delta"), 0),
+                minimum_effective_delta=float(
+                    campaign.get("minimum_effective_delta", .18)
+                ),
+                adverse_signal_confirmations=int(
+                    campaign_state.get("adverse_signal_confirmations", 0)
+                ),
+                adverse_signal_confirmations_required=int(
+                    campaign.get("adverse_signal_confirmations_required", 2)
+                ),
             )
         opened_at = datetime.fromisoformat(str(
             campaign_state.get("position_opened_at", now.isoformat())
@@ -525,6 +552,9 @@ def run_campaign(
             action, reason = "SELL", partial_exit_reason
         else:
             protection_profile = volatility_profit_protection_profile(campaign, regime)
+            adverse_exit_confirmed = int(
+                campaign_state.get("adverse_signal_confirmations", 0)
+            ) >= int(campaign.get("adverse_signal_confirmations_required", 2))
             action, reason = decide_volatility_action(
                 now=now, opened_at=opened_at, quantity=quantity,
                 stages_filled=stages_filled, max_stages=effective_max_stages,
@@ -536,7 +566,14 @@ def run_campaign(
                 trailing_stop=float(campaign["trailing_stop"]),
                 max_hold_hours=float(campaign.get("max_hold_hours", 24)),
                 decay_reason=decay_reason,
-                minimum_hold_minutes=float(campaign.get("minimum_hold_minutes", 90)),
+                minimum_hold_minutes=(
+                    min(
+                        float(campaign.get("minimum_hold_minutes", 90)),
+                        float(campaign.get("adverse_exit_minimum_hold_minutes", 20)),
+                    )
+                    if adverse_exit_confirmed else
+                    float(campaign.get("minimum_hold_minutes", 90))
+                ),
                 profit_protection_start=float(
                     protection_profile["profit_protection_start"]
                 ),
@@ -605,6 +642,11 @@ def run_campaign(
             "entry_gamma_theta_efficiency_actual": campaign_state.get(
                 "entry_gamma_theta_efficiency_actual"
             ),
+            "adverse_signal_confirmations": campaign_state.get(
+                "adverse_signal_confirmations", 0
+            ),
+            "option_delta": market_number(option.get("option_delta"), 0),
+            "book_status": quote_check.get("book_reason", ""),
         })
     else:
         decision_payload.update({

@@ -292,7 +292,7 @@ with current_tab:
             st.success("验证已停止，Core Satellite 已恢复正式参数。")
             st.rerun()
         st.page_link(
-            "pages/15_策略控制台.py",
+            "pages/15_strategy_control_center.py",
             label="前往策略与资金控制检查 Core 执行模式",
             icon=":material/tune:",
         )
