@@ -360,13 +360,18 @@ def volatility_cooldown_bypass_allowed(
         intraday >= min_intraday_move,
         atr_ratio >= min_atr_ratio,
     ]
-    if not any(strong_checks):
+    # Cooldown bypass is deliberately stricter than entry activation.  A
+    # single intraday spike should not immediately re-open a position that
+    # just took profit; require two independent volatility confirmations.
+    confirmations = sum(bool(value) for value in strong_checks)
+    if confirmations < 2:
         return (
             False,
             "强信号豁免未达标："
             f"Z值 {zscore:.2f}/{min_zscore:.2f}，"
             f"日内波动 {intraday:.2%}/{min_intraday_move:.2%}，"
-            f"ATR倍数 {atr_ratio:.2f}/{min_atr_ratio:.2f}",
+            f"ATR倍数 {atr_ratio:.2f}/{min_atr_ratio:.2f}；"
+            f"仅 {confirmations}/3 项达标，至少需要 2 项",
         )
     return (
         True,

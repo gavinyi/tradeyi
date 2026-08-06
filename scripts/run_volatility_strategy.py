@@ -5,6 +5,7 @@ from futu_quant.config import Settings, load_volatility_campaigns, upsert_campai
 from futu_quant.execution import ExecutionManager
 from futu_quant.volatility_roll import roll_campaign, should_replace_campaign
 from futu_quant.volatility_optimizer import volatility_entry_quality_allowed
+from futu_quant.option_lifecycle import parse_option_code
 from datetime import date, datetime, timezone
 import os
 import pandas as pd
@@ -26,6 +27,22 @@ def run_once(reconcile: bool = True) -> None:
     orders = broker.orders()
     state = load_state()
     campaigns = load_volatility_campaigns()
+    # Clean malformed contracts before they reach the decision loop.  A bad
+    # code otherwise produces hundreds of repetitive BLOCKED decisions and
+    # obscures the actionable diagnostics for valid campaigns.
+    valid_campaigns = []
+    for item in campaigns:
+        code = str(item.get("code", ""))
+        if parse_option_code(code) is None:
+            executor.store.decision_if_changed(
+                "volatility_long_gamma", code or None, "BLOCKED",
+                "候选池已过滤：期权代码格式无效或无法解析到期日",
+                {"code": code, "underlying": item.get("underlying", "")},
+                repeat_after_seconds=3600,
+            )
+            continue
+        valid_campaigns.append(item)
+    campaigns = valid_campaigns
     active_keys = {f"volatility_long_gamma:{item['code']}" for item in campaigns}
     state = {
         key: value for key, value in state.items()

@@ -44,7 +44,7 @@ def test_volatility_cooldown_depends_on_exit_reason():
     assert volatility_cooldown_hours("合约到期日临近收盘，强制退出以避免自动行权", 24) == 0
 
 
-def test_volatility_cooldown_bypass_allows_strong_non_stop_signal():
+def test_volatility_cooldown_bypass_requires_two_confirmations():
     allowed, reason = volatility_cooldown_bypass_allowed(
         "盈利保护触发",
         {
@@ -56,8 +56,8 @@ def test_volatility_cooldown_bypass_allows_strong_non_stop_signal():
         },
     )
 
-    assert allowed
-    assert "提前解除冷却" in reason
+    assert not allowed
+    assert "仅 1/3 项达标" in reason
 
 
 def test_volatility_cooldown_bypass_keeps_stop_loss_hard_by_default():
