@@ -29,7 +29,8 @@ from futu_quant.volatility_optimizer import (
     volatility_cooldown_hours, volatility_exit_reason,
     volatility_cooldown_bypass_allowed, volatility_profit_protection_profile,
     volatility_direction_size_factor, volatility_entry_confirmation,
-    volatility_entry_quality_allowed, volatility_regime, volatility_threshold_profile,
+    volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
+    volatility_threshold_profile,
 )
 from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.data_quality import (
@@ -439,6 +440,7 @@ def run_campaign(
                     min_intraday_move=float(campaign.get("cooldown_bypass_min_intraday_move", 0.035)),
                     min_atr_ratio=float(campaign.get("cooldown_bypass_min_atr_ratio", 2.0)),
                     min_volume_ratio=float(campaign.get("cooldown_bypass_min_volume_ratio", 1.5)),
+                    signal_tier=volatility_entry_tier(regime),
                 )
                 if bypass_allowed:
                     for key in (

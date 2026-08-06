@@ -341,6 +341,7 @@ def volatility_cooldown_bypass_allowed(
     min_intraday_move: float = 0.035,
     min_atr_ratio: float = 2.0,
     min_volume_ratio: float = 1.50,
+    signal_tier: str | None = None,
 ) -> tuple[bool, str]:
     """Decide whether a fresh volatility shock can override an exit cooldown."""
     if not enabled:
@@ -364,14 +365,16 @@ def volatility_cooldown_bypass_allowed(
     # single intraday spike should not immediately re-open a position that
     # just took profit; require two independent volatility confirmations.
     confirmations = sum(bool(value) for value in strong_checks)
-    if confirmations < 2:
+    tier = signal_tier or volatility_entry_tier(regime)
+    required = 1 if tier == "强波动" and bool(regime.get("volume_confirmed")) else 2
+    if confirmations < required:
         return (
             False,
             "强信号豁免未达标："
             f"Z值 {zscore:.2f}/{min_zscore:.2f}，"
             f"日内波动 {intraday:.2%}/{min_intraday_move:.2%}，"
             f"ATR倍数 {atr_ratio:.2f}/{min_atr_ratio:.2f}；"
-            f"仅 {confirmations}/3 项达标，至少需要 2 项",
+            f"当前分层 {tier}，仅 {confirmations}/3 项达标，至少需要 {required} 项",
         )
     return (
         True,
