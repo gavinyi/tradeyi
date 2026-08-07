@@ -244,6 +244,47 @@ with reconcile_tab:
             "ledger_quantity": "虚拟账本持仓", "difference": "差异",
             "status": "状态", "affected_strategies": "受影响策略",
         }), hide_index=True)
+        mismatches = report[report["status"].astype(str).eq("MISMATCH")]
+        if not mismatches.empty:
+            st.subheader("差异快速调整")
+            st.caption("适用于你已在富途手动卖出/买入的情况。系统会把虚拟账本调整到富途当前实际数量，并保留审计记录。")
+            for row in mismatches.to_dict("records"):
+                symbol = str(row["symbol"])
+                owners = [item.strip() for item in str(row.get("affected_strategies", "")).split(",") if item.strip()]
+                allocations = [item for item in store.virtual_allocations() if item["symbol"] == symbol]
+                owner_names = owners or [str(item["strategy_id"]) for item in allocations]
+                with st.container(border=True):
+                    st.write(
+                        f"**{symbol}**：富途 {float(row['broker_quantity']):g}，"
+                        f"虚拟账本 {float(row['ledger_quantity']):g}，差异 {float(row['difference']):g}"
+                    )
+                    if not admin:
+                        st.info("解锁管理员操作后可调整。")
+                        continue
+                    if len(owner_names) == 1:
+                        strategy = owner_names[0]
+                        current_cost = next(
+                            (float(item.get("average_cost", 0) or 0) for item in allocations
+                             if str(item["strategy_id"]) == strategy), 0.0
+                        )
+                        if st.button(
+                            f"按富途持仓同步 · {strategy}",
+                            key=f"reconcile_sync:{symbol}:{strategy}",
+                        ):
+                            store.set_virtual_allocation(
+                                strategy, symbol, float(row["broker_quantity"]), current_cost
+                            )
+                            store.audit(
+                                "RECONCILIATION_MANUAL_SYNC",
+                                {"actor": "streamlit_admin", "symbol": symbol,
+                                 "strategy": strategy, "broker_quantity": float(row["broker_quantity"]),
+                                 "previous_ledger_quantity": float(row["ledger_quantity"])},
+                                strategy,
+                            )
+                            st.success(f"已将 {symbol} 的 {strategy} 虚拟持仓同步为富途实际数量。")
+                            st.rerun()
+                    else:
+                        st.warning("该标的有多个策略归属，请到风险中心手动拆分后再对账。")
     history = pd.DataFrame(store.reconciliation_reports())
     if not history.empty:
         st.subheader("最近对账历史")
