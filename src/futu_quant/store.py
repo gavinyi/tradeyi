@@ -1617,6 +1617,29 @@ class TradingStore:
                 (strategy_id, symbol, quantity, average_cost, self.now()),
             )
 
+    def sync_virtual_allocation_to_target(
+        self, strategy_id: str, symbol: str, target_quantity: float,
+        average_cost: float = 0,
+    ) -> dict[str, float]:
+        """Set the allocation so allocation + settled fills equals broker target.
+
+        Reconciliation must not overwrite the historical fill ledger.  The
+        initial virtual allocation is therefore the residual after applying
+        non-shadow filled orders for this strategy and symbol.
+        """
+        with self.connection() as connection:
+            row = connection.execute(
+                """SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_quantity
+                ELSE -filled_quantity END), 0) AS net_fills
+                FROM order_intents WHERE strategy_id=? AND symbol=?
+                AND status NOT LIKE 'SHADOW%'""",
+                (strategy_id, symbol),
+            ).fetchone()
+            net_fills = float(row["net_fills"] or 0)
+        residual = float(target_quantity) - net_fills
+        self.set_virtual_allocation(strategy_id, symbol, residual, average_cost)
+        return {"target_quantity": float(target_quantity), "net_fills": net_fills, "residual": residual}
+
     def virtual_allocations(self) -> list[dict]:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(

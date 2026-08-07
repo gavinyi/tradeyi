@@ -271,17 +271,22 @@ with reconcile_tab:
                             f"按富途持仓同步 · {strategy}",
                             key=f"reconcile_sync:{symbol}:{strategy}",
                         ):
-                            store.set_virtual_allocation(
+                            adjustment = store.sync_virtual_allocation_to_target(
                                 strategy, symbol, float(row["broker_quantity"]), current_cost
                             )
                             store.audit(
                                 "RECONCILIATION_MANUAL_SYNC",
                                 {"actor": "streamlit_admin", "symbol": symbol,
                                  "strategy": strategy, "broker_quantity": float(row["broker_quantity"]),
-                                 "previous_ledger_quantity": float(row["ledger_quantity"])},
+                                 "previous_ledger_quantity": float(row["ledger_quantity"]),
+                                 **adjustment},
                                 strategy,
                             )
-                            st.success(f"已将 {symbol} 的 {strategy} 虚拟持仓同步为富途实际数量。")
+                            st.success(
+                                f"已完成 {symbol} 对账：目标 {adjustment['target_quantity']:g}，"
+                                f"历史成交净量 {adjustment['net_fills']:g}，"
+                                f"归属残差 {adjustment['residual']:g}。"
+                            )
                             st.rerun()
                     else:
                         st.warning("该标的有多个策略归属，请到风险中心手动拆分后再对账。")
