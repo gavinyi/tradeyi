@@ -337,6 +337,14 @@ class TradingStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(strategy_id,symbol)
                 );
+                CREATE TABLE IF NOT EXISTS reconciliation_adjustments (
+                    strategy_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(strategy_id,symbol)
+                );
                 CREATE TABLE IF NOT EXISTS strategy_approvals (
                     strategy_id TEXT PRIMARY KEY,
                     version_hash TEXT NOT NULL,
@@ -1637,7 +1645,15 @@ class TradingStore:
             ).fetchone()
             net_fills = float(row["net_fills"] or 0)
         residual = float(target_quantity) - net_fills
-        self.set_virtual_allocation(strategy_id, symbol, residual, average_cost)
+        self.set_virtual_allocation(strategy_id, symbol, 0.0, average_cost)
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT INTO reconciliation_adjustments
+                (strategy_id,symbol,quantity,reason,updated_at) VALUES(?,?,?,?,?)
+                ON CONFLICT(strategy_id,symbol) DO UPDATE SET quantity=excluded.quantity,
+                reason=excluded.reason,updated_at=excluded.updated_at""",
+                (strategy_id, symbol, residual, "外部券商持仓调整", self.now()),
+            )
         return {"target_quantity": float(target_quantity), "net_fills": net_fills, "residual": residual}
 
     def virtual_allocations(self) -> list[dict]:
@@ -1661,15 +1677,19 @@ class TradingStore:
                     SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE -filled_quantity END) qty
                     FROM order_intents WHERE status NOT LIKE 'SHADOW%'
                     GROUP BY strategy_id,symbol
+                ), adjustments AS (
+                    SELECT strategy_id,symbol,quantity FROM reconciliation_adjustments
                 ), keys AS (
                     SELECT strategy_id,symbol FROM fills UNION
-                    SELECT strategy_id,symbol FROM virtual_allocations
+                    SELECT strategy_id,symbol FROM virtual_allocations UNION
+                    SELECT strategy_id,symbol FROM adjustments
                 )
                 SELECT keys.strategy_id,keys.symbol,
-                COALESCE(a.quantity,0)+COALESCE(f.qty,0) quantity,
+                COALESCE(a.quantity,0)+COALESCE(f.qty,0)+COALESCE(r.quantity,0) quantity,
                 COALESCE(a.average_cost,0) average_cost
                 FROM keys LEFT JOIN fills f USING(strategy_id,symbol)
                 LEFT JOIN virtual_allocations a USING(strategy_id,symbol)
+                LEFT JOIN adjustments r USING(strategy_id,symbol)
                 ORDER BY keys.strategy_id,keys.symbol"""
             ).fetchall()
             return [dict(row) for row in rows]
