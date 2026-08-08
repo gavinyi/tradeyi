@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pandas as pd
+import os
 
 
 STRATEGY_NAME = "Core Satellite"
@@ -399,6 +400,12 @@ def build_rebalance_plan(
         symbols, stats_by_symbol, spy, risk_on, max_stock_weight, profile,
         core_budget, satellite_budget,
     )
+    # Avoid flipping a symbol from zero to a full target in one rebalance.
+    # This is a portfolio-level hysteresis guard; the existing participation
+    # throttle still controls the order slice sent to the broker.
+    max_target_change = min(
+        0.20, max(0.01, float(os.getenv("CORE_SAT_MAX_TARGET_CHANGE", "0.05")))
+    )
     candidates = []
     for symbol in symbols:
         stats = stats_by_symbol[symbol]
@@ -407,6 +414,15 @@ def build_rebalance_plan(
         held = position_map.get(symbol, {"qty": 0.0, "can_sell_qty": 0.0})
         current_value = held["qty"] * stats["price"]
         current_weight = current_value / account_value
+        original_target_weight = target_weight
+        target_weight = min(
+            max(current_weight - max_target_change, target_weight),
+            current_weight + max_target_change,
+        )
+        if abs(target_weight - original_target_weight) > 1e-9:
+            reason = f"组合目标权重变化受限（单次最多{max_target_change:.1%}）；{reason}"
+        elif target_weight < current_weight:
+            reason = f"组合再平衡减仓；{reason}"
         delta_value = account_value * target_weight - current_value
         candidates.append((symbol, stats, held, current_weight, target_weight, delta_value, reason))
 
