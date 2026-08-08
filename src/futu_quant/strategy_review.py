@@ -91,8 +91,8 @@ def _option_quality(decisions: list[dict], fills: list[dict]) -> pd.DataFrame:
         symbol = str(row.get("symbol"))
         side = str(row.get("side"))
         item = fill_map.setdefault(symbol, {"buy_qty": 0.0, "buy_amt": 0.0, "sell_qty": 0.0, "sell_amt": 0.0})
-        qty = float(row.get("quantity") or 0)
-        price = float(row.get("price") or 0)
+        qty = float(row.get("filled_quantity") or row.get("quantity") or 0)
+        price = float(row.get("average_fill_price") or row.get("price") or 0)
         if side == "BUY":
             item["buy_qty"] += qty
             item["buy_amt"] += qty * price
@@ -169,9 +169,13 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         row for row in store.intents(limit=20_000)
         if _within(row, window) and row.get("strategy_id") in REVIEW_STRATEGIES
     ]
+    # PAPER fills live on order_intents; shadow_fills only covers the Shadow
+    # simulator. Use the unified filled-intent ledger for both modes so review
+    # P&L cannot silently show zero after real paper fills.
     fills = [
-        row for row in store.shadow_fills(limit=50_000)
+        row for row in store.intents(limit=50_000)
         if _within(row, window) and row.get("strategy_id") in REVIEW_STRATEGIES
+        and float(row.get("filled_quantity") or 0) > 0
     ]
 
     orders = _orders_frame(intents)

@@ -30,7 +30,7 @@ from futu_quant.volatility_optimizer import (
     volatility_cooldown_bypass_allowed, volatility_profit_protection_profile,
     volatility_direction_size_factor, volatility_entry_confirmation,
     volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
-    volatility_threshold_profile,
+    volatility_threshold_profile, loss_adaptive_premium_budget,
 )
 from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.data_quality import (
@@ -261,7 +261,13 @@ def run_campaign(
     option, owner, quote_check = refreshed_trade_quotes(
         broker, code, campaign["underlying"], now, max_quote_spread_pct,
     )
-    quote_stale = not quote_check["option_fresh"] or not quote_check["underlying_fresh"]
+    # A quote between 180s and 900s old is explicitly marked degraded by the
+    # data-quality layer. Permit a small, liquid entry in that window; fully
+    # stale or unusable-book quotes remain blocked.
+    quote_stale = (
+        not quote_check["underlying_fresh"]
+        or (not quote_check["option_fresh"] and not quote_check["option_degraded"])
+    )
     entry_book_blocked = not quote_check["book_ok"] and quantity <= 0
     if quote_stale or entry_book_blocked:
         reason = (
@@ -680,14 +686,19 @@ def run_campaign(
 
         multiplier = float(option["option_contract_multiplier"])
         premium = float(campaign.get("structure_net_debit", ask)) * multiplier * per_stage
-        if ask <= 0 or premium > float(campaign["max_premium_per_stage"]):
+        budget_limit, budget_reason = loss_adaptive_premium_budget(
+            float(campaign["max_premium_per_stage"]), executor.store, campaign["underlying"],
+        )
+        if ask <= 0 or premium > budget_limit:
             block_reason = (
                 f"交易前权利金检查未通过：本批权利金 ${premium:,.2f}，"
-                f"活动预算 ${float(campaign['max_premium_per_stage']):,.2f}"
+                f"活动预算 ${budget_limit:,.2f}（{budget_reason}）"
             )
             record_pretrade_block("PREMIUM_BUDGET", block_reason, {
                 "premium": premium,
-                "premium_budget": float(campaign["max_premium_per_stage"]),
+                "premium_budget": budget_limit,
+                "base_premium_budget": float(campaign["max_premium_per_stage"]),
+                "budget_adjustment_reason": budget_reason,
                 "ask_price": ask,
             })
             print(f"{code}: BLOCKED ({block_reason})")

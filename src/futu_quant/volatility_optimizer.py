@@ -302,6 +302,48 @@ def tiered_premium_budget(base_budget: float, regime: dict[str, object], store=N
     return float(base_budget) * factor, tier
 
 
+def loss_adaptive_premium_budget(
+    base_budget: float, store, symbol: str, lookback_hours: float = 24,
+) -> tuple[float, str]:
+    """Reduce a symbol's next budget after recent realized losses.
+
+    This is a conservative execution throttle, not a signal override: one
+    recent losing exit gets a 25% reduction; two or more losing exits get 50%.
+    The strategy may still trade if all normal entry gates pass.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=float(lookback_hours))).isoformat()
+    rows = [row for row in store.intents(limit=20_000)
+            if row.get("strategy_id") == "volatility_long_gamma"
+            and (row.get("symbol") == symbol or str(symbol).replace("US.", "") in str(row.get("symbol", "")))
+            and row.get("created_at", "") >= cutoff
+            and row.get("status") == "FILLED" and float(row.get("filled_quantity") or 0) > 0]
+    buys: list[tuple[float, float]] = []
+    losses = 0
+    for row in sorted(rows, key=lambda item: item.get("created_at", "")):
+        qty = float(row.get("filled_quantity") or 0)
+        price = float(row.get("average_fill_price") or 0)
+        if row.get("side") == "BUY":
+            buys.append((qty, price))
+        elif row.get("side") == "SELL":
+            remaining, pnl = qty, 0.0
+            while remaining > 0 and buys:
+                buy_qty, buy_price = buys[0]
+                take = min(remaining, buy_qty)
+                pnl += (price - buy_price) * take * 100
+                remaining -= take
+                buy_qty -= take
+                if buy_qty <= 0:
+                    buys.pop(0)
+                else:
+                    buys[0] = (buy_qty, buy_price)
+            if pnl < 0:
+                losses += 1
+    factor = 0.50 if losses >= 2 else 0.75 if losses == 1 else 1.0
+    return float(base_budget) * factor, f"近{lookback_hours:g}小时亏损退出{losses}次，预算系数{factor:.0%}"
+
+
 def volatility_cooldown_hours(
     reason: str, configured_hours: float = 24, overrides: dict[str, float] | None = None,
 ) -> float:
