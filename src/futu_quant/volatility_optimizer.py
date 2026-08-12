@@ -253,6 +253,73 @@ def volatility_entry_quality_allowed(
     return True, "入场质量闸门通过", checks
 
 
+def volatility_combo_entry_allowed(
+    campaign: dict[str, object],
+    *,
+    default_min_score: float = 68.0,
+    default_min_expected_return: float = 0.06,
+) -> tuple[bool, str, dict[str, float]]:
+    """Allow multi-leg automatic structures only for high-conviction setups."""
+    score = market_number(campaign.get("volatility_quality_score"), 0.0)
+    expected = market_number(campaign.get("model_expected_return"), 0.0)
+    spread = market_number(campaign.get("spread_pct"), 100.0)
+    oi = market_number(campaign.get("option_open_interest"), 0.0)
+    volume = market_number(campaign.get("volume"), 0.0)
+    min_score = float(campaign.get(
+        "combo_minimum_entry_quality_score", default_min_score,
+    ) or default_min_score)
+    min_expected = float(campaign.get(
+        "combo_minimum_model_expected_return", default_min_expected_return,
+    ) or default_min_expected_return)
+    max_spread = float(campaign.get("combo_maximum_entry_spread_pct", 4.0) or 4.0)
+    min_oi = float(campaign.get("combo_minimum_open_interest", 1500) or 1500)
+    min_volume = float(campaign.get("combo_minimum_volume", 30) or 30)
+    checks = {
+        "quality_score": score, "minimum_quality_score": min_score,
+        "model_expected_return": expected,
+        "minimum_model_expected_return": min_expected,
+        "spread_pct": spread, "maximum_spread_pct": max_spread,
+        "open_interest": oi, "minimum_open_interest": min_oi,
+        "volume": volume, "minimum_volume": min_volume,
+    }
+    failed = []
+    if score < min_score:
+        failed.append(f"质量分 {score:.1f} 低于组合门槛 {min_score:.1f}")
+    if expected < min_expected:
+        failed.append(f"模型预期收益 {expected:.2%} 低于组合门槛 {min_expected:.2%}")
+    if spread > max_spread:
+        failed.append(f"主腿价差 {spread:.1f}% 超过组合门槛 {max_spread:.1f}%")
+    if oi < min_oi:
+        failed.append(f"主腿未平仓量 {oi:.0f} 低于组合门槛 {min_oi:.0f}")
+    if volume < min_volume:
+        failed.append(f"主腿成交量 {volume:.0f} 低于组合门槛 {min_volume:.0f}")
+    if failed:
+        return False, "组合结构质量不足，回退单腿买方期权：" + "；".join(failed), checks
+    return True, "组合结构质量通过，可使用定义风险组合", checks
+
+
+def volatility_hard_loss_exit_reason(
+    *,
+    pnl_ratio: float,
+    pnl_amount: float,
+    max_loss_usd: float = 100.0,
+    max_loss_ratio: float = 0.25,
+) -> str | None:
+    """Absolute per-position kill switch for long-gamma option campaigns."""
+    usd_limit = max(0.0, float(max_loss_usd or 0.0))
+    ratio_limit = max(0.0, float(max_loss_ratio or 0.0))
+    usd_hit = usd_limit > 0 and float(pnl_amount) <= -usd_limit
+    ratio_hit = ratio_limit > 0 and float(pnl_ratio) <= -ratio_limit
+    if not (usd_hit or ratio_hit):
+        return None
+    reasons = []
+    if usd_hit:
+        reasons.append(f"亏损 ${abs(float(pnl_amount)):,.2f} ≥ ${usd_limit:,.2f}")
+    if ratio_hit:
+        reasons.append(f"亏损比例 {abs(float(pnl_ratio)):.1%} ≥ {ratio_limit:.1%}")
+    return "单笔硬止损触发：" + "；".join(reasons)
+
+
 def volatility_min_expected_return(
     *, signal_active: bool = False, strong_signal: bool = False, store=None,
 ) -> float:
@@ -314,13 +381,26 @@ def loss_adaptive_premium_budget(
     from datetime import datetime, timedelta, timezone
 
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=float(lookback_hours))).isoformat()
+    get_setting = getattr(store, "get_setting", lambda _key, default="": default)
+    cooldown_after = int(get_setting("volatility_loss_cooldown_after", "3") or 3)
+    factor_one = float(get_setting("volatility_loss_budget_factor_one", "0.75") or .75)
+    factor_two = float(get_setting("volatility_loss_budget_factor_two", "0.50") or .50)
+    normalized_symbol = "".join(
+        char for char in str(symbol).replace("US.", "").upper() if char.isalnum()
+    )
     rows = [row for row in store.intents(limit=20_000)
             if row.get("strategy_id") == "volatility_long_gamma"
-            and (row.get("symbol") == symbol or str(symbol).replace("US.", "") in str(row.get("symbol", "")))
+            and (
+                row.get("symbol") == symbol
+                or normalized_symbol in "".join(
+                    char for char in str(row.get("symbol", "")).upper()
+                    if char.isalnum()
+                )
+            )
             and row.get("created_at", "") >= cutoff
             and row.get("status") == "FILLED" and float(row.get("filled_quantity") or 0) > 0]
     buys: list[tuple[float, float]] = []
-    losses = 0
+    exit_pnls: list[float] = []
     for row in sorted(rows, key=lambda item: item.get("created_at", "")):
         qty = float(row.get("filled_quantity") or 0)
         price = float(row.get("average_fill_price") or 0)
@@ -338,10 +418,26 @@ def loss_adaptive_premium_budget(
                     buys.pop(0)
                 else:
                     buys[0] = (buy_qty, buy_price)
-            if pnl < 0:
-                losses += 1
-    factor = 0.50 if losses >= 2 else 0.75 if losses == 1 else 1.0
-    return float(base_budget) * factor, f"近{lookback_hours:g}小时亏损退出{losses}次，预算系数{factor:.0%}"
+            exit_pnls.append(pnl)
+    losses = sum(1 for pnl in exit_pnls if pnl < 0)
+    consecutive_losses = 0
+    for pnl in reversed(exit_pnls):
+        if pnl < 0:
+            consecutive_losses += 1
+        else:
+            break
+    if cooldown_after > 0 and consecutive_losses >= cooldown_after:
+        return (
+            0.0,
+            f"近{lookback_hours:g}小时连续亏损{consecutive_losses}次，"
+            "进入同标的防守冷却，暂停新增风险",
+        )
+    factor = factor_two if consecutive_losses >= 2 else factor_one if consecutive_losses == 1 else 1.0
+    return (
+        float(base_budget) * factor,
+        f"近{lookback_hours:g}小时亏损退出{losses}次，"
+        f"连续亏损{consecutive_losses}次，预算系数{factor:.0%}",
+    )
 
 
 def volatility_cooldown_hours(

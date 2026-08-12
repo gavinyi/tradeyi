@@ -33,6 +33,7 @@ from futu_quant.volatility_optimizer import (
     volatility_direction_size_factor, volatility_entry_confirmation,
     volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
     volatility_threshold_profile, loss_adaptive_premium_budget,
+    volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
 )
 from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.data_quality import (
@@ -381,6 +382,11 @@ def run_campaign(
     else:
         campaign_state["peak"] = max(float(campaign_state.get("peak", 0)), last)
     pnl_ratio = last / cost - 1 if quantity > 0 and cost > 0 else 0.0
+    position_multiplier = market_number(option.get("option_contract_multiplier"), 100.0)
+    position_pnl_amount = (
+        (last - cost) * quantity * position_multiplier
+        if quantity > 0 and cost > 0 else 0.0
+    )
     peak = float(campaign_state.get("peak", 0))
     drawdown = 1 - last / peak if peak > 0 else 0.0
     peak_pnl_ratio = (
@@ -658,6 +664,16 @@ def run_campaign(
             float(campaign.get("max_hold_hours", 8)),
         )
     if trigger_mode == "VOLATILITY" and quantity > 0:
+        hard_loss_reason = volatility_hard_loss_exit_reason(
+            pnl_ratio=pnl_ratio,
+            pnl_amount=position_pnl_amount,
+            max_loss_usd=float(campaign.get("max_position_loss_usd", 100)),
+            max_loss_ratio=float(campaign.get("max_position_loss_ratio", .25)),
+        )
+        if hard_loss_reason:
+            partial_exit_quantity = 0
+            partial_exit_tier = None
+            action, reason = "SELL", hard_loss_reason
         expiry = datetime.fromisoformat(str(campaign.get("strike_time", now.date()))).date()
         if now.date() > expiry or (now.date() == expiry and now.hour >= 15):
             action, reason = "SELL", "合约到期日临近收盘，强制退出以避免自动行权"
@@ -671,6 +687,7 @@ def run_campaign(
          "position_quantity": quantity, "planned_order_quantity": planned_order_quantity,
          "position_source": "SHADOW_LEDGER" if execution_mode == "SHADOW" else "FUTU_ACCOUNT",
          "pnl_ratio": pnl_ratio, "drawdown": drawdown, "trigger_mode": trigger_mode,
+         "position_pnl_amount": position_pnl_amount,
          "profit_giveback": profit_giveback,
          "validation_warnings": issues, "direction_reason": direction_reason,
          "direction_metrics": direction_metrics,
@@ -745,7 +762,33 @@ def run_campaign(
             return
 
         multiplier = float(option["option_contract_multiplier"])
-        premium = float(campaign.get("structure_net_debit", ask)) * multiplier * per_stage
+        order_legs = list(legs)
+        combo_entry_allowed = True
+        combo_entry_reason = ""
+        combo_entry_checks = {}
+        if trigger_mode == "VOLATILITY" and len(order_legs) > 1:
+            combo_entry_allowed, combo_entry_reason, combo_entry_checks = (
+                volatility_combo_entry_allowed(campaign)
+            )
+            if not combo_entry_allowed:
+                order_legs = [{"code": code, "side": "BUY", "ratio": 1, "role": "PRIMARY"}]
+                executor.store.audit("VOLATILITY_COMBO_FALLBACK_LONG_OPTION", {
+                    "symbol": code,
+                    "underlying": campaign["underlying"],
+                    "structure": campaign.get("structure"),
+                    "reason": combo_entry_reason,
+                    "checks": combo_entry_checks,
+                }, strategy_id)
+                decision_payload.update({
+                    "combo_fallback": True,
+                    "combo_fallback_reason": combo_entry_reason,
+                    "combo_quality_checks": combo_entry_checks,
+                })
+        entry_unit_price = (
+            float(campaign.get("structure_net_debit", ask))
+            if len(order_legs) > 1 else ask
+        )
+        premium = entry_unit_price * multiplier * per_stage
         budget_limit, budget_reason = loss_adaptive_premium_budget(
             float(campaign["max_premium_per_stage"]), executor.store, campaign["underlying"],
         )
@@ -760,6 +803,9 @@ def run_campaign(
                 "base_premium_budget": float(campaign["max_premium_per_stage"]),
                 "budget_adjustment_reason": budget_reason,
                 "ask_price": ask,
+                "order_structure": (
+                    campaign.get("structure") if len(order_legs) > 1 else "LONG_OPTION"
+                ),
             })
             print(f"{code}: BLOCKED ({block_reason})")
             return
@@ -802,7 +848,7 @@ def run_campaign(
             })
             print(f"{code}: BLOCKED ({block_reason})")
             return
-        if len(legs) > 1 and execution_mode != "SHADOW":
+        if len(order_legs) > 1 and execution_mode != "SHADOW":
             active_combo_id = automatic_combo_id(
                 strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
             )
@@ -814,9 +860,9 @@ def run_campaign(
                     repeat_after_seconds=300,
                 )
                 return
-            quotes = broker.snapshots([leg["code"] for leg in legs]).set_index("code")
+            quotes = broker.snapshots([leg["code"] for leg in order_legs]).set_index("code")
             combo_legs = []
-            for leg in legs:
+            for leg in order_legs:
                 quote = quotes.loc[leg["code"]]
                 side = str(leg["side"]).upper()
                 combo_legs.append({
@@ -856,12 +902,12 @@ def run_campaign(
                 {**decision_payload, "combo_id": active_combo_id, "legs": combo_legs},
             )
             return
-        leg_quotes = broker.snapshots([leg["code"] for leg in legs]).set_index("code")
+        leg_quotes = broker.snapshots([leg["code"] for leg in order_legs]).set_index("code")
         cycle_suffix = (
             f":cycle{int(campaign_state.get('entry_cycle', 0))}"
             if trigger_mode == "VOLATILITY" else ""
         )
-        for leg_number, leg in enumerate(legs, 1):
+        for leg_number, leg in enumerate(order_legs, 1):
             leg_quote = leg_quotes.loc[leg["code"]]
             side = str(leg["side"]).upper()
             leg_price = float(leg_quote["ask_price"] if side == "BUY" else leg_quote["bid_price"])

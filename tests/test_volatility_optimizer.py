@@ -7,7 +7,8 @@ from futu_quant.volatility_optimizer import (
     tiered_premium_budget, volatility_partial_exit_plan,
     volatility_direction_size_factor, volatility_entry_confirmation,
     volatility_entry_quality_allowed, volatility_min_expected_return,
-    volatility_profit_protection_profile,
+    volatility_profit_protection_profile, loss_adaptive_premium_budget,
+    volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
 )
 from futu_quant.volatility_roll import should_replace_campaign
 from datetime import datetime, timedelta, timezone
@@ -626,3 +627,112 @@ def test_saved_campaign_entry_quality_gate_allows_liquid_positive_edge():
 
     assert allowed
     assert "通过" in reason
+
+
+class _IntentStore:
+    def __init__(self, intents, settings=None):
+        self._intents = intents
+        self._settings = settings or {}
+
+    def intents(self, limit=500):
+        return self._intents[:limit]
+
+    def get_setting(self, key, default=""):
+        return self._settings.get(key, default)
+
+
+def test_loss_adaptive_budget_blocks_after_three_consecutive_losses():
+    rows = [
+        {
+            "strategy_id": "volatility_long_gamma",
+            "symbol": "US.SPCX260814P134000",
+            "side": "BUY",
+            "status": "FILLED",
+            "filled_quantity": 1,
+            "average_fill_price": 6.0,
+            "created_at": "2099-01-01T00:00:00+00:00",
+        },
+        {
+            "strategy_id": "volatility_long_gamma",
+            "symbol": "US.SPCX260814P134000",
+            "side": "SELL",
+            "status": "FILLED",
+            "filled_quantity": 1,
+            "average_fill_price": 5.0,
+            "created_at": "2099-01-01T00:01:00+00:00",
+        },
+    ] * 3
+
+    budget, reason = loss_adaptive_premium_budget(1000, _IntentStore(rows), "US.SPCX")
+
+    assert budget == 0
+    assert "连续亏损3次" in reason
+    assert "暂停新增风险" in reason
+
+
+def test_loss_adaptive_budget_recovers_after_recent_win():
+    rows = [
+        {
+            "strategy_id": "volatility_long_gamma",
+            "symbol": "US.TSLA260814C340000",
+            "side": "BUY",
+            "status": "FILLED",
+            "filled_quantity": 1,
+            "average_fill_price": 6.0,
+            "created_at": "2099-01-01T00:00:00+00:00",
+        },
+        {
+            "strategy_id": "volatility_long_gamma",
+            "symbol": "US.TSLA260814C340000",
+            "side": "SELL",
+            "status": "FILLED",
+            "filled_quantity": 1,
+            "average_fill_price": 7.0,
+            "created_at": "2099-01-01T00:01:00+00:00",
+        },
+    ]
+
+    budget, reason = loss_adaptive_premium_budget(1000, _IntentStore(rows), "US.TSLA")
+
+    assert budget == 1000
+    assert "连续亏损0次" in reason
+
+
+def test_combo_entry_requires_higher_quality_than_single_leg():
+    allowed, reason, checks = volatility_combo_entry_allowed({
+        "volatility_quality_score": 61,
+        "model_expected_return": .03,
+        "spread_pct": 3.5,
+        "option_open_interest": 2000,
+        "volume": 100,
+    })
+
+    assert not allowed
+    assert "回退单腿" in reason
+    assert checks["minimum_quality_score"] == 68
+
+
+def test_combo_entry_allows_high_quality_structure():
+    allowed, reason, _ = volatility_combo_entry_allowed({
+        "volatility_quality_score": 74,
+        "model_expected_return": .08,
+        "spread_pct": 2.5,
+        "option_open_interest": 3000,
+        "volume": 200,
+    })
+
+    assert allowed
+    assert "组合结构质量通过" in reason
+
+
+def test_volatility_hard_loss_reason_uses_usd_and_ratio_limits():
+    reason = volatility_hard_loss_exit_reason(
+        pnl_ratio=-.20,
+        pnl_amount=-125,
+        max_loss_usd=100,
+        max_loss_ratio=.25,
+    )
+
+    assert reason is not None
+    assert "$125.00" in reason
+    assert "单笔硬止损" in reason
