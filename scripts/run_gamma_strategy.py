@@ -667,7 +667,7 @@ def run_campaign(
         hard_loss_reason = volatility_hard_loss_exit_reason(
             pnl_ratio=pnl_ratio,
             pnl_amount=position_pnl_amount,
-            max_loss_usd=float(campaign.get("max_position_loss_usd", 100)),
+            max_loss_usd=float(campaign.get("max_position_loss_usd", 300)),
             max_loss_ratio=float(campaign.get("max_position_loss_ratio", .25)),
         )
         if hard_loss_reason:
