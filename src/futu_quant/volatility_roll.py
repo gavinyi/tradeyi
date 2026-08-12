@@ -178,13 +178,36 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
             message += f"；最高分候选：{top_reason}"
         return _with_diagnostics(campaign, candidates, regime, message)
     selected = eligible.iloc[0]
+    selected_code = str(selected.get("code", ""))
+    if parse_option_code(selected_code) is None:
+        selected_legs = list(selected.get("legs") or [])
+        selected_code = next(
+            (
+                str(leg.get("code", ""))
+                for leg in selected_legs
+                if str(leg.get("side", "")).upper() == "BUY"
+                and parse_option_code(str(leg.get("code", ""))) is not None
+            ),
+            next(
+                (
+                    str(leg.get("code", ""))
+                    for leg in selected_legs
+                    if parse_option_code(str(leg.get("code", ""))) is not None
+                ),
+                "",
+            ),
+        )
+    if parse_option_code(selected_code) is None:
+        return _with_diagnostics(
+            campaign, structures, regime, "最佳结构缺少可解析的主期权代码，跳过本轮维护"
+        )
     selected_contract = pd.Series(selected.get("primary_row") or selected.to_dict())
     analysis = contract_analysis(
         selected_contract, spot, rv, store, peer_contracts=candidates
     )
     updated = dict(campaign)
     updated.update({
-        "code": str(selected["code"]), "option_type": str(selected["option_type"]),
+        "code": selected_code, "option_type": str(selected["option_type"]),
         "structure": str(selected.get("structure", "LONG_OPTION")),
         "structure_label": str(selected.get("structure_label", "单腿买方期权")),
         "legs": list(selected.get("legs") or []),

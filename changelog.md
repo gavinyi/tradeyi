@@ -12,6 +12,84 @@
 6. 如果改动影响自动下单，必须记录是否已重启统一交易服务。
 7. 只改测试、文档或文案，也要简短记录。
 
+## 2026-08-11：修复波动率期权组合仓位孤儿化与 TSLA 价差平仓
+
+原因：
+
+- `US.TSLA260810C332500` / `US.TSLA260810C337500` 是 `CALL_DEBIT_SPREAD` 组合仓，账户里表现为 `+1 / -1`；
+- 当前波动率活动被维护成 `code=""`、`strike_time="nan"` 后，`run_volatility_strategy.py` 在预处理阶段直接过滤了该活动；
+- 组合已经 `OPEN`，但后续策略决策只围绕活动主代码运行，导致组合平仓链没有触发，形成孤儿组合仓；
+- 普通单腿到期自动平仓只支持正整数多头，不覆盖 `+1/-1` 价差组合。
+
+改动：
+
+1. 新增 `find_open_combo_for_campaign`，当活动 code、legs 或 cycle 发生漂移时，可按策略、正股、结构和腿代码找回已打开的自动组合。
+2. `run_campaign` 在 code 不可解析但 legs 合法时，自动用第一条 BUY 腿恢复主代码，并在组合平仓分支优先使用已恢复的 `combo_id`。
+3. `run_volatility_strategy.py` 不再过滤“code 异常但组合腿合法”的活动；预处理持仓判断会把 OPEN 组合视为已有持仓，避免一边持仓一边滚到新活动。
+4. 到期滚仓不再把活动写成空 code：只有滚出可解析的新合约时才替换配置。
+5. 已将当前 TSLA 活动配置从 `code=""` 修复为 `US.TSLA260810C330000`，`strike_time=2026-08-10`。
+6. 已对 `auto-8f09410d44299926` 发起组合平仓：
+   - 先买回空腿 `US.TSLA260810C337500`；
+   - 再卖出多腿 `US.TSLA260810C332500`；
+   - 组合状态已变为 `CLOSED`。
+
+验证：
+
+- 富途模拟盘已无上述两张 TSLA 期权持仓；
+- 平仓成交：
+  - `US.TSLA260810C337500 BUY 1 @ 0.03`；
+  - `US.TSLA260810C332500 SELL 1 @ 0.34`；
+- `pytest -q tests/test_combo_execution.py tests/test_volatility_structures.py`：10 项通过；
+- `ruff check src/futu_quant/combo_execution.py src/futu_quant/volatility_roll.py scripts/run_gamma_strategy.py scripts/run_volatility_strategy.py tests/test_combo_execution.py`：通过。
+
+## 2026-08-09：修复归因行情混入非美股代码导致页面报错
+
+原因：
+
+- 策略归因会合并股票、期权、币现货/合约等账本记录；
+- 富途美股 `snapshots` 只接受 `US.*` 代码，归因明细中如果出现 `AVAX-USDT-SWAP` 这类非美股代码，会导致整个“收益归因”页报错：`Snapshots require US.* symbols`。
+
+改动：
+
+1. `src/futu_quant/attribution.py` 在请求富途行情前只保留 `US.*` 标的；
+2. 非美股代码仍保留在归因明细中，不再丢弃记录；
+3. 明细新增 `quote_status` 字段：
+   - `行情已读取`；
+   - `行情缺失`；
+   - `未请求行情：非美股代码`。
+
+验证：
+
+- `pytest -q tests/test_strategy_plugins_experiments_attribution.py`：4 项通过；
+- `ruff check src/futu_quant/attribution.py tests/test_strategy_plugins_experiments_attribution.py`：通过。
+
+## 2026-08-09：Core Satellite 拆分 Core 周频与 Satellite 每日机会扫描
+
+原因：
+
+- Core Satellite 按周运行时，Core 底仓可以保持稳定，但 Satellite 增强仓可能错过 NVDA、AMD、GOOG 等高波动标的的短期强势机会；
+- 直接把整个组合改成每日调仓会导致 Core 底仓过度交易、参数噪声和小额重复订单；
+- 之前“单次目标权重变化上限”隐藏在环境变量里，页面不可见，不利于理解为什么单次调仓幅度受限。
+
+改动：
+
+1. `build_rebalance_plan` 新增 `satellite_only` 模式：正式周频/月频未到时，只允许非 Core 标的产生订单，SPY、VOO、IVV、QQQ、SCHD 等 Core 底仓不参与交易。
+2. Satellite 新增每日机会评分门槛 `CORE_SAT_SATELLITE_MIN_SCORE`，默认 4.0/6.5；低于门槛时记录“等待更强入场信号”，不下单。
+3. `run_strategies.py` 在正式 Core 调仓未到期时，如果 `CORE_SAT_SATELLITE_DAILY_SCAN=true`，自动进入“Satellite 每日机会扫描”；订单意图模式标记为 `satellite-daily`，便于后续复盘区分正式组合调仓和增强仓机会交易。
+4. `CORE_SAT_MAX_TARGET_CHANGE` 从隐式环境变量升级为 Settings 显式配置，默认 5%，限制单个标的目标权重单次跳变。
+5. 交易配置页的 Core Satellite 执行节奏区域新增：
+   - `Satellite 每日机会扫描` 开关；
+   - `Satellite 每日机会最低评分`；
+   - `单次目标权重变化上限`。
+6. 当前运行时配置已写入：`CORE_SAT_SATELLITE_DAILY_SCAN=true`、`CORE_SAT_SATELLITE_MIN_SCORE=4.0`、`CORE_SAT_MAX_TARGET_CHANGE=0.05`。
+7. 统一交易服务已重启，新 PID 为 `12718`。
+
+验证：
+
+- `pytest -q tests/test_safety_and_strategies.py tests/test_core_validation.py`：27 项通过；
+- `pytest -q tests/test_service_scheduling.py`：2 项通过；
+- `ruff check src/futu_quant/core_satellite.py src/futu_quant/config.py scripts/run_strategies.py pages/1_trading_config.py tests/test_safety_and_strategies.py`：通过。
+
 ## 2026-08-05：修复夜间断流、重复重启与波动率候选空转
 
 原因：
@@ -1514,3 +1592,13 @@ Core Satellite：
 - 收益退出后的强信号冷却豁免改为至少满足 3 项波动确认中的 2 项，抑制止盈后立即重复开仓。
 - 保留原有硬止损和数据质量门控，不通过放宽条件换取成交数量。
 - 冷却豁免升级为分层模式：强波动档在量比确认且满足任一核心波动条件时可提前恢复；动态波动档仍需至少 2/3 项确认。
+
+## 2026-08-11：波动率期权止血与组合残留修复
+
+- 手动核查并完成 TSLA 借方价差残留组合平仓：先回补短腿 `US.TSLA260810C337500`，再卖出长腿 `US.TSLA260810C332500`，富途模拟盘已无这两张持仓。
+- 波动率期权新增运行开关 `volatility_new_entries_paused`，当前已打开：暂停 `volatility_long_gamma` 新开仓，只保留已有持仓止盈、止损、到期退出和组合平仓管理。
+- 过期且富途账户已无真实持仓的 OPEN 组合会自动本地收尾，避免旧 NVDA/SPCX/TSLA 组合继续污染三账对账、上线状态和策略判断。
+- 已有期权持仓的行情门控改为“退出优先”：新开仓仍严格要求新鲜行情；已有仓位只要正股行情新鲜且期权盘口可用，就允许继续计算退出，不再被期权快照超过 900 秒永久卡住。
+- 统一交易服务已重启加载本轮修复，当前波动率期权处于止血观察状态；恢复新开仓前需要先复盘近期亏损来源并重新校准入场质量。
+- 修复 Berkshire B 期权合约反推正股代码的问题：`US.BRKB260...` 合约代码保持不变，但行情任务请求正股时统一使用富途可识别的 `US.BRK.B`，消除 `snapshots failed: 未知股票 BRKB` 导致的 option_history/健康检查降级。
+- 修复系统监控页“策略绩效”卡死：将原 `st.tabs` 全量渲染改为单视图按需渲染，并缓存绩效归因 60 秒；绩效后端只对未平仓成交批次请求行情，不再对全部历史成交代码批量拉快照。

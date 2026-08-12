@@ -19,6 +19,14 @@ def test_option_code_parser_supports_standard_futu_symbol():
     assert contract.strike == 332.5
 
 
+def test_option_code_parser_normalizes_berkshire_underlying_for_snapshots():
+    contract = parse_option_code("US.BRKB260828C530000")
+
+    assert contract is not None
+    assert contract.code == "US.BRKB260828C530000"
+    assert contract.underlying == "US.BRK.B"
+
+
 def test_long_itm_call_detects_exercise_cash_shortfall():
     positions = pd.DataFrame([
         {"code": "US.AAPL260720C300000", "qty": 2},

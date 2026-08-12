@@ -24,13 +24,32 @@ class OptionContract:
     strike: float
 
 
+def normalize_option_underlying(symbol: str) -> str:
+    """Normalize option-derived underlyings to broker quote symbols.
+
+    Futu option contract codes for Berkshire B commonly appear as
+    ``US.BRKB260...`` while the stock snapshot endpoint expects ``US.BRK.B``.
+    Keep the option contract code unchanged, but normalize the derived
+    underlying before requesting stock quotes.
+    """
+    value = str(symbol or "").upper()
+    aliases = {
+        "US.BRKB": "US.BRK.B",
+        "BRKB": "US.BRK.B",
+        "US.BRK.B": "US.BRK.B",
+        "BRK.B": "US.BRK.B",
+    }
+    return aliases.get(value, value if value.startswith("US.") else f"US.{value}")
+
+
 def parse_option_code(code: str) -> OptionContract | None:
     match = OPTION_CODE.fullmatch(str(code).upper())
     if not match:
         return None
+    underlying = normalize_option_underlying(match.group("underlying"))
     return OptionContract(
         code=str(code).upper(),
-        underlying=f"US.{match.group('underlying')}",
+        underlying=underlying,
         expiration=datetime.strptime(match.group("expiration"), "%y%m%d").date(),
         option_type="CALL" if match.group("option_type") == "C" else "PUT",
         strike=int(match.group("strike")) / 1000,

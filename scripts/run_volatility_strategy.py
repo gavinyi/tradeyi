@@ -3,6 +3,7 @@ from __future__ import annotations
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_volatility_campaigns, upsert_campaign, delete_campaign
 from futu_quant.execution import ExecutionManager
+from futu_quant.combo_execution import find_open_combo_for_campaign
 from futu_quant.volatility_roll import roll_campaign, should_replace_campaign
 from futu_quant.volatility_optimizer import volatility_entry_quality_allowed
 from futu_quant.option_lifecycle import parse_option_code
@@ -15,6 +16,46 @@ else:
     from run_gamma_strategy import load_state, run_campaign, save_state
 
 
+def close_stale_expired_combos(store, positions: pd.DataFrame, today: date) -> int:
+    """Close local combo records that cannot map to a live broker position anymore.
+
+    This is a bookkeeping cleanup only. It deliberately requires all combo legs
+    to be expired and absent from the broker account, so it does not hide a real
+    position that still needs to be exited.
+    """
+    position_codes = set()
+    if positions is not None and not positions.empty and "code" in positions.columns:
+        for _, row in positions.iterrows():
+            try:
+                qty = float(row.get("qty", 0) or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            if abs(qty) > 1e-9:
+                position_codes.add(str(row.get("code", "")).upper())
+
+    cleaned = 0
+    for combo in store.option_combos(limit=500):
+        if combo.get("strategy_id") != "volatility_long_gamma" or combo.get("status") != "OPEN":
+            continue
+        legs = store.option_combo_legs(combo["combo_id"])
+        contracts = [parse_option_code(str(leg.get("symbol", "")).upper()) for leg in legs]
+        if not contracts or any(contract is None for contract in contracts):
+            continue
+        leg_codes = {str(leg.get("symbol", "")).upper() for leg in legs}
+        if any(code in position_codes for code in leg_codes):
+            continue
+        if max(contract.expiration for contract in contracts if contract is not None) >= today:
+            continue
+        store.update_option_combo(combo["combo_id"], "CLOSED", "过期组合在富途已无持仓，自动完成本地收尾")
+        store.option_combo_event(
+            combo["combo_id"], "STALE_EXPIRED_COMBO_CLOSED", "CLOSED",
+            "过期组合在富途已无持仓，已自动完成本地账本收尾",
+            {"leg_codes": sorted(leg_codes)},
+        )
+        cleaned += 1
+    return cleaned
+
+
 def run_once(reconcile: bool = True) -> None:
     settings = Settings.load()
     if not settings.enable_paper_orders:
@@ -25,6 +66,13 @@ def run_once(reconcile: bool = True) -> None:
         executor.reconcile()
     positions = broker.positions()
     orders = broker.orders()
+    stale_cleaned = close_stale_expired_combos(executor.store, positions, date.today())
+    if stale_cleaned:
+        executor.store.audit(
+            "VOLATILITY_STALE_EXPIRED_COMBOS_CLOSED",
+            {"count": stale_cleaned},
+            "volatility_long_gamma",
+        )
     state = load_state()
     campaigns = load_volatility_campaigns()
     # Clean malformed contracts before they reach the decision loop.  A bad
@@ -34,6 +82,32 @@ def run_once(reconcile: bool = True) -> None:
     for item in campaigns:
         code = str(item.get("code", ""))
         if parse_option_code(code) is None:
+            valid_legs = [
+                str(leg.get("code", "")).upper()
+                for leg in (item.get("legs") or [])
+                if parse_option_code(str(leg.get("code", "")).upper()) is not None
+            ]
+            if valid_legs:
+                normalized = dict(item)
+                normalized["code"] = next(
+                    (
+                        str(leg.get("code", "")).upper()
+                        for leg in (item.get("legs") or [])
+                        if str(leg.get("side", "")).upper() == "BUY"
+                        and parse_option_code(str(leg.get("code", "")).upper()) is not None
+                    ),
+                    valid_legs[0],
+                )
+                parsed = parse_option_code(normalized["code"])
+                normalized["strike_time"] = parsed.expiration.isoformat() if parsed else ""
+                executor.store.audit("VOLATILITY_CAMPAIGN_CODE_RECOVERED", {
+                    "old_code": code, "new_code": normalized["code"],
+                    "underlying": normalized.get("underlying"),
+                    "structure": normalized.get("structure"),
+                    "valid_legs": valid_legs,
+                }, "volatility_long_gamma")
+                valid_campaigns.append(normalized)
+                continue
             executor.store.decision_if_changed(
                 "volatility_long_gamma", code or None, "BLOCKED",
                 "候选池已过滤：期权代码格式无效或无法解析到期日",
@@ -58,6 +132,18 @@ def run_once(reconcile: bool = True) -> None:
     for campaign in campaigns:
         current_code = str(campaign.get("code", ""))
         underlying = str(campaign.get("underlying", ""))
+        leg_symbols = {
+            str(leg.get("code", "")).upper()
+            for leg in (campaign.get("legs") or [])
+            if parse_option_code(str(leg.get("code", "")).upper()) is not None
+        }
+        open_combo = find_open_combo_for_campaign(
+            executor.store,
+            strategy_id="volatility_long_gamma",
+            underlying=underlying,
+            structure=str(campaign.get("structure", "")),
+            leg_symbols=leg_symbols,
+        ) if len(leg_symbols) > 1 else None
         broker_position = (
             positions[positions["code"] == current_code] if not positions.empty
             else positions
@@ -66,7 +152,7 @@ def run_once(reconcile: bool = True) -> None:
         shadow_quantity, _ = executor.store.shadow_position(
             "volatility_long_gamma", current_code,
         )
-        quantity = max(broker_quantity, int(shadow_quantity))
+        quantity = max(broker_quantity, int(shadow_quantity), 1 if open_combo else 0)
         pending = (
             orders[
                 (orders["code"] == current_code)
@@ -108,7 +194,11 @@ def run_once(reconcile: bool = True) -> None:
         if needs_expiry_roll or should_review_expression:
             rolled, reason = roll_campaign(broker, campaign, executor.store)
             replace, replace_reason = (
-                (True, reason) if needs_expiry_roll
+                (
+                    parse_option_code(str(rolled.get("code", ""))) is not None
+                    and rolled.get("code") != campaign.get("code"),
+                    reason,
+                ) if needs_expiry_roll
                 else should_replace_campaign(campaign, rolled)
             )
             if needs_quality_replacement:

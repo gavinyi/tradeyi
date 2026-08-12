@@ -13,7 +13,9 @@ from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_gamma_campaigns
 from futu_quant.execution import ExecutionManager
 from futu_quant.combo_analytics import combo_market_snapshot
-from futu_quant.combo_execution import ComboExecutionManager, create_combo
+from futu_quant.combo_execution import (
+    ComboExecutionManager, create_combo, find_open_combo_for_campaign,
+)
 from futu_quant.gamma_automation import decide_gamma_action
 from futu_quant.gamma_debug import diagnose_campaign, hard_campaign_issues
 from futu_quant.gamma_risk import (
@@ -37,12 +39,17 @@ from futu_quant.data_quality import (
     option_book_status, option_quote_freshness, quote_freshness,
 )
 from futu_quant.market_calendar import USMarketCalendar
+from futu_quant.option_lifecycle import parse_option_code
 from futu_quant.store import TradingStore
 
 
 NY = ZoneInfo("America/New_York")
 MARKET_CALENDAR = USMarketCalendar()
 LEGACY_STATE_FILE = Path("data/gamma_state.json")
+
+
+def volatility_new_entries_paused(store: TradingStore) -> bool:
+    return store.get_setting("volatility_new_entries_paused", "false").lower() == "true"
 
 
 def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float]:
@@ -128,8 +135,23 @@ def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
 ) -> None:
-    code = campaign["code"]
+    code = str(campaign.get("code", ""))
     legs = campaign.get("legs") or [{"code": code, "side": "BUY", "ratio": 1}]
+    valid_leg_codes = [
+        str(leg.get("code", "")).upper()
+        for leg in legs if parse_option_code(str(leg.get("code", "")).upper())
+    ]
+    if parse_option_code(code) is None and valid_leg_codes:
+        code = next(
+            (
+                str(leg.get("code", "")).upper()
+                for leg in legs
+                if str(leg.get("side", "")).upper() == "BUY"
+                and parse_option_code(str(leg.get("code", "")).upper())
+            ),
+            valid_leg_codes[0],
+        )
+        campaign = {**campaign, "code": code}
     issues = diagnose_campaign(campaign, executor.store.earnings_events())
     hard_issues = hard_campaign_issues(campaign, issues)
     if hard_issues:
@@ -172,6 +194,23 @@ def run_campaign(
         strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
     ) if len(legs) > 1 else ""
     combo = executor.store.option_combo(combo_id) if combo_id else None
+    if len(legs) > 1 and combo is None:
+        recovered = find_open_combo_for_campaign(
+            executor.store,
+            strategy_id=strategy_id,
+            underlying=str(campaign.get("underlying", "")),
+            structure=str(campaign.get("structure", "")),
+            leg_symbols=set(valid_leg_codes),
+        )
+        if recovered:
+            combo_id = recovered["combo_id"]
+            combo = recovered
+            executor.store.audit("VOLATILITY_COMBO_RECOVERED", {
+                "combo_id": combo_id, "campaign_code": code,
+                "underlying": campaign.get("underlying"),
+                "structure": campaign.get("structure"),
+                "leg_symbols": valid_leg_codes,
+            }, strategy_id)
     if combo and combo.get("status") in {"EXECUTING", "CLOSING", "ROLLBACK_PENDING"}:
         ComboExecutionManager(broker, executor.store, executor).advance(combo_id)
         combo = executor.store.option_combo(combo_id)
@@ -269,7 +308,11 @@ def run_campaign(
         or (not quote_check["option_fresh"] and not quote_check["option_degraded"])
     )
     entry_book_blocked = not quote_check["book_ok"] and quantity <= 0
-    if quote_stale or entry_book_blocked:
+    entry_data_blocked = quote_stale and quantity <= 0
+    exit_data_blocked = quantity > 0 and (
+        not quote_check["underlying_fresh"] or not quote_check["book_ok"]
+    )
+    if entry_data_blocked or exit_data_blocked or entry_book_blocked:
         reason = (
             "行情/盘口检查未通过："
             f"正股 {quote_check['underlying_reason']}；"
@@ -301,6 +344,14 @@ def run_campaign(
         )
         print(f"{code}: {decision} ({reason})")
         return
+    if quantity > 0 and not quote_check["option_fresh"]:
+        executor.store.audit("OPTION_EXIT_STALE_QUOTE_ACCEPTED", {
+            "strategy_id": strategy_id, "symbol": code,
+            "option_quote_age_seconds": quote_check["option_age_seconds"],
+            "reason": quote_check["option_reason"],
+            "book_reason": quote_check["book_reason"],
+            "position_quantity": quantity,
+        }, strategy_id)
     if quantity > 0 and not quote_check["book_ok"]:
         executor.store.audit("OPTION_EXIT_BOOK_DEGRADED", {
             "strategy_id": strategy_id, "symbol": code,
@@ -684,6 +735,15 @@ def run_campaign(
                 }, strategy_id,
             )
 
+        if trigger_mode == "VOLATILITY" and volatility_new_entries_paused(executor.store):
+            block_reason = "波动率期权新开仓已临时暂停：只保留已有持仓止盈、止损和组合平仓管理"
+            record_pretrade_block("VOLATILITY_ENTRY_PAUSED", block_reason, {
+                "entry_paused": True,
+                "setting_key": "volatility_new_entries_paused",
+            })
+            print(f"{code}: BLOCKED ({block_reason})")
+            return
+
         multiplier = float(option["option_contract_multiplier"])
         premium = float(campaign.get("structure_net_debit", ask)) * multiplier * per_stage
         budget_limit, budget_reason = loss_adaptive_premium_budget(
@@ -837,7 +897,7 @@ def run_campaign(
             print(f"{code}: HOLD ({reason})")
             return
         if len(legs) > 1 and execution_mode != "SHADOW":
-            active_combo_id = automatic_combo_id(
+            active_combo_id = combo_id or automatic_combo_id(
                 strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
             )
             active_combo = executor.store.option_combo(active_combo_id)

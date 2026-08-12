@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pandas as pd
-import os
 
 
 STRATEGY_NAME = "Core Satellite"
@@ -180,6 +179,7 @@ def core_quality_score(stats: dict[str, float], risk_on: bool) -> tuple[float, s
 def allocation_factor(
     stats: dict[str, float], kind: str, risk_on: bool, base_factor: float = 0.60,
     benchmark_stats: dict[str, float] | None = None,
+    satellite_min_score: float = 2.5,
 ) -> tuple[float, str]:
     above_long = stats["price"] >= stats["sma200"]
     above_short = stats["price"] >= stats["sma20"]
@@ -196,8 +196,11 @@ def allocation_factor(
 
         if relative20 <= 0 and relative60 <= 0:
             return 0.0, f"Satellite 评分 {quality_score:.1f}/6.5，但相对 SPY 强度不足，等待更强入场信号"
-        if quality_score <= 2.5:
-            return 0.0, f"Satellite 评分 {quality_score:.1f}/6.5 不足，等待更强入场信号"
+        if quality_score <= satellite_min_score:
+            return 0.0, (
+                f"Satellite 评分 {quality_score:.1f}/6.5 低于每日机会门槛 "
+                f"{satellite_min_score:.1f}，等待更强入场信号"
+            )
         if quality_score < 4.0:
             factor = 0.35
         elif quality_score < 5.0:
@@ -276,6 +279,7 @@ def ranked_target_weights(
     profile: str,
     core_budget: float | None,
     satellite_budget: float | None,
+    satellite_min_score: float = 2.5,
 ) -> tuple[dict[str, float], dict[str, str]]:
     parameters = PROFILES[profile]
     configured_core_budget = (
@@ -315,7 +319,7 @@ def ranked_target_weights(
     for symbol in satellite_symbols:
         factor, factor_reason = allocation_factor(
             stats_by_symbol[symbol], "satellite", risk_on,
-            parameters["base_factor"], spy_stats,
+            parameters["base_factor"], spy_stats, satellite_min_score,
         )
         if factor <= 0:
             reasons[symbol] = factor_reason
@@ -371,6 +375,9 @@ def build_rebalance_plan(
     max_order_notional: float = 0.0,
     core_budget: float | None = None,
     satellite_budget: float | None = None,
+    satellite_min_score: float = 2.5,
+    satellite_only: bool = False,
+    max_target_change: float = 0.05,
 ) -> tuple[list[RebalanceOrder], bool]:
     if account_value <= 0:
         raise ValueError("account value must be positive")
@@ -398,16 +405,16 @@ def build_rebalance_plan(
     stats_by_symbol = {symbol: indicators(frames[symbol]) for symbol in symbols}
     target_weights, allocation_reasons = ranked_target_weights(
         symbols, stats_by_symbol, spy, risk_on, max_stock_weight, profile,
-        core_budget, satellite_budget,
+        core_budget, satellite_budget, satellite_min_score,
     )
     # Avoid flipping a symbol from zero to a full target in one rebalance.
     # This is a portfolio-level hysteresis guard; the existing participation
     # throttle still controls the order slice sent to the broker.
-    max_target_change = min(
-        0.20, max(0.01, float(os.getenv("CORE_SAT_MAX_TARGET_CHANGE", "0.05")))
-    )
+    max_target_change = min(0.20, max(0.01, float(max_target_change)))
     candidates = []
     for symbol in symbols:
+        if satellite_only and symbol in CORE_MAX_WEIGHTS:
+            continue
         stats = stats_by_symbol[symbol]
         target_weight = target_weights.get(symbol, 0.0)
         reason = allocation_reasons.get(symbol, "未通过择时/择标的过滤")

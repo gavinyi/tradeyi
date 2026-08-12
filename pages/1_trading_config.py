@@ -195,6 +195,12 @@ with current_tab:
             settings.core_satellite_max_single_rebalance_pct,
             step=0.05, format="%.2f",
         )
+        max_target_change = st.number_input(
+            "单次目标权重变化上限", 0.01, 0.20,
+            settings.core_satellite_max_target_change,
+            step=0.01, format="%.2f",
+            help="限制单个标的目标权重每次最多变化多少，降低一次性追涨或急速减仓。",
+        )
         max_order_notional = st.number_input(
             "单笔计划最大金额（美元，0 表示不限制）", 0.0, 1_000_000.0,
             settings.core_satellite_max_order_notional, step=1000.0,
@@ -209,12 +215,24 @@ with current_tab:
             settings.core_satellite_high_volatility_trade_factor,
             step=0.05, format="%.2f",
         )
+        satellite_daily_scan = st.toggle(
+            "Satellite 每日机会扫描",
+            value=settings.core_satellite_satellite_daily_scan,
+            help="正式调仓频率未到时，只扫描 Satellite 标的；Core 底仓不参与交易。",
+        )
+        satellite_min_score = st.number_input(
+            "Satellite 每日机会最低评分", 0.0, 6.5,
+            settings.core_satellite_satellite_min_score,
+            step=0.5, format="%.1f",
+            help="分数越高越严格。建议正式模拟阶段使用 4.0，避免弱信号频繁换仓。",
+        )
     if st.button("保存 Core Satellite 配置", disabled=not admin):
         save_core_satellite_settings(
             core_profile, frequency, tolerance, min_trade,
             core_budget, satellite_budget, cash_buffer,
             max_single_rebalance_pct, max_order_notional,
             high_vol_threshold, high_vol_factor,
+            satellite_daily_scan, satellite_min_score, max_target_change,
         )
         st.success("档案已保存；请重启正在运行的策略进程。")
         st.rerun()

@@ -67,6 +67,37 @@ def create_combo(store, combo: dict, legs: list[dict]) -> str:
     return store.create_option_combo(normalized, normalized_legs)
 
 
+def find_open_combo_for_campaign(
+    store,
+    *,
+    strategy_id: str,
+    underlying: str,
+    structure: str = "",
+    leg_symbols: set[str] | None = None,
+) -> dict | None:
+    """Recover an already-open automatic combo when campaign identity drifted."""
+    leg_symbols = {str(symbol).upper() for symbol in (leg_symbols or set()) if symbol}
+    candidates = []
+    for combo in store.option_combos(limit=500):
+        if combo.get("strategy_id") != strategy_id:
+            continue
+        if combo.get("status") not in {"OPEN", "EXECUTING", "CLOSING", "ROLLBACK_PENDING"}:
+            continue
+        if str(combo.get("underlying", "")).upper() != str(underlying).upper():
+            continue
+        if structure and combo.get("structure") and combo.get("structure") != structure:
+            continue
+        combo_legs = {
+            str(leg.get("symbol", "")).upper()
+            for leg in store.option_combo_legs(combo["combo_id"])
+        }
+        overlap = len(leg_symbols & combo_legs) if leg_symbols else 0
+        candidates.append((overlap, combo))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (item[0], item[1]["created_at"]), reverse=True)[0][1]
+
+
 class ComboExecutionManager:
     def __init__(self, broker, store, executor):
         self.broker = broker

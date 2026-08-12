@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from futu_quant.combo_execution import ComboExecutionManager, create_combo, validate_combo
+from futu_quant.combo_execution import (
+    ComboExecutionManager, create_combo, find_open_combo_for_campaign, validate_combo,
+)
 from futu_quant.risk import RiskEngine, RiskLimits
 from futu_quant.store import TradingStore
 
@@ -107,6 +109,23 @@ def test_combo_opens_protection_first_and_closes_short_first(tmp_path):
     fill(store, executor.calls[-1][5])
     manager.advance(combo_id)
     assert executor.calls[-1][0:2] == ("US.NVDA260717C220000", "SELL")
+
+
+def test_find_open_combo_recovers_drifted_campaign_identity(tmp_path):
+    store = TradingStore(tmp_path / "combo-recovery.db")
+    combo_id = create_combo(store, combo_config(), vertical_legs())
+    store.update_option_combo(combo_id, "OPEN")
+
+    recovered = find_open_combo_for_campaign(
+        store,
+        strategy_id="volatility_long_gamma",
+        underlying="US.NVDA",
+        structure="VERTICAL",
+        leg_symbols={"US.NVDA260717C210000", "US.NVDA260717C999000"},
+    )
+
+    assert recovered is not None
+    assert recovered["combo_id"] == combo_id
 
 
 def test_combo_approval_rejection_does_not_write_invalid_foreign_key(tmp_path):

@@ -76,12 +76,23 @@ def run_once(
             due, schedule_reason = rebalance_due(
                 frames["US.SPY"], effective.frequency
             )
+        satellite_only = False
         if not due:
-            print(f"Core Satellite skipped: not due ({schedule_reason})")
-            executor.store.decision(
-                "core_satellite", None, "NOT_DUE", schedule_reason
-            )
-            return
+            if (
+                settings.core_satellite_satellite_daily_scan
+                and effective.frequency != "daily"
+            ):
+                due = True
+                satellite_only = True
+                schedule_reason = (
+                    f"Satellite 每日机会扫描；正式 Core 调仓未到期：{schedule_reason}"
+                )
+            else:
+                print(f"Core Satellite skipped: not due ({schedule_reason})")
+                executor.store.decision(
+                    "core_satellite", None, "NOT_DUE", schedule_reason
+                )
+                return
         print(f"Rebalance trigger: {schedule_reason}")
         if effective.validation_mode:
             print(
@@ -103,6 +114,9 @@ def run_once(
             settings.core_satellite_max_order_notional,
             settings.core_satellite_core_budget,
             settings.core_satellite_satellite_budget,
+            settings.core_satellite_satellite_min_score,
+            satellite_only,
+            settings.core_satellite_max_target_change,
         )
         signal_date = str(frames["US.SPY"].iloc[-1]["time_key"])[:10]
         validation_payload = {
@@ -121,6 +135,10 @@ def run_once(
             "max_order_notional": settings.core_satellite_max_order_notional,
             "high_volatility_threshold": settings.core_satellite_high_volatility_threshold,
             "high_volatility_trade_factor": settings.core_satellite_high_volatility_trade_factor,
+            "satellite_daily_scan": settings.core_satellite_satellite_daily_scan,
+            "satellite_min_score": settings.core_satellite_satellite_min_score,
+            "satellite_only": satellite_only,
+            "max_target_change": settings.core_satellite_max_target_change,
         }
         if effective.validation_mode:
             record_core_validation_session(
@@ -130,7 +148,9 @@ def run_once(
         if not orders:
             print("No rebalance order reached the minimum trade value")
             executor.store.decision(
-                "core_satellite", None, "HOLD", "没有达到最低交易金额的调仓指令",
+                "core_satellite", None, "HOLD",
+                "Satellite 每日扫描未发现可交易机会" if satellite_only
+                else "没有达到最低交易金额的调仓指令",
                 {"risk_on": risk_on, **validation_payload},
             )
         planned_reduction_delta = sum(
@@ -144,7 +164,10 @@ def run_once(
                 f"batch {order.execution_slice}/{order.total_slices})"
             )
             if settings.enable_paper_orders:
-                intent_mode = "daily-validation" if effective.validation_mode else "formal"
+                intent_mode = (
+                    "daily-validation" if effective.validation_mode
+                    else ("satellite-daily" if satellite_only else "formal")
+                )
                 print(
                     executor.submit_limit(
                         "core_satellite",

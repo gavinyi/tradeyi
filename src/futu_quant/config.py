@@ -132,6 +132,9 @@ def save_core_satellite_settings(
     max_order_notional: float = 50_000.0,
     high_volatility_threshold: float = 0.025,
     high_volatility_trade_factor: float = 0.50,
+    satellite_daily_scan: bool = True,
+    satellite_min_score: float = 4.0,
+    max_target_change: float = 0.05,
 ) -> None:
     save_core_satellite_profile(profile)
     if frequency not in {"daily", "weekly", "monthly"}:
@@ -154,6 +157,10 @@ def save_core_satellite_settings(
         raise ValueError("高波动阈值必须在 0% 到 20% 之间")
     if not 0.05 <= high_volatility_trade_factor <= 1.0:
         raise ValueError("高波动降速比例必须在 5% 到 100% 之间")
+    if not 0 <= satellite_min_score <= 6.5:
+        raise ValueError("Satellite 机会门槛必须在 0 到 6.5 分之间")
+    if not 0.01 <= max_target_change <= 0.20:
+        raise ValueError("单次目标权重变化上限必须在 1% 到 20% 之间")
     values = {
         "CORE_SAT_REBALANCE_FREQUENCY": frequency,
         "CORE_SAT_WEIGHT_TOLERANCE": str(tolerance),
@@ -165,6 +172,9 @@ def save_core_satellite_settings(
         "CORE_SAT_MAX_ORDER_NOTIONAL": str(max_order_notional),
         "CORE_SAT_HIGH_VOL_DAILY_STD": str(high_volatility_threshold),
         "CORE_SAT_HIGH_VOL_TRADE_FACTOR": str(high_volatility_trade_factor),
+        "CORE_SAT_SATELLITE_DAILY_SCAN": "true" if satellite_daily_scan else "false",
+        "CORE_SAT_SATELLITE_MIN_SCORE": str(satellite_min_score),
+        "CORE_SAT_MAX_TARGET_CHANGE": str(max_target_change),
     }
     save_runtime_settings(values)
 
@@ -443,6 +453,9 @@ class Settings:
     core_satellite_max_order_notional: float
     core_satellite_high_volatility_threshold: float
     core_satellite_high_volatility_trade_factor: float
+    core_satellite_satellite_daily_scan: bool
+    core_satellite_satellite_min_score: float
+    core_satellite_max_target_change: float
     core_satellite_symbols: tuple[str, ...]
     gamma_symbols: tuple[str, ...]
     volatility_symbols: tuple[str, ...]
@@ -538,6 +551,15 @@ class Settings:
         high_volatility_trade_factor = float(os.getenv("CORE_SAT_HIGH_VOL_TRADE_FACTOR", "0.50"))
         if not 0.05 <= high_volatility_trade_factor <= 1.0:
             raise RuntimeError("CORE_SAT_HIGH_VOL_TRADE_FACTOR must be between 0.05 and 1.0")
+        satellite_daily_scan = (
+            os.getenv("CORE_SAT_SATELLITE_DAILY_SCAN", "true").lower() == "true"
+        )
+        satellite_min_score = float(os.getenv("CORE_SAT_SATELLITE_MIN_SCORE", "4.0"))
+        if not 0 <= satellite_min_score <= 6.5:
+            raise RuntimeError("CORE_SAT_SATELLITE_MIN_SCORE must be between 0 and 6.5")
+        max_target_change = float(os.getenv("CORE_SAT_MAX_TARGET_CHANGE", "0.05"))
+        if not 0.01 <= max_target_change <= 0.20:
+            raise RuntimeError("CORE_SAT_MAX_TARGET_CHANGE must be between 0.01 and 0.20")
         core_symbols = tuple(
             symbol.strip().upper()
             for symbol in os.getenv("CORE_SAT_SYMBOLS", ",".join(watchlist)).split(",")
@@ -589,6 +611,9 @@ class Settings:
             core_satellite_max_order_notional=max_order_notional,
             core_satellite_high_volatility_threshold=high_volatility_threshold,
             core_satellite_high_volatility_trade_factor=high_volatility_trade_factor,
+            core_satellite_satellite_daily_scan=satellite_daily_scan,
+            core_satellite_satellite_min_score=satellite_min_score,
+            core_satellite_max_target_change=max_target_change,
             core_satellite_symbols=core_symbols,
             gamma_symbols=gamma_symbols,
             volatility_symbols=volatility_symbols,

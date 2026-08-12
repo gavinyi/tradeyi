@@ -24,9 +24,6 @@ def performance_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
     fills = fills[~fills["strategy_id"].astype(str).str.startswith("migration_")]
     if fills.empty:
         return pd.DataFrame(), pd.DataFrame(), equity_frame(store)
-    symbols = fills["symbol"].unique().tolist()
-    quotes = broker.snapshots(symbols)
-    prices = quotes.set_index("code")["last_price"].astype(float).to_dict()
     lots: dict[tuple[str, str], deque] = defaultdict(deque)
     realized: dict[str, list[float]] = defaultdict(list)
     fees: dict[str, float] = defaultdict(float)
@@ -56,6 +53,15 @@ def performance_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
             else:
                 lots[key][0][0] = lot_qty
         realized[fill["strategy_id"]].append(trade_pnl)
+
+    open_symbols = sorted({
+        symbol for (_strategy, symbol), open_lots in lots.items() if open_lots
+    })
+    if open_symbols:
+        quotes = broker.snapshots(open_symbols)
+        prices = quotes.set_index("code")["last_price"].astype(float).to_dict()
+    else:
+        prices = {}
 
     detail_rows = []
     for (strategy, symbol), open_lots in lots.items():

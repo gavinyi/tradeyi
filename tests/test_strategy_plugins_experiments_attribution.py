@@ -50,3 +50,23 @@ def test_attribution_combines_fifo_unrealized_fees_and_slippage(tmp_path):
     assert detail.iloc[0]["slippage_cost"] == 2
     assert detail.iloc[0]["delta_exposure"] == 1100
     assert summary.iloc[0]["total_pnl"] == 116
+
+
+def test_attribution_skips_non_us_symbols_for_futu_snapshots(tmp_path):
+    store = TradingStore(tmp_path / "trading.db")
+    store.set_virtual_allocation("crypto_volatility_swap", "AVAX-USDT-SWAP", 2, 25)
+    store.set_virtual_allocation("core", "US.AAPL", 1, 100)
+
+    class Broker:
+        @staticmethod
+        def snapshots(symbols):
+            assert symbols == ["US.AAPL"]
+            return pd.DataFrame([{"code": "US.AAPL", "last_price": 110}])
+
+    summary, detail = attribution_report(store, Broker())
+    by_symbol = detail.set_index("symbol")
+
+    assert set(by_symbol.index) == {"AVAX-USDT-SWAP", "US.AAPL"}
+    assert by_symbol.loc["AVAX-USDT-SWAP", "quote_status"] == "未请求行情：非美股代码"
+    assert by_symbol.loc["AVAX-USDT-SWAP", "market_value"] == 0
+    assert summary["strategy_id"].tolist() == ["core", "crypto_volatility_swap"]

@@ -38,6 +38,20 @@ def test_non_us_symbol_is_rejected(monkeypatch):
         Settings.load()
 
 
+def test_core_satellite_daily_opportunity_settings_load_from_env(monkeypatch):
+    monkeypatch.setenv("FUTU_TRADING_ENV", "SIMULATE")
+    monkeypatch.setenv("WATCHLIST", "US.SPY,US.NVDA")
+    monkeypatch.setenv("CORE_SAT_SATELLITE_DAILY_SCAN", "true")
+    monkeypatch.setenv("CORE_SAT_SATELLITE_MIN_SCORE", "4.5")
+    monkeypatch.setenv("CORE_SAT_MAX_TARGET_CHANGE", "0.06")
+
+    settings = Settings.load()
+
+    assert settings.core_satellite_satellite_daily_scan is True
+    assert settings.core_satellite_satellite_min_score == pytest.approx(4.5)
+    assert settings.core_satellite_max_target_change == pytest.approx(0.06)
+
+
 def test_breakout_buy():
     frame = pd.DataFrame({"close": list(range(1, 22))})
     assert breakout(frame).signal == Signal.BUY
@@ -173,6 +187,39 @@ def test_core_satellite_satellite_scores_into_position():
     assert "相对SPY强势" in reason
 
 
+def test_core_satellite_satellite_score_gate_can_be_tightened():
+    satellite = indicators(trend_frame(start=70, step=0.45))
+    spy = indicators(trend_frame(start=80, step=0.20))
+
+    factor, reason = allocation_factor(
+        satellite, "satellite", True, 0.80, spy, satellite_min_score=6.5
+    )
+
+    assert factor == 0
+    assert "每日机会门槛" in reason
+
+
+def test_core_satellite_satellite_only_does_not_touch_core_positions():
+    frames = {
+        "US.SPY": trend_frame(start=80, step=0.20),
+        "US.QQQ": trend_frame(start=90, step=0.20),
+        "US.NVDA": trend_frame(start=50, step=0.80),
+    }
+    positions = pd.DataFrame(
+        [{"code": "US.SPY", "qty": 100, "can_sell_qty": 100, "market_val": 12_380}]
+    )
+
+    plan, risk_on = build_rebalance_plan(
+        frames, positions, 100_000, ("US.SPY", "US.QQQ", "US.NVDA"),
+        min_trade_usd=0, core_budget=0.40, satellite_budget=0.25,
+        satellite_min_score=4.0, satellite_only=True,
+    )
+
+    assert risk_on
+    assert plan
+    assert {order.symbol for order in plan} == {"US.NVDA"}
+
+
 def test_core_satellite_plan_never_buys_over_total_stock_cap():
     frames = {"US.SPY": core_frame(), "US.AAPL": core_frame()}
     positions = pd.DataFrame(
@@ -190,14 +237,15 @@ def test_core_satellite_slices_large_rebalance_and_records_full_target():
     plan, risk_on = build_rebalance_plan(
         frames, pd.DataFrame(), 100_000, ("US.SPY", "US.NVDA"),
         min_trade_usd=0, max_single_rebalance_pct=0.50, max_order_notional=10_000,
+        max_target_change=0.20,
     )
     spy_order = next(order for order in plan if order.symbol == "US.SPY")
 
     assert risk_on
-    assert spy_order.desired_quantity == 250
+    assert spy_order.desired_quantity == 200
     assert spy_order.quantity == 100
     assert spy_order.order_notional == pytest.approx(10_000)
-    assert spy_order.total_slices == 3
+    assert spy_order.total_slices == 2
 
 
 def test_core_satellite_high_volatility_reduces_trade_participation():

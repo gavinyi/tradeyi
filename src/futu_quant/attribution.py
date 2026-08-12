@@ -8,6 +8,10 @@ import pandas as pd
 from .option_lifecycle import parse_option_code
 
 
+def _is_futu_us_symbol(symbol: str) -> bool:
+    return symbol.startswith("US.")
+
+
 def _number(value, default: float = 0.0) -> float:
     try:
         result = float(value)
@@ -25,7 +29,8 @@ def attribution_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame]:
     allocations = store.virtual_allocations()
     symbols = set(fills["symbol"].astype(str)) if not fills.empty else set()
     symbols.update(str(item["symbol"]) for item in allocations)
-    quotes = broker.snapshots(sorted(symbols)) if symbols else pd.DataFrame()
+    us_symbols = sorted(symbol for symbol in symbols if _is_futu_us_symbol(symbol))
+    quotes = broker.snapshots(us_symbols) if us_symbols else pd.DataFrame()
     quote_map = {
         str(row["code"]): row for _, row in quotes.iterrows()
     } if not quotes.empty else {}
@@ -80,6 +85,11 @@ def attribution_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame]:
         key = (strategy, symbol)
         row = quote_map.get(symbol, {})
         last = _number(row.get("last_price"), 0)
+        quote_status = (
+            "行情已读取" if symbol in quote_map
+            else "未请求行情：非美股代码" if not _is_futu_us_symbol(symbol)
+            else "行情缺失"
+        )
         open_lots = lots[key]
         quantity = sum(float(lot[0]) for lot in open_lots)
         cost = sum(float(lot[0]) * float(lot[1]) * float(lot[2]) for lot in open_lots)
@@ -91,6 +101,7 @@ def attribution_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame]:
             "asset_class": "OPTION" if is_option else "STOCK_ETF",
             "quantity": quantity, "average_cost": cost / (quantity * multiplier)
             if quantity else 0, "last_price": last, "market_value": market_value,
+            "quote_status": quote_status,
             "realized_pnl": realized_by_key[key], "unrealized_pnl": market_value - cost,
             "fees": fees_by_key[key], "slippage_cost": slippage_by_key[key],
             "total_pnl": realized_by_key[key] + market_value - cost - fees_by_key[key],

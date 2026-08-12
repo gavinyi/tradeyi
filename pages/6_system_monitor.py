@@ -26,6 +26,13 @@ store = TradingStore()
 settings = Settings.load()
 broker = FutuPaperBroker(settings)
 
+
+@st.cache_data(ttl=60)
+def cached_performance_report():
+    local_store = TradingStore()
+    local_broker = FutuPaperBroker(Settings.load())
+    return performance_report(local_store, local_broker)
+
 service = service_status()
 radar = radar_status()
 with st.container(border=True):
@@ -73,8 +80,13 @@ with st.container(horizontal=True):
     st.metric("风控拒单", int((intents.get("status") == "REJECTED").sum()) if not intents.empty else 0, border=True)
     st.metric("未处理告警", int((alerts.get("delivered") == 0).sum()) if not alerts.empty else 0, border=True)
 
-tabs = st.tabs(["运行状态", "调度任务", "策略绩效", "系统健康", "告警中心", "恢复与日报"])
-with tabs[0]:
+view = st.segmented_control(
+    "监控视图",
+    ["运行状态", "调度任务", "策略绩效", "系统健康", "告警中心", "恢复与日报"],
+    default="运行状态",
+)
+
+if view == "运行状态":
     if heartbeats.empty:
         st.info("统一交易服务尚未启动，因此还没有心跳。")
     else:
@@ -85,7 +97,7 @@ with tabs[0]:
         st.dataframe(display, hide_index=True)
         st.caption("高频交易任务允许 2 分钟，系统维护允许 7 分钟，每日任务允许 25 小时；ERROR 始终表示执行异常。")
 
-with tabs[1]:
+elif view == "调度任务":
     task_runs = pd.DataFrame(store.task_runs(limit=300))
     if task_runs.empty:
         st.info("服务尚无任务执行记录；启动后会记录每个任务的耗时与超时状态。")
@@ -148,9 +160,11 @@ with tabs[1]:
         })
         st.caption("软超时不会强杀正在进行的下单或对账，避免任务被中断后重复提交；完成后会降级告警。")
 
-with tabs[2]:
+elif view == "策略绩效":
+    st.caption("绩效归因只在当前视图打开时加载，并缓存 60 秒；避免打开系统监控时被行情归因阻塞。")
     try:
-        summary, detail, equity = performance_report(store, broker)
+        with st.spinner("正在加载策略绩效归因…"):
+            summary, detail, equity = cached_performance_report()
         if summary.empty:
             st.info("统一执行层尚无成交记录，成交后会显示策略级估算盈亏。")
         else:
@@ -173,7 +187,7 @@ with tabs[2]:
     except BrokerError as exc:
         st.error(f"绩效行情读取失败：{exc}")
 
-with tabs[3]:
+elif view == "系统健康":
     backups = sorted(Path("data/backups").glob("trading-*.db"), reverse=True)
     service_log = Path("data/service.log")
     with st.container(horizontal=True):
@@ -199,7 +213,7 @@ with tabs[3]:
         "每日备份、日志轮转和过期监控数据清理。"
     )
 
-with tabs[4]:
+elif view == "告警中心":
     if alerts.empty:
         st.success("暂无告警。")
     else:
@@ -218,7 +232,7 @@ with tabs[4]:
         )
         st.dataframe(alert_display, hide_index=True)
 
-with tabs[5]:
+elif view == "恢复与日报":
     events = pd.DataFrame(store.operational_events())
     if events.empty:
         st.info("暂无恢复或运行事件。")
