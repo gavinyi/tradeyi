@@ -73,6 +73,32 @@
 - `pytest -q tests/test_option_pnl.py tests/test_combo_execution.py tests/test_trade_diagnostics.py`：20 项通过；
 - `python scripts/check_streamlit_pages.py --runtime`：39 个页面运行通过。
 
+## 2026-08-12：每日复盘期权盈亏表列顺序优化
+
+原因：
+
+- “期权盈亏拆解”表里时间列靠前，占用大屏宽度；
+- 用户最关心的是结果、毛盈亏和净盈亏，原顺序不利于一眼判断哪张期权赚/亏。
+
+改动：
+
+1. “期权盈亏拆解”表列顺序改为：
+   - 代码；
+   - 结果；
+   - 净盈亏；
+   - 毛盈亏；
+   - 费用；
+   - 买入/卖出均价；
+   - 平仓数量、剩余持仓；
+   - 买入/卖出数量与金额；
+   - 首次成交、最后成交。
+2. 成交时间改为短格式中国时间，例如 `08-12 03:45`，并移到表格后方。
+
+验证：
+
+- `ruff check pages/29_strategy_review_execution_quality.py`：通过；
+- `python scripts/check_streamlit_pages.py --runtime`：静态巡检 39 页通过；动态巡检因当前 OpenD 探测不可连而跳过。
+
 ## 2026-08-11：修复波动率期权组合仓位孤儿化与 TSLA 价差平仓
 
 原因：

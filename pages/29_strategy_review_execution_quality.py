@@ -29,6 +29,28 @@ def display_percent_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataF
     return result
 
 
+def option_pnl_display_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    for source, target in {
+        "首次成交": "首次成交（中国）",
+        "最后成交": "最后成交（中国）",
+    }.items():
+        if source in result:
+            result[target] = pd.to_datetime(
+                result[source], utc=True, errors="coerce",
+            ).dt.tz_convert("Asia/Shanghai").dt.strftime("%m-%d %H:%M")
+            result = result.drop(columns=[source])
+    preferred = [
+        "代码", "结果", "净盈亏", "毛盈亏", "费用",
+        "买入均价", "卖出均价", "平仓数量", "剩余持仓",
+        "买入数量", "卖出数量", "成交次数", "买入金额", "卖出金额",
+        "首次成交（中国）", "最后成交（中国）",
+    ]
+    ordered = [column for column in preferred if column in result.columns]
+    rest = [column for column in result.columns if column not in ordered]
+    return result[ordered + rest]
+
+
 default_session = latest_us_session_date()
 left, middle, right = st.columns(3)
 session_date = left.date_input("复盘交易日（美东）", value=default_session)
@@ -96,7 +118,7 @@ with pnl_tab:
             st.metric("已平胜率", f"{wins / max(1, wins + losses):.0%}", border=True)
             st.metric("毛盈利", f"${float(review.metrics['期权毛盈利']):,.2f}", border=True)
             st.metric("毛亏损", f"${float(review.metrics['期权毛亏损']):,.2f}", border=True)
-        view = china_time_columns(review.option_pnl_breakdown)
+        view = option_pnl_display_frame(review.option_pnl_breakdown)
         st.dataframe(
             view,
             hide_index=True,
