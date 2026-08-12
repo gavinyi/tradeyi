@@ -12,6 +12,37 @@
 6. 如果改动影响自动下单，必须记录是否已重启统一交易服务。
 7. 只改测试、文档或文案，也要简短记录。
 
+## 2026-08-12：组合平仓数量防呆、期权盈亏时间锚点与每日复盘运行健康
+
+原因：
+
+- 自动期权组合如果某条腿被富途手动处理，系统仍可能按原组合比例继续提交平仓，触发“持仓不足”并反复失败；
+- 期权盈亏台账曾使用 `last_broker_update`/`updated_at` 作为纸账户成交时间，后续 OpenD 对账会刷新该时间，导致昨晚窗口内明明有成交但复盘查不到；
+- 每日复盘只覆盖订单、波动率期权和 Core Satellite，缺少 OpenD 退避、任务退化、服务异常等运行层诊断。
+
+改动：
+
+1. `ComboExecutionManager` 在组合腿平仓前读取富途当前持仓：
+   - 多头腿只按可卖数量平仓；
+   - 空头腿只按当前空头暴露买回；
+   - 如果富途当前无该合约持仓，直接标记该腿已平，不再重复提交错误订单。
+2. 期权盈亏台账新增“富途首次成交时间”：
+   - Shadow 订单仍使用 Shadow 成交时间；
+   - 纸账户订单使用首次成交的 `order_state_events` 时间；
+   - 后续对账刷新不再改变历史开仓/平仓时间。
+3. “策略复盘与执行质量”页面新增运行健康指标和页签：
+   - 运行退化/超时；
+   - 运行异常；
+   - 各服务任务的执行次数、成功次数、退化/超时、异常次数、最近状态、问题摘要和中国时间。
+4. 复盘 Markdown 同步加入运行健康章节，方便下载后追踪“策略问题 vs 系统问题”。
+
+验证：
+
+- `pytest -q tests/test_combo_execution.py tests/test_option_pnl.py tests/test_trade_diagnostics.py`：20 项通过；
+- `ruff check src/futu_quant/combo_execution.py src/futu_quant/option_pnl.py src/futu_quant/strategy_review.py pages/29_strategy_review_execution_quality.py tests/test_combo_execution.py tests/test_option_pnl.py`：通过；
+- `python scripts/check_streamlit_pages.py --runtime`：39 个页面运行通过；
+- 使用当前数据库生成每日复盘，已能显示运行退化/异常、期权已实现盈亏和 Core Satellite 调仓摘要。
+
 ## 2026-08-11：修复波动率期权组合仓位孤儿化与 TSLA 价差平仓
 
 原因：

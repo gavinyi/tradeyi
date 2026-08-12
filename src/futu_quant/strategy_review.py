@@ -21,6 +21,7 @@ class StrategyReview:
     blockers: pd.DataFrame
     option_quality: pd.DataFrame
     core_quality: pd.DataFrame
+    runtime_health: pd.DataFrame
 
 
 def _json(value: object) -> dict:
@@ -36,6 +37,22 @@ def _json(value: object) -> dict:
 def _within(row: dict, window: DiagnosticWindow, column: str = "created_at") -> bool:
     value = str(row.get(column, ""))
     return bool(value and window.start_iso <= value <= window.end_iso)
+
+
+TASK_LABELS = {
+    "shadow_matching": "Shadow 成交匹配",
+    "order_reconciliation": "订单对账",
+    "ledger_reconciliation": "三账对账",
+    "option_combo_monitor": "期权组合执行监控",
+    "option_lifecycle": "期权生命周期",
+    "option_history": "期权历史采集",
+    "earnings_gamma": "财报 Gamma",
+    "volatility_long_gamma": "波动率期权",
+    "core_satellite": "Core Satellite",
+    "daily_report": "每日运行报告",
+    "earnings_calendar": "财报日历",
+    "system_health": "系统健康",
+}
 
 
 def _multiplier(symbol: str) -> float:
@@ -159,6 +176,45 @@ def _core_quality(intents: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _runtime_health(store, window: DiagnosticWindow) -> pd.DataFrame:
+    rows = [
+        row for row in store.task_runs(limit=10_000)
+        if _within(row, window, "started_at")
+    ]
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    grouped_rows = []
+    for task_id, group in frame.groupby("task_id", dropna=False):
+        ordered = group.sort_values("started_at")
+        latest = ordered.iloc[-1]
+        statuses = group["status"].astype(str).str.upper()
+        problematic = ordered[
+            ordered["status"].astype(str).str.upper().isin(
+                ["ERROR", "DEGRADED", "SLOW", "OVERDUE", "INTERRUPTED"],
+            )
+        ]
+        problem = problematic.iloc[-1] if not problematic.empty else latest
+        degraded = int(statuses.isin(["DEGRADED", "SLOW", "OVERDUE", "INTERRUPTED"]).sum())
+        errors = int(statuses.eq("ERROR").sum())
+        grouped_rows.append({
+            "任务": TASK_LABELS.get(str(task_id), str(task_id)),
+            "任务代码": str(task_id),
+            "执行次数": int(len(group)),
+            "成功次数": int(statuses.eq("SUCCESS").sum()),
+            "退化/超时": degraded,
+            "异常次数": errors,
+            "最近状态": str(latest.get("status", "")),
+            "最近消息": str(latest.get("message") or ""),
+            "问题摘要": str(problem.get("message") or problem.get("status") or ""),
+            "最后时间": latest.get("started_at"),
+        })
+    result = pd.DataFrame(grouped_rows)
+    return result.sort_values(
+        ["异常次数", "退化/超时", "最后时间"], ascending=[False, False, False],
+    ).reset_index(drop=True)
+
+
 def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
     diagnostic = build_diagnostic_report(store, window)
     decisions = [
@@ -182,6 +238,7 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
     blockers = diagnostic["blockers"].copy()
     option_quality = _option_quality(decisions, fills)
     core_quality = _core_quality(intents)
+    runtime_health = _runtime_health(store, window)
 
     decision_counts = pd.DataFrame(decisions)
     if not decision_counts.empty:
@@ -207,8 +264,30 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         "期权已实现盈亏": realized_option_pnl,
         "期权未平持仓": open_option_count,
         "Core调仓订单": len(core_quality),
+        "退化任务": (
+            int(pd.to_numeric(runtime_health.get("退化/超时", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+            if not runtime_health.empty else 0
+        ),
+        "异常任务": (
+            int(pd.to_numeric(runtime_health.get("异常次数", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+            if not runtime_health.empty else 0
+        ),
     }
     narrative = []
+    if not runtime_health.empty:
+        degraded_rows = runtime_health[
+            pd.to_numeric(runtime_health["退化/超时"], errors="coerce").fillna(0).gt(0)
+            | pd.to_numeric(runtime_health["异常次数"], errors="coerce").fillna(0).gt(0)
+        ]
+        if degraded_rows.empty:
+            narrative.append("运行健康层面没有发现任务异常或退化。")
+        else:
+            top_runtime = degraded_rows.iloc[0]
+            narrative.append(
+                f"运行健康层面有 {int(metrics['退化任务'])} 次退化/超时、"
+                f"{int(metrics['异常任务'])} 次异常；最需要关注的是"
+                f"“{top_runtime['任务']}”：{top_runtime['问题摘要'] or top_runtime['最近状态']}。"
+            )
     if not option_quality.empty:
         winners = option_quality[pd.to_numeric(option_quality["已实现盈亏"], errors="coerce").fillna(0) > 0]
         open_rows = option_quality[pd.to_numeric(option_quality["当前持仓"], errors="coerce").fillna(0) > 0]
@@ -237,6 +316,7 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         blockers=blockers,
         option_quality=option_quality,
         core_quality=core_quality,
+        runtime_health=runtime_health,
     )
 
 
@@ -281,6 +361,10 @@ def review_markdown(review: StrategyReview) -> str:
         "## Core Satellite 调仓质量",
         "",
         table(review.core_quality),
+        "",
+        "## 运行健康",
+        "",
+        table(review.runtime_health),
         "",
         "## 阻塞原因",
         "",

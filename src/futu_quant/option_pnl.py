@@ -121,17 +121,50 @@ def _shadow_fill_times(store, limit: int) -> dict[int, str]:
     return first_by_intent
 
 
-def _fill_time(order: pd.Series, shadow_times: dict[int, str]) -> tuple[Any, str]:
+def _broker_fill_times(store, limit: int) -> dict[int, str]:
+    """Return the first broker-confirmed fill timestamp for each intent.
+
+    `order_intents.last_broker_update` is a mutable reconciliation timestamp.
+    It can move every time OpenD is polled, which makes historical PnL windows
+    look empty after a later sync. The order state event is append-only, so it
+    is the stable timestamp we want for review and PnL attribution.
+    """
+    try:
+        rows = store.order_state_events(limit=limit * 2)
+    except Exception:
+        return {}
+    first_by_intent: dict[int, str] = {}
+    for row in rows:
+        try:
+            intent_id = int(row["intent_id"])
+            filled_quantity = float(row.get("filled_quantity") or 0)
+        except (TypeError, ValueError, KeyError):
+            continue
+        status = str(row.get("new_status") or "").upper()
+        created_at = str(row.get("created_at") or "")
+        if filled_quantity <= 0 or status not in FILLED_STATUSES or not created_at:
+            continue
+        previous = first_by_intent.get(intent_id)
+        if previous is None or created_at < previous:
+            first_by_intent[intent_id] = created_at
+    return first_by_intent
+
+
+def _fill_time(
+    order: pd.Series,
+    shadow_times: dict[int, str],
+    broker_times: dict[int, str],
+) -> tuple[Any, str]:
     try:
         intent_id = int(order["id"])
     except (TypeError, ValueError, KeyError):
         intent_id = -1
     if intent_id in shadow_times:
         return shadow_times[intent_id], "Shadow 成交时间"
+    if intent_id in broker_times:
+        return broker_times[intent_id], "富途首次成交时间"
     if str(order.get("status", "")).upper() in FILLED_STATUSES:
-        broker_time = order.get("last_broker_update") or order.get("updated_at")
-        if broker_time:
-            return broker_time, "富途成交更新时间"
+        return order.get("created_at"), "订单创建时间"
     return order.get("created_at"), "订单创建时间"
 
 
@@ -169,6 +202,7 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
     symbols = sorted(option_orders["symbol"].astype(str).unique())
     quote_map, quote_status = _fetch_quote_map(broker, symbols)
     shadow_times = _shadow_fill_times(store, limit)
+    broker_times = _broker_fill_times(store, limit)
 
     lots_by_key: dict[tuple[str, str], deque[OptionLot]] = defaultdict(deque)
     all_lots: list[OptionLot] = []
@@ -187,7 +221,7 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
             continue
 
         if str(order["side"]).upper() == "BUY":
-            open_time, open_time_source = _fill_time(order, shadow_times)
+            open_time, open_time_source = _fill_time(order, shadow_times, broker_times)
             lot = OptionLot(
                 lot_id=f"{int(order['id'])}-{symbol}",
                 strategy_id=strategy_id,
@@ -210,7 +244,7 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
 
         remaining = quantity
         sell_fee_remaining = fees
-        close_time, close_time_source = _fill_time(order, shadow_times)
+        close_time, close_time_source = _fill_time(order, shadow_times, broker_times)
         while remaining > 0 and lots_by_key[key]:
             lot = lots_by_key[key][0]
             matched = min(remaining, lot.remaining_quantity)

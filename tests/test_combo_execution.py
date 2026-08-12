@@ -111,6 +111,51 @@ def test_combo_opens_protection_first_and_closes_short_first(tmp_path):
     assert executor.calls[-1][0:2] == ("US.NVDA260717C220000", "SELL")
 
 
+def test_combo_close_skips_leg_already_flat_in_broker_positions(tmp_path):
+    store = TradingStore(tmp_path / "combo-flat.db")
+    combo_id = create_combo(store, combo_config(), vertical_legs())
+    for leg in store.option_combo_legs(combo_id):
+        store.update_option_combo_leg(leg["id"], status="FILLED", filled_quantity=1)
+    store.update_option_combo(combo_id, "OPEN")
+
+    class FlatBroker(FakeBroker):
+        def positions(self, refresh=False):
+            return pd.DataFrame([
+                {"code": "US.NVDA260717C220000", "qty": 1, "can_sell_qty": 1},
+            ])
+
+    executor = FakeExecutor(store)
+    manager = ComboExecutionManager(FlatBroker(), store, executor)
+
+    manager.request_close(combo_id)
+
+    legs = store.option_combo_legs(combo_id)
+    short_leg = next(leg for leg in legs if leg["side"] == "SELL")
+    assert short_leg["status"] == "CLOSED"
+    assert executor.calls == []
+
+
+def test_combo_close_caps_quantity_to_broker_visible_position(tmp_path):
+    store = TradingStore(tmp_path / "combo-cap.db")
+    combo_id = create_combo(store, combo_config(), vertical_legs())
+    short_leg = next(leg for leg in store.option_combo_legs(combo_id) if leg["side"] == "SELL")
+    store.update_option_combo_leg(short_leg["id"], status="FILLED", filled_quantity=2)
+    store.update_option_combo(combo_id, "OPEN")
+
+    class PartialShortBroker(FakeBroker):
+        def positions(self, refresh=False):
+            return pd.DataFrame([
+                {"code": "US.NVDA260717C210000", "qty": -1},
+            ])
+
+    executor = FakeExecutor(store)
+    manager = ComboExecutionManager(PartialShortBroker(), store, executor)
+
+    manager.request_close(combo_id)
+
+    assert executor.calls[-1][0:3] == ("US.NVDA260717C210000", "BUY", 1)
+
+
 def test_find_open_combo_recovers_drifted_campaign_identity(tmp_path):
     store = TradingStore(tmp_path / "combo-recovery.db")
     combo_id = create_combo(store, combo_config(), vertical_legs())

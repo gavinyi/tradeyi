@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 import uuid
+
+import pandas as pd
 
 from .alerts import AlertManager
 from .combo_analytics import capacity_assessment, combo_market_snapshot
@@ -247,6 +250,25 @@ class ComboExecutionManager:
     def _submit_leg(self, combo: dict, leg: dict, closing: bool, protected_short: bool) -> None:
         side = ("BUY" if leg["side"] == "SELL" else "SELL") if closing else leg["side"]
         quantity = int(leg["filled_quantity"] if closing else leg["quantity"])
+        if closing:
+            quantity, quantity_reason = self._closing_quantity(leg, side, quantity)
+            if quantity <= 0:
+                self.store.update_option_combo_leg(
+                    leg["id"], status="CLOSED", close_intent_id=None,
+                    error=quantity_reason,
+                )
+                self.store.option_combo_event(
+                    combo["combo_id"], "LEG_ALREADY_FLAT", "CLOSED",
+                    f"{leg['symbol']} 已无需要平仓的持仓：{quantity_reason}",
+                    {"leg_id": leg["id"], "closing_side": side},
+                )
+                return
+            if quantity_reason:
+                self.store.option_combo_event(
+                    combo["combo_id"], "LEG_CLOSE_QUANTITY_ADJUSTED", "WARNING",
+                    f"{leg['symbol']} 平仓数量调整为 {quantity}：{quantity_reason}",
+                    {"leg_id": leg["id"], "closing_side": side, "quantity": quantity},
+                )
         price = self._marketable_price(leg["symbol"], side, float(leg["limit_price"])) if closing else float(leg["limit_price"])
         attempts = sum(
             event["event_type"] == "EXECUTION_STARTED"
@@ -295,6 +317,79 @@ class ComboExecutionManager:
             result.status, f"{leg['symbol']} {side} {quantity}：{result.message}",
             {"leg_id": leg["id"], "intent_id": result.intent_id or None},
         )
+
+    def _positions_snapshot(self) -> pd.DataFrame | None:
+        if not hasattr(self.broker, "positions"):
+            return None
+        try:
+            positions = self.broker.positions(refresh=True)
+        except TypeError:
+            try:
+                positions = self.broker.positions()
+            except Exception:
+                return None
+        except Exception:
+            return None
+        if positions is None:
+            return pd.DataFrame()
+        return positions if isinstance(positions, pd.DataFrame) else pd.DataFrame(positions)
+
+    @staticmethod
+    def _position_number(row: pd.Series, columns: tuple[str, ...]) -> float | None:
+        for column in columns:
+            if column not in row:
+                continue
+            try:
+                value = float(row.get(column) or 0)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                return value
+        return None
+
+    def _closing_quantity(self, leg: dict, closing_side: str, requested: int) -> tuple[int, str]:
+        """Cap a closing order to the broker-visible exposure.
+
+        Automatic combos can be partially closed manually in Futu, or one leg can
+        be flattened by a previous recovery attempt. Submitting the original
+        ratio again creates repeated "持仓不足" failures. If broker positions are
+        unavailable we keep the existing deterministic behavior; if they are
+        available, the broker ledger becomes the source of truth for reduce-only
+        combo closes.
+        """
+        requested = max(0, int(requested))
+        positions = self._positions_snapshot()
+        if positions is None or "code" not in positions.columns:
+            return requested, ""
+        symbol = str(leg.get("symbol", "")).upper()
+        matched = positions[positions["code"].astype(str).str.upper() == symbol]
+        if matched.empty:
+            return 0, "富途当前无该合约持仓，视为已经平掉"
+
+        qty = sum(
+            self._position_number(row, ("qty", "quantity", "position", "position_qty")) or 0.0
+            for _, row in matched.iterrows()
+        )
+        sellable_values = [
+            self._position_number(row, ("can_sell_qty", "sellable_qty", "avail_qty", "available_qty"))
+            for _, row in matched.iterrows()
+        ]
+        sellable = sum(value for value in sellable_values if value is not None)
+        if closing_side == "SELL":
+            exposure = max(qty, 0.0)
+            if sellable > 0:
+                exposure = min(exposure if exposure > 0 else sellable, sellable)
+            if exposure <= 0:
+                return 0, f"富途当前多头数量 {qty:g}，没有可卖出的多头腿"
+        else:
+            exposure = abs(min(qty, 0.0))
+            if exposure <= 0:
+                return 0, f"富途当前数量 {qty:g}，没有需要买入回补的空头腿"
+
+        adjusted = min(requested, int(math.floor(exposure + 1e-9)))
+        if adjusted < requested:
+            return adjusted, f"请求 {requested} 张，但富途可平仓暴露只有 {exposure:g} 张"
+        return adjusted, ""
 
     def _marketable_price(self, symbol: str, side: str, fallback: float) -> float:
         try:
