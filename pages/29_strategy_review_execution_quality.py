@@ -57,6 +57,8 @@ with st.container(horizontal=True):
     st.metric("成交订单", review.metrics["成交订单"], border=True)
     st.metric("阻断次数", review.metrics["阻断次数"], border=True)
     st.metric("期权已实现盈亏", f"${float(review.metrics['期权已实现盈亏']):,.2f}", border=True)
+    st.metric("盈利期权合约", review.metrics["盈利期权合约"], border=True)
+    st.metric("亏损期权合约", review.metrics["亏损期权合约"], border=True)
     st.metric("期权未平持仓", review.metrics["期权未平持仓"], border=True)
     st.metric("运行退化/超时", review.metrics["退化任务"], border=True)
     st.metric("运行异常", review.metrics["异常任务"], border=True)
@@ -73,9 +75,41 @@ st.download_button(
     icon=":material/download:",
 )
 
-orders_tab, option_tab, core_tab, runtime_tab, blockers_tab, raw_tab = st.tabs([
-    "订单执行质量", "波动率期权质量", "Core Satellite 调仓", "运行健康", "阻塞原因", "原始报告",
+pnl_tab, orders_tab, option_tab, core_tab, runtime_tab, blockers_tab, raw_tab = st.tabs([
+    "期权盈亏拆解", "订单执行质量", "波动率期权质量", "Core Satellite 调仓", "运行健康", "阻塞原因", "原始报告",
 ])
+
+with pnl_tab:
+    st.subheader("期权盈亏拆解")
+    st.caption("按昨晚窗口内的实际成交聚合，每个合约展示买入/卖出均价、平仓数量、剩余持仓和估算盈亏。")
+    if review.option_pnl_breakdown.empty:
+        st.info("本窗口没有可计算的期权成交盈亏。")
+    else:
+        pnl_values = pd.to_numeric(review.option_pnl_breakdown["净盈亏"], errors="coerce").fillna(0)
+        with st.container(horizontal=True):
+            st.metric("净盈亏", f"${pnl_values.sum():,.2f}", border=True)
+            st.metric("盈利合约", int(pnl_values.gt(0).sum()), border=True)
+            st.metric("亏损合约", int(pnl_values.lt(0).sum()), border=True)
+            closed = pd.to_numeric(review.option_pnl_breakdown["平仓数量"], errors="coerce").fillna(0).gt(0)
+            wins = pnl_values[closed].gt(0).sum()
+            losses = pnl_values[closed].lt(0).sum()
+            st.metric("已平胜率", f"{wins / max(1, wins + losses):.0%}", border=True)
+            st.metric("毛盈利", f"${float(review.metrics['期权毛盈利']):,.2f}", border=True)
+            st.metric("毛亏损", f"${float(review.metrics['期权毛亏损']):,.2f}", border=True)
+        view = china_time_columns(review.option_pnl_breakdown)
+        st.dataframe(
+            view,
+            hide_index=True,
+            column_config={
+                "买入均价": st.column_config.NumberColumn("买入均价", format="$%.2f"),
+                "卖出均价": st.column_config.NumberColumn("卖出均价", format="$%.2f"),
+                "买入金额": st.column_config.NumberColumn("买入金额", format="$%.2f"),
+                "卖出金额": st.column_config.NumberColumn("卖出金额", format="$%.2f"),
+                "毛盈亏": st.column_config.NumberColumn("毛盈亏", format="$%.2f"),
+                "费用": st.column_config.NumberColumn("费用", format="$%.2f"),
+                "净盈亏": st.column_config.NumberColumn("净盈亏", format="$%.2f"),
+            },
+        )
 
 with orders_tab:
     st.subheader("订单执行质量")

@@ -19,6 +19,7 @@ class StrategyReview:
     narrative: list[str]
     orders: pd.DataFrame
     blockers: pd.DataFrame
+    option_pnl_breakdown: pd.DataFrame
     option_quality: pd.DataFrame
     core_quality: pd.DataFrame
     runtime_health: pd.DataFrame
@@ -155,6 +156,85 @@ def _option_quality(decisions: list[dict], fills: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _option_pnl_breakdown(fills: list[dict]) -> pd.DataFrame:
+    """Summarize filled option round trips by contract for daily review.
+
+    This is intentionally a trading-review view, not a tax lot ledger: it uses
+    the fills that occurred inside the selected review window and gives the
+    trader a quick read of which contracts made or lost money overnight.
+    """
+    rows_by_symbol: dict[str, dict[str, object]] = {}
+    for row in sorted(fills, key=lambda item: (str(item.get("created_at", "")), int(item.get("id") or 0))):
+        if row.get("strategy_id") != "volatility_long_gamma":
+            continue
+        symbol = str(row.get("symbol") or "")
+        if parse_option_code(symbol) is None:
+            continue
+        side = str(row.get("side") or "").upper()
+        qty = float(row.get("filled_quantity") or 0)
+        price = float(row.get("average_fill_price") or 0)
+        fees = float(row.get("fees") or 0)
+        if qty <= 0 or price <= 0 or side not in {"BUY", "SELL"}:
+            continue
+        item = rows_by_symbol.setdefault(symbol, {
+            "代码": symbol,
+            "买入数量": 0.0,
+            "买入金额": 0.0,
+            "卖出数量": 0.0,
+            "卖出金额": 0.0,
+            "费用": 0.0,
+            "成交次数": 0,
+            "首次成交": row.get("created_at"),
+            "最后成交": row.get("created_at"),
+        })
+        item["成交次数"] = int(item["成交次数"]) + 1
+        item["费用"] = float(item["费用"]) + fees
+        item["最后成交"] = row.get("created_at")
+        if side == "BUY":
+            item["买入数量"] = float(item["买入数量"]) + qty
+            item["买入金额"] = float(item["买入金额"]) + qty * price * 100
+        else:
+            item["卖出数量"] = float(item["卖出数量"]) + qty
+            item["卖出金额"] = float(item["卖出金额"]) + qty * price * 100
+
+    rows = []
+    for item in rows_by_symbol.values():
+        buy_qty = float(item["买入数量"])
+        sell_qty = float(item["卖出数量"])
+        closed_qty = min(buy_qty, sell_qty)
+        buy_avg = float(item["买入金额"]) / buy_qty / 100 if buy_qty else None
+        sell_avg = float(item["卖出金额"]) / sell_qty / 100 if sell_qty else None
+        gross_pnl = (
+            (float(sell_avg) - float(buy_avg)) * closed_qty * 100
+            if buy_avg is not None and sell_avg is not None else 0.0
+        )
+        fees = float(item["费用"])
+        net_pnl = gross_pnl - fees if closed_qty > 0 else 0.0
+        open_qty = buy_qty - sell_qty
+        if closed_qty <= 0 and open_qty > 0:
+            result = "持仓中"
+        elif net_pnl > 0:
+            result = "盈利"
+        elif net_pnl < 0:
+            result = "亏损"
+        else:
+            result = "持平"
+        rows.append({
+            **item,
+            "平仓数量": closed_qty,
+            "剩余持仓": open_qty,
+            "买入均价": buy_avg,
+            "卖出均价": sell_avg,
+            "毛盈亏": gross_pnl,
+            "净盈亏": net_pnl,
+            "结果": result,
+        })
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    return frame.sort_values("净盈亏", ascending=False).reset_index(drop=True)
+
+
 def _core_quality(intents: list[dict]) -> pd.DataFrame:
     rows = []
     for row in intents:
@@ -236,6 +316,7 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
 
     orders = _orders_frame(intents)
     blockers = diagnostic["blockers"].copy()
+    option_pnl_breakdown = _option_pnl_breakdown(fills)
     option_quality = _option_quality(decisions, fills)
     core_quality = _core_quality(intents)
     runtime_health = _runtime_health(store, window)
@@ -250,7 +331,7 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         not decision_summary.empty and "BLOCKED" in decision_summary.index.get_level_values("decision")
     ) else 0
     realized_option_pnl = (
-        float(option_quality["已实现盈亏"].sum()) if not option_quality.empty else 0.0
+        float(option_pnl_breakdown["净盈亏"].sum()) if not option_pnl_breakdown.empty else 0.0
     )
     open_option_count = (
         int(pd.to_numeric(option_quality.get("当前持仓", pd.Series(dtype=float)), errors="coerce").fillna(0).gt(0).sum())
@@ -264,6 +345,22 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         "期权已实现盈亏": realized_option_pnl,
         "期权未平持仓": open_option_count,
         "Core调仓订单": len(core_quality),
+        "盈利期权合约": (
+            int(pd.to_numeric(option_pnl_breakdown.get("净盈亏", pd.Series(dtype=float)), errors="coerce").fillna(0).gt(0).sum())
+            if not option_pnl_breakdown.empty else 0
+        ),
+        "亏损期权合约": (
+            int(pd.to_numeric(option_pnl_breakdown.get("净盈亏", pd.Series(dtype=float)), errors="coerce").fillna(0).lt(0).sum())
+            if not option_pnl_breakdown.empty else 0
+        ),
+        "期权毛盈利": (
+            float(pd.to_numeric(option_pnl_breakdown.get("净盈亏", pd.Series(dtype=float)), errors="coerce").fillna(0).clip(lower=0).sum())
+            if not option_pnl_breakdown.empty else 0.0
+        ),
+        "期权毛亏损": (
+            float(pd.to_numeric(option_pnl_breakdown.get("净盈亏", pd.Series(dtype=float)), errors="coerce").fillna(0).clip(upper=0).sum())
+            if not option_pnl_breakdown.empty else 0.0
+        ),
         "退化任务": (
             int(pd.to_numeric(runtime_health.get("退化/超时", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
             if not runtime_health.empty else 0
@@ -289,13 +386,27 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
                 f"“{top_runtime['任务']}”：{top_runtime['问题摘要'] or top_runtime['最近状态']}。"
             )
     if not option_quality.empty:
-        winners = option_quality[pd.to_numeric(option_quality["已实现盈亏"], errors="coerce").fillna(0) > 0]
+        pnl_values = (
+            pd.to_numeric(option_pnl_breakdown["净盈亏"], errors="coerce").fillna(0)
+            if not option_pnl_breakdown.empty else pd.Series(dtype=float)
+        )
+        winners = option_pnl_breakdown[pnl_values > 0] if not option_pnl_breakdown.empty else pd.DataFrame()
+        losers = option_pnl_breakdown[pnl_values < 0] if not option_pnl_breakdown.empty else pd.DataFrame()
         open_rows = option_quality[pd.to_numeric(option_quality["当前持仓"], errors="coerce").fillna(0) > 0]
         narrative.append(
             f"波动率期权产生 {len(option_quality)} 个合约记录，"
             f"已实现盈亏约 ${realized_option_pnl:,.2f}，"
             f"当前仍有 {len(open_rows)} 个未平合约。"
         )
+        if not option_pnl_breakdown.empty:
+            win_rate = len(winners) / max(1, len(winners) + len(losers))
+            best = option_pnl_breakdown.iloc[0]
+            worst = option_pnl_breakdown.iloc[-1]
+            narrative.append(
+                f"按合约成交表现看，盈利 {len(winners)} 个、亏损 {len(losers)} 个，"
+                f"胜率约 {win_rate:.0%}；最佳是 {best['代码']}（约 ${float(best['净盈亏']):,.0f}），"
+                f"最弱是 {worst['代码']}（约 ${float(worst['净盈亏']):,.0f}）。"
+            )
         if not winners.empty:
             narrative.append(f"盈利退出合约 {len(winners)} 个，说明自动退出链路能跑通。")
     if not blockers.empty:
@@ -314,6 +425,7 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         narrative=narrative,
         orders=orders,
         blockers=blockers,
+        option_pnl_breakdown=option_pnl_breakdown,
         option_quality=option_quality,
         core_quality=core_quality,
         runtime_health=runtime_health,
@@ -353,6 +465,10 @@ def review_markdown(review: StrategyReview) -> str:
         "## 订单执行质量",
         "",
         table(review.orders),
+        "",
+        "## 期权盈亏拆解",
+        "",
+        table(review.option_pnl_breakdown),
         "",
         "## 波动率期权质量面板",
         "",

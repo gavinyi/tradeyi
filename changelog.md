@@ -43,6 +43,36 @@
 - `python scripts/check_streamlit_pages.py --runtime`：39 个页面运行通过；
 - 使用当前数据库生成每日复盘，已能显示运行退化/异常、期权已实现盈亏和 Core Satellite 调仓摘要。
 
+## 2026-08-12：每日复盘新增期权盈亏拆解
+
+原因：
+
+- 每日复盘原来只展示期权总盈亏和合约质量，不能直观看出昨晚到底是哪几张期权赚钱、哪几张亏钱；
+- 用户需要类似“SKHY 两轮亏损、SPCX 小赚、GOOG 盈利”的成交表现清单，便于判断策略是否真的在进步。
+
+改动：
+
+1. `strategy_review.py` 新增 `option_pnl_breakdown`：
+   - 按期权代码聚合昨晚窗口内实际成交；
+   - 计算买入数量、卖出数量、买入均价、卖出均价、平仓数量、剩余净持仓、毛盈亏、费用、净盈亏和结果；
+   - 同时生成盈利合约数、亏损合约数、毛盈利、毛亏损等指标。
+2. “策略复盘与执行质量”页面新增第一个页签“期权盈亏拆解”：
+   - 顶部展示净盈亏、盈利合约、亏损合约、已平胜率、毛盈利、毛亏损；
+   - 下方展示按合约拆解表，方便一眼看到具体哪张赚/亏。
+3. 复盘叙述新增“按合约成交表现”：
+   - 自动总结盈利/亏损数量、胜率、最佳合约和最弱合约；
+   - Markdown 下载报告同步包含期权盈亏拆解表。
+
+验证：
+
+- 当前数据库复盘结果可识别：
+  - `US.SKHY260814C140000` 两轮亏损；
+  - `US.SPCX260814P129000`、`US.SPCX260814P133000`、`US.SPCX260821P125000` 小幅盈利；
+  - `US.GOOG260814P345000`、`US.GOOG260814P340000` 盈利；
+- `ruff check src/futu_quant/strategy_review.py pages/29_strategy_review_execution_quality.py`：通过；
+- `pytest -q tests/test_option_pnl.py tests/test_combo_execution.py tests/test_trade_diagnostics.py`：20 项通过；
+- `python scripts/check_streamlit_pages.py --runtime`：39 个页面运行通过。
+
 ## 2026-08-11：修复波动率期权组合仓位孤儿化与 TSLA 价差平仓
 
 原因：
