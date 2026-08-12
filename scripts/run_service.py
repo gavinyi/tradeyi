@@ -25,7 +25,7 @@ from futu_quant.order_push import open_order_push
 from futu_quant.recovery import daily_operations_report, startup_recovery
 from futu_quant.correlation_risk import update_correlation_clusters
 from futu_quant.core_validation import load_core_daily_validation
-from futu_quant.config import load_gamma_campaigns, upsert_campaign
+from futu_quant.config import load_gamma_campaigns, load_volatility_campaigns, upsert_campaign
 from futu_quant.campaign_cleanup import cleanup_expired_campaigns
 from futu_quant.account_metrics import account_pnl_metrics
 from futu_quant.risk import RiskLimits, ny_trading_day_start_utc
@@ -36,6 +36,7 @@ from futu_quant.stress import monitor_portfolio_stress
 from futu_quant.strategy_plugins import BY_SERVICE_NAME, strategy_plugins
 from futu_quant.experiments import sync_strategy_experiments
 from futu_quant.combo_execution import ComboExecutionManager
+from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.validation_loop import (
     collect_combo_market_snapshots, run_validation_cycle, validation_report,
 )
@@ -204,6 +205,27 @@ def run_task(
         return False
 
 
+def active_volatility_combo_ids(store: TradingStore) -> set[str]:
+    """Combo ids still owned by currently enabled volatility campaigns."""
+    states = store.campaign_states()
+    ids: set[str] = set()
+    for campaign in load_volatility_campaigns():
+        if not campaign.get("enabled", True):
+            continue
+        legs = campaign.get("legs") or []
+        if len(legs) <= 1:
+            continue
+        code = str(campaign.get("code") or "")
+        state = states.get(f"volatility_long_gamma:{code}") or states.get(code) or {}
+        try:
+            cycle = int(state.get("entry_cycle", 0) or 0)
+        except (TypeError, ValueError):
+            cycle = 0
+        for candidate_cycle in {0, cycle}:
+            ids.add(automatic_combo_id("volatility_long_gamma", campaign, candidate_cycle))
+    return ids
+
+
 def service_cycle(settings: Settings, store: TradingStore) -> None:
     now = datetime.now(NY)
     session = MARKET_CALENDAR.session(now)
@@ -253,7 +275,10 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     store.set_setting("connectivity_degraded", str(not connected).lower())
     run_task(
         store, alerts, "option_combo_monitor",
-        lambda: ComboExecutionManager(broker, store, executor).monitor_all(),
+        lambda: ComboExecutionManager(broker, store, executor).monitor_all(
+            active_volatility_combo_ids(store),
+            close_orphan_open=True,
+        ),
     )
     if session.regular_open(now) and due(store, "last_run:combo_market_snapshot", 60, now):
         run_task(

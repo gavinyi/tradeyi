@@ -163,11 +163,30 @@ class ComboExecutionManager:
         self.advance(combo_id)
         return self._required_combo(combo_id)
 
-    def monitor_all(self) -> list[dict]:
+    def monitor_all(
+        self,
+        active_combo_ids: set[str] | None = None,
+        *,
+        close_orphan_open: bool = False,
+    ) -> list[dict]:
         results = []
+        active_combo_ids = active_combo_ids or set()
         for combo in self.store.option_combos(limit=500):
             if combo["status"] in {"EXECUTING", "CLOSING", "ROLLBACK_PENDING"}:
                 results.append(self.advance(combo["combo_id"]))
+            elif (
+                close_orphan_open
+                and combo["status"] == "OPEN"
+                and combo.get("strategy_id") == "volatility_long_gamma"
+                and combo["combo_id"] not in active_combo_ids
+                and self._combo_has_broker_exposure(combo["combo_id"])
+            ):
+                self.store.option_combo_event(
+                    combo["combo_id"], "ORPHAN_OPEN_COMBO_CLOSE_REQUESTED", "CLOSING",
+                    "OPEN 组合已脱离当前波动率活动接管，自动进入组合级平仓",
+                    {"active_combo_ids": sorted(active_combo_ids)},
+                )
+                results.append(self.request_close(combo["combo_id"]))
         return results
 
     def advance(self, combo_id: str) -> dict:
@@ -333,6 +352,25 @@ class ComboExecutionManager:
         if positions is None:
             return pd.DataFrame()
         return positions if isinstance(positions, pd.DataFrame) else pd.DataFrame(positions)
+
+    def _combo_has_broker_exposure(self, combo_id: str) -> bool:
+        positions = self._positions_snapshot()
+        if positions is None or positions.empty or "code" not in positions.columns:
+            return False
+        leg_codes = {
+            str(leg.get("symbol", "")).upper()
+            for leg in self.store.option_combo_legs(combo_id)
+        }
+        if not leg_codes:
+            return False
+        matched = positions[positions["code"].astype(str).str.upper().isin(leg_codes)]
+        for _, row in matched.iterrows():
+            quantity = self._position_number(
+                row, ("qty", "quantity", "position", "position_qty"),
+            )
+            if quantity is not None and abs(quantity) > 1e-9:
+                return True
+        return False
 
     @staticmethod
     def _position_number(row: pd.Series, columns: tuple[str, ...]) -> float | None:

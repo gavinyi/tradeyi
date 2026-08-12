@@ -156,6 +156,52 @@ def test_combo_close_caps_quantity_to_broker_visible_position(tmp_path):
     assert executor.calls[-1][0:3] == ("US.NVDA260717C210000", "BUY", 1)
 
 
+def test_monitor_closes_orphan_open_combo_with_broker_exposure(tmp_path):
+    store = TradingStore(tmp_path / "orphan-combo.db")
+    combo_id = create_combo(store, combo_config(), vertical_legs())
+    for leg in store.option_combo_legs(combo_id):
+        store.update_option_combo_leg(leg["id"], status="FILLED", filled_quantity=1)
+    store.update_option_combo(combo_id, "OPEN")
+
+    class ComboPositionBroker(FakeBroker):
+        def positions(self, refresh=False):
+            return pd.DataFrame([
+                {"code": "US.NVDA260717C220000", "qty": 1, "can_sell_qty": 1},
+                {"code": "US.NVDA260717C210000", "qty": -1, "can_sell_qty": -1},
+            ])
+
+    executor = FakeExecutor(store)
+    manager = ComboExecutionManager(ComboPositionBroker(), store, executor)
+
+    manager.monitor_all(active_combo_ids=set(), close_orphan_open=True)
+
+    assert store.option_combo(combo_id)["status"] == "CLOSING"
+    assert executor.calls[-1][0:3] == ("US.NVDA260717C210000", "BUY", 1)
+
+
+def test_monitor_keeps_active_open_combo(tmp_path):
+    store = TradingStore(tmp_path / "active-combo.db")
+    combo_id = create_combo(store, combo_config(), vertical_legs())
+    for leg in store.option_combo_legs(combo_id):
+        store.update_option_combo_leg(leg["id"], status="FILLED", filled_quantity=1)
+    store.update_option_combo(combo_id, "OPEN")
+
+    class ComboPositionBroker(FakeBroker):
+        def positions(self, refresh=False):
+            return pd.DataFrame([
+                {"code": "US.NVDA260717C220000", "qty": 1, "can_sell_qty": 1},
+                {"code": "US.NVDA260717C210000", "qty": -1, "can_sell_qty": -1},
+            ])
+
+    executor = FakeExecutor(store)
+    manager = ComboExecutionManager(ComboPositionBroker(), store, executor)
+
+    manager.monitor_all(active_combo_ids={combo_id}, close_orphan_open=True)
+
+    assert store.option_combo(combo_id)["status"] == "OPEN"
+    assert executor.calls == []
+
+
 def test_find_open_combo_recovers_drifted_campaign_identity(tmp_path):
     store = TradingStore(tmp_path / "combo-recovery.db")
     combo_id = create_combo(store, combo_config(), vertical_legs())

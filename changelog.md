@@ -99,6 +99,33 @@
 - `ruff check pages/29_strategy_review_execution_quality.py`：通过；
 - `python scripts/check_streamlit_pages.py --runtime`：静态巡检 39 页通过；动态巡检因当前 OpenD 探测不可连而跳过。
 
+## 2026-08-12：修复波动率期权 OPEN 组合活动漂移后未自动退出
+
+原因：
+
+- `US.SPCX260814P134000/+1` 与 `US.SPCX260814P128000/-1` 是一个 `PUT_DEBIT_SPREAD` 组合；
+- 后续波动率活动已经切换到 `US.SPCX260828P125000`，旧组合 `auto-b995be344829055b` 仍处于 `OPEN`；
+- 原 `option_combo_monitor` 只推进 `EXECUTING`、`CLOSING`、`ROLLBACK_PENDING`，不会处理已打开但脱离当前活动接管的组合；
+- 结果是在富途模拟盘仍能看到 `-1` 空腿，组合净亏损继续扩大。
+
+改动：
+
+1. `ComboExecutionManager.monitor_all` 新增孤儿 OPEN 组合保护：
+   - 传入当前仍由波动率活动接管的组合 ID；
+   - 对不在活动集合内、但富途仍有腿持仓的 `volatility_long_gamma` OPEN 组合，自动发起组合级平仓；
+   - 平仓仍按组合规则先回补短腿，再卖出多腿。
+2. `run_service.py` 在 `option_combo_monitor` 中接入当前 volatility 活动组合 ID 计算：
+   - 只对启用中、且有多腿结构的 volatility 活动生成 active combo ID；
+   - 不影响仍被当前活动接管的 OPEN 组合。
+3. 保留上一轮 reduce-only 数量保护：
+   - 如果某条腿已被手动处理，平仓数量会按富途当前持仓修正；
+   - 避免再次出现 `持仓不足` 循环失败。
+
+验证：
+
+- `pytest -q tests/test_combo_execution.py`：13 项通过；
+- `ruff check src/futu_quant/combo_execution.py scripts/run_service.py tests/test_combo_execution.py`：通过。
+
 ## 2026-08-11：修复波动率期权组合仓位孤儿化与 TSLA 价差平仓
 
 原因：
