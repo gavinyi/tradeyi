@@ -133,6 +133,31 @@ def save_state(state: dict) -> None:
     TradingStore().save_campaign_states(state)
 
 
+def safe_datetime(value, default: datetime) -> datetime:
+    try:
+        if value is None or pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "nat", "none", "<na>"}:
+        return default
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return default
+    if parsed.tzinfo is None and default.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=default.tzinfo)
+    return parsed
+
+
+def campaign_expiry_date(campaign: dict, code: str, default: datetime):
+    parsed_contract = parse_option_code(code)
+    if parsed_contract is not None:
+        return parsed_contract.expiration
+    return safe_datetime(campaign.get("strike_time"), default).date()
+
+
 def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
@@ -174,14 +199,14 @@ def run_campaign(
     if trigger_mode == "VOLATILITY":
         signal_started_at = campaign_state.get("signal_started_at")
         event_time = (
-            datetime.fromisoformat(signal_started_at) if signal_started_at else now
+            safe_datetime(signal_started_at, now) if signal_started_at else now
         ) + timedelta(
             hours=int(campaign.get("entry_hours", 6))
         )
     else:
         event_clock = time(8, 0) if campaign["event_session"] == "盘前" else time(16, 5)
         event_time = datetime.combine(
-            datetime.fromisoformat(campaign["event_date"]).date(), event_clock, tzinfo=NY
+            safe_datetime(campaign.get("event_date"), now).date(), event_clock, tzinfo=NY
         )
     positions = positions_snapshot if positions_snapshot is not None else broker.positions()
     position = positions[positions["code"] == code] if not positions.empty else positions
@@ -431,7 +456,7 @@ def run_campaign(
         campaign_state["regime_was_active"] = bool(regime["active"])
         signal_started_at = campaign_state.get("signal_started_at")
         event_time = (
-            datetime.fromisoformat(signal_started_at) if signal_started_at else now
+            safe_datetime(signal_started_at, now) if signal_started_at else now
         ) + timedelta(hours=int(campaign.get("entry_hours", 6)))
     nondirectional = campaign.get("structure") in {"LONG_STRADDLE", "LONG_STRANGLE"}
     if nondirectional:
@@ -497,7 +522,7 @@ def run_campaign(
                 campaign.get("cooldown_hours", 24),
             ))
             remaining = cooldown_duration - (
-                now - datetime.fromisoformat(str(last_exit))
+                now - safe_datetime(last_exit, now - timedelta(hours=cooldown_duration + 1))
             ).total_seconds() / 3600
             if remaining > 0:
                 cooldown_reason = str(state.get(
@@ -606,9 +631,7 @@ def run_campaign(
                     campaign.get("adverse_signal_confirmations_required", 2)
                 ),
             )
-        opened_at = datetime.fromisoformat(str(
-            campaign_state.get("position_opened_at", now.isoformat())
-        ))
+        opened_at = safe_datetime(campaign_state.get("position_opened_at"), now)
         partial_exit_quantity, partial_exit_tier, partial_exit_reason = (
             volatility_partial_exit_plan(
                 quantity=quantity,
@@ -694,7 +717,7 @@ def run_campaign(
             partial_exit_quantity = 0
             partial_exit_tier = None
             action, reason = "SELL", hard_loss_reason
-        expiry = datetime.fromisoformat(str(campaign.get("strike_time", now.date()))).date()
+        expiry = campaign_expiry_date(campaign, code, now)
         if now.date() > expiry or (now.date() == expiry and now.hour >= 15):
             action, reason = "SELL", "合约到期日临近收盘，强制退出以避免自动行权"
     print(f"{code}: {action} ({reason}) qty={quantity} pnl={pnl_ratio:.2%}")
@@ -765,6 +788,15 @@ def run_campaign(
             strategy_id, code, action, reason, decision_payload, repeat_after_seconds=900,
         )
     if action == "BUY":
+        if trigger_mode == "VOLATILITY" and campaign.get("exit_only"):
+            block_reason = "退出维护合约已无持仓，不再重新开仓"
+            executor.store.decision(
+                strategy_id, code, "CLOSED", block_reason,
+                {**decision_payload, "exit_only": True},
+            )
+            print(f"{code}: CLOSED ({block_reason})")
+            return
+
         def record_pretrade_block(check: str, block_reason: str, details: dict) -> None:
             payload = {**decision_payload, "pre_trade_check": check, **details}
             executor.store.decision(

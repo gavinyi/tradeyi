@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -69,7 +70,64 @@ def create_recovery_point(store, root: Path | str = RECOVERY_ROOT) -> dict:
            "database_hash": database_hash, "config_hash": config_hash, "data_hash": data_hash,
            "status": "CREATED", "created_at": manifest["created_at"]}
     store.save_recovery_point(row)
+    prune_recovery_points(store, root)
     return row
+
+
+def prune_recovery_points(store, root: Path | str = RECOVERY_ROOT) -> dict:
+    """Apply bounded retention to recovery manifests and unreferenced blobs."""
+    root = Path(root)
+    manifest_dir = root / "manifests"
+    blob_dir = root / "blobs"
+    keep_count = max(1, int(os.getenv("RECOVERY_POINT_RETENTION_COUNT", "7")))
+    keep_days = max(1, int(os.getenv("RECOVERY_POINT_RETENTION_DAYS", "14")))
+    cutoff = datetime.now(timezone.utc).timestamp() - keep_days * 86400
+    points = store.recovery_points(limit=10_000)
+    remove_ids: list[str] = []
+    for index, point in enumerate(points):
+        manifest_path = root / "manifests" / f"{point['recovery_id']}.json"
+        try:
+            mtime = manifest_path.stat().st_mtime
+        except OSError:
+            mtime = 0
+        if index >= keep_count or (mtime and mtime < cutoff):
+            remove_ids.append(str(point["recovery_id"]))
+            manifest_path.unlink(missing_ok=True)
+    deleted_records = store.delete_recovery_points(remove_ids)
+    referenced_blobs: set[str] = set()
+    if manifest_dir.exists():
+        for manifest_path in manifest_dir.glob("*.json"):
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            for key in ("database_blob", "config_blob"):
+                value = manifest.get(key)
+                if value:
+                    referenced_blobs.add(str(value))
+    deleted_blobs = 0
+    freed_bytes = 0
+    if blob_dir.exists():
+        for blob in blob_dir.iterdir():
+            if not blob.is_file() or blob.name in referenced_blobs:
+                continue
+            try:
+                freed_bytes += blob.stat().st_size
+                blob.unlink()
+                deleted_blobs += 1
+            except OSError:
+                continue
+    result = {
+        "removed_recovery_points": len(remove_ids),
+        "deleted_records": deleted_records,
+        "deleted_blobs": deleted_blobs,
+        "freed_bytes": freed_bytes,
+        "retention_count": keep_count,
+        "retention_days": keep_days,
+    }
+    if remove_ids or deleted_blobs:
+        store.audit("RECOVERY_POINT_RETENTION_APPLIED", result)
+    return result
 
 
 def verify_recovery_point(store, recovery_id: str, root: Path | str = RECOVERY_ROOT) -> dict:

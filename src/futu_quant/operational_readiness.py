@@ -185,10 +185,15 @@ def automatic_recovery_cycle(store) -> dict:
         latest.setdefault(row["task_id"], row)
     recovered: list[str] = []
     pending: list[str] = []
+    now = datetime.now(timezone.utc)
+    stale_hours = max(1, int(os.getenv("TRANSIENT_INCIDENT_AUTO_RECOVER_HOURS", "12")))
     for incident in store.incidents("OPEN"):
         key = str(incident["incident_key"])
         task = key.split(":", 1)[1] if key.startswith(("TASK_TIMEOUT:", "STRATEGY_ERROR:")) else None
         if task and latest.get(task, {}).get("status") == "SUCCESS":
+            if store.recover_incident(key):
+                recovered.append(key)
+        elif _transient_incident_recovered(store, key, incident, now, stale_hours):
             if store.recover_incident(key):
                 recovered.append(key)
         else:
@@ -196,6 +201,28 @@ def automatic_recovery_cycle(store) -> dict:
     result = {"recovered": recovered, "pending": pending, "safe_actions_only": True}
     store.operational_event("recovery", "AUTO_RECOVERY", "HEALTHY" if not pending else "WARNING", result)
     return result
+
+
+def _transient_incident_recovered(
+    store,
+    key: str,
+    incident: dict,
+    now: datetime,
+    stale_hours: int,
+) -> bool:
+    """Recover stale one-shot incidents without hiding active portfolio risk."""
+    transient_keys = {"ORDER_FAILED", "VOLATILITY_SCANNER_ERROR"}
+    if key == "DAILY_LOSS_KILL_SWITCH" and not store.kill_switch():
+        transient_keys.add("DAILY_LOSS_KILL_SWITCH")
+    if key not in transient_keys:
+        return False
+    try:
+        last_seen = datetime.fromisoformat(str(incident.get("last_seen")))
+    except (TypeError, ValueError):
+        return False
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    return now - last_seen >= timedelta(hours=stale_hours)
 
 
 def strategy_paper_acceptance(store, strategy_id: str) -> dict:

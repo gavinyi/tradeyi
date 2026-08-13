@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
-from futu_quant.disaster_recovery import create_recovery_point, verify_recovery_point
+from futu_quant.disaster_recovery import create_recovery_point, prune_recovery_points, verify_recovery_point
 from futu_quant.migrations import migration_status
 from futu_quant.parquet_store import archive_market_data
 from futu_quant.postgres_migration import postgres_readiness
@@ -69,6 +70,23 @@ def test_content_addressed_recovery_point_and_isolated_drill(tmp_path):
     manifest = json.loads((root / "manifests" / f"{point['recovery_id']}.json").read_text())
     assert (root / "blobs" / manifest["database_blob"]).exists()
     assert store.recovery_points()[0]["status"] == "VERIFIED"
+
+
+def test_recovery_point_retention_removes_old_unreferenced_blobs(tmp_path, monkeypatch):
+    store = TradingStore(tmp_path / "recovery-retention.db")
+    root = tmp_path / "recovery"
+    monkeypatch.setenv("RECOVERY_POINT_RETENTION_COUNT", "1")
+    monkeypatch.setenv("RECOVERY_POINT_RETENTION_DAYS", "30")
+
+    first = create_recovery_point(store, root)
+    time.sleep(1.1)
+    second = create_recovery_point(store, root)
+    result = prune_recovery_points(store, root)
+
+    remaining_ids = {item["recovery_id"] for item in store.recovery_points(limit=10)}
+    assert second["recovery_id"] in remaining_ids
+    assert first["recovery_id"] not in remaining_ids
+    assert result["retention_count"] == 1
 
 
 def test_rbac_storage_and_postgres_are_safe_by_default(tmp_path, monkeypatch):

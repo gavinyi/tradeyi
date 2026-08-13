@@ -362,6 +362,11 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
                     "ERROR", "LEDGER_MISMATCH",
                     f"三账对账发现 {len(mismatches)} 个标的差异，相关策略已暂停",
                 )
+            else:
+                alerts.recover(
+                    "LEDGER_MISMATCH",
+                    "三账对账已恢复一致，自动解除恢复阻断",
+                )
         if run_task(store, alerts, "ledger_reconciliation", ledger_check):
             mark_run(store, "last_run:ledger_reconciliation", now)
 

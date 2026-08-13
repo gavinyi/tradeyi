@@ -6,14 +6,26 @@ from futu_quant.execution import ExecutionManager
 from futu_quant.combo_execution import find_open_combo_for_campaign
 from futu_quant.volatility_roll import roll_campaign, should_replace_campaign
 from futu_quant.volatility_optimizer import volatility_entry_quality_allowed
+from futu_quant.volatility_orphans import (
+    manage_volatility_orphans,
+    protected_volatility_state_keys,
+)
 from futu_quant.option_lifecycle import parse_option_code
 from datetime import date, datetime, timezone
 import os
+from pathlib import Path
 import pandas as pd
 if __package__:
     from scripts.run_gamma_strategy import load_state, run_campaign, save_state
 else:
     from run_gamma_strategy import load_state, run_campaign, save_state
+
+STOP_FILE = Path("data/trading-service.stop")
+RESTART_FILE = Path("data/trading-service.restart")
+
+
+def stop_requested() -> bool:
+    return STOP_FILE.exists() or RESTART_FILE.exists()
 
 
 def close_stale_expired_combos(store, positions: pd.DataFrame, today: date) -> int:
@@ -81,7 +93,8 @@ def run_once(reconcile: bool = True) -> None:
     valid_campaigns = []
     for item in campaigns:
         code = str(item.get("code", ""))
-        if parse_option_code(code) is None:
+        parsed_code = parse_option_code(code)
+        if parsed_code is None:
             valid_legs = [
                 str(leg.get("code", "")).upper()
                 for leg in (item.get("legs") or [])
@@ -115,9 +128,44 @@ def run_once(reconcile: bool = True) -> None:
                 repeat_after_seconds=3600,
             )
             continue
-        valid_campaigns.append(item)
+        normalized = dict(item)
+        normalized["code"] = code.upper()
+        strike_time = pd.to_datetime(normalized.get("strike_time"), errors="coerce")
+        if pd.isna(strike_time):
+            normalized["strike_time"] = parsed_code.expiration.isoformat()
+            executor.store.audit("VOLATILITY_CAMPAIGN_EXPIRY_RECOVERED", {
+                "code": normalized["code"],
+                "old_strike_time": str(item.get("strike_time")),
+                "new_strike_time": normalized["strike_time"],
+            }, "volatility_long_gamma")
+        valid_campaigns.append(normalized)
     campaigns = valid_campaigns
-    active_keys = {f"volatility_long_gamma:{item['code']}" for item in campaigns}
+    orphan_results = manage_volatility_orphans(
+        broker=broker,
+        executor=executor,
+        campaigns=campaigns,
+        positions=positions,
+        orders=orders,
+        now=datetime.now(timezone.utc),
+    )
+    if orphan_results:
+        print(f"VOLATILITY ORPHANS HANDLED: {len(orphan_results)}")
+        adopted_campaigns = [
+            item.get("campaign") for item in orphan_results
+            if item.get("action") == "ADOPTED" and isinstance(item.get("campaign"), dict)
+        ]
+        existing_codes = {str(item.get("code", "")).upper() for item in campaigns}
+        for adopted in adopted_campaigns:
+            if str(adopted.get("code", "")).upper() not in existing_codes:
+                campaigns.append(adopted)
+                existing_codes.add(str(adopted.get("code", "")).upper())
+        state = load_state()
+    protected_keys = protected_volatility_state_keys(
+        executor.store, positions, orders, broker,
+    )
+    active_keys = {
+        f"volatility_long_gamma:{item['code']}" for item in campaigns
+    } | protected_keys
     state = {
         key: value for key, value in state.items()
         if not key.startswith("volatility_long_gamma:") or key in active_keys
@@ -130,6 +178,13 @@ def run_once(reconcile: bool = True) -> None:
         60, int(os.getenv("VOLATILITY_EXPRESSION_REVIEW_SECONDS", "300"))
     )
     for campaign in campaigns:
+        if stop_requested():
+            executor.store.audit(
+                "VOLATILITY_LOOP_INTERRUPTED_FOR_SERVICE_CONTROL",
+                {"reason": "检测到服务停止或重启请求，提前结束本轮波动率策略循环"},
+                "volatility_long_gamma",
+            )
+            break
         current_code = str(campaign.get("code", ""))
         underlying = str(campaign.get("underlying", ""))
         leg_symbols = {
@@ -211,7 +266,11 @@ def run_once(reconcile: bool = True) -> None:
                 }, "volatility_long_gamma")
             state[maintenance_key] = now.isoformat()
             if replace and rolled.get("code") != campaign.get("code"):
-                rolled_pairs.append((campaign.get("campaign_id", campaign.get("code")), rolled))
+                rolled_pairs.append((
+                    campaign.get("campaign_id", campaign.get("code")),
+                    campaign,
+                    rolled,
+                ))
                 executor.store.audit("VOLATILITY_CONTRACT_ROLLED", {
                     "old_code": campaign.get("code"), "new_code": rolled.get("code"),
                     "reason": reason, "replace_reason": replace_reason,
@@ -237,10 +296,48 @@ def run_once(reconcile: bool = True) -> None:
                 )
             campaign = rolled
         prepared.append(campaign)
-    for old_identity, rolled in rolled_pairs:
-        delete_campaign("VOLATILITY_CAMPAIGNS", old_identity)
+    for old_identity, old_campaign, rolled in rolled_pairs:
+        old_code = str(old_campaign.get("code") or "").upper()
+        old_has_broker_position = False
+        old_has_pending_order = False
+        if old_code:
+            if not positions.empty and "code" in positions.columns:
+                old_rows = positions[positions["code"].astype(str).str.upper() == old_code]
+                if not old_rows.empty:
+                    old_has_broker_position = (
+                        pd.to_numeric(old_rows.get("qty"), errors="coerce").fillna(0).abs().sum() > 0
+                    )
+            if not orders.empty and {"code", "order_status"}.issubset(orders.columns):
+                old_order_rows = orders[orders["code"].astype(str).str.upper() == old_code]
+                old_has_pending_order = bool(
+                    not old_order_rows.empty
+                    and old_order_rows["order_status"].map(broker.is_cancellable_status).any()
+                )
+        if old_has_broker_position or old_has_pending_order:
+            retained = {
+                **old_campaign,
+                "exit_only": True,
+                "replacement_code": rolled.get("code"),
+                "replacement_reason": "旧合约仍有富途风险，保留为退出维护配置",
+            }
+            upsert_campaign("VOLATILITY_CAMPAIGNS", retained)
+            executor.store.audit("VOLATILITY_OLD_CAMPAIGN_RETAINED_FOR_EXIT", {
+                "old_code": old_code,
+                "new_code": rolled.get("code"),
+                "has_broker_position": old_has_broker_position,
+                "has_pending_order": old_has_pending_order,
+            }, "volatility_long_gamma")
+        else:
+            delete_campaign("VOLATILITY_CAMPAIGNS", old_identity)
         upsert_campaign("VOLATILITY_CAMPAIGNS", rolled)
     for campaign in prepared:
+        if stop_requested():
+            executor.store.audit(
+                "VOLATILITY_EXECUTION_INTERRUPTED_FOR_SERVICE_CONTROL",
+                {"reason": "检测到服务停止或重启请求，提前结束本轮波动率交易执行"},
+                "volatility_long_gamma",
+            )
+            break
         if not campaign.get("enabled", True):
             continue
         campaign = {**campaign, "trigger_mode": "VOLATILITY"}

@@ -12,6 +12,7 @@ from futu_quant.radar_control import start as radar_start, status as radar_statu
 from futu_quant.service_control import status as service_status
 from futu_quant.store import TradingStore
 from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar, translate_common_values
+from futu_quant.volatility_orphans import orphan_rows_for_display
 
 
 st.set_page_config(page_title="波动率策略总览", page_icon=":material/waves:", layout="wide")
@@ -188,6 +189,8 @@ page_loaded_at = datetime.now().astimezone()
 positions, orders, broker_error = load_broker_snapshot()
 position_map = build_position_map(positions)
 shadow_map = build_shadow_map(store)
+orphan_rows = [] if broker_error else orphan_rows_for_display(store, positions, orders, broker, campaigns)
+orphan_frame = pd.DataFrame(orphan_rows)
 pending_count = order_pending_count(orders)
 paper_position_count = sum(position_map.get(str(item.get("code")), {}).get("quantity", 0) > 0 for item in campaigns)
 shadow_position_count = sum(shadow_map.get(str(item.get("code")), {}).get("quantity", 0) > 0 for item in campaigns)
@@ -197,6 +200,7 @@ with st.container(horizontal=True):
     st.metric("自动策略", len(campaigns), border=True)
     st.metric("模拟盘持仓策略", paper_position_count, border=True)
     st.metric("Shadow 持仓策略", shadow_position_count, border=True)
+    st.metric("未接管风险仓位", len(orphan_rows), border=True)
     st.metric("待成交订单", pending_count, border=True)
     radar_label = (
         "扫描与交易在线" if radar.running and service.running and not service.restart_pending
@@ -228,7 +232,7 @@ with st.container(border=True):
 # Keep the daily workflow visible in one place. The detailed legacy sections
 # below remain available for exports and backward-compatible deep links.
 overview_tabs = st.tabs([
-    "雷达流水线", "准入漏斗", "策略决策", "当前持仓",
+    "雷达流水线", "准入漏斗", "策略决策", "当前持仓", "未接管风险",
     "待成交订单", "执行诊断", "导出复盘",
 ])
 with overview_tabs[0]:
@@ -333,6 +337,48 @@ with overview_tabs[3]:
                         column_config=holding_config,
                     )
 with overview_tabs[4]:
+    st.caption("这里显示：富途模拟盘仍有数量，但不在当前波动率策略配置和状态中的期权。默认会先自动接管，纳入止盈、止损、盈利保护和方向退出。")
+    if orphan_frame.empty:
+        st.success("当前没有未接管的波动率期权风险仓位。")
+    else:
+        display = orphan_frame.rename(columns={
+            "code": "期权代码",
+            "underlying": "正股代码",
+            "quantity": "富途数量",
+            "can_sell_quantity": "可卖数量",
+            "cost_price": "成本价",
+            "nominal_price": "当前价",
+            "market_value": "市值",
+            "pnl_value": "盈亏金额",
+            "pnl_ratio": "盈亏比例",
+            "strategy_net_quantity": "策略净成交数量",
+            "pending_order_count": "待成交订单数",
+            "status": "状态",
+            "reason": "原因",
+        })
+        status_map = {
+            "SELLABLE_ORPHAN": "未接管，可平仓",
+            "PENDING_EXIT_ORDER": "已有退出挂单",
+            "LOCKED_ORPHAN": "未接管，暂不可卖",
+        }
+        if "状态" in display.columns:
+            display["状态"] = display["状态"].map(lambda value: status_map.get(str(value), value))
+        st.error(f"发现 {len(display)} 个未接管风险仓位。请优先处理，系统自动服务默认会先接管；如配置为 CLOSE 才会直接减仓退出。")
+        st.dataframe(
+            display,
+            hide_index=True,
+            height=320,
+            column_config={
+                "富途数量": st.column_config.NumberColumn(format="%.0f"),
+                "可卖数量": st.column_config.NumberColumn(format="%.0f"),
+                "成本价": st.column_config.NumberColumn(format="$%.2f"),
+                "当前价": st.column_config.NumberColumn(format="$%.2f"),
+                "市值": st.column_config.NumberColumn(format="$%.2f"),
+                "盈亏金额": st.column_config.NumberColumn(format="$%.2f"),
+                "盈亏比例": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+with overview_tabs[5]:
     if orders.empty:
         st.info("暂无待成交订单。")
     else:
@@ -345,14 +391,14 @@ with overview_tabs[4]:
                 hide_index=True,
                 height=360,
             )
-with overview_tabs[5]:
+with overview_tabs[6]:
     blocked_decisions = [item for item in decisions if str(item.get("decision", "")).upper() in {"BLOCKED", "REJECTED", "ERROR"}]
     if blocked_decisions:
         diag = china_time_columns(pd.DataFrame(blocked_decisions[:100])).rename(columns={"symbol": "期权代码", "decision": "决策", "reason": "原因", "created_at": "时间（中国）"}).drop(columns=["id", "strategy_id", "payload_json"], errors="ignore")
         st.dataframe(translate_common_values(diag), hide_index=True, height=320)
     else:
         st.success("当前没有需要处理的阻断或异常。")
-with overview_tabs[6]:
+with overview_tabs[7]:
     st.caption("详细 CSV 和 Markdown 下载保留在页面下方的导出复盘区域。")
     st.page_link("pages/10_volatility_options_strategy.py", label="进入高级配置与执行", icon=":material/tune:")
 
@@ -398,6 +444,15 @@ with st.container(border=True):
             "原因": f"{pending_count} 笔订单仍在等待成交",
             "建议入口": "订单管理",
         })
+    if orphan_rows:
+        risk_items.append(("高", f"存在 {len(orphan_rows)} 个富途真实期权仓位未被策略接管，普通止盈止损不会管理它们。"))
+        for item in orphan_rows:
+            action_items.append({
+                "优先级": "高",
+                "处理事项": f"处理未接管期权 {item.get('code', '')}",
+                "原因": item.get("reason", "富途持仓未进入策略状态"),
+                "建议入口": "波动率策略总览 / 当前持仓",
+            })
     if scanner_decisions:
         recent_scans = recent_scanner_items()
         blocked_scans = sum(payload.get("campaign_created") is False for _, payload in recent_scans)

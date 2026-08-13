@@ -1313,6 +1313,18 @@ class TradingStore:
                 "SELECT * FROM recovery_points ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()]
 
+    def delete_recovery_points(self, recovery_ids: list[str] | tuple[str, ...]) -> int:
+        ids = tuple(dict.fromkeys(str(item) for item in recovery_ids if item))
+        if not ids:
+            return 0
+        with self.connection() as connection:
+            before = connection.total_changes
+            connection.executemany(
+                "DELETE FROM recovery_points WHERE recovery_id=?",
+                [(item,) for item in ids],
+            )
+            return connection.total_changes - before
+
     def create_config_release(
         self, config_key: str, draft, created_by: str, reason: str = "",
     ) -> int:

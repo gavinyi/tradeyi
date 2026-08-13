@@ -49,6 +49,38 @@ def test_automatic_recovery_closes_task_incident_after_success(tmp_path):
     assert store.incidents()[0]["status"] == "RECOVERED"
 
 
+def test_automatic_recovery_closes_stale_transient_incidents(tmp_path, monkeypatch):
+    store = TradingStore(tmp_path / "transient-recovery.db")
+    monkeypatch.setenv("TRANSIENT_INCIDENT_AUTO_RECOVER_HOURS", "1")
+    store.record_incident("ORDER_FAILED", "ERROR", "一次性下单失败")
+    stale = "2026-01-01T00:00:00+00:00"
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE incidents SET last_seen=? WHERE incident_key=?",
+            (stale, "ORDER_FAILED"),
+        )
+
+    result = automatic_recovery_cycle(store)
+
+    assert "ORDER_FAILED" in result["recovered"]
+    assert store.incidents()[0]["status"] == "RECOVERED"
+
+
+def test_automatic_recovery_keeps_real_risk_incidents_open(tmp_path):
+    store = TradingStore(tmp_path / "risk-recovery.db")
+    store.record_incident("PORTFOLIO_STRESS_BREACH", "ERROR", "压力超限")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE incidents SET last_seen=? WHERE incident_key=?",
+            ("2026-01-01T00:00:00+00:00", "PORTFOLIO_STRESS_BREACH"),
+        )
+
+    result = automatic_recovery_cycle(store)
+
+    assert "PORTFOLIO_STRESS_BREACH" in result["pending"]
+    assert store.incidents()[0]["status"] == "OPEN"
+
+
 def test_paper_acceptance_and_dynamic_allocation(tmp_path, monkeypatch):
     monkeypatch.setenv("PAPER_ACCEPTANCE_MIN_DAYS", "1")
     monkeypatch.setenv("PAPER_ACCEPTANCE_MIN_ORDERS", "1")

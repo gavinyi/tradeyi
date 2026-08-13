@@ -97,6 +97,30 @@ def test_reconciliation_blocks_mismatched_symbol(tmp_path):
     assert report.iloc[0]["status"] == "MISMATCH"
     assert store.get_setting("symbol_blocked:US.NVDA") == "true"
     assert store.get_setting("strategy_enabled:core") == "false"
+    assert store.get_setting("recovery_blocked") == "true"
+
+
+def test_reconciliation_recovers_auto_disabled_strategy(tmp_path):
+    store = TradingStore(tmp_path / "test.db")
+    store.set_setting("strategy_enabled:volatility_long_gamma", "true")
+    store.set_setting("strategy_enabled:Volatility Long Gamma", "true")
+    store.set_virtual_allocation("volatility_long_gamma", "US.NVDA", 1, 100)
+
+    mismatch = reconcile_ledgers(store, Broker())
+    assert not mismatch[mismatch["status"] == "MISMATCH"].empty
+    assert store.get_setting("strategy_enabled:volatility_long_gamma") == "false"
+    assert store.get_setting("strategy_enabled:Volatility Long Gamma") == "false"
+    assert store.get_setting("recovery_blocked") == "true"
+    assert store.incidents(status="OPEN", limit=5)[0]["incident_key"] == "LEDGER_MISMATCH"
+
+    store.sync_virtual_allocation_to_target("volatility_long_gamma", "US.NVDA", 2, 100)
+    recovered = reconcile_ledgers(store, Broker())
+
+    assert recovered[recovered["status"] == "MISMATCH"].empty
+    assert store.get_setting("strategy_enabled:volatility_long_gamma") == "true"
+    assert store.get_setting("strategy_enabled:Volatility Long Gamma") == "true"
+    assert store.get_setting("recovery_blocked") == "false"
+    assert not store.incidents(status="OPEN", limit=5)
 
 
 def test_futu_reconciliation_ignores_crypto_swap_allocations(tmp_path):
