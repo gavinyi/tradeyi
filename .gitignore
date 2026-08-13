@@ -13,10 +13,13 @@ data/*.log
 data/*.log.*
 data/*.lock
 data/*.pid
+data/*.restart
+data/*.stop
 data/backups/
 data/market-data/
 data/warehouse/
 data/recovery/
+pytest-of-*/
 .env.docker
 .env.env.lock
 .agents/
