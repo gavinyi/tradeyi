@@ -158,6 +158,28 @@ def campaign_expiry_date(campaign: dict, code: str, default: datetime):
     return safe_datetime(campaign.get("strike_time"), default).date()
 
 
+def volatility_exit_close_legs(
+    campaign: dict,
+    code: str,
+    legs: list[dict],
+    *,
+    combo_available: bool = True,
+) -> tuple[list[dict], str | None]:
+    """Choose the safest close route for a volatility exit.
+
+    Exit-maintenance campaigns and orphan-adopted positions may carry stale
+    multi-leg metadata. When the live risk is a single broker position, a hard
+    stop must never be blocked by a missing combo ledger.
+    """
+    if campaign.get("trigger_mode") != "VOLATILITY":
+        return list(legs), None
+    if campaign.get("exit_only"):
+        return [{"code": code, "side": "BUY", "ratio": 1, "role": "PRIMARY"}], "EXIT_ONLY"
+    if len(legs) > 1 and not combo_available:
+        return [{"code": code, "side": "BUY", "ratio": 1, "role": "PRIMARY"}], "MISSING_COMBO"
+    return list(legs), None
+
+
 def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
@@ -999,33 +1021,47 @@ def run_campaign(
             }, strategy_id)
             print(f"{code}: HOLD ({reason})")
             return
-        if len(legs) > 1 and execution_mode != "SHADOW":
+        close_legs, close_route = volatility_exit_close_legs(campaign, code, legs)
+        if close_route == "EXIT_ONLY":
+            executor.store.audit("VOLATILITY_EXIT_ONLY_SINGLE_LEG_CLOSE", {
+                "symbol": code,
+                "underlying": campaign["underlying"],
+                "original_structure": campaign.get("structure"),
+                "original_legs": legs,
+                "reason": reason,
+            }, strategy_id)
+        if len(close_legs) > 1 and execution_mode != "SHADOW":
             active_combo_id = combo_id or automatic_combo_id(
                 strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
             )
             active_combo = executor.store.option_combo(active_combo_id)
             if not active_combo:
-                executor.store.decision(
-                    strategy_id, code, "BLOCKED",
-                    "组合平仓失败：未找到对应的自动组合账本",
-                    {**decision_payload, "combo_id": active_combo_id},
+                close_legs, close_route = volatility_exit_close_legs(
+                    campaign, code, legs, combo_available=False,
                 )
+                executor.store.audit("VOLATILITY_COMBO_CLOSE_FALLBACK_SINGLE_LEG", {
+                    "symbol": code,
+                    "underlying": campaign["underlying"],
+                    "missing_combo_id": active_combo_id,
+                    "original_legs": legs,
+                    "reason": reason,
+                }, strategy_id)
+            else:
+                ComboExecutionManager(
+                    broker, executor.store, executor
+                ).request_close(active_combo_id)
+                campaign_state["pending_exit_reason"] = reason
+                executor.store.audit("VOLATILITY_COMBO_CLOSE_REQUESTED", {
+                    "combo_id": active_combo_id, "symbol": code, "reason": reason,
+                }, strategy_id)
                 return
-            ComboExecutionManager(
-                broker, executor.store, executor
-            ).request_close(active_combo_id)
-            campaign_state["pending_exit_reason"] = reason
-            executor.store.audit("VOLATILITY_COMBO_CLOSE_REQUESTED", {
-                "combo_id": active_combo_id, "symbol": code, "reason": reason,
-            }, strategy_id)
-            return
         exit_quantity = int(planned_order_quantity or quantity)
-        leg_quotes = broker.snapshots([leg["code"] for leg in legs]).set_index("code")
+        leg_quotes = broker.snapshots([leg["code"] for leg in close_legs]).set_index("code")
         cycle_suffix = (
             f":cycle{int(campaign_state.get('entry_cycle', 0))}"
             if trigger_mode == "VOLATILITY" else ""
         )
-        for leg_number, leg in enumerate(legs, 1):
+        for leg_number, leg in enumerate(close_legs, 1):
             opening_side = str(leg["side"]).upper()
             closing_side = "SELL" if opening_side == "BUY" else "BUY"
             leg_quote = leg_quotes.loc[leg["code"]]
