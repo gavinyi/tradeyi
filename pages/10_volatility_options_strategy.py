@@ -654,8 +654,11 @@ with config_tab:
         protection_start_strong = strong_start_col.number_input("强波动启动", 0.01, 2.0, value=setting_float("volatility_default_profit_protection_start_strong", 0.20), step=0.01, label_visibility="collapsed")
         protection_giveback_strong = strong_giveback_col.number_input("强波动回吐", 0.01, 1.0, value=setting_float("volatility_default_profit_protection_giveback_strong", 0.30), step=0.01, label_visibility="collapsed")
         locked_profit_strong = strong_lock_col.number_input("强波动锁定", 0.0, 1.0, value=setting_float("volatility_default_minimum_locked_profit_strong", 0.10), step=0.01, label_visibility="collapsed")
-    with st.expander("参数配置 · 分批止盈参数", expanded=False):
-        st.caption("2 张以上自动分批；1 张合约会跳过分批，继续使用盈利回吐保护。")
+    with st.expander("参数配置 · 分批止盈与冲高保护", expanded=False):
+        st.caption(
+            "2 张以上自动分批；1 张合约达到主动落袋线会先兑现原合约，"
+            "后续由新信号/低成本表达继续做 runner。"
+        )
         partial_enabled = st.toggle(
             "启用分批止盈",
             value=setting_bool("volatility_default_partial_profit_enabled", True),
@@ -663,7 +666,7 @@ with config_tab:
         partial_left, partial_middle, partial_right = st.columns(3)
         partial_tier1 = partial_left.number_input(
             "第一档盈利阈值", 0.05, 5.0,
-            value=setting_float("volatility_default_partial_profit_tier1", 0.30),
+            value=setting_float("volatility_default_partial_profit_tier1", 0.18),
             step=0.05,
             help="达到该浮盈后先卖出一部分，把利润落袋。",
         )
@@ -675,7 +678,7 @@ with config_tab:
         )
         partial_tier2 = partial_left.number_input(
             "第二档盈利阈值", 0.05, 10.0,
-            value=setting_float("volatility_default_partial_profit_tier2", 0.60),
+            value=setting_float("volatility_default_partial_profit_tier2", 0.35),
             step=0.05,
         )
         partial_tier2_fraction = partial_middle.number_input(
@@ -684,7 +687,31 @@ with config_tab:
             step=0.05,
             help="第二档未必每次都执行；如果只剩 1 张，会自动交给盈利回吐保护。",
         )
-        partial_right.info("行业默认：30% 卖约一半，60% 再卖一部分，剩余仓位追踪趋势。")
+        single_take_profit = partial_right.number_input(
+            "单张主动落袋线", 0.05, 5.0,
+            value=setting_float("volatility_default_single_contract_take_profit", 0.18),
+            step=0.01,
+            help="只有 1 张期权时不能分批，达到该盈利后先卖出原合约，避免冲高回落。",
+        )
+        tiered_lock_enabled = st.toggle(
+            "启用阶梯锁盈",
+            value=setting_bool("volatility_default_tiered_profit_lock_enabled", True),
+            help="峰值越高，最低保留盈利越高：10%→6%、18%→12%、30%→18%、50%→30%、80%→50%。",
+        )
+        tighten_left, tighten_middle, tighten_right = st.columns(3)
+        time_tighten_minutes = tighten_left.number_input(
+            "持仓多久后收紧（分钟）", 5, 360,
+            value=setting_int("volatility_default_profit_time_tighten_minutes", 60),
+            step=5,
+            help="持仓超过该时间且已有明显浮盈后，盈利回吐阈值自动收紧。",
+        )
+        time_tighten_giveback = tighten_middle.number_input(
+            "时间收紧回吐", 0.01, 1.0,
+            value=setting_float("volatility_default_profit_time_tighten_giveback", 0.12),
+            step=0.01,
+            help="超过持仓时间后，只允许从峰值回吐这么多比例。",
+        )
+        tighten_right.info("行业默认：18% 主动落袋，60 分钟后回吐阈值收紧到 12%。")
     with st.expander("按退出原因冷却", expanded=False):
         cooldown_left, cooldown_middle, cooldown_right = st.columns(3)
         cooldown_take_profit = cooldown_left.number_input("止盈后冷却小时", 0, 168, value=setting_int("volatility_default_cooldown_take_profit_hours", 4))
@@ -725,6 +752,10 @@ with config_tab:
         "partial_profit_tier1_fraction": float(partial_tier1_fraction),
         "partial_profit_tier2": float(partial_tier2),
         "partial_profit_tier2_fraction": float(partial_tier2_fraction),
+        "single_contract_take_profit": float(single_take_profit),
+        "tiered_profit_lock_enabled": bool(tiered_lock_enabled),
+        "profit_time_tighten_minutes": int(time_tighten_minutes),
+        "profit_time_tighten_giveback": float(time_tighten_giveback),
         "cooldown_take_profit_hours": int(cooldown_take_profit),
         "cooldown_profit_protection_hours": int(cooldown_profit_protection),
         "cooldown_stop_loss_hours": int(cooldown_stop_loss),
@@ -764,6 +795,10 @@ with config_tab:
         "volatility_default_partial_profit_tier1_fraction": float(partial_tier1_fraction),
         "volatility_default_partial_profit_tier2": float(partial_tier2),
         "volatility_default_partial_profit_tier2_fraction": float(partial_tier2_fraction),
+        "volatility_default_single_contract_take_profit": float(single_take_profit),
+        "volatility_default_tiered_profit_lock_enabled": str(bool(tiered_lock_enabled)).lower(),
+        "volatility_default_profit_time_tighten_minutes": int(time_tighten_minutes),
+        "volatility_default_profit_time_tighten_giveback": float(time_tighten_giveback),
         "volatility_default_cooldown_take_profit_hours": int(cooldown_take_profit),
         "volatility_default_cooldown_profit_protection_hours": int(cooldown_profit_protection),
         "volatility_default_cooldown_stop_loss_hours": int(cooldown_stop_loss),

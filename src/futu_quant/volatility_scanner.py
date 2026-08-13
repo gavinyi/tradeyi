@@ -227,11 +227,27 @@ def scan_volatility_watchlist(
                         "partial_profit_tier1": _setting_float(
                             store, "volatility_default_partial_profit_tier1", .18,
                         ),
-                        "partial_profit_tier1_fraction": .50,
+                        "partial_profit_tier1_fraction": _setting_float(
+                            store, "volatility_default_partial_profit_tier1_fraction", .50,
+                        ),
                         "partial_profit_tier2": _setting_float(
                             store, "volatility_default_partial_profit_tier2", .35,
                         ),
-                        "partial_profit_tier2_fraction": .25,
+                        "partial_profit_tier2_fraction": _setting_float(
+                            store, "volatility_default_partial_profit_tier2_fraction", .25,
+                        ),
+                        "single_contract_take_profit": _setting_float(
+                            store, "volatility_default_single_contract_take_profit", .18,
+                        ),
+                        "tiered_profit_lock_enabled": _setting_bool(
+                            store, "volatility_default_tiered_profit_lock_enabled", True,
+                        ),
+                        "profit_time_tighten_minutes": _setting_float(
+                            store, "volatility_default_profit_time_tighten_minutes", 60,
+                        ),
+                        "profit_time_tighten_giveback": _setting_float(
+                            store, "volatility_default_profit_time_tighten_giveback", .12,
+                        ),
                         "cooldown_take_profit_hours": 4,
                         "cooldown_profit_protection_hours": 8,
                         "cooldown_stop_loss_hours": 24,

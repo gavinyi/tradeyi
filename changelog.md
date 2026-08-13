@@ -12,6 +12,50 @@
 6. 如果改动影响自动下单，必须记录是否已重启统一交易服务。
 7. 只改测试、文档或文案，也要简短记录。
 
+## 2026-08-13：波动率期权止盈引擎升级为 MFE 捕获与阶梯锁盈
+
+原因：
+
+- 昨晚波动率期权整体有改善，但多笔交易出现“盘中冲高、最终回落后才卖”的体验问题；
+- 原逻辑主要是盈利回吐后保护，不是主动收割；
+- 单张期权无法分批卖出，导致“1 张合约只能全卖或继续拿”，容易把短期浮盈交回去。
+
+改动：
+
+1. 退出判断改用更保守的可成交估值：
+   - 持仓期权用买一价优先计算当前盈亏、美元盈亏和回撤；
+   - 买一不可用时才回退到最新价；
+   - 组合持仓继续使用组合可执行净值。
+2. 新增单张期权主动落袋：
+   - 默认 `single_contract_take_profit = 18%`；
+   - 只有 1 张合约时，达到该盈利线直接卖出原合约；
+   - 退出原因标记为“单张替代分批主动落袋”，冷却时间为 0，后续由新信号/低成本表达继续给 runner 机会。
+3. 新增阶梯锁盈：
+   - 峰值盈利 ≥ 10%：锁盈线 6%；
+   - 峰值盈利 ≥ 18%：锁盈线 12%；
+   - 峰值盈利 ≥ 30%：锁盈线 18%；
+   - 峰值盈利 ≥ 50%：锁盈线 30%；
+   - 峰值盈利 ≥ 80%：锁盈线 50%。
+4. 新增持仓时间收紧：
+   - 默认持仓超过 60 分钟后，如果已有明显浮盈，只允许从峰值回吐 12%；
+   - 避免后半段时间价值和盘口退潮吞掉盈利。
+5. 新增 MFE/浮盈捕获率：
+   - 决策 payload 记录 `mfe_pnl_ratio`、`profit_capture_ratio`、`executable_mark`、`tiered_profit_lock_floor`；
+   - 每日复盘新增“平均浮盈捕获率”和“低捕获合约数”；
+   - 波动率期权质量面板展示最大浮盈、捕获率、阶梯锁盈线和可成交估值。
+6. 波动率策略配置页新增：
+   - 单张主动落袋线；
+   - 启用阶梯锁盈；
+   - 持仓多久后收紧；
+   - 时间收紧回吐阈值。
+7. 自动雷达生成新活动时同步带入上述默认参数。
+
+验证：
+
+- `pytest -q tests/test_volatility_optimizer.py`：43 项通过；
+- `ruff check src/futu_quant/volatility_optimizer.py scripts/run_gamma_strategy.py src/futu_quant/volatility_scanner.py src/futu_quant/strategy_review.py src/futu_quant/ui.py pages/10_volatility_options_strategy.py pages/29_strategy_review_execution_quality.py tests/test_volatility_optimizer.py`：通过；
+- `python scripts/check_streamlit_pages.py --runtime`：静态巡检 39 页，错误 0，警告 0；运行巡检因 OpenD 不可连接被跳过。
+
 ## 2026-08-12：波动率期权新增单笔硬止损、同标的连续亏损降级和组合结构准入
 
 原因：

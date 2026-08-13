@@ -137,14 +137,20 @@ def _option_quality(decisions: list[dict], fills: list[dict]) -> pd.DataFrame:
             if buy_avg is not None and sell_avg is not None else 0.0
         )
         profile = payload.get("profit_protection_profile") or {}
+        peak_pnl = payload.get("mfe_pnl_ratio", payload.get("peak_pnl_ratio"))
         rows.append({
             "代码": symbol,
             "最新动作": decision.get("decision"),
             "最新原因": decision.get("reason"),
             "当前持仓": payload.get("position_quantity", net_qty),
             "当前盈亏": payload.get("pnl_ratio"),
-            "峰值盈利": payload.get("peak_pnl_ratio"),
+            "最大浮盈MFE": peak_pnl,
+            "峰值盈利": peak_pnl,
+            "浮盈捕获率": payload.get("profit_capture_ratio"),
             "盈利回吐": payload.get("profit_giveback"),
+            "可成交估值": payload.get("executable_mark"),
+            "阶梯锁盈线": payload.get("tiered_profit_lock_floor"),
+            "阶梯档位": payload.get("tiered_profit_lock_label"),
             "保护档": profile.get("tier"),
             "保护启动": profile.get("profit_protection_start"),
             "回吐阈值": profile.get("profit_protection_giveback"),
@@ -337,6 +343,10 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         int(pd.to_numeric(option_quality.get("当前持仓", pd.Series(dtype=float)), errors="coerce").fillna(0).gt(0).sum())
         if not option_quality.empty else 0
     )
+    capture_values = (
+        pd.to_numeric(option_quality.get("浮盈捕获率", pd.Series(dtype=float)), errors="coerce")
+        if not option_quality.empty else pd.Series(dtype=float)
+    ).dropna()
     metrics = {
         "策略决策": len(decisions),
         "订单数": len(intents),
@@ -361,6 +371,8 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
             float(pd.to_numeric(option_pnl_breakdown.get("净盈亏", pd.Series(dtype=float)), errors="coerce").fillna(0).clip(upper=0).sum())
             if not option_pnl_breakdown.empty else 0.0
         ),
+        "平均浮盈捕获率": float(capture_values.mean()) if not capture_values.empty else 0.0,
+        "低捕获合约数": int(capture_values.lt(.50).sum()) if not capture_values.empty else 0,
         "退化任务": (
             int(pd.to_numeric(runtime_health.get("退化/超时", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
             if not runtime_health.empty else 0
@@ -406,6 +418,12 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
                 f"按合约成交表现看，盈利 {len(winners)} 个、亏损 {len(losers)} 个，"
                 f"胜率约 {win_rate:.0%}；最佳是 {best['代码']}（约 ${float(best['净盈亏']):,.0f}），"
                 f"最弱是 {worst['代码']}（约 ${float(worst['净盈亏']):,.0f}）。"
+            )
+        if not capture_values.empty:
+            narrative.append(
+                f"止盈质量看，平均浮盈捕获率约 {float(capture_values.mean()):.0%}，"
+                f"低于 50% 的合约 {int(capture_values.lt(.50).sum())} 个；"
+                "这用于识别“冲高后回落才卖”的问题。"
             )
         if not winners.empty:
             narrative.append(f"盈利退出合约 {len(winners)} 个，说明自动退出链路能跑通。")

@@ -82,6 +82,8 @@ with st.container(horizontal=True):
     st.metric("盈利期权合约", review.metrics["盈利期权合约"], border=True)
     st.metric("亏损期权合约", review.metrics["亏损期权合约"], border=True)
     st.metric("期权未平持仓", review.metrics["期权未平持仓"], border=True)
+    st.metric("平均浮盈捕获率", f"{float(review.metrics['平均浮盈捕获率']):.0%}", border=True)
+    st.metric("低捕获合约", review.metrics["低捕获合约数"], border=True)
     st.metric("运行退化/超时", review.metrics["退化任务"], border=True)
     st.metric("运行异常", review.metrics["异常任务"], border=True)
 
@@ -149,7 +151,10 @@ with option_tab:
     else:
         view = display_percent_columns(
             review.option_quality,
-            ["当前盈亏", "峰值盈利", "盈利回吐", "保护启动", "回吐阈值", "锁定盈利"],
+            [
+                "当前盈亏", "最大浮盈MFE", "峰值盈利", "浮盈捕获率",
+                "盈利回吐", "阶梯锁盈线", "保护启动", "回吐阈值", "锁定盈利",
+            ],
         )
         st.dataframe(view, hide_index=True)
 

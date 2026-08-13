@@ -34,6 +34,7 @@ from futu_quant.volatility_optimizer import (
     volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
     volatility_threshold_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
+    volatility_profit_capture_ratio, volatility_profit_lock_floor,
 )
 from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.data_quality import (
@@ -374,21 +375,26 @@ def run_campaign(
     current_iv = normalize_iv(option.get("option_implied_volatility", 0))
     if combo and combo.get("status") == "OPEN" and combo_last > 0:
         last = combo_last
+    executable_mark = (
+        last if combo and combo.get("status") == "OPEN"
+        else bid if quantity > 0 and bid > 0
+        else last
+    )
     if trigger_mode == "VOLATILITY":
         sync_volatility_position_cycle(
-            campaign_state, quantity=quantity, cost=cost, last=last,
+            campaign_state, quantity=quantity, cost=cost, last=executable_mark,
             current_iv=current_iv, current_efficiency=current_efficiency, now=now,
         )
     else:
-        campaign_state["peak"] = max(float(campaign_state.get("peak", 0)), last)
-    pnl_ratio = last / cost - 1 if quantity > 0 and cost > 0 else 0.0
+        campaign_state["peak"] = max(float(campaign_state.get("peak", 0)), executable_mark)
+    pnl_ratio = executable_mark / cost - 1 if quantity > 0 and cost > 0 else 0.0
     position_multiplier = market_number(option.get("option_contract_multiplier"), 100.0)
     position_pnl_amount = (
-        (last - cost) * quantity * position_multiplier
+        (executable_mark - cost) * quantity * position_multiplier
         if quantity > 0 and cost > 0 else 0.0
     )
     peak = float(campaign_state.get("peak", 0))
-    drawdown = 1 - last / peak if peak > 0 else 0.0
+    drawdown = 1 - executable_mark / peak if peak > 0 else 0.0
     peak_pnl_ratio = (
         peak / cost - 1
         if quantity > 0 and cost > 0 else 0.0
@@ -397,6 +403,8 @@ def run_campaign(
         max(0.0, (peak_pnl_ratio - pnl_ratio) / peak_pnl_ratio)
         if peak_pnl_ratio > 0 else 0.0
     )
+    profit_capture_ratio = volatility_profit_capture_ratio(pnl_ratio, peak_pnl_ratio)
+    tier_lock_floor, tier_lock_label = volatility_profit_lock_floor(peak_pnl_ratio)
     underlying_bars = broker.candles(campaign["underlying"], count=90)
     regime = None
     if trigger_mode == "VOLATILITY":
@@ -652,6 +660,18 @@ def run_campaign(
                 minimum_locked_profit=float(
                     protection_profile["minimum_locked_profit"]
                 ),
+                single_contract_take_profit=float(
+                    campaign.get("single_contract_take_profit", .18)
+                ),
+                tiered_profit_lock_enabled=bool(
+                    campaign.get("tiered_profit_lock_enabled", True)
+                ),
+                time_tighten_minutes=float(
+                    campaign.get("profit_time_tighten_minutes", 60)
+                ),
+                time_tighten_giveback=float(
+                    campaign.get("profit_time_tighten_giveback", .12)
+                ),
             )
     else:
         partial_exit_quantity = 0
@@ -689,6 +709,8 @@ def run_campaign(
          "pnl_ratio": pnl_ratio, "drawdown": drawdown, "trigger_mode": trigger_mode,
          "position_pnl_amount": position_pnl_amount,
          "profit_giveback": profit_giveback,
+         "profit_capture_ratio": profit_capture_ratio,
+         "executable_mark": executable_mark,
          "validation_warnings": issues, "direction_reason": direction_reason,
          "direction_metrics": direction_metrics,
          "volatility_regime": regime,
@@ -709,6 +731,9 @@ def run_campaign(
             "entry_window_end": event_time.isoformat(),
             "position_opened_at": campaign_state.get("position_opened_at"),
             "peak_pnl_ratio": peak_pnl_ratio,
+            "tiered_profit_lock_floor": tier_lock_floor,
+            "tiered_profit_lock_label": tier_lock_label,
+            "mfe_pnl_ratio": peak_pnl_ratio,
             "profit_protection_profile": (
                 volatility_profit_protection_profile(campaign, regime)
                 if regime is not None else {}

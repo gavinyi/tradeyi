@@ -9,6 +9,7 @@ from futu_quant.volatility_optimizer import (
     volatility_entry_quality_allowed, volatility_min_expected_return,
     volatility_profit_protection_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
+    volatility_profit_capture_ratio, volatility_profit_lock_floor,
 )
 from futu_quant.volatility_roll import should_replace_campaign
 from datetime import datetime, timedelta, timezone
@@ -282,6 +283,8 @@ def test_profit_protection_holds_winner_until_drawdown_threshold():
         max_hold_hours=24,
         profit_protection_start=.15,
         profit_protection_drawdown=.25,
+        single_contract_take_profit=0,
+        tiered_profit_lock_enabled=False,
     )
 
     action, reason = decide_volatility_action(
@@ -354,7 +357,7 @@ def test_profit_protection_minimum_locked_profit_exits_before_winner_turns_loss(
     )
 
     assert action == "SELL"
-    assert "最低锁定盈利" in reason
+    assert "阶梯锁盈" in reason
 
 
 def test_profit_protection_profile_uses_signal_tier_overrides():
@@ -736,3 +739,38 @@ def test_volatility_hard_loss_reason_uses_usd_and_ratio_limits():
     assert reason is not None
     assert "$125.00" in reason
     assert "单笔硬止损" in reason
+
+
+def test_single_contract_profit_take_exits_before_round_trip_giveback():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    action, reason = decide_volatility_action(
+        now=now,
+        opened_at=now - timedelta(minutes=20),
+        quantity=1,
+        stages_filled=1,
+        max_stages=3,
+        pnl_ratio=.19,
+        peak_pnl_ratio=.19,
+        drawdown_from_peak=0,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=.50,
+        stop_loss=.40,
+        trailing_stop=.25,
+        max_hold_hours=24,
+        single_contract_take_profit=.18,
+    )
+
+    assert action == "SELL"
+    assert "单张替代分批主动落袋" in reason
+
+
+def test_tiered_profit_lock_floor_scales_with_mfe():
+    assert volatility_profit_lock_floor(.11) == (.06, "轻盈利档")
+    assert volatility_profit_lock_floor(.31) == (.18, "强盈利档")
+    assert volatility_profit_lock_floor(.81) == (.50, "爆发档")
+
+
+def test_profit_capture_ratio_measures_mfe_retention():
+    assert volatility_profit_capture_ratio(.10, .20) == .5
+    assert volatility_profit_capture_ratio(.10, 0) is None

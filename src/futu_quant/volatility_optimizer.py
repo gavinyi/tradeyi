@@ -30,6 +30,32 @@ PROFIT_PROTECTION_DEFAULTS = {
 }
 
 
+def volatility_profit_lock_floor(peak_pnl_ratio: float) -> tuple[float, str]:
+    """Return a professional tiered profit floor based on max favorable excursion."""
+    peak = float(peak_pnl_ratio or 0.0)
+    tiers = [
+        (.80, .50, "爆发档"),
+        (.50, .30, "大盈利档"),
+        (.30, .18, "强盈利档"),
+        (.18, .12, "标准盈利档"),
+        (.10, .06, "轻盈利档"),
+    ]
+    for threshold, floor, label in tiers:
+        if peak >= threshold:
+            return floor, label
+    return 0.0, "未启动"
+
+
+def volatility_profit_capture_ratio(
+    pnl_ratio: float, peak_pnl_ratio: float,
+) -> float | None:
+    """How much of the position's max favorable excursion is still captured."""
+    peak = float(peak_pnl_ratio or 0.0)
+    if peak <= 0:
+        return None
+    return float(pnl_ratio or 0.0) / peak
+
+
 def _partial_exit_quantity(quantity: int, fraction: float) -> int:
     """Return a safe partial-exit size that never turns a partial into a full exit."""
     if quantity <= 1 or fraction <= 0:
@@ -454,7 +480,7 @@ def volatility_cooldown_hours(
     }
     if overrides:
         values.update({key: float(value) for key, value in overrides.items()})
-    if "分批止盈" in reason:
+    if "分批止盈" in reason or "替代分批" in reason or "主动落袋" in reason:
         return 0.0
     if "到期" in reason or "行权" in reason:
         return values["expiry"]
@@ -866,6 +892,10 @@ def decide_volatility_action(
     profit_giveback_from_peak: float | None = None,
     full_profit_target_enabled: bool = True,
     minimum_locked_profit: float = .0,
+    single_contract_take_profit: float = .18,
+    tiered_profit_lock_enabled: bool = True,
+    time_tighten_minutes: float = 60,
+    time_tighten_giveback: float = .12,
 ) -> tuple[str, str]:
     """Decide one volatility campaign action without earnings-event semantics."""
     if quantity <= 0:
@@ -885,6 +915,37 @@ def decide_volatility_action(
         if profit_giveback_from_peak is None and peak_pnl_ratio > 0
         else max(0.0, float(profit_giveback_from_peak or 0.0))
     )
+    held = now - opened_at
+    if (
+        quantity == 1
+        and single_contract_take_profit > 0
+        and pnl_ratio >= single_contract_take_profit
+    ):
+        return (
+            "SELL",
+            f"单张替代分批主动落袋：当前盈利{pnl_ratio:.1%} ≥ "
+            f"{single_contract_take_profit:.1%}；先兑现原合约，后续只用新信号/低成本表达做 runner",
+        )
+    if tiered_profit_lock_enabled and protection_active:
+        tier_floor, tier_label = volatility_profit_lock_floor(peak_pnl_ratio)
+        effective_floor = max(float(minimum_locked_profit or 0.0), tier_floor)
+        if effective_floor > 0 and pnl_ratio <= effective_floor:
+            return (
+                "SELL",
+                f"阶梯锁盈触发：{tier_label}峰值盈利{peak_pnl_ratio:.1%}，"
+                f"当前盈利{pnl_ratio:.1%} ≤ 锁盈线{effective_floor:.1%}",
+            )
+        if (
+            held >= timedelta(minutes=max(0.0, float(time_tighten_minutes or 0.0)))
+            and peak_pnl_ratio >= .10
+            and profit_giveback >= float(time_tighten_giveback or 0.0)
+        ):
+            return (
+                "SELL",
+                f"持仓时间收紧止盈：已持有{held.total_seconds() / 60:.0f}分钟，"
+                f"峰值盈利{peak_pnl_ratio:.1%}，盈利回吐{profit_giveback:.1%} ≥ "
+                f"{float(time_tighten_giveback):.1%}",
+            )
     if protection_active and profit_giveback >= protection_drawdown:
         return (
             "SELL",
@@ -902,7 +963,6 @@ def decide_volatility_action(
             f"最低锁定盈利触发：峰值盈利{peak_pnl_ratio:.1%}，"
             f"当前盈利{pnl_ratio:.1%} ≤ 锁定线{minimum_locked_profit:.1%}",
         )
-    held = now - opened_at
     if held >= timedelta(hours=max_hold_hours):
         return "SELL", f"波动率仓位已持有{max_hold_hours:g}小时，触发最长持有退出"
     if decay_reason and held >= timedelta(minutes=minimum_hold_minutes):
