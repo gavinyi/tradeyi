@@ -119,3 +119,14 @@ def stop() -> RadarStatus:
     PID_FILE.unlink(missing_ok=True)
     STOP_FILE.unlink(missing_ok=True)
     return RadarStatus(False, message="雷达已停止")
+
+
+def restart() -> RadarStatus:
+    stopped = stop()
+    if stopped.running:
+        return RadarStatus(
+            True, stopped.pid,
+            "雷达正在停止；当前扫描结束后会自动重启需要稍后重试",
+            stopped.uptime_seconds,
+        )
+    return start()

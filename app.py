@@ -7,6 +7,7 @@ from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.account_metrics import account_pnl_metrics
 from futu_quant.config import Settings
 from futu_quant.core_satellite import STRATEGY_NAME, build_rebalance_plan
+from futu_quant.home_dashboard import render_home_dashboard
 from futu_quant.option_lifecycle import parse_option_code
 from futu_quant.performance import performance_report
 from futu_quant.strategies import STRATEGIES
@@ -25,15 +26,22 @@ st.set_page_config(
 )
 
 
-home_page = st.Page(
+dashboard_page = st.Page(
+    lambda: None,
+    title="首页驾驶舱",
+    icon=":material/space_dashboard:",
+    default=True,
+)
+account_page = st.Page(
     lambda: None,
     title="账户总览",
     icon=":material/account_balance_wallet:",
-    default=True,
+    url_path="account-overview",
 )
 navigation = {
     "账户与交易": [
-        home_page,
+        dashboard_page,
+        account_page,
         st.Page("pages/29_strategy_review_execution_quality.py", title="策略复盘与执行质量", icon=":material/summarize:"),
         st.Page("pages/26_trade_diagnostics_center.py", title="交易诊断中心", icon=":material/troubleshoot:"),
         st.Page("pages/4_order_management.py", title="订单管理", icon=":material/receipt_long:"),
@@ -120,7 +128,7 @@ navigation = {
 }
 current_page = st.navigation(navigation, position="sidebar")
 current_page.run()
-if current_page != home_page:
+if current_page not in (dashboard_page, account_page):
     st.stop()
 
 try:
@@ -132,7 +140,11 @@ except Exception as exc:
     st.stop()
 
 render_sidebar(settings)
-admin = render_admin_login()
+admin = render_admin_login() if current_page == account_page else False
+
+if current_page == dashboard_page:
+    render_home_dashboard(settings, broker, store, account_page=account_page)
+    st.stop()
 
 
 @st.cache_data(ttl=30, max_entries=3, show_spinner=False)

@@ -10,7 +10,7 @@
     <string>scripts/run_service.py</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/gavinyi/Documents/My/trade</string>
-  <key>RunAtLoad</key><true/>
+  <key>RunAtLoad</key><false/>
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key><false/>

@@ -576,6 +576,32 @@ def test_strong_signal_uses_one_minute_dynamic_confirmation():
     assert "1 分钟" in reason
 
 
+def test_entry_confirmation_blocks_when_volume_fades_after_signal_start():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    regime = {
+        "active": True,
+        "reason": "全部动态波动条件已通过",
+        "strong_signal_override": True,
+        "trigger_confirmed": True,
+        "volume_confirmed": True,
+        "direction_confirmed": True,
+        "volume_ratio": 0.9,
+    }
+
+    allowed, reason = volatility_entry_confirmation(
+        now=now,
+        signal_started_at=(now - timedelta(minutes=2)).isoformat(),
+        regime=regime,
+        confirmation_minutes=5,
+        signal_start_volume_ratio=2.0,
+        minimum_volume_ratio=0.8,
+        minimum_volume_retention=0.65,
+    )
+
+    assert not allowed
+    assert "量能保持率" in reason
+
+
 def test_confirmed_adverse_direction_exits_before_option_hard_stop():
     reason = volatility_exit_reason(
         {"active": True, "contraction": False},

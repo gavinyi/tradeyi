@@ -328,6 +328,48 @@ def test_smart_execution_starts_at_mid_price(tmp_path):
     assert broker.submitted_price == 100
 
 
+class RepriceBroker(FakeBroker):
+    def __init__(self):
+        super().__init__()
+        self.modified_price = None
+
+    def snapshots(self, symbols):
+        return pd.DataFrame([{"code": symbols[0], "bid_price": 9.50, "ask_price": 10.50}])
+
+    def modify_limit_order(self, broker_order_id, quantity, price):
+        self.modified_price = price
+
+
+def test_urgent_sell_reprice_uses_exit_slippage_not_normal_one_percent(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXEC_REPRICE_INTERVAL_SECONDS", "15")
+    monkeypatch.setenv("EXEC_MAX_REPRICE_ATTEMPTS", "3")
+    monkeypatch.setenv("EXEC_REPRICE_STEP_PCT", "0.10")
+    monkeypatch.setenv("EXEC_MAX_SLIPPAGE_PCT", "0.01")
+    monkeypatch.setenv("EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT", "0.12")
+    store = TradingStore(tmp_path / "test.db")
+    broker = RepriceBroker()
+    intent, _ = store.create_intent(
+        "volatility_long_gamma",
+        "urgent-exit",
+        "US.SPCX260814P142000",
+        "SELL",
+        1,
+        10.00,
+        {"urgent": True, "reference_price": 10.00},
+    )
+    store.update_intent(intent["id"], "SUBMITTED", broker_order_id="paper-1")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE order_intents SET created_at=?, last_reprice_at=? WHERE id=?",
+            ("2026-08-13T14:00:00+00:00", "2026-08-13T14:00:00+00:00", intent["id"]),
+        )
+
+    repriced = ExecutionManager(broker, store).reprice_open_orders()
+
+    assert repriced == 1
+    assert broker.modified_price == 9.50
+
+
 def test_shadow_mode_never_calls_broker(tmp_path):
     broker = FakeBroker()
     store = TradingStore(tmp_path / "test.db")

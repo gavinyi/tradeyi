@@ -84,6 +84,8 @@ with st.container(horizontal=True):
     st.metric("期权未平持仓", review.metrics["期权未平持仓"], border=True)
     st.metric("平均浮盈捕获率", f"{float(review.metrics['平均浮盈捕获率']):.0%}", border=True)
     st.metric("低捕获合约", review.metrics["低捕获合约数"], border=True)
+    st.metric("高优先级行动项", review.metrics["高优先级行动项"], border=True)
+    st.metric("最低质量评分", review.metrics["最低质量评分"], border=True)
     st.metric("运行退化/超时", review.metrics["退化任务"], border=True)
     st.metric("运行异常", review.metrics["异常任务"], border=True)
 
@@ -99,9 +101,64 @@ st.download_button(
     icon=":material/download:",
 )
 
-pnl_tab, orders_tab, option_tab, core_tab, runtime_tab, blockers_tab, raw_tab = st.tabs([
-    "期权盈亏拆解", "订单执行质量", "波动率期权质量", "Core Satellite 调仓", "运行健康", "阻塞原因", "原始报告",
+action_tab, quality_tab, lifecycle_tab, pnl_tab, orders_tab, option_tab, core_tab, runtime_tab, blockers_tab, evidence_tab, raw_tab = st.tabs([
+    "行动项", "质量评分", "期权生命周期", "期权盈亏拆解", "订单执行质量",
+    "波动率期权质量", "Core Satellite 调仓", "运行健康", "阻塞原因", "回测证据", "原始报告",
 ])
+
+with action_tab:
+    st.subheader("复盘行动项")
+    st.caption("按交易生命周期、运行异常和阻塞原因生成，优先处理高优先级项。")
+    if review.action_items.empty:
+        st.success("本窗口没有需要立即处理的行动项。")
+    else:
+        st.dataframe(
+            review.action_items,
+            hide_index=True,
+            column_config={
+                "优先级": st.column_config.TextColumn("优先级"),
+                "建议动作": st.column_config.TextColumn("建议动作", width="large"),
+            },
+        )
+
+with quality_tab:
+    st.subheader("策略质量评分")
+    st.caption("按入场、退出、执行、风控四个维度打分，最低分排在最前面。")
+    if review.quality_scores.empty:
+        st.info("本窗口没有足够数据生成质量评分。")
+    else:
+        st.dataframe(
+            review.quality_scores,
+            hide_index=True,
+            column_config={
+                "总评分": st.column_config.ProgressColumn("总评分", min_value=0, max_value=100),
+                "入场质量": st.column_config.ProgressColumn("入场质量", min_value=0, max_value=100),
+                "退出质量": st.column_config.ProgressColumn("退出质量", min_value=0, max_value=100),
+                "执行质量": st.column_config.ProgressColumn("执行质量", min_value=0, max_value=100),
+                "风控质量": st.column_config.ProgressColumn("风控质量", min_value=0, max_value=100),
+                "建议": st.column_config.TextColumn("建议", width="large"),
+            },
+        )
+
+with lifecycle_tab:
+    st.subheader("期权交易生命周期")
+    st.caption("每个合约从入场、持仓、峰值浮盈、退出到最终盈亏串成一行；MAE 无历史采集时会明确标记。")
+    if review.option_lifecycle.empty:
+        st.info("本窗口没有可展示的期权生命周期。")
+    else:
+        view = option_pnl_display_frame(review.option_lifecycle)
+        view = display_percent_columns(view, ["当前盈亏比例", "最大浮盈MFE", "浮盈捕获率"])
+        st.dataframe(
+            view,
+            hide_index=True,
+            column_config={
+                "买入均价": st.column_config.NumberColumn("买入均价", format="$%.2f"),
+                "卖出均价": st.column_config.NumberColumn("卖出均价", format="$%.2f"),
+                "毛盈亏": st.column_config.NumberColumn("毛盈亏", format="$%.2f"),
+                "净盈亏": st.column_config.NumberColumn("净盈亏", format="$%.2f"),
+                "最新原因": st.column_config.TextColumn("最新原因", width="large"),
+            },
+        )
 
 with pnl_tab:
     st.subheader("期权盈亏拆解")
@@ -186,6 +243,22 @@ with blockers_tab:
         st.success("本窗口没有阻塞记录。")
     else:
         st.dataframe(review.blockers, hide_index=True)
+
+with evidence_tab:
+    st.subheader("回测/前测证据对照")
+    st.caption("把复盘交易和现有实验、验证、审批证据放在同一处，避免只看夜盘结果调参数。")
+    if review.evidence_alignment.empty:
+        st.info("没有找到验证或证据记录。")
+    else:
+        view = china_time_columns(review.evidence_alignment)
+        st.dataframe(
+            view,
+            hide_index=True,
+            column_config={
+                "关键指标": st.column_config.TextColumn("关键指标", width="large"),
+                "结论": st.column_config.TextColumn("结论", width="large"),
+            },
+        )
 
 with raw_tab:
     st.subheader("Markdown 原始报告")

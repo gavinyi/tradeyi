@@ -164,8 +164,52 @@ def _trade_amounts(
     }
 
 
+def _missing_order_breakpoint(trade_signals: list[dict], blocked: list[dict]) -> str:
+    """Explain why a BUY/SELL strategy signal did not become an order intent."""
+    latest_signal = trade_signals[-1]
+    payload = _json(latest_signal.get("payload_json"))
+    action = _side_label(latest_signal.get("decision") or payload.get("side"))
+    quantity = _quantity(
+        payload.get("planned_order_quantity", payload.get("quantity"))
+    )
+    limit_price = next((
+        value
+        for key in ("limit_price", "price", "ask_price", "bid_price", "executable_mark")
+        if (value := _optional_number(payload.get(key))) is not None
+    ), None)
+    reason = str(latest_signal.get("reason") or "").strip()
+    warnings = payload.get("validation_warnings")
+    if isinstance(warnings, list):
+        warnings = "；".join(str(item) for item in warnings if item)
+    warnings = str(warnings or "").strip()
+
+    if blocked:
+        return f"买卖信号后被策略校验阻断：{blocked[-1]['reason']}"
+    if "期权表达复核" in reason or "最佳期权表达" in reason:
+        return "期权表达维护信号：只更新/替换候选合约，不会直接形成订单"
+    if "冷却" in reason:
+        return f"同标的冷却拦截：{reason}"
+    if warnings:
+        return f"买卖信号未提交订单：存在校验提醒：{warnings}"
+    if quantity is not None and float(quantity) <= 0:
+        return "买卖信号未提交订单：计划下单数量为 0，通常由预算、持仓上限、可用资金或减仓数量约束导致"
+    if limit_price is None:
+        return "买卖信号未提交订单：缺少可用限价/盘口价格，执行器无法生成订单"
+    detail = f"{action}"
+    if quantity is not None:
+        detail += f" {quantity}"
+    if limit_price is not None:
+        detail += f" @ {limit_price:g}"
+    return (
+        f"买卖信号未进入执行器：已产生 {len(trade_signals)} 次信号，"
+        f"最近信号为 {detail}；最近原因：{reason or '未记录'}"
+    )
+
+
 def _reason_category(reason: str) -> str:
     text = str(reason)
+    if "合约已于" in text or "全部合约已过期" in text or "已过期" in text:
+        return "到期/失效清理项"
     if "新鲜度" in text or "行情已过期" in text or "盘口不可用" in text:
         return "行情过期或盘口不可用"
     if "预期收益" in text:
@@ -180,6 +224,12 @@ def _reason_category(reason: str) -> str:
         return "单笔名义金额超限"
     if "审批" in text:
         return "上线审批未通过"
+    if "数量为 0" in text:
+        return "计划下单数量为0"
+    if "缺少可用限价" in text or "盘口价格" in text:
+        return "缺少可执行价格"
+    if "未进入执行器" in text:
+        return "信号未进入执行器"
     if "方向" in text or "动态波动" in text:
         return "信号或方向未确认"
     return text[:60] or "未说明原因"
@@ -278,10 +328,7 @@ def build_diagnostic_report(store, window: DiagnosticWindow) -> dict:
             reason = "正股达到动态波动条件，等待候选或已有活动"
         elif trade_signals:
             stage, outcome = "交易前检查", "未形成订单"
-            reason = (
-                blocked[-1]["reason"] if blocked
-                else f"产生 {len(trade_signals)} 次买卖信号，但没有形成订单意图"
-            )
+            reason = _missing_order_breakpoint(trade_signals, blocked)
         elif blocked:
             is_candidate = blocked[-1]["decision"] == "CANDIDATE_BLOCKED"
             stage, outcome = (

@@ -459,6 +459,10 @@ class Settings:
     core_satellite_symbols: tuple[str, ...]
     gamma_symbols: tuple[str, ...]
     volatility_symbols: tuple[str, ...]
+    ml_enabled: bool
+    ml_model_path: str
+    ml_threshold: float
+    ml_weight: float
 
     @classmethod
     def load(cls, refresh: bool = False) -> "Settings":
@@ -581,6 +585,14 @@ class Settings:
         )
         if not volatility_symbols or any(not symbol.startswith("US.") for symbol in volatility_symbols):
             raise RuntimeError("VOLATILITY_SYMBOLS must contain US.* symbols")
+        ml_enabled = os.getenv("ML_ENABLED", "false").lower() == "true"
+        ml_model_path = os.getenv("ML_MODEL_PATH", "data/ml_models/volatility_scorer_v3.pkl")
+        ml_threshold = float(os.getenv("ML_THRESHOLD", "0.5"))
+        if not 0 <= ml_threshold <= 1.0:
+            raise RuntimeError("ML_THRESHOLD must be between 0 and 1")
+        ml_weight = float(os.getenv("ML_WEIGHT", "0.6"))
+        if not 0 <= ml_weight <= 1.0:
+            raise RuntimeError("ML_WEIGHT must be between 0 and 1")
         return cls(
             host=os.getenv("FUTU_HOST", "127.0.0.1"),
             port=int(os.getenv("FUTU_PORT", "11111")),
@@ -617,6 +629,10 @@ class Settings:
             core_satellite_symbols=core_symbols,
             gamma_symbols=gamma_symbols,
             volatility_symbols=volatility_symbols,
+            ml_enabled=ml_enabled,
+            ml_model_path=ml_model_path,
+            ml_threshold=ml_threshold,
+            ml_weight=ml_weight,
         )
 
     def quantity_for(self, symbol: str) -> int:

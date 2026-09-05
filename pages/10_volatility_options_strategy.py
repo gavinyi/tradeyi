@@ -604,6 +604,24 @@ with config_tab:
             step=0.5,
             help="强信号自动缩短到最多1分钟，完整确认信号最多2.5分钟，边缘信号使用这里的基准值。",
         )
+        stability_left, stability_middle, stability_right = st.columns(3)
+        entry_confirmation_min_volume_ratio = stability_left.number_input(
+            "入场稳定最低量比", 0.0, 5.0,
+            value=setting_float("volatility_default_entry_confirmation_min_volume_ratio", 0.80),
+            step=0.05,
+            help="二次确认结束时仍需达到的最低量比。用于过滤冲高后量能快速衰减的尾端单。",
+        )
+        entry_confirmation_min_volume_retention = stability_middle.number_input(
+            "入场量能保持率", 0.0, 1.0,
+            value=setting_float("volatility_default_entry_confirmation_min_volume_retention", 0.65),
+            step=0.05,
+            help="当前量比 / 信号刚触发时量比。低于该比例说明行情没有持续跟进，暂不入场。",
+        )
+        entry_confirmation_require_active = stability_right.toggle(
+            "确认时必须仍处于动态波动",
+            value=setting_bool("volatility_default_entry_confirmation_require_active", True),
+            help="开启后，二次确认结束时动态波动状态已经失效则不再开仓。",
+        )
         profit_protection_start = exit_left.number_input(
             "盈利保护启动阈值", 0.01, 2.0,
             value=setting_float("volatility_default_profit_protection_start", 0.15),
@@ -731,6 +749,9 @@ with config_tab:
         "adverse_signal_confirmations_required": int(adverse_confirmations),
         "adverse_exit_minimum_hold_minutes": int(adverse_exit_hold),
         "entry_confirmation_minutes": float(entry_confirmation_minutes),
+        "entry_confirmation_min_volume_ratio": float(entry_confirmation_min_volume_ratio),
+        "entry_confirmation_min_volume_retention": float(entry_confirmation_min_volume_retention),
+        "entry_confirmation_require_active": bool(entry_confirmation_require_active),
         "profit_protection_start": float(profit_protection_start),
         "profit_protection_drawdown": float(profit_protection_drawdown),
         "minimum_locked_profit": float(minimum_locked_profit),
@@ -774,6 +795,9 @@ with config_tab:
         "volatility_default_adverse_signal_confirmations_required": int(adverse_confirmations),
         "volatility_default_adverse_exit_minimum_hold_minutes": int(adverse_exit_hold),
         "volatility_default_entry_confirmation_minutes": float(entry_confirmation_minutes),
+        "volatility_default_entry_confirmation_min_volume_ratio": float(entry_confirmation_min_volume_ratio),
+        "volatility_default_entry_confirmation_min_volume_retention": float(entry_confirmation_min_volume_retention),
+        "volatility_default_entry_confirmation_require_active": str(bool(entry_confirmation_require_active)).lower(),
         "volatility_default_profit_protection_start": float(profit_protection_start),
         "volatility_default_profit_protection_drawdown": float(profit_protection_drawdown),
         "volatility_default_minimum_locked_profit": float(minimum_locked_profit),
@@ -814,7 +838,7 @@ with config_tab:
         )
         st.markdown(
             "当前会保存以下参数："
-            "`独立平仓参数`、`按信号强度分层保护`、"
+            "`独立平仓参数`、`入场稳定性确认`、`按信号强度分层保护`、"
             "`分批止盈参数`、`按退出原因冷却`。"
         )
         save_default_col, apply_existing_col = st.columns(2)

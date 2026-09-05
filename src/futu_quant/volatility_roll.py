@@ -23,7 +23,7 @@ MAINTAIN_SCORE_IMPROVEMENT = 8.0
 def _roll_diagnostics(candidates: pd.DataFrame, regime: dict, message: str) -> dict:
     top = []
     for _, row in candidates.head(5).iterrows():
-        top.append({
+        entry = {
             "code": str(row.get("code", "")),
             "eligible": bool(row.get("volatility_eligible", False)),
             "reason": str(row.get("volatility_filter_reason", "")),
@@ -32,7 +32,14 @@ def _roll_diagnostics(candidates: pd.DataFrame, regime: dict, message: str) -> d
             "iv_rv_limit": float(row.get("iv_rv_limit", 0) or 0),
             "premium": float(row.get("premium_per_stage", 0) or 0),
             "expected_return": float(row.get("model_expected_return", 0) or 0),
-        })
+        }
+        if "ml_score" in row and pd.notna(row.get("ml_score")):
+            entry["ml_score"] = float(row["ml_score"])
+        if "ml_rank" in row and pd.notna(row.get("ml_rank")):
+            entry["ml_rank"] = str(row["ml_rank"])
+        if "ml_adjusted_score" in row and pd.notna(row.get("ml_adjusted_score")):
+            entry["ml_adjusted_score"] = float(row["ml_adjusted_score"])
+        top.append(entry)
     return {
         "message": message,
         "risk_tier": (
@@ -177,6 +184,8 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         if top_reason:
             message += f"；最高分候选：{top_reason}"
         return _with_diagnostics(campaign, candidates, regime, message)
+    # ML 评分重排序（可选增强：AUC 0.76 的标的选择模型）
+    eligible = _apply_ml_ranking(eligible, store)
     selected = eligible.iloc[0]
     selected_code = str(selected.get("code", ""))
     if parse_option_code(selected_code) is None:
@@ -255,6 +264,12 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         "base_premium_budget": float(campaign.get("max_premium_per_stage", 1000)),
         "effective_premium_budget": premium_budget,
     })
+    # ML 评分写入活动（供审计与后续参考）
+    if pd.notna(selected.get("ml_score")):
+        updated["ml_score"] = float(selected["ml_score"])
+        updated["ml_rank"] = str(selected.get("ml_rank", "NA"))
+        if pd.notna(selected.get("ml_adjusted_score")):
+            updated["ml_adjusted_score"] = float(selected["ml_adjusted_score"])
     if float(selected.get("iv_rv_limit", 1.5)) > 1.5:
         # Relaxed entries are deliberately capped at one contract and one stage.
         updated["contracts_per_stage"] = 1
@@ -275,3 +290,87 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     return updated, (
         f"已自动滚动到 {updated['code']}（{updated['structure_label']}）；{direction_reason}"
     )
+
+
+def _apply_ml_ranking(structures: pd.DataFrame, store) -> pd.DataFrame:
+    """
+    用ML模型对合格结构做评分加权排序（可选增强）。
+    
+    - ML 未启用/模型缺失/评分失败时：原样返回，绝不影响主流程。
+    - 启用时：为每个结构的主买入腿计算 ML 盈利概率，
+      并生成 ml_adjusted_score = 质量分 + ML_WEIGHT*(ml_score-0.5)*10，
+      即在质量分相近时（±约 ML_WEIGHT*5 分）由 ML 分数决定优先序。
+    - 返回的 DataFrame 增加 ml_score / ml_rank / ml_adjusted_score 三列，
+      排序按 ml_adjusted_score 降序，供审计诊断。
+    """
+    if structures is None or structures.empty:
+        return structures
+    try:
+        from .ml_symbol_scorer import MLSymbolScorer
+        scorer = MLSymbolScorer()
+        if not scorer.enabled:
+            return structures
+    except Exception as e:  # noqa: BLE001
+        # 模型加载失败不能阻断策略主流程
+        try:
+            import logging
+            logging.getLogger(__name__).warning(
+                "ML评分器不可用，跳过ML重排序: %s", e
+            )
+        except Exception:
+            pass
+        return structures
+
+    # ML_WEIGHT 控制调整幅度（0=不调整，与原始排序一致）
+    try:
+        import os
+        ml_weight = float(os.getenv("ML_WEIGHT", "0.6"))
+    except Exception:  # noqa: BLE001
+        ml_weight = 0.6
+
+    def _main_leg_code(row) -> str:
+        legs = list(row.get("legs") or [])
+        for leg in legs:
+            if str(leg.get("side", "")).upper() == "BUY":
+                code = str(leg.get("code", ""))
+                if parse_option_code(code) is not None:
+                    return code
+        for leg in legs:
+            code = str(leg.get("code", ""))
+            if parse_option_code(code) is not None:
+                return code
+        return str(row.get("code", ""))
+
+    result = structures.copy()
+    scores = []
+    for _, row in result.iterrows():
+        code = _main_leg_code(row)
+        if not code:
+            scores.append(None)
+            continue
+        try:
+            s = scorer.score_symbol(code, None, store)
+            scores.append(s)
+        except Exception:  # noqa: BLE001
+            scores.append(None)
+    result["ml_score"] = scores
+    result["ml_rank"] = [
+        ("HIGH" if s is not None and s >= 0.7
+         else "MEDIUM" if s is not None and s >= 0.5
+         else "LOW" if s is not None else "NA")
+        for s in scores
+    ]
+    # 加权调整分：质量分主导，ML 分数在 ±ml_weight*5 分容差内调整优先序
+    def _adjusted(row):
+        q = float(row.get("volatility_quality_score", 0) or 0)
+        m = row.get("ml_score")
+        if m is None:
+            return q
+        return q + float(ml_weight) * (float(m) - 0.5) * 10.0
+
+    result["ml_adjusted_score"] = [_adjusted(row) for _, row in result.iterrows()]
+    # 排序：调整分降序
+    result = result.sort_values(
+        "ml_adjusted_score", ascending=False, na_position="last"
+    ).reset_index(drop=True)
+    return result

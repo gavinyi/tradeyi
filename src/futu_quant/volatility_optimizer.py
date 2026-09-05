@@ -155,6 +155,10 @@ def volatility_entry_confirmation(
     signal_started_at: str | None,
     regime: dict[str, object],
     confirmation_minutes: float = 5,
+    signal_start_volume_ratio: float | None = None,
+    minimum_volume_ratio: float = 0.80,
+    minimum_volume_retention: float = 0.65,
+    require_active: bool = True,
 ) -> tuple[bool, str]:
     """Require a short persistence check before opening a new long-gamma trade.
 
@@ -163,8 +167,28 @@ def volatility_entry_confirmation(
     until the dynamic signal has survived one short confirmation window.
     """
     configured_minutes = max(0.0, float(confirmation_minutes or 0))
-    if not bool(regime.get("active")):
+    if require_active and not bool(regime.get("active")):
         return False, f"动态波动状态未激活：{regime.get('reason', '')}"
+    if "volume_ratio" in regime:
+        current_volume = float(regime.get("volume_ratio", 0) or 0)
+        minimum_volume_ratio = max(0.0, float(minimum_volume_ratio or 0))
+        if current_volume < minimum_volume_ratio:
+            return (
+                False,
+                "等待入场稳定性确认："
+                f"当前量比 {current_volume:.2f} 低于最低 {minimum_volume_ratio:.2f}",
+            )
+        if signal_start_volume_ratio is not None:
+            start_volume = max(0.0, float(signal_start_volume_ratio or 0))
+            retention = max(0.0, min(1.0, float(minimum_volume_retention or 0)))
+            retained = current_volume / start_volume if start_volume > 0 else 1.0
+            if start_volume > 0 and retained < retention:
+                return (
+                    False,
+                    "等待入场稳定性确认："
+                    f"量能保持率 {retained:.0%} 低于 {retention:.0%}，"
+                    f"起点量比 {start_volume:.2f}，当前量比 {current_volume:.2f}",
+                )
     strong = bool(
         regime.get("strong_signal_override")
         and regime.get("trigger_confirmed")

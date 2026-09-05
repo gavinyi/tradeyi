@@ -1,0 +1,26 @@
+{
+  "auc": 0.7648902821316614,
+  "test_size": 62,
+  "train_size": 207,
+  "n_features": 16,
+  "feature_cols": [
+    "days_to_expiry",
+    "is_call",
+    "strike_price",
+    "expiry_bucket",
+    "symbol_avg_pnl",
+    "symbol_std_pnl",
+    "symbol_max_pnl",
+    "symbol_min_pnl",
+    "symbol_win_rate",
+    "symbol_3d_avg_pnl",
+    "symbol_7d_avg_pnl",
+    "symbol_trade_count",
+    "symbol_pnl_trend",
+    "day_of_week",
+    "hour_of_day",
+    "is_market_close"
+  ],
+  "model_type": "auto",
+  "positive_rate": 0.5326797385620915
+}

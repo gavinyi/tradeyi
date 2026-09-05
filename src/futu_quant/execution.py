@@ -288,7 +288,12 @@ class ExecutionManager:
                 current = float(intent["limit_price"])
                 target = min(ask, current * (1 + step)) if intent["side"] == "BUY" else max(bid, current * (1 - step))
                 reference = float(metadata.get("reference_price", current))
-                slip = float(os.getenv("EXEC_MAX_SLIPPAGE_PCT", "0.01"))
+                slip = float(os.getenv(
+                    "EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT"
+                    if metadata.get("urgent") else
+                    "EXEC_MAX_SLIPPAGE_PCT",
+                    "0.12" if metadata.get("urgent") else "0.01",
+                ))
                 if intent["side"] == "BUY":
                     target = min(target, reference * (1 + slip))
                 else:

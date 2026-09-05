@@ -14,6 +14,7 @@ import futu_quant.radar_control as radar_control
 import futu_quant.service_control as service_control
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import run_service  # noqa: E402
 from run_service import run_task  # noqa: E402
 
 
@@ -121,6 +122,102 @@ def test_opend_task_failure_is_degraded_not_strategy_error(tmp_path: Path):
     assert heartbeat["status"] == "DEGRADED"
     assert any(row["event_type"] == "OPEND_UNAVAILABLE" for row in alerts)
     assert not any(row["event_type"] == "STRATEGY_ERROR" for row in alerts)
+
+
+def test_critical_opend_failure_does_not_restart_service_process(
+    tmp_path: Path, monkeypatch,
+):
+    store = TradingStore(tmp_path / "opend-self-heal.db")
+    restart_file = tmp_path / "trading-service.restart"
+    stop_file = tmp_path / "trading-service.stop"
+    log_file = tmp_path / "service.log"
+    launches = []
+
+    class Process:
+        pass
+
+    monkeypatch.setattr(run_service, "RESTART_FILE", restart_file)
+    monkeypatch.setattr(run_service, "STOP_FILE", stop_file)
+    monkeypatch.setattr(run_service, "LOG_FILE", log_file)
+    monkeypatch.setattr(run_service, "STOP_EVENT", run_service.threading.Event())
+    monkeypatch.setattr(run_service.subprocess, "Popen", lambda *args, **kwargs: launches.append(args) or Process())
+
+    result = run_task(
+        store,
+        AlertManager(store),
+        "volatility_long_gamma",
+        lambda: (_ for _ in ()).throw(BrokerError("snapshots failed: Connect timeout")),
+    )
+
+    assert result is False
+    assert not restart_file.exists()
+    assert not stop_file.exists()
+    assert store.get_setting("opend_consecutive_failures") == "1"
+    assert launches == []
+
+
+def test_opend_app_restart_requires_store_and_env_opt_in(tmp_path: Path, monkeypatch):
+    store = TradingStore(tmp_path / "opend-app-restart.db")
+    alerts = AlertManager(store)
+    calls = []
+
+    monkeypatch.setenv("FUTU_OPEND_AUTO_RESTART", "true")
+    monkeypatch.setattr(run_service.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+
+    result = run_service.maybe_restart_opend(
+        store, alerts, "snapshots failed: Connect timeout", run_service.datetime.now(run_service.NY)
+    )
+
+    assert result is False
+    assert calls == []
+    store.set_setting("futu_opend_auto_restart", "true")
+    monkeypatch.setenv("FUTU_OPEND_AUTO_RESTART", "false")
+
+    result = run_service.maybe_restart_opend(
+        store, alerts, "snapshots failed: Connect timeout", run_service.datetime.now(run_service.NY)
+    )
+
+    assert result is False
+    assert calls == []
+
+
+def test_critical_broker_success_clears_opend_failure_counter(tmp_path: Path):
+    store = TradingStore(tmp_path / "opend-recovered.db")
+    store.set_setting("opend_consecutive_failures", "3")
+
+    result = run_task(
+        store, AlertManager(store), "order_reconciliation", lambda: None,
+    )
+
+    assert result is True
+    assert store.get_setting("opend_consecutive_failures") == "0"
+
+
+def test_sdk_preflight_timeout_records_broker_failure_without_hanging(
+    tmp_path: Path, monkeypatch,
+):
+    store = TradingStore(tmp_path / "preflight.db")
+    alerts = AlertManager(store)
+    settings = SimpleNamespace()
+
+    monkeypatch.setenv("FUTU_SERVICE_RESTART_ON_OPEND_FAILURES", "99")
+    monkeypatch.setenv("FUTU_SDK_PREFLIGHT_TIMEOUT_SECONDS", "3")
+    monkeypatch.setattr(
+        run_service.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            run_service.subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 3))
+        ),
+    )
+
+    ok = run_service.futu_sdk_preflight(store, alerts, settings, force=True)
+
+    heartbeat = next(
+        row for row in store.heartbeats() if row["strategy_id"] == "trading_service"
+    )
+    assert ok is False
+    assert heartbeat["status"] == "DEGRADED"
+    assert store.get_setting("opend_consecutive_failures") == "1"
 
 
 def test_broker_sets_bounded_sync_connect_timeout(monkeypatch):

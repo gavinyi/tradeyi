@@ -283,9 +283,9 @@ Gamma 活动；方向和具体期权合约仍必须人工选择。管理员登�
 Webhook 可通过 `ALERT_WEBHOOK_SECRET` 添加 HMAC-SHA256 签名。
 
 macOS 自动恢复模板位于 `deploy/com.futu.paperquant.plist.example`。确认路径后复制到
-`~/Library/LaunchAgents/com.futu.paperquant.plist` 并使用 `launchctl bootstrap` 注册；模板设置了
-`RunAtLoad` 和异常退出自动恢复：登录或重启后会启动统一服务，异常崩溃会自动重启，管理员正常
-停止则保持停止。`deploy/com.futu.opend.plist.example` 用于登录后自动打开 Futu OpenD；统一服务
+`~/Library/LaunchAgents/com.futu.paperquant.plist` 并使用 `launchctl bootstrap` 注册；模板默认关闭
+`RunAtLoad`，只在管理员手动启动统一服务后托管异常退出恢复，管理员正常停止则保持停止。
+`deploy/com.futu.opend.plist.example` 用于登录后自动打开 Futu OpenD；统一服务
 会持续退避等待 11111 端口恢复，并在启动时自动拉起独立波动率雷达。单实例锁仍会拒绝第二个交易进程。
 
 ## 事件驱动执行与持续验证

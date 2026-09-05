@@ -99,6 +99,37 @@ def test_report_exposes_signal_without_intent_and_core_risk_rejection():
     assert report["metrics"]["触发标的"] == 1
     assert report["metrics"]["生成自动策略"] == 1
     assert "单笔名义金额超限" in report["blockers"]["未下单原因"].tolist()
+    assert "买卖信号未提交订单" in aapl["最终原因"]
+    assert "缺少可用限价" in aapl["最终原因"]
+
+
+class ZeroQuantitySignalStore(FakeStore):
+    def decisions(self, limit=20_000):
+        return [{
+            "strategy_id": "volatility_long_gamma",
+            "symbol": "US.META260807P550000",
+            "decision": "SELL",
+            "reason": "硬止损退出",
+            "payload_json": '{"planned_order_quantity":0,"pnl_ratio":-0.31}',
+            "created_at": "2026-07-20T16:30:00+00:00",
+        }]
+
+    def intents(self, limit=10_000):
+        return []
+
+    def audit_events(self, limit=20_000):
+        return []
+
+
+def test_signal_without_intent_explains_zero_quantity_breakpoint():
+    report = build_diagnostic_report(
+        ZeroQuantitySignalStore(), diagnostic_window(date(2026, 7, 20)),
+    )
+    row = report["summary"].iloc[0]
+
+    assert row["最终结果"] == "未形成订单"
+    assert "计划下单数量为 0" in row["最终原因"]
+    assert "计划下单数量为0" in report["blockers"]["未下单原因"].tolist()
 
 
 def test_timeline_and_download_report_are_human_readable():

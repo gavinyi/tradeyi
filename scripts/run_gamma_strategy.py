@@ -180,6 +180,89 @@ def volatility_exit_close_legs(
     return list(legs), None
 
 
+def volatility_near_expiry_itm_exit_reason(
+    campaign: dict,
+    code: str,
+    *,
+    now: datetime,
+    underlying_price: float,
+    quantity: int,
+) -> str | None:
+    """Force earlier exits for near-expiry in-the-money long options.
+
+    Long ITM options close to expiration carry exercise/assignment and liquidity
+    risk that is not captured by ordinary PnL stops. Treat this as a lifecycle
+    invariant: if a volatility option is still held and is ITM within the
+    configured DTE window, exit before waiting for the generic expiry cutoff.
+    """
+    if campaign.get("trigger_mode") != "VOLATILITY" or quantity <= 0:
+        return None
+    contract = parse_option_code(code)
+    if contract is None:
+        return None
+    dte = (contract.expiration - now.date()).days
+    exit_days = int(campaign.get("near_expiry_itm_exit_days", 1))
+    if dte < 0 or dte > exit_days:
+        return None
+    intrinsic = (
+        max(0.0, underlying_price - contract.strike)
+        if contract.option_type == "CALL"
+        else max(0.0, contract.strike - underlying_price)
+    )
+    min_intrinsic = float(campaign.get("near_expiry_itm_min_intrinsic", 0.01))
+    if intrinsic < min_intrinsic:
+        return None
+    return (
+        f"临近到期价内合约强制提前退出：剩余 {dte} 天，"
+        f"{contract.option_type} 行权价 ${contract.strike:.2f}，"
+        f"正股 ${underlying_price:.2f}，内在价值 ${intrinsic:.2f}"
+    )
+
+
+def volatility_exit_limit_price(
+    quote: pd.Series,
+    side: str,
+    *,
+    urgent: bool,
+    campaign: dict | None = None,
+) -> tuple[float, dict]:
+    """Choose explicit exit prices for normal and urgent option closes."""
+    campaign = campaign or {}
+    bid = float(quote.get("bid_price", 0) or 0)
+    ask = float(quote.get("ask_price", 0) or 0)
+    last = float(quote.get("last_price", 0) or 0)
+    side = side.upper()
+    reference = ask if side == "BUY" else bid
+    if reference <= 0:
+        reference = last
+    adjustment = 0.0
+    if urgent and reference > 0:
+        adjustment = max(
+            0.0,
+            float(campaign.get(
+                "urgent_exit_price_improvement_pct",
+                campaign.get("urgent_exit_chase_pct", 0.02),
+            )),
+        )
+        if side == "SELL":
+            reference *= max(0.0, 1 - adjustment)
+        else:
+            reference *= 1 + adjustment
+    price = round(max(0.01, reference), 2) if reference > 0 else 0.0
+    return price, {
+        "bid_price": bid,
+        "ask_price": ask,
+        "last_price": last,
+        "urgent_exit": urgent,
+        "urgent_exit_price_improvement_pct": adjustment,
+        "exit_limit_rule": (
+            "紧急退出：卖出按买一主动降价，买回按卖一主动加价"
+            if urgent else
+            "普通退出：卖出按买一，买回按卖一"
+        ),
+    }
+
+
 def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
@@ -358,9 +441,7 @@ def run_campaign(
     )
     entry_book_blocked = not quote_check["book_ok"] and quantity <= 0
     entry_data_blocked = quote_stale and quantity <= 0
-    exit_data_blocked = quantity > 0 and (
-        not quote_check["underlying_fresh"] or not quote_check["book_ok"]
-    )
+    exit_data_blocked = quantity > 0 and not quote_check["underlying_fresh"]
     if entry_data_blocked or exit_data_blocked or entry_book_blocked:
         reason = (
             "行情/盘口检查未通过："
@@ -471,10 +552,14 @@ def run_campaign(
         if regime["active"]:
             if not was_regime_active or not campaign_state.get("signal_started_at"):
                 campaign_state["signal_started_at"] = now.isoformat()
+                campaign_state["signal_start_volume_ratio"] = float(
+                    regime.get("volume_ratio", 0) or 0
+                )
             campaign_state["signal_active"] = True
         elif float(regime["zscore_20d"]) < 1.2:
             campaign_state["signal_active"] = False
             campaign_state.pop("signal_started_at", None)
+            campaign_state.pop("signal_start_volume_ratio", None)
         campaign_state["regime_was_active"] = bool(regime["active"])
         signal_started_at = campaign_state.get("signal_started_at")
         event_time = (
@@ -508,6 +593,18 @@ def run_campaign(
                 confirmation_minutes=float(
                     campaign.get("entry_confirmation_minutes", 5)
                 ),
+                signal_start_volume_ratio=campaign_state.get(
+                    "signal_start_volume_ratio"
+                ),
+                minimum_volume_ratio=float(
+                    campaign.get("entry_confirmation_min_volume_ratio", 0.80)
+                ),
+                minimum_volume_retention=float(
+                    campaign.get("entry_confirmation_min_volume_retention", 0.65)
+                ),
+                require_active=bool(
+                    campaign.get("entry_confirmation_require_active", True)
+                ),
             )
             direction_reason = f"{direction_reason}；{confirmation_reason}"
             if not entry_confirmed:
@@ -531,6 +628,9 @@ def run_campaign(
                         "direction_metrics": direction_metrics,
                         "volatility_regime": regime,
                         "signal_started_at": campaign_state.get("signal_started_at"),
+                        "signal_start_volume_ratio": campaign_state.get(
+                            "signal_start_volume_ratio"
+                        ),
                     },
                     repeat_after_seconds=300,
                 )
@@ -740,7 +840,15 @@ def run_campaign(
             partial_exit_tier = None
             action, reason = "SELL", hard_loss_reason
         expiry = campaign_expiry_date(campaign, code, now)
-        if now.date() > expiry or (now.date() == expiry and now.hour >= 15):
+        lifecycle_reason = volatility_near_expiry_itm_exit_reason(
+            campaign, code, now=now, underlying_price=float(owner["last_price"] or 0),
+            quantity=quantity,
+        )
+        if lifecycle_reason:
+            partial_exit_quantity = 0
+            partial_exit_tier = None
+            action, reason = "SELL", lifecycle_reason
+        elif now.date() > expiry or (now.date() == expiry and now.hour >= 15):
             action, reason = "SELL", "合约到期日临近收盘，强制退出以避免自动行权"
     print(f"{code}: {action} ({reason}) qty={quantity} pnl={pnl_ratio:.2%}")
     planned_order_quantity = (
@@ -773,6 +881,9 @@ def run_campaign(
                 "effective_premium_budget", campaign.get("max_premium_per_stage")
             ),
             "signal_started_at": campaign_state.get("signal_started_at"),
+            "signal_start_volume_ratio": campaign_state.get(
+                "signal_start_volume_ratio"
+            ),
             "entry_window_end": event_time.isoformat(),
             "position_opened_at": campaign_state.get("position_opened_at"),
             "peak_pnl_ratio": peak_pnl_ratio,
@@ -1006,21 +1117,6 @@ def run_campaign(
             )
             print(result)
     elif action == "SELL" and quantity > 0:
-        if bid <= 0:
-            reason = f"等待可卖出盘口：买一 {bid:.2f} 不可用，下一轮继续刷新尝试退出"
-            executor.store.decision(strategy_id, code, "HOLD", reason, {
-                **decision_payload,
-                "market_data_status": "WAITING_EXIT_LIQUIDITY",
-                "book_reason": reason,
-                "planned_order_quantity": int(planned_order_quantity or quantity),
-            })
-            executor.store.audit("OPTION_EXIT_WAITING_FOR_BID", {
-                "symbol": code, "strategy_id": strategy_id, "reason": reason,
-                "position_quantity": quantity,
-                "planned_order_quantity": int(planned_order_quantity or quantity),
-            }, strategy_id)
-            print(f"{code}: HOLD ({reason})")
-            return
         close_legs, close_route = volatility_exit_close_legs(campaign, code, legs)
         if close_route == "EXIT_ONLY":
             executor.store.audit("VOLATILITY_EXIT_ONLY_SINGLE_LEG_CLOSE", {
@@ -1065,7 +1161,37 @@ def run_campaign(
             opening_side = str(leg["side"]).upper()
             closing_side = "SELL" if opening_side == "BUY" else "BUY"
             leg_quote = leg_quotes.loc[leg["code"]]
-            leg_price = float(leg_quote["bid_price"] if closing_side == "SELL" else leg_quote["ask_price"])
+            urgent_exit = bool(
+                "止损" in str(reason)
+                or "强制" in str(reason)
+                or "到期" in str(reason)
+                or "盈利保护" in str(reason)
+                or "回撤" in str(reason)
+            )
+            leg_price, exit_price_context = volatility_exit_limit_price(
+                leg_quote, closing_side, urgent=urgent_exit, campaign=campaign,
+            )
+            if leg_price <= 0:
+                wait_reason = (
+                    f"等待可退出盘口：{leg['code']} "
+                    f"{closing_side} 可用限价为 0，下一轮继续刷新尝试退出"
+                )
+                executor.store.decision(strategy_id, code, "HOLD", wait_reason, {
+                    **decision_payload,
+                    "market_data_status": "WAITING_EXIT_LIQUIDITY",
+                    "book_reason": wait_reason,
+                    "planned_order_quantity": exit_quantity,
+                    "exit_price_context": exit_price_context,
+                })
+                executor.store.audit("OPTION_EXIT_WAITING_FOR_LIMIT_PRICE", {
+                    "symbol": leg["code"], "strategy_id": strategy_id,
+                    "reason": wait_reason,
+                    "position_quantity": quantity,
+                    "planned_order_quantity": exit_quantity,
+                    "exit_price_context": exit_price_context,
+                }, strategy_id)
+                print(f"{code}: HOLD ({wait_reason})")
+                return
             result = executor.submit_limit(
                 strategy_id,
                 f"{campaign['event_date']}:{campaign.get('campaign_id', code)}"
@@ -1074,7 +1200,8 @@ def run_campaign(
                 {"multiplier": float(leg_quote.get("option_contract_multiplier", 100)),
                  "reason": reason, "urgent": True, "structure": campaign.get("structure"),
                  "combo_primary": code, "partial_exit_tier": partial_exit_tier,
-                 "planned_order_quantity": exit_quantity},
+                 "planned_order_quantity": exit_quantity,
+                 **exit_price_context},
             )
             print(result)
             if trigger_mode == "VOLATILITY" and result.status in {

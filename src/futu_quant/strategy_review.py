@@ -6,6 +6,12 @@ import json
 import pandas as pd
 
 from .option_lifecycle import parse_option_code
+from .strategy_quality import (
+    build_action_items,
+    build_evidence_alignment,
+    build_option_lifecycle_frame,
+    build_trade_quality_scores,
+)
 from .trade_diagnostics import DiagnosticWindow, build_diagnostic_report
 
 
@@ -20,6 +26,10 @@ class StrategyReview:
     orders: pd.DataFrame
     blockers: pd.DataFrame
     option_pnl_breakdown: pd.DataFrame
+    option_lifecycle: pd.DataFrame
+    quality_scores: pd.DataFrame
+    action_items: pd.DataFrame
+    evidence_alignment: pd.DataFrame
     option_quality: pd.DataFrame
     core_quality: pd.DataFrame
     runtime_health: pd.DataFrame
@@ -38,6 +48,47 @@ def _json(value: object) -> dict:
 def _within(row: dict, window: DiagnosticWindow, column: str = "created_at") -> bool:
     value = str(row.get(column, ""))
     return bool(value and window.start_iso <= value <= window.end_iso)
+
+
+OPTION_METRIC_KEYS = {
+    "pnl_ratio",
+    "position_pnl_amount",
+    "drawdown",
+    "peak_pnl_ratio",
+    "mfe_pnl_ratio",
+    "profit_capture_ratio",
+    "profit_giveback",
+    "executable_mark",
+    "tiered_profit_lock_floor",
+    "tiered_profit_lock_label",
+    "profit_protection_profile",
+    "position_quantity",
+}
+
+
+def _decision_sort_key(row: dict) -> tuple[str, int]:
+    return str(row.get("created_at") or ""), int(row.get("id") or 0)
+
+
+def _has_option_metrics(row: dict) -> bool:
+    payload = _json(row.get("payload_json"))
+    return any(key in payload for key in OPTION_METRIC_KEYS)
+
+
+def _split_blockers(blockers: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Keep expired cleanup residue visible without treating it as strategy blockage."""
+    if blockers.empty or "未下单原因" not in blockers.columns:
+        empty = blockers.copy()
+        return empty, pd.DataFrame(), empty
+    result = blockers.copy()
+    cleanup_mask = result["未下单原因"].astype(str).eq("到期/失效清理项")
+    result["处理类型"] = cleanup_mask.map({
+        True: "到期/失效清理项",
+        False: "交易阻塞",
+    })
+    trading = result[~cleanup_mask].reset_index(drop=True)
+    cleanup = result[cleanup_mask].reset_index(drop=True)
+    return trading, cleanup, result.reset_index(drop=True)
 
 
 TASK_LABELS = {
@@ -119,14 +170,26 @@ def _option_quality(decisions: list[dict], fills: list[dict]) -> pd.DataFrame:
             item["sell_amt"] += qty * price
 
     latest: dict[str, dict] = {}
-    for row in decisions:
-        if row.get("strategy_id") == "volatility_long_gamma" and row.get("symbol"):
-            latest[str(row["symbol"])] = row
+    latest_with_metrics: dict[str, dict] = {}
+    for row in sorted(decisions, key=_decision_sort_key):
+        if row.get("strategy_id") != "volatility_long_gamma" or not row.get("symbol"):
+            continue
+        symbol = str(row["symbol"])
+        latest[symbol] = row
+        if _has_option_metrics(row):
+            latest_with_metrics[symbol] = row
 
     rows = []
     for symbol, decision in sorted(latest.items()):
-        payload = _json(decision.get("payload_json"))
+        metric_decision = latest_with_metrics.get(symbol, decision)
+        payload = _json(metric_decision.get("payload_json"))
         fills_for_symbol = fill_map.get(symbol, {})
+        if (
+            not fills_for_symbol
+            and decision.get("decision") in {"BLOCKED", "CANDIDATE_BLOCKED"}
+            and "合约已于" in str(decision.get("reason") or "")
+        ):
+            continue
         buy_qty = fills_for_symbol.get("buy_qty", 0.0)
         sell_qty = fills_for_symbol.get("sell_qty", 0.0)
         net_qty = buy_qty - sell_qty
@@ -138,12 +201,18 @@ def _option_quality(decisions: list[dict], fills: list[dict]) -> pd.DataFrame:
         )
         profile = payload.get("profit_protection_profile") or {}
         peak_pnl = payload.get("mfe_pnl_ratio", payload.get("peak_pnl_ratio"))
+        current_quantity = net_qty if fills_for_symbol else payload.get("position_quantity", net_qty)
+        if abs(float(current_quantity or 0)) <= 1e-9:
+            current_quantity = 0.0
         rows.append({
             "代码": symbol,
             "最新动作": decision.get("decision"),
             "最新原因": decision.get("reason"),
-            "当前持仓": payload.get("position_quantity", net_qty),
+            "指标时间": metric_decision.get("created_at"),
+            "指标原因": metric_decision.get("reason"),
+            "当前持仓": current_quantity,
             "当前盈亏": payload.get("pnl_ratio"),
+            "当前盈亏金额": payload.get("position_pnl_amount"),
             "最大浮盈MFE": peak_pnl,
             "峰值盈利": peak_pnl,
             "浮盈捕获率": payload.get("profit_capture_ratio"),
@@ -322,10 +391,19 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
 
     orders = _orders_frame(intents)
     blockers = diagnostic["blockers"].copy()
+    trading_blockers, cleanup_blockers, blockers = _split_blockers(blockers)
     option_pnl_breakdown = _option_pnl_breakdown(fills)
     option_quality = _option_quality(decisions, fills)
     core_quality = _core_quality(intents)
     runtime_health = _runtime_health(store, window)
+    option_lifecycle = build_option_lifecycle_frame(option_pnl_breakdown, option_quality)
+    quality_scores = build_trade_quality_scores(
+        option_lifecycle, orders, trading_blockers, runtime_health,
+    )
+    action_items = build_action_items(
+        quality_scores, option_lifecycle, runtime_health, trading_blockers,
+    )
+    evidence_alignment = build_evidence_alignment(store, REVIEW_STRATEGIES)
 
     decision_counts = pd.DataFrame(decisions)
     if not decision_counts.empty:
@@ -336,6 +414,11 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
     blocked_count = int(decision_summary.xs("BLOCKED", level="decision").sum()) if (
         not decision_summary.empty and "BLOCKED" in decision_summary.index.get_level_values("decision")
     ) else 0
+    expired_cleanup_count = sum(
+        1 for row in decisions
+        if row.get("decision") in {"BLOCKED", "CANDIDATE_BLOCKED"}
+        and "合约已于" in str(row.get("reason") or "")
+    )
     realized_option_pnl = (
         float(option_pnl_breakdown["净盈亏"].sum()) if not option_pnl_breakdown.empty else 0.0
     )
@@ -352,6 +435,8 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         "订单数": len(intents),
         "成交订单": filled_orders,
         "阻断次数": blocked_count,
+        "交易阻塞类型数": len(trading_blockers),
+        "到期/失效清理项": expired_cleanup_count,
         "期权已实现盈亏": realized_option_pnl,
         "期权未平持仓": open_option_count,
         "Core调仓订单": len(core_quality),
@@ -373,6 +458,13 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         ),
         "平均浮盈捕获率": float(capture_values.mean()) if not capture_values.empty else 0.0,
         "低捕获合约数": int(capture_values.lt(.50).sum()) if not capture_values.empty else 0,
+        "高优先级行动项": (
+            int((action_items["优先级"] == "高").sum()) if not action_items.empty else 0
+        ),
+        "最低质量评分": (
+            int(pd.to_numeric(quality_scores["总评分"], errors="coerce").min())
+            if not quality_scores.empty else 100
+        ),
         "退化任务": (
             int(pd.to_numeric(runtime_health.get("退化/超时", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
             if not runtime_health.empty else 0
@@ -427,8 +519,24 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
             )
         if not winners.empty:
             narrative.append(f"盈利退出合约 {len(winners)} 个，说明自动退出链路能跑通。")
-    if not blockers.empty:
-        top = blockers.iloc[0]
+    if not quality_scores.empty:
+        worst_quality = quality_scores.iloc[0]
+        narrative.append(
+            f"质量评分最低的是 {worst_quality['对象']}，总分 {int(worst_quality['总评分'])}，"
+            f"主要短板是“{worst_quality['主要短板']}”。"
+        )
+    if not action_items.empty:
+        high_items = int((action_items["优先级"] == "高").sum())
+        if high_items:
+            narrative.append(f"复盘生成 {high_items} 个高优先级处理项，建议先处理再继续扩大交易。")
+    if not cleanup_blockers.empty:
+        count = int(pd.to_numeric(cleanup_blockers.get("次数", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+        narrative.append(
+            f"发现 {count} 条到期/失效残留记录，已从核心交易阻塞统计中剔除；"
+            "请让自动清理任务或页面清理入口处理。"
+        )
+    if not trading_blockers.empty:
+        top = trading_blockers.iloc[0]
         narrative.append(f"最大阻塞来源是“{top['未下单原因']}”，出现 {int(top['次数'])} 次。")
     if not core_quality.empty:
         buys = int((core_quality["方向"] == "买入").sum())
@@ -444,6 +552,10 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         orders=orders,
         blockers=blockers,
         option_pnl_breakdown=option_pnl_breakdown,
+        option_lifecycle=option_lifecycle,
+        quality_scores=quality_scores,
+        action_items=action_items,
+        evidence_alignment=evidence_alignment,
         option_quality=option_quality,
         core_quality=core_quality,
         runtime_health=runtime_health,
@@ -487,6 +599,22 @@ def review_markdown(review: StrategyReview) -> str:
         "## 期权盈亏拆解",
         "",
         table(review.option_pnl_breakdown),
+        "",
+        "## 期权交易生命周期",
+        "",
+        table(review.option_lifecycle),
+        "",
+        "## 策略质量评分",
+        "",
+        table(review.quality_scores),
+        "",
+        "## 行动项",
+        "",
+        table(review.action_items),
+        "",
+        "## 回测/前测证据对照",
+        "",
+        table(review.evidence_alignment),
         "",
         "## 波动率期权质量面板",
         "",

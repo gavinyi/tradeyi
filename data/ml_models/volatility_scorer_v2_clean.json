@@ -1,0 +1,55 @@
+{
+  "auc": 0.533769063180828,
+  "confusion_matrix": [
+    [
+      23,
+      4
+    ],
+    [
+      25,
+      9
+    ]
+  ],
+  "feature_importance": [
+    {
+      "feature": "hour_of_day",
+      "importance": 0.39539311986174636
+    },
+    {
+      "feature": "day_of_week",
+      "importance": 0.2865842863339485
+    },
+    {
+      "feature": "symbol_trade_count",
+      "importance": 0.15059280794131757
+    },
+    {
+      "feature": "symbol_max_pnl",
+      "importance": 0.039639646956700955
+    },
+    {
+      "feature": "symbol_avg_pnl",
+      "importance": 0.034798277250252016
+    },
+    {
+      "feature": "symbol_7d_avg_pnl",
+      "importance": 0.0339834313805445
+    },
+    {
+      "feature": "symbol_min_pnl",
+      "importance": 0.03134210131399284
+    },
+    {
+      "feature": "symbol_win_rate",
+      "importance": 0.027666328961497386
+    },
+    {
+      "feature": "quantity",
+      "importance": 0.0
+    },
+    {
+      "feature": "symbol_std_pnl",
+      "importance": 0.0
+    }
+  ]
+}

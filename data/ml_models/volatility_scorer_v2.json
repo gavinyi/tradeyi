@@ -1,0 +1,63 @@
+{
+  "auc": 0.5076252723311547,
+  "confusion_matrix": [
+    [
+      19,
+      8
+    ],
+    [
+      24,
+      10
+    ]
+  ],
+  "feature_importance": [
+    {
+      "feature": "average_fill_price",
+      "importance": 0.4265792714637206
+    },
+    {
+      "feature": "hour_of_day",
+      "importance": 0.20452422298688566
+    },
+    {
+      "feature": "day_of_week",
+      "importance": 0.16878273150464826
+    },
+    {
+      "feature": "symbol_trade_count",
+      "importance": 0.10138633349167024
+    },
+    {
+      "feature": "symbol_win_rate",
+      "importance": 0.02918561788695111
+    },
+    {
+      "feature": "symbol_min_pnl",
+      "importance": 0.0275821181628036
+    },
+    {
+      "feature": "symbol_avg_pnl",
+      "importance": 0.01974986347309755
+    },
+    {
+      "feature": "symbol_max_pnl",
+      "importance": 0.012208827540680313
+    },
+    {
+      "feature": "symbol_7d_avg_pnl",
+      "importance": 0.010001013489542755
+    },
+    {
+      "feature": "filled_quantity",
+      "importance": 0.0
+    },
+    {
+      "feature": "quantity",
+      "importance": 0.0
+    },
+    {
+      "feature": "symbol_std_pnl",
+      "importance": 0.0
+    }
+  ]
+}

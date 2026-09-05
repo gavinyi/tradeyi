@@ -186,6 +186,15 @@ def scan_volatility_watchlist(
                         "entry_confirmation_minutes": _setting_float(
                             store, "volatility_default_entry_confirmation_minutes", 5,
                         ),
+                        "entry_confirmation_min_volume_ratio": _setting_float(
+                            store, "volatility_default_entry_confirmation_min_volume_ratio", 0.80,
+                        ),
+                        "entry_confirmation_min_volume_retention": _setting_float(
+                            store, "volatility_default_entry_confirmation_min_volume_retention", 0.65,
+                        ),
+                        "entry_confirmation_require_active": _setting_bool(
+                            store, "volatility_default_entry_confirmation_require_active", True,
+                        ),
                         "profit_target": .5,
                         "stop_loss": _setting_float(
                             store, "volatility_default_stop_loss", .35,
