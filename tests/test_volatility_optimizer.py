@@ -10,6 +10,7 @@ from futu_quant.volatility_optimizer import (
     volatility_profit_protection_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
     volatility_profit_capture_ratio, volatility_profit_lock_floor,
+    volatility_time_decay_stop,
 )
 from futu_quant.volatility_roll import should_replace_campaign
 from datetime import datetime, timedelta, timezone
@@ -765,6 +766,51 @@ def test_volatility_hard_loss_reason_uses_usd_and_ratio_limits():
     assert reason is not None
     assert "$125.00" in reason
     assert "单笔硬止损" in reason
+
+
+def test_volatility_dynamic_time_stop_tightens_before_hard_stop():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+
+    threshold, held_minutes, reason = volatility_time_decay_stop(
+        pnl_ratio=-.16,
+        opened_at=now - timedelta(minutes=90),
+        now=now,
+        hard_stop_loss=.25,
+        floor_stop_loss=.12,
+        start_minutes=15,
+        full_decay_minutes=90,
+    )
+
+    assert held_minutes == 90
+    assert threshold == .12
+    assert reason is not None
+    assert "时间衰减动态止损" in reason
+
+
+def test_decide_volatility_action_uses_dynamic_time_stop():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    action, reason = decide_volatility_action(
+        now=now,
+        opened_at=now - timedelta(minutes=90),
+        quantity=1,
+        stages_filled=1,
+        max_stages=3,
+        pnl_ratio=-.16,
+        peak_pnl_ratio=0,
+        drawdown_from_peak=0,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=.50,
+        stop_loss=.25,
+        trailing_stop=.25,
+        max_hold_hours=24,
+        dynamic_stop_floor=.12,
+        dynamic_stop_start_minutes=15,
+        dynamic_stop_full_decay_minutes=90,
+    )
+
+    assert action == "SELL"
+    assert "时间衰减动态止损" in reason
 
 
 def test_single_contract_profit_take_exits_before_round_trip_giveback():

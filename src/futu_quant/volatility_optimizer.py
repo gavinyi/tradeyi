@@ -370,6 +370,46 @@ def volatility_hard_loss_exit_reason(
     return "单笔硬止损触发：" + "；".join(reasons)
 
 
+def volatility_time_decay_stop(
+    *,
+    pnl_ratio: float,
+    opened_at: datetime,
+    now: datetime,
+    hard_stop_loss: float = 0.25,
+    floor_stop_loss: float = 0.12,
+    start_minutes: float = 15,
+    full_decay_minutes: float = 90,
+    enabled: bool = True,
+) -> tuple[float, float, str | None]:
+    """Tighten loss tolerance as a long-gamma option ages.
+
+    Long option premium decays quickly.  A static 25% stop can be too slow for
+    weak intraday signals: after the trade has had enough time to work, the
+    allowed loss line gradually decays toward a lower floor.  Hard-stop remains
+    the final kill switch; this is an earlier risk reducer.
+    """
+    hard = max(0.0, float(hard_stop_loss or 0.0))
+    floor = max(0.0, min(hard, float(floor_stop_loss or 0.0)))
+    start = max(0.0, float(start_minutes or 0.0))
+    full = max(start + 1.0, float(full_decay_minutes or 0.0))
+    if not enabled or hard <= 0:
+        return hard, 0.0, None
+    held_minutes = max(0.0, (now - opened_at).total_seconds() / 60)
+    if held_minutes <= start:
+        threshold = hard
+    else:
+        progress = min(1.0, (held_minutes - start) / (full - start))
+        threshold = hard - (hard - floor) * progress
+    loss_ratio = max(0.0, -float(pnl_ratio or 0.0))
+    if floor > 0 and loss_ratio >= threshold:
+        return threshold, held_minutes, (
+            f"时间衰减动态止损触发：已持有{held_minutes:.0f}分钟，"
+            f"亏损比例{loss_ratio:.1%} ≥ 动态阈值{threshold:.1%}"
+            f"（硬止损{hard:.1%}，最低阈值{floor:.1%}）"
+        )
+    return threshold, held_minutes, None
+
+
 def volatility_min_expected_return(
     *, signal_active: bool = False, strong_signal: bool = False, store=None,
 ) -> float:
@@ -920,6 +960,10 @@ def decide_volatility_action(
     tiered_profit_lock_enabled: bool = True,
     time_tighten_minutes: float = 60,
     time_tighten_giveback: float = .12,
+    dynamic_stop_enabled: bool = True,
+    dynamic_stop_floor: float = .12,
+    dynamic_stop_start_minutes: float = 15,
+    dynamic_stop_full_decay_minutes: float = 90,
 ) -> tuple[str, str]:
     """Decide one volatility campaign action without earnings-event semantics."""
     if quantity <= 0:
@@ -928,6 +972,18 @@ def decide_volatility_action(
         return "HOLD", "动态波动或方向条件尚未确认"
     if pnl_ratio <= -stop_loss:
         return "SELL", "触发波动率策略硬止损"
+    _, _, dynamic_stop_reason = volatility_time_decay_stop(
+        pnl_ratio=pnl_ratio,
+        opened_at=opened_at,
+        now=now,
+        hard_stop_loss=stop_loss,
+        floor_stop_loss=dynamic_stop_floor,
+        start_minutes=dynamic_stop_start_minutes,
+        full_decay_minutes=dynamic_stop_full_decay_minutes,
+        enabled=dynamic_stop_enabled,
+    )
+    if dynamic_stop_reason:
+        return "SELL", dynamic_stop_reason
     if full_profit_target_enabled and pnl_ratio >= profit_target:
         return "SELL", "达到波动率策略止盈目标"
     protection_drawdown = (

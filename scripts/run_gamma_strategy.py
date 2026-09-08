@@ -817,6 +817,18 @@ def run_campaign(
                 time_tighten_giveback=float(
                     campaign.get("profit_time_tighten_giveback", .12)
                 ),
+                dynamic_stop_enabled=bool(
+                    campaign.get("dynamic_time_stop_enabled", True)
+                ),
+                dynamic_stop_floor=float(
+                    campaign.get("dynamic_time_stop_floor", .12)
+                ),
+                dynamic_stop_start_minutes=float(
+                    campaign.get("dynamic_time_stop_start_minutes", 15)
+                ),
+                dynamic_stop_full_decay_minutes=float(
+                    campaign.get("dynamic_time_stop_full_decay_minutes", 90)
+                ),
             )
     else:
         partial_exit_quantity = 0

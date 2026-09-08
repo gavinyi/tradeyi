@@ -257,6 +257,18 @@ def scan_volatility_watchlist(
                         "profit_time_tighten_giveback": _setting_float(
                             store, "volatility_default_profit_time_tighten_giveback", .12,
                         ),
+                        "dynamic_time_stop_enabled": _setting_bool(
+                            store, "volatility_default_dynamic_time_stop_enabled", True,
+                        ),
+                        "dynamic_time_stop_floor": _setting_float(
+                            store, "volatility_default_dynamic_time_stop_floor", .12,
+                        ),
+                        "dynamic_time_stop_start_minutes": _setting_float(
+                            store, "volatility_default_dynamic_time_stop_start_minutes", 15,
+                        ),
+                        "dynamic_time_stop_full_decay_minutes": _setting_float(
+                            store, "volatility_default_dynamic_time_stop_full_decay_minutes", 90,
+                        ),
                         "cooldown_take_profit_hours": 4,
                         "cooldown_profit_protection_hours": 8,
                         "cooldown_stop_loss_hours": 24,

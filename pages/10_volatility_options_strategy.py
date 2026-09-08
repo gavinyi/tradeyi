@@ -640,6 +640,30 @@ with config_tab:
             step=0.01,
             help="盈利保护启动后，如果当前盈利跌到这条线以下，直接退出，避免盈利单变亏损单。",
         )
+        dynamic_stop_enabled = st.toggle(
+            "启用时间衰减动态止损",
+            value=setting_bool("volatility_default_dynamic_time_stop_enabled", True),
+            help="亏损仓位持有越久，允许亏损线越低；用于避免长 Gamma 期权一路耗到硬止损才退出。",
+        )
+        dynamic_left, dynamic_middle, dynamic_right = st.columns(3)
+        dynamic_stop_floor = dynamic_left.number_input(
+            "动态止损最低阈值", 0.01, 1.0,
+            value=setting_float("volatility_default_dynamic_time_stop_floor", 0.12),
+            step=0.01,
+            help="动态止损最终收紧到这条亏损线。例：12% 表示持仓较久后亏损达到 12% 就可退出。",
+        )
+        dynamic_stop_start = dynamic_middle.number_input(
+            "开始衰减分钟", 0, 240,
+            value=setting_int("volatility_default_dynamic_time_stop_start_minutes", 15),
+            step=5,
+            help="开仓后先给策略一点反应时间；超过该时间才从硬止损线开始收紧。",
+        )
+        dynamic_stop_full = dynamic_right.number_input(
+            "完全衰减分钟", 5, 720,
+            value=setting_int("volatility_default_dynamic_time_stop_full_decay_minutes", 90),
+            step=5,
+            help="持仓达到该分钟数后，动态止损线收紧到最低阈值。",
+        )
     with st.expander("参数配置 · 按信号强度分层保护", expanded=False):
         st.caption("行业口径：信号越强，允许更大的盈利空间和回吐；普通信号更快保护利润。")
         tier_columns = st.columns(4)
@@ -777,6 +801,10 @@ with config_tab:
         "tiered_profit_lock_enabled": bool(tiered_lock_enabled),
         "profit_time_tighten_minutes": int(time_tighten_minutes),
         "profit_time_tighten_giveback": float(time_tighten_giveback),
+        "dynamic_time_stop_enabled": bool(dynamic_stop_enabled),
+        "dynamic_time_stop_floor": float(dynamic_stop_floor),
+        "dynamic_time_stop_start_minutes": int(dynamic_stop_start),
+        "dynamic_time_stop_full_decay_minutes": int(dynamic_stop_full),
         "cooldown_take_profit_hours": int(cooldown_take_profit),
         "cooldown_profit_protection_hours": int(cooldown_profit_protection),
         "cooldown_stop_loss_hours": int(cooldown_stop_loss),
@@ -823,6 +851,10 @@ with config_tab:
         "volatility_default_tiered_profit_lock_enabled": str(bool(tiered_lock_enabled)).lower(),
         "volatility_default_profit_time_tighten_minutes": int(time_tighten_minutes),
         "volatility_default_profit_time_tighten_giveback": float(time_tighten_giveback),
+        "volatility_default_dynamic_time_stop_enabled": str(bool(dynamic_stop_enabled)).lower(),
+        "volatility_default_dynamic_time_stop_floor": float(dynamic_stop_floor),
+        "volatility_default_dynamic_time_stop_start_minutes": int(dynamic_stop_start),
+        "volatility_default_dynamic_time_stop_full_decay_minutes": int(dynamic_stop_full),
         "volatility_default_cooldown_take_profit_hours": int(cooldown_take_profit),
         "volatility_default_cooldown_profit_protection_hours": int(cooldown_profit_protection),
         "volatility_default_cooldown_stop_loss_hours": int(cooldown_stop_loss),
@@ -839,7 +871,7 @@ with config_tab:
         st.markdown(
             "当前会保存以下参数："
             "`独立平仓参数`、`入场稳定性确认`、`按信号强度分层保护`、"
-            "`分批止盈参数`、`按退出原因冷却`。"
+            "`分批止盈参数`、`时间衰减动态止损`、`按退出原因冷却`。"
         )
         save_default_col, apply_existing_col = st.columns(2)
         if save_default_col.button(
