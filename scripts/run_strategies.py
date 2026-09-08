@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import time
 
+import pandas as pd
+
 from futu_quant.broker import FutuPaperBroker
 from futu_quant.config import Settings
 from futu_quant.core_satellite import (
@@ -14,6 +16,40 @@ from futu_quant.core_validation import (
 )
 from futu_quant.execution import ExecutionManager
 from futu_quant.strategies import STRATEGIES, Signal
+
+
+def _real_sellable_quantity(broker: FutuPaperBroker, symbol: str) -> tuple[int, str]:
+    """Return broker-reported sellable quantity after active sell orders.
+
+    Core Satellite can run in a long-lived service loop.  Its initial position
+    snapshot may become stale after fills or manual broker actions, so SELL
+    orders are checked again immediately before submission.
+    """
+    positions = broker.positions(refresh=True)
+    orders = broker.orders()
+    if positions.empty or "code" not in positions.columns:
+        return 0, "富途未返回持仓，无法确认可卖数量"
+    rows = positions[positions["code"].astype(str) == symbol]
+    if rows.empty:
+        return 0, "富途当前没有该标的持仓"
+    row = rows.iloc[0]
+    raw_sellable = row.get("can_sell_qty", row.get("sellable_qty", row.get("qty", 0)))
+    try:
+        sellable = float(raw_sellable or 0)
+    except (TypeError, ValueError):
+        sellable = 0.0
+    pending_sell = 0.0
+    if not orders.empty and {"code", "trd_side", "qty", "order_status"}.issubset(orders.columns):
+        active = orders[orders["order_status"].map(broker.is_cancellable_status)]
+        side_text = active["trd_side"].astype(str).str.upper()
+        symbol_orders = active[
+            (active["code"].astype(str) == symbol) & side_text.str.contains("SELL")
+        ]
+        pending_sell = float(
+            pd.to_numeric(symbol_orders["qty"], errors="coerce").fillna(0).sum()
+        ) if not symbol_orders.empty else 0.0
+    available = max(0, int(sellable - pending_sell))
+    return available, f"富途可卖 {sellable:g}，待成交卖单 {pending_sell:g}，提交前可用 {available:g}"
 
 
 def run_once(
@@ -164,6 +200,25 @@ def run_once(
                 f"batch {order.execution_slice}/{order.total_slices})"
             )
             if settings.enable_paper_orders:
+                actual_quantity = int(order.quantity)
+                sellable_reason = ""
+                if order.side == "SELL":
+                    actual_quantity, sellable_reason = _real_sellable_quantity(
+                        broker, order.symbol,
+                    )
+                    actual_quantity = min(int(order.quantity), actual_quantity)
+                    if actual_quantity <= 0:
+                        reason = f"提交前跳过卖出：{sellable_reason}"
+                        print(f"{order.symbol} SELL skipped ({reason})")
+                        executor.store.decision(
+                            "core_satellite", order.symbol, "HOLD", reason,
+                            {
+                                "planned_quantity": order.quantity,
+                                "pre_submit_sellable_quantity": actual_quantity,
+                                **validation_payload,
+                            },
+                        )
+                        continue
                 intent_mode = (
                     "daily-validation" if effective.validation_mode
                     else ("satellite-daily" if satellite_only else "formal")
@@ -173,7 +228,7 @@ def run_once(
                         "core_satellite",
                         f"{signal_date}:{intent_mode}:{settings.core_satellite_profile}:"
                         f"{order.symbol}:{order.side}:slice{order.execution_slice}",
-                        order.symbol, order.side, order.quantity, order.price,
+                        order.symbol, order.side, actual_quantity, order.price,
                         {
                             "profile": settings.core_satellite_profile,
                             "reason": order.reason,
@@ -182,6 +237,8 @@ def run_once(
                             "desired_quantity": order.desired_quantity,
                             "desired_notional": order.desired_notional,
                             "planned_quantity": order.quantity,
+                            "submitted_quantity": actual_quantity,
+                            "pre_submit_sellable_reason": sellable_reason,
                             "planned_notional": order.order_notional,
                             "execution_slice": order.execution_slice,
                             "total_slices": order.total_slices,

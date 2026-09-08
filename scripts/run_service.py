@@ -458,6 +458,24 @@ def run_task(
     except BrokerError as exc:
         duration = time.monotonic() - started
         message = str(exc)
+        if strategy_id == "core_satellite" and (
+            "持仓不足" in message or "可用持仓" in message or "可卖" in message
+        ):
+            store.finish_task_run(run_id, "DEGRADED", duration, message)
+            until = datetime.now(NY) + timedelta(hours=20)
+            store.set_setting(f"task_backoff_until:{strategy_id}", until.isoformat())
+            store.decision(
+                strategy_id, None, "HOLD",
+                f"Core Satellite 提交前持仓校验未通过，本轮不再重复提交：{message}",
+                {"backoff_until": until.isoformat(), "non_retryable": True},
+            )
+            store.heartbeat(strategy_id, "DEGRADED", "可卖数量不足，本轮已停止重试", os.getpid())
+            alerts.send(
+                "WARNING", "CORE_SELLABLE_GUARD",
+                f"Core Satellite 可卖数量不足，本轮已停止重复提交：{message}",
+                incident_key="CORE_SELLABLE_GUARD",
+            )
+            return True
         store.finish_task_run(run_id, "DEGRADED", duration, message)
         record_broker_failure(store, alerts, strategy_id, message)
         store.set_setting(
