@@ -88,9 +88,14 @@ with st.container(horizontal=True):
     st.metric("最低质量评分", review.metrics["最低质量评分"], border=True)
     st.metric("运行退化/超时", review.metrics["退化任务"], border=True)
     st.metric("运行异常", review.metrics["异常任务"], border=True)
+    st.metric("策略中断事件", review.metrics["策略中断事件"], border=True)
+    st.metric("持仓保护恢复", review.metrics["持仓保护恢复"], border=True)
 
 for item in review.narrative:
-    st.info(item)
+    if "中断" in item or "保护" in item:
+        st.error(item)
+    else:
+        st.info(item)
 
 report_markdown = review_markdown(review)
 st.download_button(
@@ -101,9 +106,9 @@ st.download_button(
     icon=":material/download:",
 )
 
-action_tab, quality_tab, lifecycle_tab, pnl_tab, orders_tab, option_tab, core_tab, runtime_tab, blockers_tab, evidence_tab, raw_tab = st.tabs([
+action_tab, quality_tab, lifecycle_tab, pnl_tab, orders_tab, option_tab, core_tab, runtime_tab, interruption_tab, blockers_tab, evidence_tab, raw_tab = st.tabs([
     "行动项", "质量评分", "期权生命周期", "期权盈亏拆解", "订单执行质量",
-    "波动率期权质量", "Core Satellite 调仓", "运行健康", "阻塞原因", "回测证据", "原始报告",
+    "波动率期权质量", "Core Satellite 调仓", "运行健康", "中断追踪", "阻塞原因", "回测证据", "原始报告",
 ])
 
 with action_tab:
@@ -236,6 +241,21 @@ with runtime_tab:
             ).dt.tz_convert("Asia/Shanghai").dt.strftime("%Y-%m-%d %H:%M:%S")
             view = view.drop(columns=["最后时间"])
         st.dataframe(view, hide_index=True)
+
+with interruption_tab:
+    st.subheader("OpenD 中断与持仓保护追踪")
+    st.caption("红色事件说明策略执行链路发生过中断；恢复确认会显示持仓保护何时完成恢复。")
+    if review.interruptions.empty:
+        st.success("本窗口没有 OpenD 断连或持仓保护事件。")
+    else:
+        st.error("本窗口出现过 OpenD/持仓保护事件，请确认恢复确认、订单对账和持仓对账都已完成。")
+        st.dataframe(
+            review.interruptions,
+            hide_index=True,
+            column_config={
+                "说明": st.column_config.TextColumn("说明", width="large"),
+            },
+        )
 
 with blockers_tab:
     st.subheader("阻塞原因")

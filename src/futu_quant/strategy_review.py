@@ -5,6 +5,7 @@ import json
 
 import pandas as pd
 
+from .connectivity_protection import PROTECTION_EVENT_TYPES, china_label, json_payload
 from .option_lifecycle import parse_option_code
 from .strategy_quality import (
     build_action_items,
@@ -33,6 +34,7 @@ class StrategyReview:
     option_quality: pd.DataFrame
     core_quality: pd.DataFrame
     runtime_health: pd.DataFrame
+    interruptions: pd.DataFrame
 
 
 def _json(value: object) -> dict:
@@ -370,6 +372,40 @@ def _runtime_health(store, window: DiagnosticWindow) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+def _strategy_interruptions(store, window: DiagnosticWindow) -> pd.DataFrame:
+    rows = []
+    start_types = set(PROTECTION_EVENT_TYPES) | {"BROKER_CONNECTIVITY_FAILURE"}
+    recovery_types = {"PROTECTIVE_RECOVERY_CONFIRMED", "BROKER_CONNECTIVITY_RECOVERED"}
+    for row in store.operational_events(limit=20_000):
+        event_type = str(row.get("event_type") or "").upper()
+        if event_type not in start_types | recovery_types:
+            continue
+        if not _within(row, window):
+            continue
+        payload = json_payload(row.get("payload_json"))
+        rows.append({
+            "时间（中国）": china_label(row.get("created_at")),
+            "事件": {
+                "BROKER_CONNECTIVITY_FAILURE": "OpenD/券商连接失败",
+                "PROTECTIVE_RESTART_REQUESTED": "持仓保护请求重启服务",
+                "PROTECTIVE_RADAR_RESTART_REQUESTED": "持仓保护请求重启雷达",
+                "PROTECTIVE_SERVICE_RESTART_REQUESTED": "持仓保护服务重启",
+                "PROTECTIVE_MODE_ACTIVE": "持仓保护模式激活",
+                "PROTECTIVE_RECOVERY_CONFIRMED": "持仓保护恢复确认",
+                "BROKER_CONNECTIVITY_RECOVERED": "OpenD/券商连接恢复",
+            }.get(event_type, event_type),
+            "状态": str(row.get("status") or ""),
+            "任务": TASK_LABELS.get(str(payload.get("task") or payload.get("trigger_task") or row.get("component") or ""), str(payload.get("task") or payload.get("trigger_task") or row.get("component") or "")),
+            "未平期权数": int(payload.get("open_option_count") or 0),
+            "失败次数": int(payload.get("failures") or 0),
+            "说明": str(payload.get("message") or payload.get("reason") or row.get("message") or ""),
+        })
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    return frame.sort_values("时间（中国）", ascending=False).reset_index(drop=True)
+
+
 def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
     diagnostic = build_diagnostic_report(store, window)
     decisions = [
@@ -396,6 +432,7 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
     option_quality = _option_quality(decisions, fills)
     core_quality = _core_quality(intents)
     runtime_health = _runtime_health(store, window)
+    interruptions = _strategy_interruptions(store, window)
     option_lifecycle = build_option_lifecycle_frame(option_pnl_breakdown, option_quality)
     quality_scores = build_trade_quality_scores(
         option_lifecycle, orders, trading_blockers, runtime_health,
@@ -473,8 +510,25 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
             int(pd.to_numeric(runtime_health.get("异常次数", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
             if not runtime_health.empty else 0
         ),
+        "策略中断事件": len(interruptions),
+        "持仓保护恢复": (
+            int(interruptions["事件"].astype(str).str.contains("恢复").sum())
+            if not interruptions.empty else 0
+        ),
     }
     narrative = []
+    if not interruptions.empty:
+        latest_interruption = interruptions.iloc[0]
+        active_count = int(
+            len(interruptions[~interruptions["事件"].astype(str).str.contains("恢复")])
+        )
+        narrative.append(
+            f"运行中断追踪发现 {len(interruptions)} 条 OpenD/持仓保护事件；"
+            f"最近一次为 {latest_interruption['时间（中国）']} 的"
+            f"“{latest_interruption['事件']}”。若首页仍标红，应先确认恢复事件与对账已完成。"
+        )
+        if active_count and int(metrics["持仓保护恢复"]) == 0:
+            narrative.append("本窗口出现连接中断但未看到恢复确认，持仓保护链路需要继续追踪。")
     if not runtime_health.empty:
         degraded_rows = runtime_health[
             pd.to_numeric(runtime_health["退化/超时"], errors="coerce").fillna(0).gt(0)
@@ -559,6 +613,7 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         option_quality=option_quality,
         core_quality=core_quality,
         runtime_health=runtime_health,
+        interruptions=interruptions,
     )
 
 
@@ -627,6 +682,10 @@ def review_markdown(review: StrategyReview) -> str:
         "## 运行健康",
         "",
         table(review.runtime_health),
+        "",
+        "## OpenD 中断与持仓保护追踪",
+        "",
+        table(review.interruptions),
         "",
         "## 阻塞原因",
         "",
