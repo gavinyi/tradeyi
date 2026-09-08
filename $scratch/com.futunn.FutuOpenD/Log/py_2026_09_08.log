@@ -1,0 +1,310 @@
+2026-09-08 23:34:42,094 | 8720 | 14232 | [open_context_base.py:429] _connect_sync: Start connect: self=3134492638336 ret=0 conn=1
+2026-09-08 23:34:42,094 | 8720 | 2068 | [open_context_base.py:172] on_connect: on_connect: self=3134492638336 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:34:42,095 | 8720 | 14232 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:34:42,095 | 8720 | 14232 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=1682
+2026-09-08 23:34:42,096 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=1682 err=Ok
+2026-09-08 23:34:42,098 | 8720 | 14232 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503113594738580366(1) context=<futu.trade.open_trade_context.OpenSecTradeContext object at 0x000002D9CE51FC80>
+2026-09-08 23:34:42,098 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113594738580366(1) proto=2001 sn=1683
+2026-09-08 23:34:42,099 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113594738580366(1) proto=2001 sn=1683 err=Ok
+2026-09-08 23:34:42,105 | 8720 | 14232 | [open_context_base.py:389] _query_async: Send: conn=7503113594738580366(1) proto=2008 sn=1684
+2026-09-08 23:34:42,105 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113594738580366(1) proto=2001 sn=1685
+2026-09-08 23:34:42,105 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113594738580366(1) proto=2008 sn=1684 err=Ok
+2026-09-08 23:34:42,106 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113594738580366(1) proto=2001 sn=1685 err=Ok
+2026-09-08 23:34:42,118 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113594738580366(1) proto=2001 sn=1686
+2026-09-08 23:34:42,119 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113594738580366(1) proto=2001 sn=1686 err=Ok
+2026-09-08 23:34:42,126 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113594738580366(1) proto=2102 sn=1687
+2026-09-08 23:34:42,127 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113594738580366(1) proto=2102 sn=1687 err=Ok
+2026-09-08 23:34:42,139 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113594738580366(1) proto=2001 sn=1688
+2026-09-08 23:34:42,140 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113594738580366(1) proto=2001 sn=1688 err=Ok
+2026-09-08 23:34:42,143 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113594738580366(1) proto=2201 sn=1689
+2026-09-08 23:34:42,170 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113594738580366(1) proto=2201 sn=1689 err=Ok
+2026-09-08 23:34:42,176 | 8720 | 14232 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:34:42,176 | 8720 | 12376 | [open_context_base.py:716] _reconnect: start reconnect: self=3134494003648
+2026-09-08 23:34:42,177 | 8720 | 12376 | [open_context_base.py:429] _connect_sync: Start connect: self=3134494003648 ret=0 conn=2
+2026-09-08 23:34:42,177 | 8720 | 2068 | [open_context_base.py:172] on_connect: on_connect: self=3134494003648 self.conn_id=2 self.status=CONNECTING conn=2 err=ConnectErr.Ok
+2026-09-08 23:34:42,177 | 8720 | 12376 | [open_context_base.py:432] _connect_sync: Connected : conn=2; 
+2026-09-08 23:34:42,177 | 8720 | 12376 | [open_context_base.py:345] _query_sync: Send: conn=0(2) proto=1001 sn=1690
+2026-09-08 23:34:42,178 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=0(2) proto=1001 sn=1690 err=Ok
+2026-09-08 23:34:42,178 | 8720 | 12376 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503113595081915824(2) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x000002D9CE66D1C0>
+2026-09-08 23:34:42,183 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113595081915824(2) proto=3203 sn=1691
+2026-09-08 23:34:42,199 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113595081915824(2) proto=3203 sn=1691 err=Ok
+2026-09-08 23:34:42,208 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113595081915824(2) proto=3103 sn=1692
+2026-09-08 23:34:42,245 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113595081915824(2) proto=3103 sn=1692 err=Ok
+2026-09-08 23:34:42,248 | 8720 | 14232 | [open_context_base.py:145] close: call close: conn=7503113595081915824(2) reason=CloseReason.Close
+2026-09-08 23:34:42,248 | 8720 | 2068 | [network_manager.py:356] _do_close: Close: conn=2 reason=CloseReason.Close msg=
+2026-09-08 23:34:42,249 | 8720 | 2068 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(2) reason=CallClose
+2026-09-08 23:34:42,251 | 8720 | 14232 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:34:42,252 | 8720 | 13100 | [open_context_base.py:716] _reconnect: start reconnect: self=3134493512656
+2026-09-08 23:34:42,254 | 8720 | 2068 | [open_context_base.py:172] on_connect: on_connect: self=3134493512656 self.conn_id=0 self.status=CONNECTING conn=3 err=ConnectErr.Ok
+2026-09-08 23:34:42,264 | 8720 | 13100 | [open_context_base.py:429] _connect_sync: Start connect: self=3134493512656 ret=0 conn=3
+2026-09-08 23:34:42,269 | 8720 | 13100 | [open_context_base.py:432] _connect_sync: Connected : conn=3; 
+2026-09-08 23:34:42,270 | 8720 | 13100 | [open_context_base.py:345] _query_sync: Send: conn=0(3) proto=1001 sn=1694
+2026-09-08 23:34:42,274 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=0(3) proto=1001 sn=1694 err=Ok
+2026-09-08 23:34:42,275 | 8720 | 13100 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503113595438388055(3) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x000002D9CE5F53D0>
+2026-09-08 23:34:42,291 | 8720 | 14232 | [open_context_base.py:291] sync_query_processor: Send: conn=7503113595438388055(3) proto=3203 sn=1693
+2026-09-08 23:34:42,305 | 8720 | 2068 | [open_context_base.py:568] _handle_recv: Recv: conn=7503113595438388055(3) proto=3203 sn=1693 err=Ok
+2026-09-08 23:34:42,311 | 8720 | 14232 | [open_context_base.py:145] close: call close: conn=7503113595438388055(3) reason=CloseReason.Close
+2026-09-08 23:34:42,311 | 8720 | 14232 | [open_context_base.py:145] close: call close: conn=7503113594738580366(1) reason=CloseReason.Close
+2026-09-08 23:34:42,311 | 8720 | 2068 | [network_manager.py:356] _do_close: Close: conn=3 reason=CloseReason.Close msg=
+2026-09-08 23:34:42,312 | 8720 | 2068 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(3) reason=CallClose
+2026-09-08 23:34:42,312 | 8720 | 2068 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-08 23:34:42,312 | 8720 | 2068 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose
+2026-09-08 23:40:33,465 | 12220 | 10404 | [open_context_base.py:429] _connect_sync: Start connect: self=1926034786496 ret=0 conn=1
+2026-09-08 23:40:33,466 | 12220 | 1388 | [open_context_base.py:172] on_connect: on_connect: self=1926034786496 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:40:33,466 | 12220 | 10404 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:40:33,466 | 12220 | 10404 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2034
+2026-09-08 23:40:33,467 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2034 err=Ok
+2026-09-08 23:40:33,467 | 12220 | 10404 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503115068495569866(1) context=<futu.trade.open_trade_context.OpenSecTradeContext object at 0x000001C0709E88C0>
+2026-09-08 23:40:33,467 | 12220 | 10404 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115068495569866(1) proto=2001 sn=2035
+2026-09-08 23:40:33,468 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=2001 sn=2035 err=Ok
+2026-09-08 23:40:33,475 | 12220 | 10404 | [open_context_base.py:389] _query_async: Send: conn=7503115068495569866(1) proto=2008 sn=2036
+2026-09-08 23:40:33,476 | 12220 | 10404 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115068495569866(1) proto=2001 sn=2037
+2026-09-08 23:40:33,476 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=2008 sn=2036 err=Ok
+2026-09-08 23:40:33,476 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=2001 sn=2037 err=Ok
+2026-09-08 23:40:33,489 | 12220 | 10404 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115068495569866(1) proto=2001 sn=2038
+2026-09-08 23:40:33,490 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=2001 sn=2038 err=Ok
+2026-09-08 23:40:33,498 | 12220 | 10404 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115068495569866(1) proto=2101 sn=2039
+2026-09-08 23:40:33,499 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=2101 sn=2039 err=Ok
+2026-09-08 23:40:42,099 | 12220 | 1388 | [open_context_base.py:389] _query_async: Send: conn=7503115068495569866(1) proto=1004 sn=2040
+2026-09-08 23:40:42,100 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=1004 sn=2040 err=Ok
+2026-09-08 23:40:50,805 | 12220 | 1388 | [open_context_base.py:389] _query_async: Send: conn=7503115068495569866(1) proto=1004 sn=2041
+2026-09-08 23:40:50,806 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=1004 sn=2041 err=Ok
+2026-09-08 23:40:59,542 | 12220 | 1388 | [open_context_base.py:389] _query_async: Send: conn=7503115068495569866(1) proto=1004 sn=2042
+2026-09-08 23:40:59,543 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=1004 sn=2042 err=Ok
+2026-09-08 23:41:08,285 | 12220 | 1388 | [open_context_base.py:389] _query_async: Send: conn=7503115068495569866(1) proto=1004 sn=2043
+2026-09-08 23:41:08,286 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=1004 sn=2043 err=Ok
+2026-09-08 23:41:17,013 | 12220 | 1388 | [open_context_base.py:389] _query_async: Send: conn=7503115068495569866(1) proto=1004 sn=2044
+2026-09-08 23:41:17,014 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=1004 sn=2044 err=Ok
+2026-09-08 23:41:25,725 | 12220 | 1388 | [open_context_base.py:389] _query_async: Send: conn=7503115068495569866(1) proto=1004 sn=2045
+2026-09-08 23:41:25,726 | 12220 | 1388 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115068495569866(1) proto=1004 sn=2045 err=Ok
+2026-09-08 23:42:04,202 | 3608 | 16080 | [open_context_base.py:429] _connect_sync: Start connect: self=1969555864320 ret=0 conn=1
+2026-09-08 23:42:04,203 | 3608 | 10632 | [open_context_base.py:172] on_connect: on_connect: self=1969555864320 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:42:04,203 | 3608 | 16080 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:42:04,204 | 3608 | 16080 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2124
+2026-09-08 23:42:04,204 | 3608 | 10632 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2124 err=Ok
+2026-09-08 23:42:04,204 | 3608 | 16080 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503115449076240782(1) context=<futu.trade.open_trade_context.OpenSecTradeContext object at 0x000001CA92AD7B00>
+2026-09-08 23:42:04,205 | 3608 | 16080 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115449076240782(1) proto=2001 sn=2125
+2026-09-08 23:42:04,206 | 3608 | 10632 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115449076240782(1) proto=2001 sn=2125 err=Ok
+2026-09-08 23:42:04,219 | 3608 | 16080 | [open_context_base.py:389] _query_async: Send: conn=7503115449076240782(1) proto=2008 sn=2126
+2026-09-08 23:42:04,219 | 3608 | 16080 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115449076240782(1) proto=2001 sn=2127
+2026-09-08 23:42:04,220 | 3608 | 10632 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115449076240782(1) proto=2008 sn=2126 err=Ok
+2026-09-08 23:42:04,220 | 3608 | 10632 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115449076240782(1) proto=2001 sn=2127 err=Ok
+2026-09-08 23:42:04,238 | 3608 | 16080 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115449076240782(1) proto=2001 sn=2128
+2026-09-08 23:42:04,239 | 3608 | 10632 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115449076240782(1) proto=2001 sn=2128 err=Ok
+2026-09-08 23:42:04,250 | 3608 | 16080 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115449076240782(1) proto=2101 sn=2129
+2026-09-08 23:42:04,251 | 3608 | 10632 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115449076240782(1) proto=2101 sn=2129 err=Ok
+2026-09-08 23:42:04,256 | 3608 | 16080 | [open_context_base.py:145] close: call close: conn=7503115449076240782(1) reason=CloseReason.Close
+2026-09-08 23:42:04,257 | 3608 | 10632 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-08 23:42:04,257 | 3608 | 10632 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose
+2026-09-08 23:42:48,441 | 10332 | 4076 | [open_context_base.py:429] _connect_sync: Start connect: self=2768297408752 ret=0 conn=1
+2026-09-08 23:42:48,441 | 10332 | 4644 | [open_context_base.py:172] on_connect: on_connect: self=2768297408752 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:42:48,441 | 10332 | 4076 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:42:48,442 | 10332 | 4076 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2169
+2026-09-08 23:42:48,442 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2169 err=Ok
+2026-09-08 23:42:48,443 | 10332 | 4076 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503115634622893040(1) context=<futu.trade.open_trade_context.OpenSecTradeContext object at 0x000002848B6238F0>
+2026-09-08 23:42:48,443 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634622893040(1) proto=2001 sn=2170
+2026-09-08 23:42:48,444 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2001 sn=2170 err=Ok
+2026-09-08 23:42:48,450 | 10332 | 4076 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=2008 sn=2171
+2026-09-08 23:42:48,450 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634622893040(1) proto=2001 sn=2172
+2026-09-08 23:42:48,450 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2008 sn=2171 err=Ok
+2026-09-08 23:42:48,451 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2001 sn=2172 err=Ok
+2026-09-08 23:42:48,462 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634622893040(1) proto=2001 sn=2173
+2026-09-08 23:42:48,462 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2001 sn=2173 err=Ok
+2026-09-08 23:42:48,466 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634622893040(1) proto=2102 sn=2174
+2026-09-08 23:42:48,467 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2102 sn=2174 err=Ok
+2026-09-08 23:42:48,471 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634622893040(1) proto=2001 sn=2175
+2026-09-08 23:42:48,472 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2001 sn=2175 err=Ok
+2026-09-08 23:42:48,476 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634622893040(1) proto=2201 sn=2176
+2026-09-08 23:42:48,502 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2201 sn=2176 err=Ok
+2026-09-08 23:42:48,510 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634622893040(1) proto=2001 sn=2177
+2026-09-08 23:42:48,510 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2001 sn=2177 err=Ok
+2026-09-08 23:42:48,514 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634622893040(1) proto=2101 sn=2178
+2026-09-08 23:42:48,515 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=2101 sn=2178 err=Ok
+2026-09-08 23:42:48,520 | 10332 | 4076 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:42:48,521 | 10332 | 10308 | [open_context_base.py:716] _reconnect: start reconnect: self=2768297576736
+2026-09-08 23:42:48,521 | 10332 | 10308 | [open_context_base.py:429] _connect_sync: Start connect: self=2768297576736 ret=0 conn=2
+2026-09-08 23:42:48,521 | 10332 | 4644 | [open_context_base.py:172] on_connect: on_connect: self=2768297576736 self.conn_id=2 self.status=CONNECTING conn=2 err=ConnectErr.Ok
+2026-09-08 23:42:48,521 | 10332 | 10308 | [open_context_base.py:432] _connect_sync: Connected : conn=2; 
+2026-09-08 23:42:48,522 | 10332 | 10308 | [open_context_base.py:345] _query_sync: Send: conn=0(2) proto=1001 sn=2179
+2026-09-08 23:42:48,522 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=0(2) proto=1001 sn=2179 err=Ok
+2026-09-08 23:42:48,522 | 10332 | 10308 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503115634960282863(2) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x000002848B64C920>
+2026-09-08 23:42:48,525 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634960282863(2) proto=3203 sn=2180
+2026-09-08 23:42:48,537 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=3203 sn=2180 err=Ok
+2026-09-08 23:42:48,541 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634960282863(2) proto=3103 sn=2181
+2026-09-08 23:42:48,565 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=3103 sn=2181 err=Ok
+2026-09-08 23:42:48,566 | 10332 | 4076 | [open_context_base.py:291] sync_query_processor: Send: conn=7503115634960282863(2) proto=3012 sn=2182
+2026-09-08 23:42:48,572 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=3012 sn=2182 err=Ok
+2026-09-08 23:42:57,045 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2183
+2026-09-08 23:42:57,045 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2184
+2026-09-08 23:42:57,046 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2184 err=Ok
+2026-09-08 23:42:57,046 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2183 err=Ok
+2026-09-08 23:43:05,779 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2185
+2026-09-08 23:43:05,780 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2186
+2026-09-08 23:43:05,782 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2185 err=Ok
+2026-09-08 23:43:05,782 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2186 err=Ok
+2026-09-08 23:43:14,555 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2187
+2026-09-08 23:43:14,556 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2188
+2026-09-08 23:43:14,557 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2187 err=Ok
+2026-09-08 23:43:14,558 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2188 err=Ok
+2026-09-08 23:43:23,283 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2189
+2026-09-08 23:43:23,283 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2190
+2026-09-08 23:43:23,284 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2189 err=Ok
+2026-09-08 23:43:23,284 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2190 err=Ok
+2026-09-08 23:43:32,015 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2191
+2026-09-08 23:43:32,016 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2192
+2026-09-08 23:43:32,017 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2191 err=Ok
+2026-09-08 23:43:32,018 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2192 err=Ok
+2026-09-08 23:43:40,735 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2193
+2026-09-08 23:43:40,735 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2194
+2026-09-08 23:43:40,736 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2193 err=Ok
+2026-09-08 23:43:40,736 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2194 err=Ok
+2026-09-08 23:43:49,467 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2195
+2026-09-08 23:43:49,467 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2196
+2026-09-08 23:43:49,468 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2195 err=Ok
+2026-09-08 23:43:49,468 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2196 err=Ok
+2026-09-08 23:43:58,209 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2197
+2026-09-08 23:43:58,209 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2198
+2026-09-08 23:43:58,210 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2197 err=Ok
+2026-09-08 23:43:58,210 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2198 err=Ok
+2026-09-08 23:44:06,952 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2199
+2026-09-08 23:44:06,952 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2200
+2026-09-08 23:44:06,953 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2200 err=Ok
+2026-09-08 23:44:06,953 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2199 err=Ok
+2026-09-08 23:44:15,687 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634622893040(1) proto=1004 sn=2201
+2026-09-08 23:44:15,688 | 10332 | 4644 | [open_context_base.py:389] _query_async: Send: conn=7503115634960282863(2) proto=1004 sn=2202
+2026-09-08 23:44:15,691 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634622893040(1) proto=1004 sn=2201 err=Ok
+2026-09-08 23:44:15,692 | 10332 | 4644 | [open_context_base.py:568] _handle_recv: Recv: conn=7503115634960282863(2) proto=1004 sn=2202 err=Ok
+2026-09-08 23:44:27,261 | 5972 | 4324 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:44:27,261 | 5972 | 8424 | [open_context_base.py:716] _reconnect: start reconnect: self=2137095435712
+2026-09-08 23:44:27,262 | 5972 | 8424 | [open_context_base.py:429] _connect_sync: Start connect: self=2137095435712 ret=0 conn=1
+2026-09-08 23:44:27,263 | 5972 | 4664 | [open_context_base.py:172] on_connect: on_connect: self=2137095435712 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:44:27,263 | 5972 | 8424 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:44:27,263 | 5972 | 8424 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2268
+2026-09-08 23:44:27,264 | 5972 | 4664 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2268 err=Ok
+2026-09-08 23:44:27,264 | 5972 | 8424 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503116049110536187(1) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x000001F194D075C0>
+2026-09-08 23:44:27,283 | 5972 | 4324 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116049110536187(1) proto=3012 sn=2267
+2026-09-08 23:44:27,284 | 5972 | 4664 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116049110536187(1) proto=3012 sn=2267 err=Ok
+2026-09-08 23:44:35,878 | 5972 | 4664 | [open_context_base.py:389] _query_async: Send: conn=7503116049110536187(1) proto=1004 sn=2269
+2026-09-08 23:44:35,879 | 5972 | 4664 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116049110536187(1) proto=1004 sn=2269 err=Ok
+2026-09-08 23:44:44,627 | 5972 | 4664 | [open_context_base.py:389] _query_async: Send: conn=7503116049110536187(1) proto=1004 sn=2270
+2026-09-08 23:44:44,628 | 5972 | 4664 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116049110536187(1) proto=1004 sn=2270 err=Ok
+2026-09-08 23:44:53,343 | 5972 | 4664 | [open_context_base.py:389] _query_async: Send: conn=7503116049110536187(1) proto=1004 sn=2271
+2026-09-08 23:44:53,345 | 5972 | 4664 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116049110536187(1) proto=1004 sn=2271 err=Ok
+2026-09-08 23:45:02,044 | 5972 | 4664 | [open_context_base.py:389] _query_async: Send: conn=7503116049110536187(1) proto=1004 sn=2272
+2026-09-08 23:45:02,044 | 5972 | 4664 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116049110536187(1) proto=1004 sn=2272 err=Ok
+2026-09-08 23:45:39,224 | 9104 | 16072 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:45:39,224 | 9104 | 3140 | [open_context_base.py:716] _reconnect: start reconnect: self=1861611448480
+2026-09-08 23:45:39,225 | 9104 | 3140 | [open_context_base.py:429] _connect_sync: Start connect: self=1861611448480 ret=0 conn=1
+2026-09-08 23:45:39,225 | 9104 | 15972 | [open_context_base.py:172] on_connect: on_connect: self=1861611448480 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:45:39,225 | 9104 | 3140 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:45:39,226 | 9104 | 3140 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2341
+2026-09-08 23:45:39,227 | 9104 | 15972 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2341 err=Ok
+2026-09-08 23:45:39,227 | 9104 | 3140 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503116350941427025(1) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x000001B170B068A0>
+2026-09-08 23:45:39,245 | 9104 | 16072 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116350941427025(1) proto=3012 sn=2340
+2026-09-08 23:45:39,246 | 9104 | 15972 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116350941427025(1) proto=3012 sn=2340 err=Ok
+2026-09-08 23:45:47,849 | 9104 | 15972 | [open_context_base.py:389] _query_async: Send: conn=7503116350941427025(1) proto=1004 sn=2342
+2026-09-08 23:45:47,849 | 9104 | 15972 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116350941427025(1) proto=1004 sn=2342 err=Ok
+2026-09-08 23:45:56,563 | 9104 | 15972 | [open_context_base.py:389] _query_async: Send: conn=7503116350941427025(1) proto=1004 sn=2343
+2026-09-08 23:45:56,564 | 9104 | 15972 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116350941427025(1) proto=1004 sn=2343 err=Ok
+2026-09-08 23:46:05,298 | 9104 | 15972 | [open_context_base.py:389] _query_async: Send: conn=7503116350941427025(1) proto=1004 sn=2344
+2026-09-08 23:46:05,300 | 9104 | 15972 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116350941427025(1) proto=1004 sn=2344 err=Ok
+2026-09-08 23:46:14,012 | 9104 | 15972 | [open_context_base.py:389] _query_async: Send: conn=7503116350941427025(1) proto=1004 sn=2345
+2026-09-08 23:46:14,012 | 9104 | 15972 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116350941427025(1) proto=1004 sn=2345 err=Ok
+2026-09-08 23:46:35,134 | 17404 | 1572 | [open_context_base.py:429] _connect_sync: Start connect: self=2129282907504 ret=0 conn=1
+2026-09-08 23:46:35,135 | 17404 | 15112 | [open_context_base.py:172] on_connect: on_connect: self=2129282907504 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:46:35,135 | 17404 | 1572 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:46:35,135 | 17404 | 1572 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2396
+2026-09-08 23:46:35,136 | 17404 | 15112 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2396 err=Ok
+2026-09-08 23:46:35,136 | 17404 | 1572 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503116585447975604(1) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x000001EFC326BD70>
+2026-09-08 23:46:35,137 | 17404 | 1572 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116585447975604(1) proto=3012 sn=2397
+2026-09-08 23:46:35,137 | 17404 | 15112 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116585447975604(1) proto=3012 sn=2397 err=Ok
+2026-09-08 23:46:35,138 | 17404 | 1572 | [open_context_base.py:145] close: call close: conn=7503116585447975604(1) reason=CloseReason.Close
+2026-09-08 23:46:35,138 | 17404 | 15112 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-08 23:46:35,138 | 17404 | 15112 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose
+2026-09-08 23:46:47,790 | 4076 | 5860 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:46:47,790 | 4076 | 7780 | [open_context_base.py:716] _reconnect: start reconnect: self=1966224097104
+2026-09-08 23:46:47,791 | 4076 | 7780 | [open_context_base.py:429] _connect_sync: Start connect: self=1966224097104 ret=0 conn=1
+2026-09-08 23:46:47,791 | 4076 | 14184 | [open_context_base.py:172] on_connect: on_connect: self=1966224097104 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:46:47,791 | 4076 | 7780 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:46:47,793 | 4076 | 7780 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2408
+2026-09-08 23:46:47,794 | 4076 | 14184 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2408 err=Ok
+2026-09-08 23:46:47,794 | 4076 | 7780 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503116638537845095(1) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x000001C9CC16BF50>
+2026-09-08 23:46:48,791 | 4076 | 5860 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116638537845095(1) proto=3012 sn=2409
+2026-09-08 23:46:48,793 | 4076 | 14184 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116638537845095(1) proto=3012 sn=2409 err=Ok
+2026-09-08 23:46:48,794 | 4076 | 5860 | [open_context_base.py:145] close: call close: conn=7503116638537845095(1) reason=CloseReason.Close
+2026-09-08 23:46:48,794 | 4076 | 14184 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-08 23:46:48,795 | 4076 | 14184 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose
+2026-09-08 23:47:29,873 | 9612 | 15172 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:47:29,874 | 9612 | 3056 | [open_context_base.py:716] _reconnect: start reconnect: self=2854859178784
+2026-09-08 23:47:29,874 | 9612 | 3056 | [open_context_base.py:429] _connect_sync: Start connect: self=2854859178784 ret=0 conn=1
+2026-09-08 23:47:29,874 | 9612 | 10984 | [open_context_base.py:172] on_connect: on_connect: self=2854859178784 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:47:29,875 | 9612 | 3056 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:47:29,875 | 9612 | 3056 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2450
+2026-09-08 23:47:29,876 | 9612 | 10984 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2450 err=Ok
+2026-09-08 23:47:29,876 | 9612 | 3056 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503116815041086501(1) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x00000298B2DE0320>
+2026-09-08 23:47:29,926 | 9612 | 15172 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116815041086501(1) proto=3012 sn=2451
+2026-09-08 23:47:29,927 | 9612 | 10984 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116815041086501(1) proto=3012 sn=2451 err=Ok
+2026-09-08 23:47:29,934 | 9612 | 15172 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116815041086501(1) proto=3203 sn=2452
+2026-09-08 23:47:29,949 | 9612 | 10984 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116815041086501(1) proto=3203 sn=2452 err=Ok
+2026-09-08 23:47:29,960 | 9612 | 15172 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116815041086501(1) proto=3103 sn=2453
+2026-09-08 23:47:29,988 | 9612 | 10984 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116815041086501(1) proto=3103 sn=2453 err=Ok
+2026-09-08 23:47:29,990 | 9612 | 15172 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116815041086501(1) proto=3012 sn=2454
+2026-09-08 23:47:29,990 | 9612 | 10984 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116815041086501(1) proto=3012 sn=2454 err=Ok
+2026-09-08 23:47:29,990 | 9612 | 15172 | [open_context_base.py:145] close: call close: conn=7503116815041086501(1) reason=CloseReason.Close
+2026-09-08 23:47:29,991 | 9612 | 10984 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-08 23:47:29,991 | 9612 | 10984 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose
+2026-09-08 23:47:37,107 | 6700 | 13828 | [open_context_base.py:429] _connect_sync: Start connect: self=2588869284768 ret=0 conn=1
+2026-09-08 23:47:37,108 | 6700 | 5868 | [open_context_base.py:172] on_connect: on_connect: self=2588869284768 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-08 23:47:37,108 | 6700 | 13828 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-08 23:47:37,108 | 6700 | 13828 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2457
+2026-09-08 23:47:37,109 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2457 err=Ok
+2026-09-08 23:47:37,109 | 6700 | 13828 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503116845381706055(1) context=<futu.trade.open_trade_context.OpenSecTradeContext object at 0x0000025AC4A253A0>
+2026-09-08 23:47:37,109 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845381706055(1) proto=2001 sn=2458
+2026-09-08 23:47:37,110 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2001 sn=2458 err=Ok
+2026-09-08 23:47:37,116 | 6700 | 13828 | [open_context_base.py:389] _query_async: Send: conn=7503116845381706055(1) proto=2008 sn=2459
+2026-09-08 23:47:37,116 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845381706055(1) proto=2001 sn=2460
+2026-09-08 23:47:37,116 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2008 sn=2459 err=Ok
+2026-09-08 23:47:37,117 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2001 sn=2460 err=Ok
+2026-09-08 23:47:37,130 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845381706055(1) proto=2001 sn=2461
+2026-09-08 23:47:37,130 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2001 sn=2461 err=Ok
+2026-09-08 23:47:37,137 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845381706055(1) proto=2102 sn=2462
+2026-09-08 23:47:37,138 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2102 sn=2462 err=Ok
+2026-09-08 23:47:37,146 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845381706055(1) proto=2001 sn=2463
+2026-09-08 23:47:37,147 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2001 sn=2463 err=Ok
+2026-09-08 23:47:37,150 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845381706055(1) proto=2201 sn=2464
+2026-09-08 23:47:37,176 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2201 sn=2464 err=Ok
+2026-09-08 23:47:37,181 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845381706055(1) proto=2001 sn=2465
+2026-09-08 23:47:37,182 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2001 sn=2465 err=Ok
+2026-09-08 23:47:37,188 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845381706055(1) proto=2101 sn=2466
+2026-09-08 23:47:37,189 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845381706055(1) proto=2101 sn=2466 err=Ok
+2026-09-08 23:47:37,194 | 6700 | 13828 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:47:37,194 | 6700 | 736 | [open_context_base.py:716] _reconnect: start reconnect: self=2588884436272
+2026-09-08 23:47:37,194 | 6700 | 736 | [open_context_base.py:429] _connect_sync: Start connect: self=2588884436272 ret=0 conn=2
+2026-09-08 23:47:37,195 | 6700 | 5868 | [open_context_base.py:172] on_connect: on_connect: self=2588884436272 self.conn_id=2 self.status=CONNECTING conn=2 err=ConnectErr.Ok
+2026-09-08 23:47:37,195 | 6700 | 736 | [open_context_base.py:432] _connect_sync: Connected : conn=2; 
+2026-09-08 23:47:37,195 | 6700 | 736 | [open_context_base.py:345] _query_sync: Send: conn=0(2) proto=1001 sn=2467
+2026-09-08 23:47:37,195 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=0(2) proto=1001 sn=2467 err=Ok
+2026-09-08 23:47:37,196 | 6700 | 736 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503116845744479788(2) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x0000025AC5898530>
+2026-09-08 23:47:37,251 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845744479788(2) proto=3203 sn=2468
+2026-09-08 23:47:37,264 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845744479788(2) proto=3203 sn=2468 err=Ok
+2026-09-08 23:47:37,267 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116845744479788(2) proto=3103 sn=2469
+2026-09-08 23:47:37,299 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116845744479788(2) proto=3103 sn=2469 err=Ok
+2026-09-08 23:47:37,300 | 6700 | 13828 | [open_context_base.py:145] close: call close: conn=7503116845744479788(2) reason=CloseReason.Close
+2026-09-08 23:47:37,300 | 6700 | 5868 | [network_manager.py:356] _do_close: Close: conn=2 reason=CloseReason.Close msg=
+2026-09-08 23:47:37,300 | 6700 | 5868 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(2) reason=CallClose
+2026-09-08 23:47:37,301 | 6700 | 13828 | [open_context_base.py:698] _wait_reconnect: Wait reconnect in 0 seconds: host=127.0.0.1; port=11111;
+2026-09-08 23:47:37,301 | 6700 | 10460 | [open_context_base.py:716] _reconnect: start reconnect: self=2588883828656
+2026-09-08 23:47:37,301 | 6700 | 10460 | [open_context_base.py:429] _connect_sync: Start connect: self=2588883828656 ret=0 conn=3
+2026-09-08 23:47:37,302 | 6700 | 5868 | [open_context_base.py:172] on_connect: on_connect: self=2588883828656 self.conn_id=3 self.status=CONNECTING conn=3 err=ConnectErr.Ok
+2026-09-08 23:47:37,302 | 6700 | 10460 | [open_context_base.py:432] _connect_sync: Connected : conn=3; 
+2026-09-08 23:47:37,302 | 6700 | 10460 | [open_context_base.py:345] _query_sync: Send: conn=0(3) proto=1001 sn=2470
+2026-09-08 23:47:37,302 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=0(3) proto=1001 sn=2470 err=Ok
+2026-09-08 23:47:37,303 | 6700 | 10460 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7503116846193830836(3) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x0000025AC5803FB0>
+2026-09-08 23:47:37,354 | 6700 | 13828 | [open_context_base.py:291] sync_query_processor: Send: conn=7503116846193830836(3) proto=3203 sn=2471
+2026-09-08 23:47:37,370 | 6700 | 5868 | [open_context_base.py:568] _handle_recv: Recv: conn=7503116846193830836(3) proto=3203 sn=2471 err=Ok
+2026-09-08 23:47:37,374 | 6700 | 13828 | [open_context_base.py:145] close: call close: conn=7503116846193830836(3) reason=CloseReason.Close
+2026-09-08 23:47:37,374 | 6700 | 13828 | [open_context_base.py:145] close: call close: conn=7503116845381706055(1) reason=CloseReason.Close
+2026-09-08 23:47:37,374 | 6700 | 5868 | [network_manager.py:356] _do_close: Close: conn=3 reason=CloseReason.Close msg=
+2026-09-08 23:47:37,374 | 6700 | 5868 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(3) reason=CallClose
+2026-09-08 23:47:37,374 | 6700 | 5868 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-08 23:47:37,375 | 6700 | 5868 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose

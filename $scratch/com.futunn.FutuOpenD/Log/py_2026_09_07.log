@@ -1,0 +1,27 @@
+2026-09-07 22:35:13,926 | 8504 | 9848 | [open_context_base.py:429] _connect_sync: Start connect: self=2633366485232 ret=0 conn=1
+2026-09-07 22:35:13,926 | 8504 | 13680 | [open_context_base.py:172] on_connect: on_connect: self=2633366485232 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-07 22:35:13,926 | 8504 | 9848 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-07 22:35:13,926 | 8504 | 9848 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=1714
+2026-09-07 22:35:13,926 | 8504 | 13680 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=1714 err=Ok
+2026-09-07 22:35:13,926 | 8504 | 9848 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7502736240887354449(1) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x0000026520DFB8F0>
+2026-09-07 22:35:13,926 | 8504 | 9848 | [open_context_base.py:145] close: call close: conn=7502736240887354449(1) reason=CloseReason.Close
+2026-09-07 22:35:13,926 | 8504 | 13680 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-07 22:35:13,926 | 8504 | 13680 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose
+2026-09-07 22:46:26,950 | 1944 | 16096 | [open_context_base.py:429] _connect_sync: Start connect: self=2410304748480 ret=0 conn=1
+2026-09-07 22:46:26,950 | 1944 | 1040 | [open_context_base.py:172] on_connect: on_connect: self=2410304748480 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-07 22:46:26,950 | 1944 | 16096 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-07 22:46:26,950 | 1944 | 16096 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2387
+2026-09-07 22:46:26,950 | 1944 | 1040 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2387 err=Ok
+2026-09-07 22:46:26,950 | 1944 | 16096 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7502739063755785300(1) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x00000231315BBBC0>
+2026-09-07 22:46:26,950 | 1944 | 16096 | [open_context_base.py:145] close: call close: conn=7502739063755785300(1) reason=CloseReason.Close
+2026-09-07 22:46:26,950 | 1944 | 1040 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-07 22:46:26,950 | 1944 | 1040 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose
+2026-09-07 22:49:56,521 | 12060 | 14692 | [open_context_base.py:429] _connect_sync: Start connect: self=2294731683168 ret=0 conn=1
+2026-09-07 22:49:56,521 | 12060 | 11116 | [open_context_base.py:172] on_connect: on_connect: self=2294731683168 self.conn_id=1 self.status=CONNECTING conn=1 err=ConnectErr.Ok
+2026-09-07 22:49:56,521 | 12060 | 14692 | [open_context_base.py:432] _connect_sync: Connected : conn=1; 
+2026-09-07 22:49:56,521 | 12060 | 14692 | [open_context_base.py:345] _query_sync: Send: conn=0(1) proto=1001 sn=2597
+2026-09-07 22:49:56,521 | 12060 | 11116 | [open_context_base.py:568] _handle_recv: Recv: conn=0(1) proto=1001 sn=2597 err=Ok
+2026-09-07 22:49:56,521 | 12060 | 14692 | [open_context_base.py:411] _init_connect_sync: New connect ready: conn=7502739942761372781(1) context=<futu.quote.open_quote_context.OpenQuoteContext object at 0x0000021648AAB560>
+2026-09-07 22:49:56,521 | 12060 | 14692 | [open_context_base.py:145] close: call close: conn=7502739942761372781(1) reason=CloseReason.Close
+2026-09-07 22:49:56,521 | 12060 | 11116 | [network_manager.py:356] _do_close: Close: conn=1 reason=CloseReason.Close msg=
+2026-09-07 22:49:56,521 | 12060 | 11116 | [open_context_base.py:520] on_disconnect: Disconnected: conn=0(1) reason=CallClose
