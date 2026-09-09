@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import fcntl
 import os
 from pathlib import Path
 import signal
@@ -12,6 +11,7 @@ from zoneinfo import ZoneInfo
 from futu_quant.alerts import AlertManager
 from futu_quant.broker import FutuPaperBroker
 from futu_quant.config import Settings, load_volatility_symbols
+from futu_quant.filelock import FileLockError, lock_exclusive
 from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.radar_schedule import (
     RadarScheduleState,
@@ -37,15 +37,38 @@ def _request_stop(_signum=None, _frame=None) -> None:
     STOP_FILE.touch()
 
 
+def _wait_or_stop(seconds: float) -> None:
+    """Wait up to *seconds*, waking early when a graceful stop is requested.
+
+    POSIX wakes immediately when ``SIGTERM`` sets ``STOP_EVENT``.  Windows
+    cannot deliver SIGTERM to the process, so the wait also polls the stop
+    flag file that the control layer touches on stop/restart requests.
+    """
+    deadline = time.monotonic() + max(0.0, seconds)
+    while not STOP_EVENT.is_set():
+        if STOP_FILE.exists():
+            STOP_EVENT.set()
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        STOP_EVENT.wait(min(1.0, remaining))
+
+
 def main() -> None:
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     STOP_FILE.unlink(missing_ok=True)
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
-    with LOCK_FILE.open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        lock.write(str(os.getpid()))
+    with LOCK_FILE.open("a+b") as lock:
+        try:
+            lock_exclusive(lock, blocking=False)
+        except FileLockError as exc:
+            raise RuntimeError("波动率雷达已经在运行，拒绝启动第二个实例") from exc
+        lock.seek(0)
+        lock.write(f"{os.getpid()}\n".encode())
         lock.flush()
+        lock.truncate()
         PID_FILE.write_text(str(os.getpid()))
         store = TradingStore()
         calendar = USMarketCalendar()
@@ -73,7 +96,7 @@ def main() -> None:
                                 "未配置波动率策略标的；15 分钟后重新检查",
                                 os.getpid(),
                             )
-                            STOP_EVENT.wait(900)
+                            _wait_or_stop(900)
                             continue
                         store.heartbeat(
                             "volatility_scanner", "SCANNING",
@@ -136,10 +159,15 @@ def main() -> None:
                     store.heartbeat(
                         "volatility_scanner", "HEALTHY", "等待美股常规交易时段", os.getpid()
                     )
-                STOP_EVENT.wait(next_wait_seconds)
+                _wait_or_stop(next_wait_seconds)
         finally:
             PID_FILE.unlink(missing_ok=True)
             STOP_FILE.unlink(missing_ok=True)
+            try:
+                from futu_quant.broker import close_all_connections
+                close_all_connections()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

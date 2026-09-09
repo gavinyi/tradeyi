@@ -1,38 +1,44 @@
 @echo off
-REM å¯Œé€”é‡åŒ–äº¤æ˜“ç³»ç»Ÿ - Windows åœæ­¢è„šæœ¬
-
-echo ========================================
-echo åœæ­¢å¯Œé€”é‡åŒ–äº¤æ˜“ç³»ç»Ÿ
-echo ========================================
+setlocal EnableExtensions
+title Futu Paper Quant Stopper
+echo.
+echo  ============================================
+echo    Í£Ö¹¸»Í¾Á¿»¯½»Ò×ÏµÍ³
+echo  ============================================
 echo.
 
-REM 1. åœæ­¢äº¤æ˜“æœåŠ¡
-echo [1/2] åœæ­¢äº¤æ˜“æœåŠ¡...
-
-if exist "data\trading-service.pid" (
-    set /p PID=<data\trading-service.pid
-    echo   æ­£åœ¨åœæ­¢æœåŠ¡ (PID: %PID%)...
-    taskkill /PID %PID% /F >nul 2>&1
-    if errorlevel 0 (
-        echo   âœ“ äº¤æ˜“æœåŠ¡å·²åœæ­¢
-        del data\trading-service.pid >nul 2>&1
-    ) else (
-        echo   âš  æ— æ³•åœæ­¢æœåŠ¡ï¼ˆè¿›ç¨‹å¯èƒ½å·²ç»“æŸï¼‰
-    )
+echo  [1/4] Í£Ö¹½»Ò×·şÎñ...
+set "SVC_PID="
+if exist "data\trading-service.pid" for /f "usebackq delims=" %%p in ("data\trading-service.pid") do set "SVC_PID=%%p"
+if defined SVC_PID (
+    taskkill /PID %SVC_PID% /T /F >nul 2>&1
+    echo    ½»Ò×·şÎñÒÑÍ£Ö¹ PID=%SVC_PID%
 ) else (
-    echo   âš  æœªæ‰¾åˆ° PID æ–‡ä»¶ï¼Œå°è¯•æŒ‰è¿›ç¨‹ååœæ­¢...
-    taskkill /F /FI "WINDOWTITLE eq Trading Service*" >nul 2>&1
+    taskkill /FI "WINDOWTITLE eq TradingService*" /T /F >nul 2>&1
+    echo    Î´ÕÒµ½½»Ò×·şÎñ PID£¬ÒÑ°´´°¿Ú±êÌâÇåÀí
 )
+del "data\trading-service.pid" >nul 2>&1
+del "data\trading-service.stop" >nul 2>&1
+del "data\trading-service.restart" >nul 2>&1
 
-REM 2. åœæ­¢ Streamlit UI
-echo [2/2] åœæ­¢ Streamlit UI...
-taskkill /F /FI "WINDOWTITLE eq Streamlit UI*" >nul 2>&1
-taskkill /F /IM streamlit.exe >nul 2>&1
-echo   âœ“ Streamlit UI å·²åœæ­¢
+echo  [2/4] Í£Ö¹²¨¶¯ÂÊÀ×´ï...
+set "RADAR_PID="
+if exist "data\volatility-radar.pid" for /f "usebackq delims=" %%r in ("data\volatility-radar.pid") do set "RADAR_PID=%%r"
+if defined RADAR_PID (
+    taskkill /PID %RADAR_PID% /T /F >nul 2>&1
+    echo    ²¨¶¯ÂÊÀ×´ïÒÑÍ£Ö¹ PID=%RADAR_PID%
+)
+del "data\volatility-radar.pid" >nul 2>&1
+del "data\volatility-radar.stop" >nul 2>&1
 
+echo  [3/4] Í£Ö¹ Streamlit UI...
+taskkill /FI "WINDOWTITLE eq StreamlitUI*" /T /F >nul 2>&1
+taskkill /IM streamlit.exe /T /F >nul 2>&1
+
+echo  [4/4] ÇåÀíÍê³É
 echo.
-echo ========================================
-echo æ‰€æœ‰æœåŠ¡å·²åœæ­¢
-echo ========================================
+echo  ============================================
+echo    ËùÓĞ·şÎñÒÑÍ£Ö¹
+echo  ============================================
 echo.
 pause

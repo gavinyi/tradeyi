@@ -14,5 +14,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        from futu_quant.broker import close_all_connections
+        close_all_connections()
 

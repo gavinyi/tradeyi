@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import time
+
+from .process_utils import pid_alive, request_stop
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,19 +27,18 @@ class RadarStatus:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Sandboxed dashboards may not be allowed to signal a healthy sibling process.
-        return True
+    # Cross-platform; never os.kill(pid, 0) on Windows (that terminates).
+    return pid_alive(pid)
 
 
 def _lock_owner_pid() -> int | None:
-    """Recover a running radar whose pid file was removed during a long scan."""
-    if not LOCK_FILE.exists():
+    """Recover a running radar whose pid file was removed during a long scan.
+
+    Recovery uses ``lsof`` which only exists on macOS/Linux.  On Windows the
+    advisory lock is released as soon as the owning process exits, so a stale
+    lock file can never block a restart and no recovery is needed.
+    """
+    if sys.platform != "darwin" or not LOCK_FILE.exists():
         return None
     try:
         result = subprocess.run(
@@ -97,22 +97,13 @@ def stop() -> RadarStatus:
     if current.running and current.pid:
         STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
         STOP_FILE.touch()
-        try:
-            os.kill(current.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        # Windows cannot deliver SIGTERM; the radar polls STOP_FILE and exits
+        # on its own, so graceful shutdown works the same on both platforms.
+        request_stop(current.pid, force_on_windows=False)
         deadline = time.monotonic() + float(os.getenv("RADAR_STOP_TIMEOUT_SECONDS", "8"))
-        while time.monotonic() < deadline:
-            try:
-                os.kill(current.pid, 0)
-            except ProcessLookupError:
-                break
+        while time.monotonic() < deadline and _pid_alive(current.pid):
             time.sleep(.1)
-        try:
-            os.kill(current.pid, 0)
-        except ProcessLookupError:
-            pass
-        else:
+        if _pid_alive(current.pid):
             return RadarStatus(
                 True, current.pid, "雷达正在停止；当前扫描结束后会退出", current.uptime_seconds
             )

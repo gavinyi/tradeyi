@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import atexit
 from contextlib import contextmanager
+from functools import wraps
 from typing import Iterator
 import os
 import socket
@@ -23,6 +25,7 @@ from futu import (
     TrdMarket,
     TrdSide,
 )
+from futu.common.constant import ContextStatus
 
 from .config import Settings
 from .option_chain_cache import (
@@ -37,6 +40,104 @@ class BrokerError(RuntimeError):
 _OPEND_HEALTH_LOCK = threading.Lock()
 _OPEND_FAILURES = 0
 _OPEND_BACKOFF_UNTIL = 0.0
+
+# Process-global persistent connection pool.  Creating and closing a fresh SDK
+# context for every quote/trade operation churns TCP connections, stresses
+# OpenD, and turns momentary hiccups into repeated failures.  All
+# FutuPaperBroker instances in one process now share one quote context and one
+# trade context per OpenD endpoint/account instead.
+_POOL_REGISTRY: dict[tuple, "_BrokerConnectionPool"] = {}
+_POOL_REGISTRY_LOCK = threading.Lock()
+
+# Substrings that indicate a transport-level failure worth a single automatic
+# reconnect-and-retry for idempotent read operations.  Order placement /
+# cancellation is never retried automatically.
+_RETRYABLE_READ_TOKENS = (
+    "disconn", "timeout", "timed out", "etimedout", "callclose",
+    "connection reset", "reset by peer", "broken pipe", "wait_reconnect",
+    "network error", "连接失败", "连接超时", "已断开", "连接被断开", "链路断开",
+    "服务端关闭", "socket closed", "远程主机", "unreachable",
+)
+
+
+class _BrokerConnectionPool:
+    """Holds the reusable quote/trade contexts for one endpoint/account."""
+
+    __slots__ = ("key", "lock", "quote", "trade")
+
+    def __init__(self, key: tuple):
+        self.key = key
+        self.lock = threading.RLock()
+        self.quote: OpenQuoteContext | None = None
+        self.trade: OpenSecTradeContext | None = None
+
+    def drop(self, kind: str) -> None:
+        """Close and forget one kind ('quote' or 'trade'); next use reconnects."""
+        with self.lock:
+            ctx = getattr(self, kind)
+            if ctx is not None:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+                setattr(self, kind, None)
+
+    def close_all(self) -> None:
+        self.drop("quote")
+        self.drop("trade")
+
+
+def close_all_connections() -> None:
+    """Release every pooled connection in this process (used at shutdown)."""
+    with _POOL_REGISTRY_LOCK:
+        pools = list(_POOL_REGISTRY.values())
+        _POOL_REGISTRY.clear()
+    for pool in pools:
+        pool.close_all()
+
+
+def _atexit_close() -> None:
+    """Close pooled connections at interpreter exit without hanging shutdown.
+
+    Closing a Futu context inside an atexit handler can itself block while the
+    interpreter is already tearing down, so the close runs on a daemon thread
+    with a short join cap.  Long-running entry points close explicitly.
+    """
+    closer = threading.Thread(target=close_all_connections, daemon=True)
+    closer.start()
+    closer.join(5.0)
+
+
+atexit.register(_atexit_close)
+
+
+def _retryable_message(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(token in text for token in _RETRYABLE_READ_TOKENS)
+
+
+def _read_with_reconnect(kind: str):
+    """Retry an idempotent read once after dropping the pooled connection.
+
+    Applies only to reads (account/position queries, candles, snapshots, ...).
+    Order placement and cancellation must never be retried automatically.
+    """
+
+    def decorate(fn):
+        @wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return fn(self, *args, **kwargs)
+            except BrokerError as exc:
+                if not _retryable_message(exc):
+                    raise
+                pool = self._pool()
+                pool.drop(kind)
+                return fn(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
 
 
 class FutuPaperBroker:
@@ -56,6 +157,98 @@ class FutuPaperBroker:
             raise BrokerError(f"Unknown FUTU_SECURITY_FIRM: {settings.security_firm}") from exc
         self._frame_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 
+    # ---- persistent pooled connections ------------------------------------
+
+    def _pool_key(self) -> tuple:
+        account = self.settings.real_account_id if self.settings.trading_env == "REAL" else self.settings.acc_id
+        return (
+            self.settings.host, self.settings.port, self.security_firm,
+            self.trd_env, account,
+        )
+
+    def _pool(self) -> _BrokerConnectionPool:
+        key = self._pool_key()
+        with _POOL_REGISTRY_LOCK:
+            pool = _POOL_REGISTRY.get(key)
+            if pool is None:
+                pool = _POOL_REGISTRY[key] = _BrokerConnectionPool(key)
+            return pool
+
+    @staticmethod
+    def _ctx_alive(ctx) -> bool:
+        status = getattr(ctx, "status", None)
+        if status is None:
+            return True  # SDK without a status property: assume usable
+        return status not in (ContextStatus.CLOSED, ContextStatus.CLOSING)
+
+    @staticmethod
+    def _wait_ready(ctx, label: str) -> None:
+        """Wait for an async-connect context to finish its handshake.
+
+        Sending a sync query (especially push-backed ones like order books) on
+        a context whose async connect is still in flight can block forever, so
+        never hand a context to a caller before it is READY/CONNECTED.
+        """
+        deadline = time.monotonic() + max(
+            3.0, float(os.getenv("FUTU_CONNECT_TIMEOUT_SECONDS", "5"))
+        )
+        ready = (ContextStatus.CONNECTED, ContextStatus.READY)
+        status = None
+        while True:
+            status = getattr(ctx, "status", None)
+            if status in ready:
+                return
+            if status in (ContextStatus.CLOSED, ContextStatus.CLOSING):
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+        try:
+            ctx.close()
+        except Exception:
+            pass
+        raise BrokerError(
+            f"富途 OpenD {label} 连接在超时时间内未就绪（status={status}）；"
+            "请确认 OpenD 已启动且牛牛已登录解锁"
+        )
+
+    def _acquire_quote(self, pool: _BrokerConnectionPool) -> OpenQuoteContext:
+        ctx = pool.quote
+        if ctx is None or not self._ctx_alive(ctx):
+            pool.drop("quote")
+            self._ensure_opend_available()
+            ctx = OpenQuoteContext(
+                host=self.settings.host,
+                port=self.settings.port,
+                security_firm=self.security_firm,
+                is_async_connect=True,
+            )
+            self._set_connect_timeout(ctx)
+            self._wait_ready(ctx, "行情")
+            pool.quote = ctx
+        return ctx
+
+    def _acquire_trade(self, pool: _BrokerConnectionPool) -> OpenSecTradeContext:
+        ctx = pool.trade
+        if ctx is None or not self._ctx_alive(ctx):
+            pool.drop("trade")
+            self._ensure_opend_available()
+            ctx = OpenSecTradeContext(
+                filter_trdmarket=self.market,
+                host=self.settings.host,
+                port=self.settings.port,
+                security_firm=self.security_firm,
+            )
+            self._set_connect_timeout(ctx)
+            self._wait_ready(ctx, "交易")
+            pool.trade = ctx
+        return ctx
+
+    @property
+    def pool(self) -> _BrokerConnectionPool:
+        """Expose the shared pool (diagnostics/tests); contexts stay cached."""
+        return self._pool()
+
     def _cached(self, key: str, loader, ttl: float = 2.0) -> pd.DataFrame:
         cached = self._frame_cache.get(key)
         if cached and time.monotonic() - cached[0] <= ttl:
@@ -66,13 +259,18 @@ class FutuPaperBroker:
 
     @contextmanager
     def trade_context(self) -> Iterator[OpenSecTradeContext]:
-        ctx = self.new_trade_context()
-        try:
-            yield ctx
-        finally:
-            ctx.close()
+        """Yield the process-wide persistent trade context (serialized).
+
+        The context stays connected and is reused by every operation instead of
+        rebuilding a TCP connection per call.  A failed context is dropped and
+        recreated lazily on the next acquisition.
+        """
+        pool = self._pool()
+        with pool.lock:
+            yield self._acquire_trade(pool)
 
     def new_trade_context(self) -> OpenSecTradeContext:
+        """Create a dedicated, caller-owned trade context (e.g. order push)."""
         self._ensure_opend_available()
         ctx = OpenSecTradeContext(
             filter_trdmarket=self.market,
@@ -129,18 +327,14 @@ class FutuPaperBroker:
 
     @contextmanager
     def quote_context(self) -> Iterator[OpenQuoteContext]:
-        self._ensure_opend_available()
-        ctx = OpenQuoteContext(
-            host=self.settings.host,
-            port=self.settings.port,
-            security_firm=self.security_firm,
-            is_async_connect=True,
-        )
-        self._set_connect_timeout(ctx)
-        try:
-            yield ctx
-        finally:
-            ctx.close()
+        """Yield the process-wide persistent quote context (serialized).
+
+        Same persistence contract as :meth:`trade_context`: one long-lived
+        quote connection per endpoint instead of connect-per-call churn.
+        """
+        pool = self._pool()
+        with pool.lock:
+            yield self._acquire_quote(pool)
 
     @staticmethod
     def _ok(result: tuple, operation: str):
@@ -149,6 +343,7 @@ class FutuPaperBroker:
             raise BrokerError(f"{operation} failed: {data}")
         return data
 
+    @_read_with_reconnect("trade")
     def accounts(self) -> pd.DataFrame:
         with self.trade_context() as ctx:
             data = self._ok(ctx.get_acc_list(), "get accounts")
@@ -173,6 +368,7 @@ class FutuPaperBroker:
             return {"acc_id": self.settings.real_account_id}
         return {"acc_id": self.settings.acc_id} if self.settings.acc_id else {}
 
+    @_read_with_reconnect("trade")
     def account_info(self, refresh: bool = False) -> pd.DataFrame:
         def load():
             acquire_api_slot("account_info", 9)
@@ -182,6 +378,7 @@ class FutuPaperBroker:
             )
         return load() if refresh else self._cached("account_info", load)
 
+    @_read_with_reconnect("trade")
     def positions(self, refresh: bool = False) -> pd.DataFrame:
         def load():
             acquire_api_slot("positions", 9)
@@ -192,6 +389,7 @@ class FutuPaperBroker:
             )
         return load() if refresh else self._cached("positions", load)
 
+    @_read_with_reconnect("trade")
     def orders(self, historical: bool = False) -> pd.DataFrame:
         def load():
             acquire_api_slot("historical_orders" if historical else "orders", 9)
@@ -204,6 +402,7 @@ class FutuPaperBroker:
             )
         return self._cached(f"orders:{historical}", load)
 
+    @_read_with_reconnect("quote")
     def candles(self, symbol: str, count: int = 120) -> pd.DataFrame:
         if not symbol.startswith("US."):
             raise BrokerError("Safety lock: only US.* symbols are allowed")
@@ -215,6 +414,7 @@ class FutuPaperBroker:
                 raise BrokerError(f"history for {symbol} failed: {data}")
             return data
 
+    @_read_with_reconnect("quote")
     def candles_range(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         """Download all daily bars in a date range, following Futu pagination."""
         if not symbol.startswith("US."):
@@ -241,6 +441,7 @@ class FutuPaperBroker:
             return pd.DataFrame()
         return pd.concat(frames, ignore_index=True).drop_duplicates("time_key")
 
+    @_read_with_reconnect("quote")
     def security_catalog(self) -> pd.DataFrame:
         """Return Futu's current US stock and ETF directory."""
         frames: list[pd.DataFrame] = []
@@ -253,6 +454,7 @@ class FutuPaperBroker:
         catalog = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["code"])
         return catalog.sort_values("code").reset_index(drop=True)
 
+    @_read_with_reconnect("quote")
     def option_expirations(self, underlying: str) -> pd.DataFrame:
         if not underlying.startswith("US."):
             raise BrokerError("Options underlying must be a US.* symbol")
@@ -273,6 +475,7 @@ class FutuPaperBroker:
                 return stale
             raise
 
+    @_read_with_reconnect("quote")
     def option_chain(self, underlying: str, expiration: str) -> pd.DataFrame:
         if not underlying.startswith("US."):
             raise BrokerError("Options underlying must be a US.* symbol")
@@ -298,6 +501,7 @@ class FutuPaperBroker:
                 return stale
             raise
 
+    @_read_with_reconnect("quote")
     def earnings_calendar(self, begin_date: str, end_date: str) -> pd.DataFrame:
         with self.quote_context() as ctx:
             return self._ok(
@@ -305,6 +509,7 @@ class FutuPaperBroker:
                 "earnings calendar",
             )
 
+    @_read_with_reconnect("quote")
     def snapshots(self, symbols: list[str]) -> pd.DataFrame:
         if not symbols or any(not symbol.startswith("US.") for symbol in symbols):
             raise BrokerError("Snapshots require US.* symbols")
@@ -317,6 +522,7 @@ class FutuPaperBroker:
                 )
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+    @_read_with_reconnect("quote")
     def snapshots_tolerant(self, symbols: list[str]) -> pd.DataFrame:
         """Fetch a broad universe while isolating unsupported OTC/bad symbols."""
         if not symbols or any(not symbol.startswith("US.") for symbol in symbols):
@@ -348,6 +554,7 @@ class FutuPaperBroker:
                 fetch_batch(symbols[start : start + 200])
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+    @_read_with_reconnect("quote")
     def order_book(self, symbol: str, depth: int = 10) -> dict:
         if not symbol.startswith("US."):
             raise BrokerError("Order book requires a US.* symbol")

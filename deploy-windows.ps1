@@ -1,4 +1,4 @@
-# 富途量化交易系统 - Windows 部署脚本
+﻿# 富途量化交易系统 - Windows 部署脚本
 # 使用方法：在 PowerShell 中运行 .\deploy-windows.ps1
 
 $ErrorActionPreference = "Stop"
@@ -38,8 +38,23 @@ if (!(Get-Command uv -ErrorAction SilentlyContinue)) {
 Write-Host "[3/7] 安装项目依赖..." -ForegroundColor Yellow
 Write-Host "  这可能需要几分钟，请耐心等待..." -ForegroundColor Gray
 
+$syncLog = Join-Path $PSScriptRoot "data\uv-sync.log"
 try {
-    uv sync 2>&1 | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $syncLog) | Out-Null
+    & cmd.exe /c "uv sync > `"$syncLog`" 2>&1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ✗ 依赖安装失败（uv 退出码：$LASTEXITCODE）" -ForegroundColor Red
+        Write-Host "  完整日志已保存：$syncLog" -ForegroundColor Yellow
+        if (Test-Path $syncLog) {
+            Write-Host "  --- 日志末尾（最后 25 行）---" -ForegroundColor Gray
+            Get-Content $syncLog -Tail 25 | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+            Write-Host "  -------------------------------" -ForegroundColor Gray
+        }
+        Write-Host "  提示：如果看到编译错误，请安装 Visual Studio Build Tools" -ForegroundColor Yellow
+        Write-Host "  提示：如果看到缓存/权限错误，先执行 uv cache clean 再重试" -ForegroundColor Yellow
+        exit 1
+    }
+    if (Test-Path $syncLog) { Remove-Item $syncLog -ErrorAction SilentlyContinue }
     Write-Host "  ✓ 依赖安装成功" -ForegroundColor Green
 } catch {
     Write-Host "  ✗ 依赖安装失败：$_" -ForegroundColor Red
@@ -80,10 +95,17 @@ Write-Host "[6/7] 测试富途 OpenD 连接..." -ForegroundColor Yellow
 $testScript = @"
 from futu import OpenQuoteContext
 try:
+    from futu.common.constant import ContextStatus
+except ImportError:
+    ContextStatus = None
+try:
     ctx = OpenQuoteContext('127.0.0.1', 11111)
-    result = ctx.start()
+    if ContextStatus is not None:
+        ok = getattr(ctx, 'status', None) in (ContextStatus.CONNECTED, ContextStatus.READY)
+    else:
+        ok = ctx.start() == 0
     ctx.close()
-    exit(0 if result == 0 else 1)
+    exit(0 if ok else 1)
 except Exception as e:
     print(f'连接失败: {e}')
     exit(1)
@@ -102,16 +124,24 @@ if ($LASTEXITCODE -eq 0) {
 
 # 7. 测试运行
 Write-Host "[7/7] 测试服务运行..." -ForegroundColor Yellow
+$testLog = Join-Path $PSScriptRoot "data\service-once.log"
 try {
-    $testOutput = & .venv\Scripts\python.exe scripts\run_service.py --once 2>&1
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $testLog) | Out-Null
+    & cmd.exe /c ".venv\Scripts\python.exe scripts\run_service.py --once > `"$testLog`" 2>&1"
     if ($LASTEXITCODE -eq 0) {
+        if (Test-Path $testLog) { Remove-Item $testLog -ErrorAction SilentlyContinue }
         Write-Host "  ✓ 服务测试成功" -ForegroundColor Green
     } else {
-        Write-Host "  ⚠ 警告：服务测试返回非零代码" -ForegroundColor Yellow
-        Write-Host "  输出：$testOutput" -ForegroundColor Gray
+        Write-Host "  ⚠ 警告：服务测试返回非零代码（完整输出见 $testLog）" -ForegroundColor Yellow
+        if (Test-Path $testLog) {
+            Write-Host "  --- 输出末尾（最后 20 行）---" -ForegroundColor Gray
+            Get-Content $testLog -Tail 20 | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+            Write-Host "  -----------------------------" -ForegroundColor Gray
+        }
     }
 } catch {
     Write-Host "  ✗ 服务测试失败：$_" -ForegroundColor Red
+    if (Test-Path $testLog) { Write-Host "  完整输出见 $testLog" -ForegroundColor Yellow }
     exit 1
 }
 

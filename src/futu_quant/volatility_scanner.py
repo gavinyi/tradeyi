@@ -34,6 +34,34 @@ def _setting_bool(store, key: str, default: bool) -> bool:
     return str(raw).lower() in {"1", "true", "yes", "y", "是"}
 
 
+def _timed_call_thread(callback, timeout: float):
+    """Windows-safe watchdog: run *callback* in a daemon thread and bound it.
+
+    Windows has no ``SIGALRM``/``setitimer``, so the blocking call cannot be
+    interrupted from the main thread.  The call runs in a daemon worker and
+    the main thread raises :class:`RadarCallTimeout` when the deadline passes;
+    the stranded worker is abandoned and cleaned up by the interpreter at
+    process exit (radar cycles bound every Futu call the same way SIGALRM did).
+    """
+    box: list = []
+    error_box: list = []
+
+    def runner() -> None:
+        try:
+            box.append(callback())
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+            error_box.append(exc)
+
+    worker = threading.Thread(target=runner, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise RadarCallTimeout(f"行情调用超过 {timeout:g} 秒")
+    if error_box:
+        raise error_box[0]
+    return box[0]
+
+
 def _timed_call(callback, timeout_seconds: float | None = None):
     """Bound Futu calls so one symbol cannot freeze the entire radar cycle."""
     timeout = max(1.0, float(
@@ -41,6 +69,8 @@ def _timed_call(callback, timeout_seconds: float | None = None):
     ))
     if threading.current_thread() is not threading.main_thread():
         return callback()
+    if not hasattr(signal, "SIGALRM"):
+        return _timed_call_thread(callback, timeout)
 
     def interrupt(_signum, _frame):
         raise RadarCallTimeout(f"行情调用超过 {timeout:g} 秒")

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import time
+
+from .process_utils import pid_alive, request_stop
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,13 +37,8 @@ def code_restart_required(started_at: float, paths=SERVICE_CODE_PATHS) -> bool:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    # Cross-platform; never os.kill(pid, 0) on Windows (that terminates).
+    return pid_alive(pid)
 
 
 def status() -> CryptoServiceStatus:
@@ -90,10 +85,7 @@ def start(interval_seconds: int = 300) -> CryptoServiceStatus:
 def stop() -> CryptoServiceStatus:
     current = status()
     if current.running and current.pid:
-        try:
-            os.kill(current.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        request_stop(current.pid)  # force-kills on Windows (no signal delivery)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline and _pid_alive(current.pid):
             time.sleep(.1)

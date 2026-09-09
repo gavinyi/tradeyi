@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
-import fcntl
 from pathlib import Path
 import re
 
-from dotenv import dotenv_values, load_dotenv, set_key
+from dotenv import dotenv_values, set_key
+
+from .filelock import exclusive_lock
 
 
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -34,14 +35,42 @@ def json_dumps(value) -> str:
     )
 
 
+# Windows caps the entire environment block at 32767 characters, and a single
+# variable must stay well under that.  Campaign/configuration payloads mirrored
+# into .env routinely exceed it (e.g. a 46KB+ VOLATILITY_CAMPAIGNS value that is
+# fine on macOS).  SQLite runtime_config is the runtime authority, so oversized
+# mirror values are skipped for os.environ while still loading from the database.
+_ENV_MAX_SAFE_VALUE = 30000
+
+
+def _set_env(key: str, value: str) -> None:
+    """Set *key* in os.environ, skipping values that cannot fit on Windows."""
+    if len(value) > _ENV_MAX_SAFE_VALUE:
+        os.environ.pop(key, None)
+        return
+    try:
+        os.environ[key] = value
+    except ValueError:
+        # Cumulative overflow of the whole environment block: drop this one.
+        os.environ.pop(key, None)
+
+
+def _apply_dotenv(override: bool = False) -> None:
+    """Load .env into os.environ without tripping Windows' environment limit."""
+    for key, value in dotenv_values(ENV_FILE).items():
+        if value is None:
+            continue
+        if override or key not in os.environ:
+            _set_env(key, str(value))
+
+
 def _mirror_env(key: str, value: str) -> None:
     """Keep .env as a compatibility mirror; SQLite is the runtime authority."""
     ENV_FILE.touch(exist_ok=True)
     lock_path = ENV_FILE.with_suffix(".env.lock")
-    with lock_path.open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with exclusive_lock(lock_path, blocking=True):
         set_key(str(ENV_FILE), key, value, quote_mode="never")
-    os.environ[key] = value
+    _set_env(key, value)
 
 
 def _load_runtime_value(key: str, default):
@@ -106,7 +135,7 @@ def save_trading_preferences(
 
 
 def load_option_contracts() -> list[dict]:
-    load_dotenv(ENV_FILE)
+    _apply_dotenv()
     try:
         value = json.loads(os.getenv("OPTION_CONTRACTS", "[]"))
     except json.JSONDecodeError as exc:
@@ -418,7 +447,7 @@ def refresh_runtime_environment(override: bool = False) -> dict[str, str]:
             values.update({key: str(value) for key, value in saved[0].items()})
     for key, value in values.items():
         if override or key not in os.environ:
-            os.environ[key] = value
+            _set_env(key, value)
     return values
 
 
@@ -466,7 +495,7 @@ class Settings:
 
     @classmethod
     def load(cls, refresh: bool = False) -> "Settings":
-        load_dotenv(ENV_FILE, override=refresh)
+        _apply_dotenv(override=refresh)
         refresh_runtime_environment(override=refresh)
         env = os.getenv("FUTU_TRADING_ENV", "SIMULATE").upper()
         market = os.getenv("FUTU_MARKET", "US").upper()

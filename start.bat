@@ -1,69 +1,78 @@
 @echo off
-REM å¯Œé€”é‡åŒ–äº¤æ˜“ç³»ç»Ÿ - Windows å¯åŠ¨è„šæœ¬
-REM ä½¿ç”¨æ–¹æ³•ï¼šåŒå‡»è¿è¡Œæ­¤æ–‡ä»¶
-
-echo ========================================
-echo å¯Œé€”é‡åŒ–äº¤æ˜“ç³»ç»Ÿå¯åŠ¨
-echo ========================================
+setlocal EnableExtensions
+title Futu Paper Quant Launcher
+rem ============================================================
+rem  ¸»Í¾Á¿»¯½»Ò×ÏµÍ³ - Windows Æô¶¯½Å±¾
+rem  ÓÃ·¨£ºË«»÷ÔËĞĞ£¬»òÔÚ cmd/PowerShell ÖĞÖ´ĞĞ start.bat
+rem ============================================================
+echo.
+echo  ============================================
+echo    ¸»Í¾Á¿»¯½»Ò×ÏµÍ³Æô¶¯
+echo  ============================================
 echo.
 
-REM æ£€æŸ¥è™šæ‹Ÿç¯å¢ƒ
 if not exist ".venv\Scripts\python.exe" (
-    echo [é”™è¯¯] æœªæ‰¾åˆ°è™šæ‹Ÿç¯å¢ƒï¼Œè¯·å…ˆè¿è¡Œ deploy-windows.ps1
+    echo  [´íÎó] Î´ÕÒµ½ĞéÄâ»·¾³£¬ÇëÏÈÔËĞĞ deploy-windows.ps1
     pause
     exit /b 1
 )
 
-REM æ£€æŸ¥å¯Œé€” OpenD
-echo [1/3] æ£€æŸ¥å¯Œé€” OpenD è¿æ¥...
-.venv\Scripts\python.exe -c "from futu import OpenQuoteContext; ctx = OpenQuoteContext('127.0.0.1', 11111); result = ctx.start(); print('è¿æ¥æˆåŠŸ' if result == 0 else 'è¿æ¥å¤±è´¥'); ctx.close()" 2>nul
+rem ---- [1/4] ¼ì²é¸»Í¾ OpenD ----
+echo  [1/4] ¼ì²é¸»Í¾ OpenD Á¬½Ó...
+.venv\Scripts\python.exe -c "from futu import OpenQuoteContext; from futu.common.constant import ContextStatus; ctx=OpenQuoteContext('127.0.0.1',11111); ok=ctx.status in (ContextStatus.CONNECTED,ContextStatus.READY); print('Á¬½Ó³É¹¦' if ok else 'Á¬½ÓÊ§°Ü'); ctx.close(); raise SystemExit(0 if ok else 1)" 2>nul
 if errorlevel 1 (
-    echo [è­¦å‘Š] å¯Œé€” OpenD æœªå¯åŠ¨æˆ–è¿æ¥å¤±è´¥
-    echo è¯·ç¡®ä¿ï¼š
-    echo   1. å¯Œé€”ç‰›ç‰›å®¢æˆ·ç«¯å·²ç™»å½•
-    echo   2. OpenD æœåŠ¡å·²å¯åŠ¨
-    echo.
-    choice /M "æ˜¯å¦ç»§ç»­å¯åŠ¨æœåŠ¡"
+    echo  [¾¯¸æ] ÎŞ·¨Á¬½Ó¸»Í¾ OpenD¡£
+    echo     1. ÇëÈ·ÈÏ¸»Í¾Å£Å£¿Í»§¶ËÒÑµÇÂ¼
+    echo     2. ÇëÈ·ÈÏ OpenD ·şÎñÒÑÆô¶¯£¨¶Ë¿Ú 11111£©
+    choice /C YN /M "ÊÇ·ñ¼ÌĞøÆô¶¯·şÎñ"
     if errorlevel 2 exit /b 1
 )
 
-echo [2/3] å¯åŠ¨äº¤æ˜“æœåŠ¡...
-REM å¯åŠ¨äº¤æ˜“æœåŠ¡ï¼ˆæœ€å°åŒ–çª—å£ï¼‰
-start "Trading Service" /MIN cmd /c ".venv\Scripts\python.exe scripts\run_service.py > data\service.log 2>&1"
+rem ---- [2/4] Æô¶¯½»Ò×·şÎñ ----
+echo  [2/4] Æô¶¯½»Ò×·şÎñ...
+start "TradingService" /MIN cmd /c "cd /d %~dp0 && .venv\Scripts\python.exe scripts\run_service.py >> data\service.log 2>&1"
 
-REM ç­‰å¾…æœåŠ¡å¯åŠ¨
-timeout /t 3 /nobreak >nul
+set "SVC_PID="
+set /a WAIT=0
+:wait_svc
+set "SVC_PID="
+if exist "data\trading-service.pid" for /f "usebackq delims=" %%p in ("data\trading-service.pid") do set "SVC_PID=%%p"
+if defined SVC_PID goto svc_ok
+set /a WAIT+=1
+if %WAIT% GEQ 20 goto svc_fail
+timeout /t 1 /nobreak >nul
+goto wait_svc
+:svc_ok
+echo    ½»Ò×·şÎñÒÑÆô¶¯ PID=%SVC_PID%
+goto svc_done
+:svc_fail
+echo    [¾¯¸æ] ½»Ò×·şÎñ 20 ÃëÄÚÎ´¾ÍĞ÷£¬Çë²é¿´ data\service.log
+:svc_done
 
-REM æ£€æŸ¥æœåŠ¡æ˜¯å¦å¯åŠ¨æˆåŠŸ
-if exist "data\trading-service.pid" (
-    set /p PID=<data\trading-service.pid
-    echo   âœ“ äº¤æ˜“æœåŠ¡å·²å¯åŠ¨ (PID: %PID%)
+rem ---- [3/4] È·ÈÏ²¨¶¯ÂÊÀ×´ï£¨½»Ò×·şÎñ»á×Ô¶¯À­Æğ£©----
+timeout /t 2 /nobreak >nul
+set "RADAR_PID="
+if exist "data\volatility-radar.pid" for /f "usebackq delims=" %%r in ("data\volatility-radar.pid") do set "RADAR_PID=%%r"
+if defined RADAR_PID (
+    echo    ²¨¶¯ÂÊÀ×´ïÒÑÆô¶¯ PID=%RADAR_PID%
 ) else (
-    echo   âœ— äº¤æ˜“æœåŠ¡å¯åŠ¨å¤±è´¥ï¼Œè¯·æ£€æŸ¥æ—¥å¿—
+    echo    [ÌáÊ¾] ²¨¶¯ÂÊÀ×´ïÉĞÎ´¾ÍĞ÷£¨½»Ò×·şÎñ»á×Ô¶¯Æô¶¯Ëü£©
 )
 
-echo [3/3] å¯åŠ¨ Streamlit UI...
-REM å¯åŠ¨ Streamlit UI
-start "Streamlit UI" cmd /c ".venv\Scripts\streamlit.exe run app.py --server.port 8501"
-
-REM ç­‰å¾… UI å¯åŠ¨
-timeout /t 3 /nobreak >nul
+rem ---- [4/4] Æô¶¯ Streamlit UI ----
+echo  [4/4] Æô¶¯ Streamlit UI...
+start "StreamlitUI" /MIN cmd /c "cd /d %~dp0 && .venv\Scripts\streamlit.exe run app.py --server.port 8501 >> data\streamlit.log 2>&1"
+timeout /t 5 /nobreak >nul
 
 echo.
-echo ========================================
-echo å¯åŠ¨å®Œæˆï¼
-echo ========================================
+echo  ============================================
+echo    Æô¶¯Íê³É
+echo  ============================================
 echo.
-echo æœåŠ¡çŠ¶æ€ï¼š
-echo   â€¢ äº¤æ˜“æœåŠ¡: è¿è¡Œä¸­
-echo   â€¢ Streamlit UI: http://localhost:8501
+echo   Web ½çÃæ:  http://localhost:8501
+echo   ·şÎñÈÕÖ¾:  data\service.log
+echo   À×´ïÈÕÖ¾:  data\volatility-radar.log
 echo.
-echo æ—¥å¿—ä½ç½®ï¼š
-echo   â€¢ æœåŠ¡æ—¥å¿—: data\service.log
-echo   â€¢ PID æ–‡ä»¶: data\trading-service.pid
-echo.
-echo æŒ‰ä»»æ„é”®æ‰“å¼€æµè§ˆå™¨...
+echo   °´ÈÎÒâ¼ü´ò¿ªä¯ÀÀÆ÷...
 pause >nul
-
-REM æ‰“å¼€æµè§ˆå™¨
 start http://localhost:8501

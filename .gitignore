@@ -1,28 +1,40 @@
-.env
+# ---- Python / venv ----
 .venv/
-.uv-cache/
-*.egg-info/
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .ruff_cache/
-data/*.db*
-data/*.db-*
-data/*.json
+
+# ---- 密钥与本地配置（绝不提交）----
+.env
+.env.lock
+
+# ---- 运行时数据（大文件/日志/缓存，绝不提交）----
 data/*.log
-data/*.log.*
-data/*.lock
+data/*.db*
 data/*.pid
-data/*.restart
+data/*.lock
 data/*.stop
+data/*.restart
+data/*.json
 data/backups/
 data/market-data/
-data/warehouse/
+data/ml_models/
+data/ml_training/
 data/recovery/
-pytest-of-*/
-.env.docker
-.env.env.lock
-.agents/
-.claude/
-.gstack/
+data/warehouse/
+data/realtime/
+data/*.s3db
+
+# ---- 临时/迁移辅助文件 ----
+deploy-windows1.txt
+deploy-windows13.ps1
+uv-sync.log
+
+# ---- IDE / OS ----
 .idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

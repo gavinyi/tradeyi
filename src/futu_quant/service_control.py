@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import time
+
+from .process_utils import pid_alive, request_stop
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,15 +29,8 @@ class ServiceStatus:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # A live process owned by another user is still live. The PID file is only
-        # created by this application, so status must remain a cheap local check.
-        return True
+    # Cross-platform; never os.kill(pid, 0) on Windows (that terminates).
+    return pid_alive(pid)
 
 
 def _launchd_target() -> str:
@@ -82,7 +76,7 @@ def start() -> ServiceStatus:
     STOP_FILE.unlink(missing_ok=True)
     RESTART_FILE.unlink(missing_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if _launchd_registered():
+    if sys.platform == "darwin" and _launchd_registered():
         subprocess.run(  # noqa: S603
             ["launchctl", "kickstart", _launchd_target()],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
@@ -127,10 +121,9 @@ def stop(*, stop_radar: bool = True) -> ServiceStatus:
         return ServiceStatus(False, message="服务已经停止")
     STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
     STOP_FILE.touch()
-    try:
-        os.kill(current.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    # Windows cannot deliver SIGTERM; the service polls STOP_FILE and exits on
+    # its own, which keeps graceful shutdown identical on both platforms.
+    request_stop(current.pid, force_on_windows=False)
     deadline = time.monotonic() + float(os.getenv("SERVICE_STOP_TIMEOUT_SECONDS", "8"))
     while time.monotonic() < deadline and _pid_alive(current.pid):
         time.sleep(0.1)

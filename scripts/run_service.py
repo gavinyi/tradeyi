@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
-import fcntl
 import os
 from pathlib import Path
 import platform
@@ -58,6 +57,7 @@ from futu_quant.research_backfill import backfill_research_history
 from run_gamma_strategy import run_once as run_gamma_once
 from run_volatility_strategy import run_once as run_volatility_once
 from run_strategies import run_once as run_strategy_once
+from futu_quant.filelock import FileLockError, lock_exclusive
 
 
 NY = ZoneInfo("America/New_York")
@@ -871,6 +871,24 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         mark_run(store, "last_run:long_term_validation", now)
 
 
+def _wait_or_stop(seconds: float) -> None:
+    """Wait up to *seconds*, waking early when a graceful stop is requested.
+
+    POSIX wakes immediately when ``SIGTERM`` sets ``STOP_EVENT``.  Windows
+    cannot deliver SIGTERM to the process, so the wait also polls the stop
+    flag file that the control layer touches on stop/restart requests.
+    """
+    deadline = time.monotonic() + max(0.0, seconds)
+    while not STOP_EVENT.is_set():
+        if STOP_FILE.exists():
+            STOP_EVENT.set()
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        STOP_EVENT.wait(min(1.0, remaining))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Unified Futu paper strategy service")
     parser.add_argument("--once", action="store_true", help="Run one scheduling cycle")
@@ -883,13 +901,15 @@ def main() -> None:
     STOP_FILE.unlink(missing_ok=True)
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
-    with LOCK_FILE.open("w") as lock:
+    with LOCK_FILE.open("a+b") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
+            lock_exclusive(lock, blocking=False)
+        except FileLockError as exc:
             raise RuntimeError("交易服务已经在运行，拒绝启动第二个实例") from exc
-        lock.write(str(os.getpid()))
+        lock.seek(0)
+        lock.write(f"{os.getpid()}\n".encode())
         lock.flush()
+        lock.truncate()
         PID_FILE.write_text(str(os.getpid()))
         store = TradingStore()
         runtime_manifest = publish_approval_runtime_manifest(store, os.getpid())
@@ -949,7 +969,7 @@ def main() -> None:
                     AlertManager(store).send("ERROR", "SERVICE_CYCLE_ERROR", str(exc))
                 if args.once or STOP_EVENT.is_set():
                     break
-                STOP_EVENT.wait(max(5, args.poll))
+                _wait_or_stop(max(5, args.poll))
         finally:
             if push_context is not None:
                 push_context.close()
@@ -958,6 +978,11 @@ def main() -> None:
             store.operational_event("trading_service", "PROCESS_STOP", "STOPPED", {"pid": os.getpid()})
             PID_FILE.unlink(missing_ok=True)
             STOP_FILE.unlink(missing_ok=True)
+            try:
+                from futu_quant.broker import close_all_connections
+                close_all_connections()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
