@@ -174,9 +174,43 @@ uv run python scripts/run_volatility_strategy.py --once
 
 ---
 
-## ⏰ 月度自动重训练定时器 ✅（已配置）
+## ⏰ 月度自动重训练定时器（Windows 安装器）
 
-**任务**: `t-mtdmzb5d-ohk1v7`（任务看板 scheduled）
+> 原文中的 `t-mtdmzb5d-ohk1v7` 是历史记录，不能证明当前 Windows 机器已注册计划任务。DSH 任务看板的 Schedule 是会话内提醒，不具备注册或执行 Windows 计划任务的能力。
+
+在目标 Windows 机器执行以下命令安装：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_ml_monthly_task.ps1
+```
+
+安装器默认注册：
+
+- 任务名：`TradeFuto-ML-Monthly-Retrain`
+- 每月 1 日 21:00（Windows 本机时区）
+- 执行器：`scripts/run_ml_retrain_monthly.ps1`
+- 使用项目 `.venv\Scripts\python.exe`，不依赖计划任务的 PATH/uv
+- 日志：`data/ml_training/logs/ml_retrain_*.log`，保留最近 12 份
+- 同一次训练未结束时不重复启动
+
+检查任务：
+
+```powershell
+Get-ScheduledTaskInfo -TaskName TradeFuto-ML-Monthly-Retrain
+```
+
+卸载任务：
+
+```powershell
+Unregister-ScheduledTask -TaskName TradeFuto-ML-Monthly-Retrain -Confirm:$false
+```
+
+**任务脚本仍执行以下自动流程**（4步，无人值守）:
+
+**任务**: Windows Task Scheduler `TradeFuto-ML-Monthly-Retrain`
+
+- **执行时间**: 每月1日 21:00（Windows 本机时区）
+- **训练入口**: `scripts/ml_retrain_monthly.py`
 
 - **cron**: `0 21 1 * *` = 每月1日 21:00 北京时间
 - **下次触发**: 2026-09-01 13:00 UTC（北京时间 9月1日 21:00）
