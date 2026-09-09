@@ -58,8 +58,9 @@ def performance_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
         symbol for (_strategy, symbol), open_lots in lots.items() if open_lots
     })
     if open_symbols:
-        quotes = broker.snapshots(open_symbols)
-        prices = quotes.set_index("code")["last_price"].astype(float).to_dict()
+        loader = getattr(broker, "snapshots_tolerant", None)
+        quotes = loader(open_symbols) if loader is not None else broker.snapshots(open_symbols)
+        prices = quotes.set_index("code")["last_price"].astype(float).to_dict() if not quotes.empty else {}
     else:
         prices = {}
 

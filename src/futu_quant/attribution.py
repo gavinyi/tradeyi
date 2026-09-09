@@ -20,6 +20,14 @@ def _number(value, default: float = 0.0) -> float:
     return default if pd.isna(result) else result
 
 
+def _load_quotes_tolerant(broker, symbols: list[str]) -> pd.DataFrame:
+    """Load quotes without letting one stale/unsupported contract hide attribution."""
+    if not symbols:
+        return pd.DataFrame()
+    loader = getattr(broker, "snapshots_tolerant", None)
+    return loader(symbols) if loader is not None else broker.snapshots(symbols)
+
+
 def attribution_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame]:
     intents = pd.DataFrame(store.intents(limit=50_000))
     fills = (
@@ -30,7 +38,7 @@ def attribution_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame]:
     symbols = set(fills["symbol"].astype(str)) if not fills.empty else set()
     symbols.update(str(item["symbol"]) for item in allocations)
     us_symbols = sorted(symbol for symbol in symbols if _is_futu_us_symbol(symbol))
-    quotes = broker.snapshots(us_symbols) if us_symbols else pd.DataFrame()
+    quotes = _load_quotes_tolerant(broker, us_symbols)
     quote_map = {
         str(row["code"]): row for _, row in quotes.iterrows()
     } if not quotes.empty else {}
