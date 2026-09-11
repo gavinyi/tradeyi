@@ -141,10 +141,13 @@ def verify_recovery_point(store, recovery_id: str, root: Path | str = RECOVERY_R
     with tempfile.TemporaryDirectory() as directory:
         restored = Path(directory) / "restored.db"
         shutil.copy2(database_blob, restored)
-        with sqlite3.connect(restored) as connection:
+        connection = sqlite3.connect(restored)
+        try:
             checks["integrity"] = connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             checks["required_tables"] = {"order_intents", "runtime_config", "schema_migrations"}.issubset(tables)
+        finally:
+            connection.close()
     checks["data_manifest"] = hashlib.sha256(
         json.dumps(manifest["data_files"], sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest() == manifest["data_manifest_hash"]

@@ -1560,10 +1560,26 @@ class TradingStore:
             return str(connection.execute("PRAGMA integrity_check").fetchone()[0])
 
     def backup(self, destination: Path | str) -> Path:
+        """Create a consistent SQLite backup and close every file handle explicitly.
+
+        SQLite's connection context manager commits/rolls back transactions but does
+        not guarantee that the connection object is closed. Windows refuses to
+        remove a temporary database while that handle is still open, which can make
+        recovery-point creation fail during TemporaryDirectory cleanup.
+        """
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with self.connection() as source, sqlite3.connect(destination) as target:
+        source = sqlite3.connect(self.path, timeout=30)
+        target = sqlite3.connect(destination)
+        try:
+            source.row_factory = sqlite3.Row
+            source.execute("PRAGMA journal_mode=WAL")
+            source.execute("PRAGMA foreign_keys=ON")
             source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+            source.close()
         return destination
 
     def cleanup(self, before_iso: str) -> dict[str, int]:

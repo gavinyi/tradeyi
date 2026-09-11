@@ -22,3 +22,15 @@ def test_backup_bundle_can_be_restored(tmp_path):
 
     assert result["integrity"] == "ok"
     assert (tmp_path / "restored" / ".env").exists()
+
+
+def test_backup_releases_destination_handle_on_windows(tmp_path):
+    source = TradingStore(tmp_path / "source.db")
+    destination = tmp_path / "backups" / "trading.db"
+    source.backup(destination)
+
+    # A second backup must be able to replace the same file. On Windows this
+    # catches leaked sqlite connection handles that would otherwise raise WinError 32.
+    source.set_setting("backup_probe", "ok")
+    source.backup(destination)
+    assert destination.exists()
