@@ -382,6 +382,32 @@ class TradingStore:
                     FOREIGN KEY(intent_id) REFERENCES order_intents(id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_shadow_fills_intent ON shadow_fills(intent_id);
+                CREATE TABLE IF NOT EXISTS fill_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    intent_id INTEGER NOT NULL,
+                    strategy_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    multiplier REAL NOT NULL DEFAULT 1,
+                    commission REAL NOT NULL DEFAULT 0,
+                    regulatory_fee REAL NOT NULL DEFAULT 0,
+                    fee_total REAL NOT NULL DEFAULT 0,
+                    bid_price REAL,
+                    ask_price REAL,
+                    mid_price REAL,
+                    reference_price REAL,
+                    spread_cost REAL NOT NULL DEFAULT 0,
+                    price_impact_cost REAL NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL,
+                    broker_deal_id TEXT,
+                    quote_json TEXT NOT NULL DEFAULT '{}',
+                    filled_at TEXT NOT NULL,
+                    UNIQUE(source, broker_deal_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_fill_ledger_time ON fill_ledger(filled_at);
+                CREATE INDEX IF NOT EXISTS idx_fill_ledger_strategy_time ON fill_ledger(strategy_id,filled_at);
                 CREATE TABLE IF NOT EXISTS acceptance_evidence (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     strategy_id TEXT NOT NULL,
@@ -458,6 +484,32 @@ class TradingStore:
             }.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE order_intents ADD COLUMN {name} {definition}")
+            connection.execute(
+                """INSERT INTO fill_ledger
+                (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,
+                 reference_price,source,quote_json,filled_at)
+                SELECT f.intent_id,i.strategy_id,i.symbol,i.side,f.quantity,f.price,
+                CASE WHEN i.symbol GLOB 'US.*[0-9][CP][0-9]*' THEN 100 ELSE 1 END,
+                f.fees,json_extract(i.metadata_json,'$.reference_price'),'SHADOW',f.quote_json,f.created_at
+                FROM shadow_fills f JOIN order_intents i ON i.id=f.intent_id
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM fill_ledger l WHERE l.source='SHADOW' AND l.intent_id=f.intent_id
+                    AND l.quantity=f.quantity AND l.price=f.price AND l.filled_at=f.created_at
+                )"""
+            )
+            connection.execute(
+                """INSERT INTO fill_ledger
+                (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,
+                 reference_price,source,quote_json,filled_at)
+                SELECT intent.id,intent.strategy_id,intent.symbol,intent.side,intent.filled_quantity,
+                intent.average_fill_price,
+                CASE WHEN intent.symbol GLOB 'US.*[0-9][CP][0-9]*' THEN 100 ELSE 1 END,
+                intent.fees,json_extract(intent.metadata_json,'$.reference_price'),
+                'LEGACY_INTENT_AGGREGATE','{}',intent.updated_at
+                FROM order_intents intent
+                WHERE intent.filled_quantity > 0
+                AND NOT EXISTS (SELECT 1 FROM fill_ledger l WHERE l.intent_id=intent.id)"""
+            )
             connection.execute(
                 """INSERT INTO order_state_events
                 (intent_id,previous_status,new_status,source,broker_order_id,filled_quantity,
@@ -772,6 +824,13 @@ class TradingStore:
             ).fetchone()
             return dict(row) if row else None
 
+    def intent_by_broker_order(self, broker_order_id: str) -> dict | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM order_intents WHERE broker_order_id=?", (str(broker_order_id),)
+            ).fetchone()
+            return dict(row) if row else None
+
     def submitted_notional_since(self, iso_timestamp: str, side: str | None = None) -> float:
         side_filter = " AND side=?" if side else ""
         parameters = (iso_timestamp, side) if side else (iso_timestamp,)
@@ -792,14 +851,28 @@ class TradingStore:
     ) -> None:
         with self.connection() as connection:
             previous = connection.execute(
-                "SELECT id,status,filled_quantity,average_fill_price FROM order_intents WHERE broker_order_id=?",
+                "SELECT id,status,filled_quantity,average_fill_price,fees FROM order_intents WHERE broker_order_id=?",
                 (str(broker_order_id),),
             ).fetchone()
+            previous_qty = float(previous["filled_quantity"] or 0) if previous else 0.0
             connection.execute(
                 """UPDATE order_intents SET status=?,filled_quantity=?,average_fill_price=?,fees=?,
                 last_broker_update=?,updated_at=? WHERE broker_order_id=?""",
                 (status, filled_quantity, average_fill_price, fees, self.now(), self.now(), str(broker_order_id)),
             )
+            delta = float(filled_quantity or 0) - previous_qty
+            if previous and delta > 0:
+                intent = connection.execute("SELECT * FROM order_intents WHERE id=?", (previous["id"],)).fetchone()
+                metadata = json.loads(intent["metadata_json"] or "{}")
+                connection.execute(
+                    """INSERT OR IGNORE INTO fill_ledger
+                    (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,reference_price,source,quote_json,filled_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (intent["id"], intent["strategy_id"], intent["symbol"], intent["side"], delta,
+                     average_fill_price, float(metadata.get("multiplier", 100 if "C" in intent["symbol"] or "P" in intent["symbol"] else 1)),
+                     max(0.0, float(fees or 0) - float(previous["fees"] or 0)),
+                     metadata.get("reference_price"), "BROKER_POLL_DIFF", "{}", self.now()),
+                )
             if previous and (
                 previous["status"] != status
                 or float(previous["filled_quantity"]) != float(filled_quantity)
@@ -1794,9 +1867,51 @@ class TradingStore:
                 "SELECT * FROM reconciliation_reports ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()]
 
+    def record_fill(
+        self, intent_id: int, quantity: float, price: float, fees: float,
+        *, source: str, quote: dict | None = None, broker_deal_id: str | None = None,
+        filled_at: str | None = None, reference_price: float | None = None,
+        multiplier: float = 1.0,
+    ) -> int | None:
+        intent = self.intent(intent_id)
+        if not intent or quantity <= 0 or price <= 0:
+            return None
+        quote = quote or {}
+        bid = float(quote.get("bid_price") or 0)
+        ask = float(quote.get("ask_price") or 0)
+        mid = (bid + ask) / 2 if bid > 0 and ask >= bid else None
+        direction = 1 if str(intent["side"]).upper() == "BUY" else -1
+        multiplier = float(multiplier or 1.0)
+        spread_cost = max(0.0, ask - bid) / 2 * quantity * multiplier if mid else 0.0
+        price_impact = max(0.0, (price - mid) * direction * quantity * multiplier) if mid else 0.0
+        reference = reference_price if reference_price and reference_price > 0 else None
+        payload = json.dumps(quote, separators=(",", ":"), default=str)
+        timestamp = filled_at or self.now()
+        with self.connection() as connection:
+            if broker_deal_id:
+                existing = connection.execute(
+                    "SELECT id FROM fill_ledger WHERE source=? AND broker_deal_id=?",
+                    (source, str(broker_deal_id)),
+                ).fetchone()
+                if existing:
+                    return int(existing["id"])
+            cursor = connection.execute(
+                """INSERT INTO fill_ledger
+                (intent_id,strategy_id,symbol,side,quantity,price,multiplier,commission,
+                 regulatory_fee,fee_total,bid_price,ask_price,mid_price,reference_price,
+                 spread_cost,price_impact_cost,source,broker_deal_id,quote_json,filled_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (intent_id, intent["strategy_id"], intent["symbol"], intent["side"],
+                 quantity, price, multiplier, fees, 0.0, fees, bid or None, ask or None,
+                 mid, reference, spread_cost, price_impact, source,
+                 str(broker_deal_id) if broker_deal_id else None, payload, timestamp),
+            )
+            return int(cursor.lastrowid)
+
     def record_shadow_fill(
         self, intent_id: int, quantity: float, price: float, fees: float, quote: dict,
     ) -> None:
+        self.record_fill(intent_id, quantity, price, fees, source="SHADOW", quote=quote)
         with self.connection() as connection:
             connection.execute(
                 """INSERT INTO shadow_fills(intent_id,quantity,price,fees,quote_json,created_at)
@@ -1804,6 +1919,26 @@ class TradingStore:
                 (intent_id, quantity, price, fees,
                  json.dumps(quote, separators=(",", ":"), default=str), self.now()),
             )
+
+    def fills(
+        self, start: str | None = None, end: str | None = None,
+        strategy_id: str | None = None, symbol: str | None = None, limit: int = 50_000,
+    ) -> list[dict]:
+        clauses, params = [], []
+        if start:
+            clauses.append("filled_at >= ?"); params.append(start)
+        if end:
+            clauses.append("filled_at < ?"); params.append(end)
+        if strategy_id:
+            clauses.append("strategy_id = ?"); params.append(strategy_id)
+        if symbol:
+            clauses.append("symbol = ?"); params.append(symbol)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                f"SELECT * FROM fill_ledger{where} ORDER BY filled_at,id LIMIT ?",
+                (*params, limit),
+            ).fetchall()]
 
     def shadow_fills(self, limit: int = 10_000) -> list[dict]:
         with self.connection() as connection:

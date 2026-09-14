@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 
 from futu import RET_OK, TradeDealHandlerBase, TradeOrderHandlerBase
 
@@ -42,7 +43,22 @@ class DealPushHandler(TradeDealHandlerBase):
         if code == RET_OK:
             for _, row in data.iterrows():
                 if str(row.get("trd_env", "")).upper().split(".")[-1] == "SIMULATE":
-                    self.store.operational_event("order_push", "DEAL_UPDATE", "HEALTHY", row.to_dict())
+                    payload = row.to_dict()
+                    order_id = str(row.get("order_id", ""))
+                    intent = self.store.intent_by_broker_order(order_id)
+                    if intent:
+                        qty = float(row.get("dealt_qty", row.get("qty", 0)) or 0)
+                        price = float(row.get("dealt_avg_price", row.get("price", 0)) or 0)
+                        deal_id = row.get("deal_id", row.get("dealId"))
+                        if qty > 0 and price > 0:
+                            self.store.record_fill(
+                                intent["id"], qty, price,
+                                float(row.get("commission", 0) or 0),
+                                source="BROKER_DEAL", broker_deal_id=str(deal_id) if deal_id else None,
+                                reference_price=json.loads(intent["metadata_json"] or "{}").get("reference_price"),
+                                multiplier=float(json.loads(intent["metadata_json"] or "{}").get("multiplier", 1)),
+                            )
+                    self.store.operational_event("order_push", "DEAL_UPDATE", "HEALTHY", payload)
         return code, data
 
 

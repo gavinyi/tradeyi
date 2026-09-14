@@ -46,6 +46,7 @@ navigation = {
         st.Page("pages/26_trade_diagnostics_center.py", title="交易诊断中心", icon=":material/troubleshoot:"),
         st.Page("pages/4_order_management.py", title="订单管理", icon=":material/receipt_long:"),
         st.Page("pages/12_trade_lifecycle.py", title="交易生命周期", icon=":material/account_tree:"),
+        st.Page("pages/30_performance_attribution.py", title="收益与交易成本", icon=":material/monitoring:"),
     ],
     "行情与资讯": [
         st.Page("pages/23_market_overview.py", title="市场与自选行情", icon=":material/monitoring:"),

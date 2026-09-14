@@ -6,6 +6,7 @@ import json
 import pandas as pd
 
 from .risk import OPTION_PATTERN
+from zoneinfo import ZoneInfo
 
 
 def equity_frame(store) -> pd.DataFrame:
@@ -94,6 +95,63 @@ def performance_report(store, broker) -> tuple[pd.DataFrame, pd.DataFrame, pd.Da
             "未实现盈亏": unrealized, "总盈亏": realized_pnl + unrealized,
         })
     return pd.DataFrame(summary_rows), detail, equity_frame(store)
+
+
+def performance_buckets(store, *, period: str = "daily", start: str | None = None, end: str | None = None) -> pd.DataFrame:
+    """Aggregate canonical fills by New York trading day/week/month."""
+    if period not in {"daily", "weekly", "monthly"}:
+        raise ValueError("period must be daily, weekly or monthly")
+    frame = pd.DataFrame(store.fills(start=start, end=end))
+    if frame.empty:
+        return pd.DataFrame()
+    frame["filled_at"] = pd.to_datetime(frame["filled_at"], utc=True, errors="coerce")
+    frame = frame.dropna(subset=["filled_at"]).copy()
+    local = frame["filled_at"].dt.tz_convert(ZoneInfo("America/New_York"))
+    if period == "daily":
+        frame["期间"] = local.dt.strftime("%Y-%m-%d")
+    elif period == "weekly":
+        frame["期间"] = local.dt.to_period("W-MON").astype(str)
+    else:
+        frame["期间"] = local.dt.strftime("%Y-%m")
+    frame["成交金额"] = frame["quantity"] * frame["price"] * frame["multiplier"]
+    frame["手续费"] = frame["fee_total"].astype(float)
+    frame["价差成本"] = frame["spread_cost"].astype(float)
+    frame["价格冲击"] = frame["price_impact_cost"].astype(float)
+    frame["方向"] = frame["side"].map({"BUY": 1, "SELL": -1}).fillna(0)
+    frame["现金流"] = -frame["方向"] * frame["成交金额"]
+    # FIFO realized P&L is assigned to the period in which the closing fill occurs.
+    lots: dict[tuple[str, str], deque] = defaultdict(deque)
+    realized = defaultdict(float)
+    for row in frame.sort_values(["filled_at", "id"]).itertuples():
+        key = (str(row.strategy_id), str(row.symbol))
+        qty, price, multiplier = float(row.quantity), float(row.price), float(row.multiplier)
+        if str(row.side).upper() == "BUY":
+            lots[key].append([qty, price, multiplier])
+            continue
+        remaining = qty
+        while remaining > 0 and lots[key]:
+            lot_qty, lot_price, lot_multiplier = lots[key][0]
+            matched = min(remaining, lot_qty)
+            realized[(str(row.期间), str(row.strategy_id))] += (
+                price - lot_price
+            ) * matched * min(multiplier, lot_multiplier)
+            remaining -= matched
+            lot_qty -= matched
+            if lot_qty <= 0:
+                lots[key].popleft()
+            else:
+                lots[key][0][0] = lot_qty
+    result = frame.groupby(["期间", "strategy_id"], as_index=False).agg(
+        成交笔数=("id", "count"), 成交金额=("成交金额", "sum"),
+        手续费=("手续费", "sum"), 价差成本=("价差成本", "sum"),
+        价格冲击=("价格冲击", "sum"), 净现金流=("现金流", "sum"),
+        行情覆盖率=("mid_price", lambda s: float(s.notna().mean())),
+    )
+    result["已实现盈亏"] = [realized[(str(p), str(s))] for p, s in zip(result["期间"], result["strategy_id"])]
+    result["可观测交易成本"] = result["手续费"] + result["价差成本"] + result["价格冲击"]
+    result["净收益"] = result["已实现盈亏"] - result["可观测交易成本"]
+    result["说明"] = "已实现盈亏按 FIFO；未平仓浮盈需结合期末行情估值"
+    return result.sort_values(["期间", "strategy_id"]).reset_index(drop=True)
 
 
 def strategy_attribution(store, broker) -> pd.DataFrame:
