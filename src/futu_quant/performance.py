@@ -7,6 +7,9 @@ import pandas as pd
 
 from .risk import OPTION_PATTERN
 from zoneinfo import ZoneInfo
+import math
+
+from .option_lifecycle import parse_option_code
 
 
 def equity_frame(store) -> pd.DataFrame:
@@ -152,6 +155,57 @@ def performance_buckets(store, *, period: str = "daily", start: str | None = Non
     result["净收益"] = result["已实现盈亏"] - result["可观测交易成本"]
     result["说明"] = "已实现盈亏按 FIFO；未平仓浮盈需结合期末行情估值"
     return result.sort_values(["期间", "strategy_id"]).reset_index(drop=True)
+
+
+def _period_label(value: pd.Timestamp, period: str) -> str:
+    local = value.tz_convert(ZoneInfo("America/New_York"))
+    if period == "daily":
+        return local.strftime("%Y-%m-%d")
+    if period == "weekly":
+        return str(local.to_period("W-MON"))
+    return local.strftime("%Y-%m")
+
+
+def _period_metrics(equity: pd.DataFrame) -> dict[str, float]:
+    if equity.empty or "total_assets" not in equity:
+        return {"TWR": 0.0, "最大回撤": 0.0, "波动率": 0.0, "Sharpe": 0.0, "Sortino": 0.0}
+    values = pd.to_numeric(equity["total_assets"], errors="coerce").dropna()
+    returns = values.pct_change().dropna()
+    if returns.empty:
+        return {"TWR": 0.0, "最大回撤": 0.0, "波动率": 0.0, "Sharpe": 0.0, "Sortino": 0.0}
+    curve = (1 + returns).cumprod()
+    drawdown = curve / curve.cummax() - 1
+    downside = returns[returns < 0]
+    volatility = float(returns.std(ddof=1) or 0)
+    downside_dev = float(downside.std(ddof=1) or 0)
+    return {
+        "TWR": float(curve.iloc[-1] - 1),
+        "最大回撤": float(drawdown.min()),
+        "波动率": volatility,
+        "Sharpe": float(returns.mean() / volatility * math.sqrt(252)) if volatility else 0.0,
+        "Sortino": float(returns.mean() / downside_dev * math.sqrt(252)) if downside_dev else 0.0,
+    }
+
+
+def performance_dashboard_data(store, broker=None, *, period: str = "daily") -> dict[str, pd.DataFrame | dict]:
+    """Return mature-dashboard datasets: fills, costs, equity risk, and coverage."""
+    buckets = performance_buckets(store, period=period)
+    fills = pd.DataFrame(store.fills())
+    if not fills.empty:
+        fills["期权结构"] = fills["symbol"].map(
+            lambda code: (parse_option_code(str(code)).option_type if parse_option_code(str(code)) else "股票/ETF")
+        )
+        fills["标的"] = fills["symbol"].map(
+            lambda code: parse_option_code(str(code)).underlying if parse_option_code(str(code)) else str(code)
+        )
+    equity = pd.DataFrame(store.equity_history())
+    if not equity.empty:
+        equity["created_at"] = pd.to_datetime(equity["created_at"], utc=True, errors="coerce")
+        equity = equity.dropna(subset=["created_at"])
+        equity["期间"] = equity["created_at"].map(lambda value: _period_label(value, period))
+    metrics = _period_metrics(equity)
+    metrics["费用覆盖率"] = float(fills["mid_price"].notna().mean()) if not fills.empty else 0.0
+    return {"buckets": buckets, "fills": fills, "equity": equity, "metrics": metrics}
 
 
 def strategy_attribution(store, broker) -> pd.DataFrame:
