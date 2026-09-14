@@ -198,7 +198,7 @@ def performance_dashboard_data(store, broker=None, *, period: str = "daily") -> 
         fills["标的"] = fills["symbol"].map(
             lambda code: parse_option_code(str(code)).underlying if parse_option_code(str(code)) else str(code)
         )
-    equity = pd.DataFrame(store.equity_history())
+    equity = pd.DataFrame(store.equity_history(limit=5_000))
     if not equity.empty:
         equity["created_at"] = pd.to_datetime(equity["created_at"], utc=True, errors="coerce")
         equity = equity.dropna(subset=["created_at"])

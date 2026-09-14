@@ -27,6 +27,13 @@ frame = pd.DataFrame(data["buckets"])
 equity = pd.DataFrame(data["equity"])
 fills = pd.DataFrame(data["fills"])
 metrics = data["metrics"]
+# 权益快照可能累计数万条；图表和表格只展示降采样后的最近 2,000 条，
+# KPI 仍使用完整快照计算，避免首次打开页面阻塞浏览器。
+if len(equity) > 2000:
+    step = max(1, len(equity) // 1800)
+    equity_display = equity.iloc[::step].tail(2000).copy()
+else:
+    equity_display = equity.copy()
 if frame.empty:
     st.info("当前还没有可统计的逐笔成交数据。")
     st.stop()
@@ -48,10 +55,11 @@ chart = frame.groupby("期间", as_index=False)[["手续费", "价差成本", "�
 st.bar_chart(chart)
 
 st.subheader("权益曲线与回撤")
-if not equity.empty:
-    curve = equity.set_index("created_at")[["total_assets"]]
+if not equity_display.empty:
+    curve = equity_display.set_index("created_at")[["total_assets"]]
     st.line_chart(curve)
-    st.dataframe(equity[["created_at", "total_assets", "cash", "market_value", "期间"]], hide_index=True)
+    with st.expander("查看权益快照明细", expanded=False):
+        st.dataframe(equity_display[["created_at", "total_assets", "cash", "market_value", "期间"]], hide_index=True)
 else:
     st.info("暂无权益快照，暂不能计算时间加权收益和回撤。")
 
