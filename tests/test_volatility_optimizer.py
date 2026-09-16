@@ -648,15 +648,43 @@ def test_saved_campaign_entry_quality_gate_blocks_stale_low_score():
 def test_saved_campaign_entry_quality_gate_allows_liquid_positive_edge():
     allowed, reason, _ = volatility_entry_quality_allowed({
         "adaptive_risk_tier": "强波动精选",
-        "volatility_quality_score": 61,
+        "volatility_quality_score": 71,
         "spread_pct": 3.0,
         "option_open_interest": 2000,
         "volume": 200,
         "model_expected_return": .05,
+        "estimated_total_cost_pct": .01,
     })
 
     assert allowed
     assert "通过" in reason
+
+
+def test_entry_quality_rejects_wide_spread_and_low_return_to_cost():
+    allowed, reason, checks = volatility_entry_quality_allowed({
+        "volatility_quality_score": 75,
+        "spread_pct": 10.1,
+        "option_open_interest": 2000,
+        "volume": 200,
+        "model_expected_return": .05,
+        "estimated_total_cost_pct": .03,
+    })
+    assert not allowed
+    assert "价差" in reason
+    assert checks["estimated_total_cost_pct"] == .03
+
+
+def test_entry_quality_requires_two_times_cost():
+    allowed, reason, _ = volatility_entry_quality_allowed({
+        "volatility_quality_score": 75,
+        "spread_pct": 3.0,
+        "option_open_interest": 2000,
+        "volume": 200,
+        "model_expected_return": .03,
+        "estimated_total_cost_pct": .02,
+    })
+    assert not allowed
+    assert "2倍" in reason
 
 
 class _IntentStore:

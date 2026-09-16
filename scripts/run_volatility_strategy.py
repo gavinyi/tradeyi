@@ -229,7 +229,7 @@ def run_once(reconcile: bool = True) -> None:
         needs_expiry_roll = pd.isna(expiry) or expiry.date() <= date.today()
         quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
             campaign,
-            default_min_score=float(campaign.get("minimum_entry_quality_score", 54)),
+            default_min_score=max(70.0, float(campaign.get("minimum_entry_quality_score", 70))),
             default_min_expected_return=float(
                 campaign.get("minimum_model_expected_return", .02)
             ),

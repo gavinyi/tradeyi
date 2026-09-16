@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from futu_quant.broker import BrokerError, FutuPaperBroker
-from futu_quant.config import Settings, load_gamma_campaigns
+from futu_quant.config import Settings, load_gamma_campaigns, load_volatility_campaigns
 from futu_quant.execution import ExecutionManager
 from futu_quant.combo_analytics import combo_market_snapshot
 from futu_quant.combo_execution import (
@@ -1012,6 +1012,22 @@ def run_campaign(
             print(f"{code}: BLOCKED ({block_reason})")
             return
         option_positions = positions[positions["code"].astype(str).str.contains(r"\d{6}[CP]\d+$", regex=True)] if not positions.empty else positions
+        same_underlying_structures = {
+            str(item.get("structure") or "LONG_OPTION")
+            for item in executor.store.option_combos(limit=500)
+            if item.get("strategy_id") == "volatility_long_gamma"
+            and item.get("status") in {"OPEN", "EXECUTING", "CLOSING"}
+            and str(item.get("underlying", "")) == str(campaign.get("underlying", ""))
+        } if trigger_mode == "VOLATILITY" else set()
+        current_structure = str(campaign.get("structure") or "LONG_OPTION")
+        if trigger_mode == "VOLATILITY" and quantity <= 0 and current_structure not in same_underlying_structures:
+            if len(same_underlying_structures) >= 2:
+                record_pretrade_block("UNDERLYING_STRUCTURE_LIMIT", "同一标的最多允许 2 个期权结构", {
+                    "underlying": campaign.get("underlying"),
+                    "active_structures": sorted(same_underlying_structures),
+                    "max_structures": 2,
+                })
+                return
         option_codes = option_positions["code"].tolist() if not option_positions.empty else []
         option_quotes = broker.snapshots(option_codes) if option_codes else option_positions
         greeks = portfolio_greeks(option_positions, option_quotes)
@@ -1031,7 +1047,7 @@ def run_campaign(
         if trigger_mode == "VOLATILITY":
             quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
                 campaign,
-                default_min_score=float(campaign.get("minimum_entry_quality_score", 55)),
+                default_min_score=max(70.0, float(campaign.get("minimum_entry_quality_score", 70))),
                 default_min_expected_return=float(
                     campaign.get("minimum_model_expected_return", .02)
                 ),

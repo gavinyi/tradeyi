@@ -241,7 +241,7 @@ def volatility_direction_size_factor(regime: dict[str, object]) -> tuple[float, 
 def volatility_entry_quality_allowed(
     campaign: dict[str, object],
     *,
-    default_min_score: float = 54.0,
+    default_min_score: float = 70.0,
     default_min_expected_return: float = 0.02,
 ) -> tuple[bool, str, dict[str, float]]:
     """Final pre-trade quality gate for saved volatility campaigns.
@@ -255,10 +255,10 @@ def volatility_entry_quality_allowed(
         signal_active="动态" in tier or "强" in tier,
         strong_signal="强" in tier,
     )
-    min_score = float(campaign.get(
+    min_score = max(70.0, float(campaign.get(
         "minimum_entry_quality_score",
-        54.0 if "强波动" in tier else 58.0 if "动态" in tier else default_min_score,
-    ) or default_min_score)
+        default_min_score,
+    ) or default_min_score))
     configured_min_expected = float(campaign.get(
         "minimum_model_expected_return", default_min_expected_return,
     ) or default_min_expected_return)
@@ -274,7 +274,7 @@ def volatility_entry_quality_allowed(
     spread = market_number(campaign.get("spread_pct"), 100.0)
     oi = market_number(campaign.get("option_open_interest"), 0.0)
     volume = market_number(campaign.get("volume"), 0.0)
-    max_spread = float(campaign.get("maximum_entry_spread_pct", 6.0) or 6.0)
+    max_spread = min(10.0, float(campaign.get("maximum_entry_spread_pct", 10.0) or 10.0))
     min_oi = float(campaign.get("minimum_entry_open_interest", 800) or 800)
     min_volume = float(campaign.get("minimum_entry_volume", 10) or 10)
     checks = {
@@ -292,6 +292,17 @@ def volatility_entry_quality_allowed(
     # solely because the historical field is absent.
     if expected_return is not None and expected < min_expected:
         failed.append(f"模型预期收益 {expected:.2%} 低于 {min_expected:.2%}")
+    cost_multiple = market_number(campaign.get("expected_return_to_cost", campaign.get("model_expected_return_to_cost")), 0.0)
+    estimated_cost = market_number(campaign.get("estimated_total_cost_pct"), 0.0)
+    if estimated_cost <= 0:
+        # Fail closed when a campaign has no explicit cost estimate: use the
+        # quoted percentage spread plus a conservative 1% round-trip fee/slippage allowance.
+        estimated_cost = spread / 100.0 + 0.01
+    cost_multiple = expected / estimated_cost if estimated_cost > 0 else 0.0
+    checks["expected_return_to_cost"] = cost_multiple
+    checks["estimated_total_cost_pct"] = estimated_cost
+    if expected < estimated_cost * 2.0:
+        failed.append(f"预期收益 {expected:.2%} 未达到预计总成本 {estimated_cost:.2%} 的2倍")
     if spread > max_spread:
         failed.append(f"价差 {spread:.1f}% 超过 {max_spread:.1f}%")
     if oi < min_oi:
