@@ -110,10 +110,11 @@ def scan_volatility_watchlist(
         pass
     total_symbols = len(scan_symbols)
     for index, symbol in enumerate(scan_symbols, 1):
-        store.heartbeat(
-            "volatility_scanner", "SCANNING",
-            f"正在扫描 {index}/{total_symbols}：{symbol}", os.getpid(),
-        )
+        if index == 1 or index == total_symbols or index % 10 == 0:
+            store.heartbeat(
+                "volatility_scanner", "SCANNING",
+                f"正在扫描 {index}/{total_symbols}：{symbol}", os.getpid(),
+            )
         try:
             if store.get_setting(f"volatility_scanner_paused:{symbol}", "false") == "true":
                 continue
@@ -122,7 +123,10 @@ def scan_volatility_watchlist(
                 reason = "未取得正股实时行情，跳过本轮扫描"
                 result = {"symbol": symbol, "active": False, "reason": reason}
                 results.append(result)
-                store.decision("volatility_scanner", symbol, "BLOCKED", reason, result)
+                store.decision_if_changed(
+                    "volatility_scanner", symbol, "BLOCKED", reason, result,
+                    repeat_after_seconds=900,
+                )
                 continue
             bars = _timed_call(lambda: broker.candles(symbol, count=120))
             profile = volatility_threshold_profile(bars)
@@ -148,8 +152,12 @@ def scan_volatility_watchlist(
                 lifecycle = "信号解除"
             else:
                 lifecycle = "等待触发"
-            store.set_setting(f"volatility_signal_active:{symbol}", str(bool(regime["active"])).lower())
-            store.set_setting(f"volatility_signal_z:{symbol}", str(regime["zscore_20d"]))
+            active_value = str(bool(regime["active"])).lower()
+            z_value = str(regime["zscore_20d"])
+            if store.get_setting(f"volatility_signal_active:{symbol}", "") != active_value:
+                store.set_setting(f"volatility_signal_active:{symbol}", active_value)
+            if store.get_setting(f"volatility_signal_z:{symbol}", "") != z_value:
+                store.set_setting(f"volatility_signal_z:{symbol}", z_value)
             result = {
                 "symbol": symbol, "active": bool(regime["active"]),
                 "reason": regime["reason"], "checks": regime["checks"],
@@ -161,11 +169,11 @@ def scan_volatility_watchlist(
                 "volume_ratio": regime["volume_ratio"], "direction_score": regime["direction_score"],
             }
             results.append(result)
-            store.decision(
+            store.decision_if_changed(
                 "volatility_scanner", symbol,
                 "BUY" if regime["active"] else "HOLD",
                 "达到动态波动监测条件" if regime["active"] else regime["reason"],
-                result,
+                result, repeat_after_seconds=300,
             )
             if regime["active"]:
                 trigger_key = f"volatility_scanner_notified:{symbol}"

@@ -536,8 +536,11 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         return
     broker = FutuPaperBroker(settings)
     executor = ExecutionManager(broker, store)
-    if store.get_setting("order_push_connected", "false") == "true":
+    if store.get_setting("order_push_connected", "false") == "true" and due(
+        store, "last_run:heartbeat:order_push", 60, now,
+    ):
         store.heartbeat("order_push", "HEALTHY", "推送通道待命，轮询兜底正常", os.getpid())
+        mark_run(store, "last_run:heartbeat:order_push", now)
     run_task(store, alerts, "shadow_matching", lambda: match_shadow_orders(store, broker))
     if due(store, "last_run:equity_snapshot", 60, now):
         try:
@@ -700,7 +703,10 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     elif "Earnings Gamma" in configured:
         store.heartbeat("earnings_gamma", "HEALTHY", "等待美股常规交易时段", os.getpid())
     if "Volatility Long Gamma" in configured and session.regular_open(now):
-        interval = max(10, int(os.getenv("GAMMA_INTERVAL_SECONDS", "30")))
+        # Keep active positions responsive, but do not rescan an empty campaign
+        # universe at the same high frequency as the exit monitor.
+        volatility_interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "120")))
+        interval = volatility_interval
         if due(store, "last_run:volatility_long_gamma", interval, now):
             run_task(
                 store, alerts, "volatility_long_gamma",
@@ -741,7 +747,9 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
                 )
     elif "Core Satellite" in configured:
         store.heartbeat("core_satellite", "HEALTHY", core_reason, os.getpid())
-    store.heartbeat("trading_service", "HEALTHY", f"调度循环完成 · {now:%F %T %Z}", os.getpid())
+    if due(store, "last_run:heartbeat:trading_service", 60, now):
+        store.heartbeat("trading_service", "HEALTHY", f"调度循环完成 · {now:%F %T %Z}", os.getpid())
+        mark_run(store, "last_run:heartbeat:trading_service", now)
     if due(store, "last_run:maintenance", 300, now):
         run_task(store, alerts, "system_health", lambda: maintenance(store, broker))
         mark_run(store, "last_run:maintenance", now)

@@ -144,6 +144,7 @@ def _load_store_snapshot() -> dict[str, pd.DataFrame]:
     }
 
 
+@st.cache_data(ttl=30, max_entries=2, show_spinner=False)
 def _account_snapshot(broker) -> dict[str, Any]:
     try:
         info = broker.account_info()
@@ -727,7 +728,7 @@ def _render_risk_pulse(snapshot: dict[str, pd.DataFrame]) -> None:
         st.altair_chart(chart, width="stretch")
 
 
-@st.fragment(run_every="10s")
+@st.fragment(run_every="30s")
 def _render_live_dashboard(_broker, _account_page=None) -> None:
     snapshot = _load_store_snapshot()
     account = _account_snapshot(_broker)

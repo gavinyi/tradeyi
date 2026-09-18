@@ -193,9 +193,12 @@ if st.button("刷新账户", icon=":material/refresh:"):
     st.cache_data.clear()
 
 
-@st.cache_data(ttl=15, show_spinner=False)
-def load_account():
-    return broker.accounts(), broker.account_info(), broker.positions(), broker.orders(), broker.orders(True)
+@st.cache_data(ttl=30, max_entries=2, show_spinner=False)
+def load_account(include_history: bool = False):
+    # Keep the common account page responsive: historical orders are opt-in.
+    current = (broker.accounts(), broker.account_info(), broker.positions(), broker.orders())
+    history = broker.orders(True) if include_history else pd.DataFrame()
+    return (*current, history)
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -257,7 +260,7 @@ def shadow_positions_frame(store: TradingStore) -> pd.DataFrame:
 
 
 try:
-    accounts, info, positions, orders, history = load_account()
+    accounts, info, positions, orders, history = load_account(False)
     st.success(f"已连接富途 OpenD；发现 {len(accounts)} 个美股模拟账户")
     if not positions.empty and "code" in positions.columns:
         option_mask = positions["code"].map(is_option_symbol)
@@ -449,7 +452,16 @@ try:
                         st.cache_data.clear()
                         st.rerun()
     tabs[2].dataframe(chinese_columns(orders), hide_index=True)
-    tabs[3].dataframe(chinese_columns(history), hide_index=True)
+    with tabs[3]:
+        st.caption("历史订单查询可能较慢，仅在明确点击后访问 OpenD。")
+        if st.button("加载历史订单", key="load_main_history"):
+            _, _, _, _, history = load_account(True)
+            st.session_state.main_history = history
+        history = st.session_state.get("main_history", pd.DataFrame())
+        if history.empty:
+            st.info("尚未加载历史订单。")
+        else:
+            st.dataframe(chinese_columns(history), hide_index=True)
     with tabs[4]:
         intent_rows = store.intents()
         if not intent_rows:

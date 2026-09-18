@@ -10,7 +10,6 @@ set "UI_LOG=%DATA%\streamlit.log"
 set "RADAR_PID=%DATA%\volatility-radar.pid"
 set "RADAR_LOG=%DATA%\volatility-radar.log"
 if not exist "%PY%" (echo ERROR: project Python not found & exit /b 1)
-if not exist "%ROOT%scripts\run_radar_service.py" (echo ERROR: volatility radar script not found & exit /b 1)
 if not exist "%STREAMLIT%" (echo ERROR: project Streamlit not found & exit /b 1)
 if not exist "%DATA%" mkdir "%DATA%"
 cd /d "%ROOT%"

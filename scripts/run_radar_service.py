@@ -106,9 +106,11 @@ def main() -> None:
                         results = scan_volatility_watchlist(broker, store, symbols)
                         scan_duration = time.monotonic() - scan_started
                         consecutive_errors = 0
-                        next_wait_seconds = adaptive_interval_seconds(
+                        next_wait_seconds = max(300, adaptive_interval_seconds(
                             len(symbols), scan_duration
-                        )
+                        ))
+                        # Do not duplicate the unified service's execution scan;
+                        # the radar is a lower-frequency discovery process.
                         state = RadarScheduleState.build(
                             symbol_count=len(symbols),
                             scan_duration_seconds=scan_duration,
