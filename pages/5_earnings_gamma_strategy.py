@@ -679,9 +679,13 @@ with config_tab:
         selected_code = st.selectbox("选择合约", candidates["code"].tolist())
         selected = candidates[candidates["code"] == selected_code].iloc[0]
         selected_option_type = str(selected["option_type"])
+        @st.cache_data(ttl=300, max_entries=20, show_spinner=False)
+        def load_rv(code: str) -> float:
+            return realized_volatility(broker.candles(code, count=90))
+
         risk_analysis = contract_analysis(
             selected, float(st.session_state.gamma_spot),
-            realized_volatility(broker.candles(underlying, count=90)), store,
+            load_rv(underlying), store,
             peer_contracts=candidates,
         )
         with st.container(horizontal=True):
