@@ -958,6 +958,8 @@ with config_tab:
                         )
                     else:
                         option_types = [automatic_type]
+                # Quote only the nearest usable slice; full chains can contain thousands of contracts.
+                chain = chain.sort_values("strike_price").head(600)
                 quotes = broker.snapshots_tolerant(chain["code"].astype(str).tolist())
                 if quotes.empty:
                     raise ValueError("期权链存在，但没有取得任何可用实时行情。")
