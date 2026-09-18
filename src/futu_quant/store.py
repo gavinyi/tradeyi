@@ -2029,6 +2029,8 @@ class TradingStore:
         reference = reference_price if reference_price and reference_price > 0 else None
         payload = json.dumps(quote, separators=(",", ":"), default=str)
         timestamp = filled_at or self.now()
+        batch_metadata = json.loads(intent.get("metadata_json") or "{}")
+        batch_id = batch_metadata.get("batch_id")
         with self.connection() as connection:
             if broker_deal_id:
                 existing = connection.execute(
@@ -2057,7 +2059,27 @@ class TradingStore:
                  mid, reference, spread_cost, price_impact, source,
                  str(broker_deal_id) if broker_deal_id else None, payload, timestamp),
             )
-            return int(cursor.lastrowid)
+            fill_id = int(cursor.lastrowid)
+        if batch_id and fill_id:
+            if str(intent["side"]).upper() == "BUY":
+                self.append_batch_lot(
+                    str(batch_id), quantity=quantity, price=price, opened_at=timestamp,
+                    fill_id=fill_id, intent_id=intent_id,
+                    initial_risk=float(batch_metadata.get("initial_risk") or 0),
+                    metadata={"source": source, "multiplier": multiplier},
+                )
+            else:
+                try:
+                    self.allocate_exit(
+                        str(batch_id), quantity=quantity, close_price=price,
+                        policy=str(batch_metadata.get("exit_allocation_policy", "FIFO")),
+                        close_intent_id=intent_id, close_fill_id=fill_id,
+                    )
+                except ValueError:
+                    self.audit("BATCH_EXIT_ALLOCATION_FAILED", {
+                        "batch_id": batch_id, "fill_id": fill_id, "quantity": quantity,
+                    }, intent["strategy_id"])
+        return fill_id
 
     def record_shadow_fill(
         self, intent_id: int, quantity: float, price: float, fees: float, quote: dict,

@@ -1265,6 +1265,7 @@ def run_campaign(
                 {"multiplier": float(leg_quote.get("option_contract_multiplier", 100)),
                  "reason": reason, "urgent": True, "structure": campaign.get("structure"),
                  "combo_primary": code, "batch_id": campaign_state.get("selected_exit_tranche_id") or campaign_state.get("active_batch_id"),
+                 "exit_allocation_policy": campaign.get("exit_allocation_policy", "FIFO"),
                  "oco_id": campaign_state.get("active_oco_id"),
                  "partial_exit_tier": partial_exit_tier,
                  "planned_order_quantity": exit_quantity,
