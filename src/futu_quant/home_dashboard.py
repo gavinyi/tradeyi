@@ -145,11 +145,11 @@ def _load_store_snapshot() -> dict[str, pd.DataFrame]:
 
 
 @st.cache_data(ttl=30, max_entries=2, show_spinner=False)
-def _account_snapshot(broker) -> dict[str, Any]:
+def _account_snapshot(_broker) -> dict[str, Any]:
     store = TradingStore()
     try:
-        info = broker.account_info()
-        positions = broker.positions()
+        info = _broker.account_info()
+        positions = _broker.positions()
         store.save_broker_snapshot("account_info", info)
         store.save_broker_snapshot("positions", positions)
         return {"ok": True, "error": "", "info": info, "positions": positions}
