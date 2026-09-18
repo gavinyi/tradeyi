@@ -2070,6 +2070,15 @@ class TradingStore:
             fill_id = int(cursor.lastrowid)
         if batch_id and fill_id:
             if str(intent["side"]).upper() == "BUY":
+                self.create_position_batch(
+                    str(batch_id), strategy_id=intent["strategy_id"], symbol=intent["symbol"],
+                    quantity=quantity, entry_price=price, opened_at=timestamp,
+                    underlying=batch_metadata.get("underlying"),
+                    structure=batch_metadata.get("structure"),
+                    initial_risk=float(batch_metadata.get("initial_risk") or 0),
+                    allocation_policy=str(batch_metadata.get("exit_allocation_policy", "FIFO")),
+                    metadata=batch_metadata,
+                )
                 self.append_batch_lot(
                     str(batch_id), quantity=quantity, price=price, opened_at=timestamp,
                     fill_id=fill_id, intent_id=intent_id,

@@ -1087,19 +1087,10 @@ def run_campaign(
             )
             stop_price = entry_unit_price * (1 - float(campaign.get("stop_loss", .35)))
             initial_risk = max(0.0, (entry_unit_price - stop_price) * multiplier * per_stage)
-            executor.store.create_position_batch(
-                batch_id, strategy_id=strategy_id,
-                campaign_id=str(campaign.get("campaign_id", code)), symbol=code,
-                quantity=per_stage, entry_price=entry_unit_price, opened_at=now.isoformat(),
-                underlying=str(campaign.get("underlying", "")),
-                structure=str(campaign.get("structure", "LONG_OPTION")),
-                initial_risk=initial_risk,
-                allocation_policy=str(campaign.get("exit_allocation_policy", "FIFO")),
-                metadata={"entry_cycle": int(campaign_state.get("entry_cycle", 0)),
-                          "initial_risk_basis": "premium_to_stop"},
-            )
+            # The batch is created on the first confirmed fill, not at intent time;
+            # rejected/unfilled orders must not create phantom risk lots.
             campaign_state["active_batch_id"] = batch_id
-            campaign_state.setdefault("initial_risk", initial_risk)
+            campaign_state["initial_risk"] = initial_risk
         if len(order_legs) > 1 and execution_mode != "SHADOW":
             active_combo_id = automatic_combo_id(
                 strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
