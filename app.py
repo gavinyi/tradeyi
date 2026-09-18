@@ -262,6 +262,13 @@ def shadow_positions_frame(store: TradingStore) -> pd.DataFrame:
 try:
     accounts, info, positions, orders, history = load_account(False)
     if info.empty or positions.empty:
+        cached_accounts = store.broker_snapshot("accounts")
+        cached_orders = store.broker_snapshot("orders")
+        if not accounts.empty and cached_accounts:
+            accounts = pd.DataFrame(cached_accounts["payload"])
+        if orders.empty and cached_orders:
+            orders = pd.DataFrame(cached_orders["payload"])
+    if info.empty or positions.empty:
         cached_info = store.broker_snapshot("account_info")
         cached_positions = store.broker_snapshot("positions")
         if info.empty and cached_info:
@@ -484,7 +491,9 @@ try:
             })
             st.dataframe(intent_table.drop(columns=["id"], errors="ignore"), hide_index=True)
             st.caption("同一策略与交易意图键只能提交一次；REJECTED 表示被本地风控拦截。")
-    tabs[6].dataframe(chinese_columns(info), hide_index=True)
+    with tabs[6]:
+        st.dataframe(chinese_columns(info), hide_index=True)
+        st.caption("账户快照由统一交易服务周期采集；页面优先显示服务最新结果。")
     with tabs[5]:
         symbol = st.selectbox("标的", settings.watchlist)
         strategy_name = st.selectbox("策略", [*STRATEGIES, STRATEGY_NAME])

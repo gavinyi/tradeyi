@@ -546,8 +546,10 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         try:
             account = broker.account_info()
             positions = broker.positions()
+            store.save_broker_snapshot("accounts", broker.accounts())
             store.save_broker_snapshot("account_info", account)
             store.save_broker_snapshot("positions", positions)
+            store.save_broker_snapshot("orders", broker.orders())
             if not account.empty:
                 row = account.iloc[0]
                 store.record_equity(
