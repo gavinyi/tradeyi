@@ -146,12 +146,19 @@ def _load_store_snapshot() -> dict[str, pd.DataFrame]:
 
 @st.cache_data(ttl=30, max_entries=2, show_spinner=False)
 def _account_snapshot(broker) -> dict[str, Any]:
+    store = TradingStore()
     try:
         info = broker.account_info()
         positions = broker.positions()
+        store.save_broker_snapshot("account_info", info)
+        store.save_broker_snapshot("positions", positions)
+        return {"ok": True, "error": "", "info": info, "positions": positions}
     except Exception as exc:  # noqa: BLE001 - homepage must remain usable during OpenD faults
-        return {"ok": False, "error": str(exc), "info": pd.DataFrame(), "positions": pd.DataFrame()}
-    return {"ok": True, "error": "", "info": info, "positions": positions}
+        snapshots = {key: store.broker_snapshot(key) for key in ("account_info", "positions")}
+        info = pd.DataFrame((snapshots["account_info"] or {}).get("payload", []))
+        positions = pd.DataFrame((snapshots["positions"] or {}).get("payload", []))
+        captured = [item["captured_at"] for item in snapshots.values() if item]
+        return {"ok": False, "error": f"{exc}；已回退到最近快照 {max(captured) if captured else '无'}", "info": info, "positions": positions}
 
 
 def _latest_data_age(snapshot: dict[str, pd.DataFrame]) -> tuple[str, str]:

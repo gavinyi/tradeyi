@@ -408,6 +408,12 @@ class TradingStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_fill_ledger_time ON fill_ledger(filled_at);
                 CREATE INDEX IF NOT EXISTS idx_fill_ledger_strategy_time ON fill_ledger(strategy_id,filled_at);
+                CREATE TABLE IF NOT EXISTS broker_snapshots (
+                    snapshot_key TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    captured_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_broker_snapshots_time ON broker_snapshots(captured_at);
                 CREATE TABLE IF NOT EXISTS acceptance_evidence (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     strategy_id TEXT NOT NULL,
@@ -1144,6 +1150,24 @@ class TradingStore:
                 updated_at=excluded.updated_at""",
                 (strategy_id, status, message, pid, self.now()),
             )
+
+    def save_broker_snapshot(self, key: str, value) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT INTO broker_snapshots(snapshot_key,payload_json,captured_at)
+                VALUES(?,?,?) ON CONFLICT(snapshot_key) DO UPDATE SET
+                payload_json=excluded.payload_json,captured_at=excluded.captured_at""",
+                (key, _json_dumps(value.to_dict(orient="records") if hasattr(value, "to_dict") else value), self.now()),
+            )
+
+    def broker_snapshot(self, key: str) -> dict | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM broker_snapshots WHERE snapshot_key=?", (key,)
+            ).fetchone()
+        if not row:
+            return None
+        return {"key": row["snapshot_key"], "payload": json.loads(row["payload_json"]), "captured_at": row["captured_at"]}
 
     def heartbeats(self) -> list[dict]:
         with self.connection() as connection:

@@ -261,6 +261,15 @@ def shadow_positions_frame(store: TradingStore) -> pd.DataFrame:
 
 try:
     accounts, info, positions, orders, history = load_account(False)
+    if info.empty or positions.empty:
+        cached_info = store.broker_snapshot("account_info")
+        cached_positions = store.broker_snapshot("positions")
+        if info.empty and cached_info:
+            info = pd.DataFrame(cached_info["payload"])
+        if positions.empty and cached_positions:
+            positions = pd.DataFrame(cached_positions["payload"])
+        if info.empty or positions.empty:
+            st.warning("OpenD 当前不可用，暂无账户快照；请稍后重试。")
     st.success(f"已连接富途 OpenD；发现 {len(accounts)} 个美股模拟账户")
     if not positions.empty and "code" in positions.columns:
         option_mask = positions["code"].map(is_option_symbol)
