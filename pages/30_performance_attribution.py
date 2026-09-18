@@ -26,6 +26,9 @@ data = load_dashboard(period)
 frame = pd.DataFrame(data["buckets"])
 equity = pd.DataFrame(data["equity"])
 fills = pd.DataFrame(data["fills"])
+trades = pd.DataFrame(data.get("trades", []))
+excursion = pd.DataFrame(data.get("excursion", []))
+scale_effect = pd.DataFrame(data.get("scale_effect", []))
 metrics = data["metrics"]
 # 权益快照可能累计数万条；图表和表格只展示降采样后的最近 2,000 条，
 # KPI 仍使用完整快照计算，避免首次打开页面阻塞浏览器。
@@ -74,6 +77,18 @@ if not fills.empty:
 else:
     st.info("暂无逐笔成交明细。")
 st.dataframe(frame, hide_index=True, width="stretch")
+with st.expander("仓位生命周期与加仓/分批止盈效果", expanded=False):
+    if not trades.empty:
+        st.subheader("批次成交归因")
+        st.dataframe(trades, hide_index=True, width="stretch")
+    if not excursion.empty:
+        st.subheader("MFE / MAE / 捕获率 / R 倍数")
+        st.dataframe(excursion, hide_index=True, width="stretch")
+    if not scale_effect.empty:
+        st.subheader("加仓效果")
+        st.dataframe(scale_effect, hide_index=True, width="stretch")
+    if trades.empty and excursion.empty:
+        st.info("当前暂无可归因的批次级交易数据。")
 st.download_button(
     "下载统计 CSV", frame.to_csv(index=False).encode("utf-8-sig"),
     file_name=f"performance_{period}.csv", mime="text/csv",

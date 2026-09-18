@@ -34,7 +34,8 @@ from futu_quant.volatility_optimizer import (
     volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
     volatility_threshold_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
-    volatility_profit_capture_ratio, volatility_profit_lock_floor,
+    volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
+    volatility_batch_metrics,
 )
 from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.data_quality import (
@@ -767,6 +768,13 @@ def run_campaign(
             )
         )
         if partial_exit_quantity > 0 and partial_exit_reason:
+            batch = select_partial_exit_batch(
+                campaign_state.get("tranches") or [],
+                mode=str(campaign.get("partial_exit_mode", "FIFO")),
+            )
+            if batch:
+                partial_exit_reason += f"；批次={batch.get('tranche_id', 'unknown')}"
+                campaign_state["selected_exit_tranche_id"] = batch.get("tranche_id")
             action, reason = "SELL", partial_exit_reason
         else:
             protection_profile = volatility_profit_protection_profile(campaign, regime)
@@ -875,6 +883,12 @@ def run_campaign(
          "position_pnl_amount": position_pnl_amount,
          "profit_giveback": profit_giveback,
          "profit_capture_ratio": profit_capture_ratio,
+         "mae_pnl_ratio": float(campaign_state.get("mae_pnl_ratio", pnl_ratio)),
+         "r_multiple": (float(position_pnl_amount) / float(campaign_state.get("initial_risk", 0))
+                        if float(campaign_state.get("initial_risk", 0) or 0) > 0 else None),
+         "tranche_count": len(campaign_state.get("tranches") or []),
+         "selected_exit_tranche_id": campaign_state.get("selected_exit_tranche_id"),
+         "exit_allocation_policy": campaign.get("exit_allocation_policy", "FIFO"),
          "executable_mark": executable_mark,
          "validation_warnings": issues, "direction_reason": direction_reason,
          "direction_metrics": direction_metrics,

@@ -64,6 +64,59 @@ def _partial_exit_quantity(quantity: int, fraction: float) -> int:
     return min(planned, quantity - 1)
 
 
+def select_partial_exit_batch(
+    batches: list[dict], *, mode: str = "FIFO",
+) -> dict | None:
+    """Select the batch whose risk should be reduced first.
+
+    FIFO/LIFO are deterministic; RISK_PRIORITY exits the batch with the worst
+    current risk-adjusted return, while preserving the whole-position guard.
+    """
+    valid = [item for item in batches if int(item.get("quantity", 0) or 0) > 0]
+    if not valid:
+        return None
+    normalized = str(mode or "FIFO").upper()
+    if normalized == "LIFO":
+        return valid[-1]
+    if normalized in {"RISK", "RISK_PRIORITY", "RISK-FIRST"}:
+        return min(
+            valid,
+            key=lambda item: (
+                float(item.get("pnl_ratio", 0) or 0),
+                float(item.get("r_multiple", 0) or 0),
+                str(item.get("entry_time", "")),
+            ),
+        )
+    return valid[0]
+
+
+def batch_r_multiple(*, mark: float, entry_price: float, stop_price: float) -> float | None:
+    """Return realized/unrealized reward divided by initial per-unit risk."""
+    risk = float(entry_price) - float(stop_price)
+    if risk <= 0 or entry_price <= 0:
+        return None
+    return (float(mark) - float(entry_price)) / risk
+
+
+def volatility_batch_metrics(
+    *, mark: float, batch: dict, peak_mark: float | None = None,
+) -> dict:
+    entry = float(batch.get("entry_price", 0) or 0)
+    stop = float(batch.get("stop_price", 0) or 0)
+    peak = max(float(peak_mark or 0), entry, float(mark))
+    pnl = mark / entry - 1 if entry > 0 else 0.0
+    peak_pnl = peak / entry - 1 if entry > 0 else 0.0
+    return {
+        "pnl_ratio": pnl,
+        "peak_pnl_ratio": peak_pnl,
+        "mfe_pnl_ratio": peak_pnl,
+        "mae_pnl_ratio": min(float(batch.get("mae_pnl_ratio", pnl) or pnl), pnl),
+        "profit_capture_ratio": volatility_profit_capture_ratio(pnl, peak_pnl),
+        "r_multiple": batch_r_multiple(mark=mark, entry_price=entry, stop_price=stop),
+        "peak_mark": peak,
+    }
+
+
 def volatility_partial_exit_plan(
     *,
     quantity: int,
@@ -1090,7 +1143,7 @@ def sync_volatility_position_cycle(
         for key in (
             "position_opened_at", "peak", "entry_iv_actual",
             "entry_gamma_theta_efficiency_actual", "contraction_confirmations",
-            "pending_exit_reason", "partial_exit_tiers",
+            "pending_exit_reason", "partial_exit_tiers", "tranches",
         ):
             state.pop(key, None)
         state["previous_position_quantity"] = 0
@@ -1102,9 +1155,40 @@ def sync_volatility_position_cycle(
         state["entry_gamma_theta_efficiency_actual"] = float(current_efficiency)
         state["contraction_confirmations"] = 0
         state["partial_exit_tiers"] = []
+        state["tranches"] = [{
+            "tranche_id": f"entry-{now.strftime('%Y%m%d%H%M%S')}",
+            "entry_time": now.isoformat(), "entry_price": float(cost),
+            "stop_price": float(cost) * .65 if cost > 0 else 0.0,
+            "quantity": int(quantity), "peak_mark": float(last),
+            "mae_pnl_ratio": 0.0, "mfe_pnl_ratio": 0.0,
+        }]
         transition = "OPENED"
     else:
         state["peak"] = max(float(state.get("peak", cost)), float(last))
-        transition = "ACTIVE"
+        tranches = list(state.get("tranches") or [])
+        if quantity > previous_quantity:
+            added = quantity - previous_quantity
+            tranches.append({
+                "tranche_id": f"add-{now.strftime('%Y%m%d%H%M%S')}",
+                "entry_time": now.isoformat(), "entry_price": float(cost),
+                "stop_price": float(cost) * .65 if cost > 0 else 0.0,
+                "quantity": int(added), "peak_mark": float(last),
+                "mae_pnl_ratio": 0.0, "mfe_pnl_ratio": 0.0,
+            })
+        elif quantity < previous_quantity:
+            remaining = quantity
+            for tranche in tranches:
+                used = min(int(tranche.get("quantity", 0)), remaining)
+                tranche["quantity"] = used
+                remaining -= used
+            tranches = [item for item in tranches if int(item.get("quantity", 0)) > 0]
+        state["tranches"] = tranches
+        transition = "ADDED" if quantity > previous_quantity else "ACTIVE"
     state["previous_position_quantity"] = int(quantity)
+    if quantity > 0:
+        denominator = float(cost) * max(1, int(quantity))
+        state.setdefault("initial_risk", denominator * .35 if denominator > 0 else 0.0)
+        current_pnl = float(last) / float(cost) - 1 if cost > 0 else 0.0
+        state["mae_pnl_ratio"] = min(float(state.get("mae_pnl_ratio", current_pnl)), current_pnl)
+        state["mfe_pnl_ratio"] = max(float(state.get("mfe_pnl_ratio", current_pnl)), current_pnl)
     return transition

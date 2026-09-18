@@ -10,6 +10,7 @@ from futu_quant.volatility_optimizer import (
     volatility_profit_protection_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
     volatility_profit_capture_ratio, volatility_profit_lock_floor,
+    select_partial_exit_batch, batch_r_multiple, volatility_batch_metrics,
     volatility_time_decay_stop,
 )
 from futu_quant.volatility_roll import should_replace_campaign
@@ -405,6 +406,28 @@ def test_profit_protection_profile_uses_near_expiry_override():
     }
 
 
+def test_batch_exit_policy_and_r_multiple():
+    batches = [
+        {"tranche_id": "a", "quantity": 1, "pnl_ratio": .30, "r_multiple": 1.0},
+        {"tranche_id": "b", "quantity": 1, "pnl_ratio": -.10, "r_multiple": -.5},
+    ]
+    assert select_partial_exit_batch(batches, mode="FIFO")["tranche_id"] == "a"
+    assert select_partial_exit_batch(batches, mode="LIFO")["tranche_id"] == "b"
+    assert select_partial_exit_batch(batches, mode="RISK_PRIORITY")["tranche_id"] == "b"
+    assert batch_r_multiple(mark=1.2, entry_price=1.0, stop_price=.9) == 2.0
+
+
+def test_batch_metrics_capture_mfe_mae_and_r():
+    metrics = volatility_batch_metrics(
+        mark=1.1,
+        batch={"entry_price": 1.0, "stop_price": .9, "mae_pnl_ratio": -.2},
+        peak_mark=1.3,
+    )
+    assert metrics["mfe_pnl_ratio"] == .3
+    assert metrics["mae_pnl_ratio"] == -.2
+    assert metrics["r_multiple"] == 1.0
+
+
 def test_volatility_partial_profit_plan_skips_single_contract():
     qty, tier, reason = volatility_partial_exit_plan(
         quantity=1, pnl_ratio=.40, campaign_state={},
@@ -478,6 +501,8 @@ def test_new_volatility_position_cycle_resets_peak_and_entry_baselines():
     assert state["entry_gamma_theta_efficiency_actual"] == 1.25
     assert state["contraction_confirmations"] == 0
     assert state["previous_position_quantity"] == 1
+    assert len(state["tranches"]) == 1
+    assert state["mae_pnl_ratio"] <= 0
 
 
 def test_flat_volatility_position_clears_cycle_specific_state():

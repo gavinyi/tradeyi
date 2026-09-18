@@ -1169,6 +1169,124 @@ class TradingStore:
             return None
         return {"key": row["snapshot_key"], "payload": json.loads(row["payload_json"]), "captured_at": row["captured_at"]}
 
+    def append_batch_lot(
+        self, batch_id: str, *, quantity: float, price: float, opened_at: str | None = None,
+        fill_id: int | None = None, intent_id: int | None = None, initial_risk: float = 0.0,
+        metadata: dict | None = None,
+    ) -> None:
+        timestamp = opened_at or self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT INTO batch_lots
+                (batch_id,fill_id,intent_id,opened_at,open_price,open_qty,remaining_qty,initial_risk,metadata_json)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (batch_id, fill_id, intent_id, timestamp, price, quantity, quantity, initial_risk,
+                 _json_dumps(metadata or {})),
+            )
+
+    def allocate_exit(self, batch_id: str, *, quantity: float, close_price: float,
+                      policy: str = "FIFO", close_intent_id: int | None = None,
+                      close_fill_id: int | None = None) -> list[dict]:
+        if quantity <= 0:
+            return []
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM batch_lots WHERE batch_id=? AND remaining_qty>0 ORDER BY opened_at,id",
+                (batch_id,),
+            ).fetchall()
+            ordered = list(rows)
+            mode = str(policy or "FIFO").upper()
+            if mode == "LIFO":
+                ordered.reverse()
+            remaining, allocations = float(quantity), []
+            for row in ordered:
+                if remaining <= 0:
+                    break
+                allocated = min(remaining, float(row["remaining_qty"]))
+                pnl = (float(close_price) - float(row["open_price"])) * allocated
+                connection.execute(
+                    "UPDATE batch_lots SET remaining_qty=remaining_qty-? WHERE id=?",
+                    (allocated, row["id"]),
+                )
+                connection.execute(
+                    """INSERT INTO exit_allocations
+                    (batch_id,close_fill_id,close_intent_id,allocated_qty,open_price,close_price,realized_pnl,allocation_rank,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (batch_id, close_fill_id, close_intent_id, allocated, row["open_price"],
+                     close_price, pnl, len(allocations) + 1, self.now()),
+                )
+                allocations.append({"lot_id": row["id"], "quantity": allocated, "realized_pnl": pnl})
+                remaining -= allocated
+            if remaining > 0:
+                raise ValueError(f"批次 {batch_id} 可分配数量不足，剩余 {remaining:g}")
+            return allocations
+
+    def create_position_batch(
+        self, batch_id: str, *, strategy_id: str, symbol: str, quantity: float,
+        entry_price: float, opened_at: str | None = None, campaign_id: str | None = None,
+        underlying: str | None = None, structure: str | None = None,
+        combo_id: str | None = None, initial_risk: float = 0.0,
+        allocation_policy: str = "FIFO", metadata: dict | None = None,
+    ) -> None:
+        timestamp = opened_at or self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO position_batches
+                (batch_id,strategy_id,campaign_id,symbol,underlying,structure,combo_id,
+                 opened_at,status,allocation_policy,entry_qty,remaining_qty,entry_cost,
+                 initial_risk,metadata_json,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?,?,?,?)""",
+                (batch_id, strategy_id, campaign_id, symbol, underlying, structure, combo_id,
+                 timestamp, allocation_policy, quantity, quantity, entry_price, initial_risk,
+                 _json_dumps(metadata or {}), timestamp, timestamp),
+            )
+
+    def position_batches(self, strategy_id: str | None = None, symbol: str | None = None) -> list[dict]:
+        clauses, params = [], []
+        if strategy_id:
+            clauses.append("strategy_id=?"); params.append(strategy_id)
+        if symbol:
+            clauses.append("symbol=?"); params.append(symbol)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                f"SELECT * FROM position_batches{where} ORDER BY opened_at,id", params
+            ).fetchall()]
+
+    def update_batch_metrics(self, batch_id: str, *, remaining_qty: float | None = None,
+                             mfe_pnl_ratio: float | None = None, mae_pnl_ratio: float | None = None,
+                             r_multiple: float | None = None, status: str | None = None) -> None:
+        fields, params = [], []
+        for name, value in (("remaining_qty", remaining_qty), ("mfe_pnl_ratio", mfe_pnl_ratio),
+                            ("mae_pnl_ratio", mae_pnl_ratio), ("r_multiple", r_multiple), ("status", status)):
+            if value is not None:
+                fields.append(f"{name}=?"); params.append(value)
+        if not fields:
+            return
+        fields.append("updated_at=?"); params.append(self.now()); params.append(batch_id)
+        with self.connection() as connection:
+            connection.execute(f"UPDATE position_batches SET {', '.join(fields)} WHERE batch_id=?", params)
+
+    def arm_oco_group(self, oco_id: str, *, batch_id: str | None, strategy_id: str,
+                      symbol: str, quantity: float, take_profit_price: float | None,
+                      stop_loss_price: float | None) -> None:
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO oco_groups
+                (oco_id,batch_id,strategy_id,symbol,quantity,take_profit_price,stop_loss_price,status,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,'ARMED',?,?)""",
+                (oco_id, batch_id, strategy_id, symbol, quantity, take_profit_price, stop_loss_price, now, now),
+            )
+
+    def trigger_oco_group(self, oco_id: str, reason: str) -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE oco_groups SET status='TRIGGERED',trigger_reason=?,updated_at=? WHERE oco_id=? AND status='ARMED'",
+                (reason, self.now(), oco_id),
+            )
+            return cursor.rowcount > 0
+
     def heartbeats(self) -> list[dict]:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(
@@ -1919,6 +2037,15 @@ class TradingStore:
                 ).fetchone()
                 if existing:
                     return int(existing["id"])
+            if not broker_deal_id:
+                duplicate = connection.execute(
+                    """SELECT id FROM fill_ledger WHERE intent_id=? AND source=? AND side=?
+                    AND ABS(quantity-?) < 0.000001 AND ABS(price-?) < 0.000001
+                    AND ABS((julianday(filled_at)-julianday(?))*86400) < 30""",
+                    (intent_id, source, intent["side"], quantity, price, timestamp),
+                ).fetchone()
+                if duplicate:
+                    return int(duplicate["id"])
             cursor = connection.execute(
                 """INSERT INTO fill_ledger
                 (intent_id,strategy_id,symbol,side,quantity,price,multiplier,commission,

@@ -283,6 +283,9 @@ def scan_volatility_watchlist(
                             store, "volatility_default_minimum_locked_profit_strong", .10,
                         ),
                         "partial_profit_enabled": True,
+                        "exit_allocation_policy": str(store.get_setting(
+                            "volatility_default_exit_allocation_policy", "FIFO"
+                        ) or "FIFO").upper(),
                         "partial_profit_tier1": _setting_float(
                             store, "volatility_default_partial_profit_tier1", .18,
                         ),

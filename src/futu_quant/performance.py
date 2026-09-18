@@ -187,6 +187,52 @@ def _period_metrics(equity: pd.DataFrame) -> dict[str, float]:
     }
 
 
+def position_lifecycle_statistics(store, *, strategy_id: str | None = None) -> dict[str, pd.DataFrame]:
+    """Build auditable batch/lifecycle summaries from persisted fills and decisions."""
+    fills = pd.DataFrame(store.fills(strategy_id=strategy_id, limit=100_000))
+    decisions = pd.DataFrame(store.decisions(limit=100_000))
+    if fills.empty:
+        return {"trades": pd.DataFrame(), "excursion": pd.DataFrame(), "scale_effect": pd.DataFrame()}
+    fills["filled_at"] = pd.to_datetime(fills["filled_at"], utc=True, errors="coerce")
+    fills = fills.dropna(subset=["filled_at"]).sort_values(["strategy_id", "symbol", "filled_at", "id"])
+    rows, lots = [], defaultdict(deque)
+    for item in fills.to_dict("records"):
+        key = (str(item["strategy_id"]), str(item["symbol"]))
+        qty, price = float(item["quantity"]), float(item["price"])
+        if str(item["side"]).upper() == "BUY":
+            lots[key].append({"entry_time": item["filled_at"], "quantity": qty, "price": price,
+                              "add": bool("加仓" in str(item.get("metadata_json", "")))})
+            continue
+        remaining = qty
+        while remaining > 0 and lots[key]:
+            lot = lots[key][0]
+            used = min(remaining, float(lot["quantity"]))
+            pnl = (price - float(lot["price"])) * used * float(item.get("multiplier") or 1)
+            rows.append({"strategy_id": key[0], "symbol": key[1], "entry_time": lot["entry_time"],
+                         "exit_time": item["filled_at"], "entry_qty": used, "exit_qty": used,
+                         "entry_price": lot["price"], "exit_price": price, "realized_pnl": pnl,
+                         "entry_type": "ADD" if lot["add"] else "ENTRY",
+                         "partial_exit_tier": json.loads(item.get("quote_json") or "{}").get("partial_exit_tier")})
+            lot["quantity"] -= used; remaining -= used
+            if lot["quantity"] <= 0: lots[key].popleft()
+    trades = pd.DataFrame(rows)
+    if not decisions.empty and not trades.empty:
+        decisions["payload"] = decisions["payload_json"].map(lambda value: json.loads(value or "{}"))
+        metrics = []
+        for _, row in decisions[decisions["strategy_id"].astype(str).eq("volatility_long_gamma")].iterrows():
+            payload = row["payload"]
+            metrics.append({"symbol": row["symbol"], "mfe_pnl_ratio": payload.get("mfe_pnl_ratio"),
+                            "mae_pnl_ratio": payload.get("mae_pnl_ratio"),
+                            "profit_capture_ratio": payload.get("profit_capture_ratio"),
+                            "r_multiple": payload.get("r_multiple")})
+        excursion = pd.DataFrame(metrics).drop_duplicates("symbol", keep="last") if metrics else pd.DataFrame()
+    else:
+        excursion = pd.DataFrame()
+    scale_effect = (trades[trades["entry_type"] == "ADD"].groupby("strategy_id", as_index=False)
+                    .agg(加仓次数=("entry_type", "count"), 加仓成交数量=("entry_qty", "sum"), 加仓实现盈亏=("realized_pnl", "sum"))) if not trades.empty else pd.DataFrame()
+    return {"trades": trades, "excursion": excursion, "scale_effect": scale_effect}
+
+
 def performance_dashboard_data(store, broker=None, *, period: str = "daily") -> dict[str, pd.DataFrame | dict]:
     """Return mature-dashboard datasets: fills, costs, equity risk, and coverage."""
     buckets = performance_buckets(store, period=period)
@@ -205,7 +251,11 @@ def performance_dashboard_data(store, broker=None, *, period: str = "daily") -> 
         equity["期间"] = equity["created_at"].map(lambda value: _period_label(value, period))
     metrics = _period_metrics(equity)
     metrics["费用覆盖率"] = float(fills["mid_price"].notna().mean()) if not fills.empty else 0.0
-    return {"buckets": buckets, "fills": fills, "equity": equity, "metrics": metrics}
+    lifecycle = position_lifecycle_statistics(store)
+    return {
+        "buckets": buckets, "fills": fills, "equity": equity, "metrics": metrics,
+        **lifecycle,
+    }
 
 
 def strategy_attribution(store, broker) -> pd.DataFrame:
