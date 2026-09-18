@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from futu_quant.broker import BrokerError, FutuPaperBroker
@@ -26,7 +27,8 @@ def load_portfolio():
     current_store = TradingStore()
     current_broker = FutuPaperBroker(Settings.load())
     usage, equity = strategy_budget_usage(current_store, current_broker)
-    positions = current_broker.positions()
+    positions_snapshot = current_store.broker_snapshot("positions")
+    positions = current_broker.positions() if positions_snapshot is None else pd.DataFrame(positions_snapshot["payload"])
     quotes = portfolio_market_snapshot(current_broker, positions)
     return usage, equity, positions, quotes
 

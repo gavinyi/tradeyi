@@ -46,9 +46,15 @@ def ensure_default_budgets(store) -> list[dict]:
 
 def strategy_budget_usage(store, broker) -> tuple[pd.DataFrame, float]:
     budgets = ensure_default_budgets(store)
-    account = broker.account_info()
+    try:
+        account = broker.account_info()
+        positions = broker.positions()
+    except Exception:
+        cached_account = store.broker_snapshot("account_info") or {}
+        cached_positions = store.broker_snapshot("positions") or {}
+        account = pd.DataFrame(cached_account.get("payload", []))
+        positions = pd.DataFrame(cached_positions.get("payload", []))
     equity = float(account.iloc[0].get("total_assets", 0) or 0) if not account.empty else 0.0
-    positions = broker.positions()
     symbols = positions["code"].astype(str).tolist() if not positions.empty else []
     quotes = broker.snapshots(symbols) if symbols else pd.DataFrame()
     quote_map = {
