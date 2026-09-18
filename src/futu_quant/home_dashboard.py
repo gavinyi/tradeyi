@@ -14,6 +14,7 @@ from .connectivity_protection import PROTECTION_EVENT_TYPES
 from .option_lifecycle import parse_option_code
 from .radar_control import status as radar_status
 from .service_control import status as service_status
+from .store import TradingStore
 
 CHINA_TZ = "Asia/Shanghai"
 UTC = timezone.utc
