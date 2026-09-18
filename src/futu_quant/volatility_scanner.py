@@ -109,6 +109,18 @@ def scan_volatility_watchlist(
     except Exception:
         pass
     total_symbols = len(scan_symbols)
+    campaigns = load_volatility_campaigns()
+    active_underlyings = {
+        str(item.get("underlying", "")) for item in campaigns
+        if item.get("enabled", True)
+    }
+    ordered_symbols = tuple(
+        sorted(scan_symbols, key=lambda item: (item not in active_underlyings, item))
+    )
+    # Discovery scans should not spend the whole OpenD budget on a large tail.
+    max_symbols = max(5, int(os.getenv("RADAR_MAX_SYMBOLS_PER_SCAN", "40")))
+    scan_symbols = ordered_symbols[:max_symbols]
+    total_symbols = len(scan_symbols)
     for index, symbol in enumerate(scan_symbols, 1):
         if index == 1 or index == total_symbols or index % 10 == 0:
             store.heartbeat(

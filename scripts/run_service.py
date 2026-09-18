@@ -709,6 +709,8 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         # universe at the same high frequency as the exit monitor.
         volatility_interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "120")))
         interval = volatility_interval
+        if not store.virtual_positions():
+            interval = max(interval, int(os.getenv("VOLATILITY_EMPTY_INTERVAL_SECONDS", "300")))
         if due(store, "last_run:volatility_long_gamma", interval, now):
             run_task(
                 store, alerts, "volatility_long_gamma",
