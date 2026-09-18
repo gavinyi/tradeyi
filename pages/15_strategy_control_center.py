@@ -35,9 +35,22 @@ st.caption(
     "统一管理策略启停、执行模式、资金配额和后台服务。策略页面只负责各自参数，组合风险页面只负责压力测试。"
 )
 
-heartbeats = {row["strategy_id"]: row for row in store.heartbeats()}
-budgets = {row["strategy_id"]: row for row in store.strategy_risk_budgets()}
-experiments = store.strategy_experiments(limit=1000)
+@st.cache_data(ttl=30, max_entries=2, show_spinner=False)
+def load_control_snapshot():
+    current_store = TradingStore()
+    return (
+        current_store.heartbeats(),
+        current_store.strategy_risk_budgets(),
+        current_store.strategy_experiments(limit=300),
+        current_store.get_setting("strategies_paused", "false"),
+        current_store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER")),
+    )
+
+
+heartbeats_rows, budgets_rows, experiments, strategies_paused, execution_mode_setting = load_control_snapshot()
+heartbeats = {row["strategy_id"]: row for row in heartbeats_rows}
+budgets = {row["strategy_id"]: row for row in budgets_rows}
+
 active_versions = {
     row["strategy_id"]: row for row in experiments if row["is_active"]
 }
@@ -78,7 +91,7 @@ with st.container(horizontal=True):
     st.metric("已注册策略", len(control), border=True)
     st.metric("启用自动策略", int(control["enabled"].sum()), border=True)
     st.metric("版本漂移", int(control["version_drift"].sum()), border=True)
-    st.metric("全局策略状态", "已暂停" if store.get_setting("strategies_paused", "false") == "true" else "运行", border=True)
+    st.metric("全局策略状态", "已暂停" if strategies_paused == "true" else "运行", border=True)
 
 service_tab, overview_tab, budget_tab, attribution_tab, experiment_tab, protocol_tab = st.tabs(
     ["服务控制", "策略调度", "策略资金", "收益归因", "实验版本", "插件协议"]
@@ -176,9 +189,7 @@ with service_tab:
     with st.container(border=True):
         st.markdown("**全局运行方式**")
         paused = store.get_setting("strategies_paused", "false") == "true"
-        mode = store.get_setting(
-            "execution_mode", os.getenv("EXECUTION_MODE", "PAPER")
-        ).upper()
+        mode = str(execution_mode_setting).upper()
         selected_mode = st.segmented_control(
             "全局执行模式", ["SHADOW", "PAPER"], default=mode,
             help="SHADOW 不向富途提交订单；PAPER 仍然只提交到富途模拟盘。",
@@ -257,7 +268,7 @@ with budget_tab:
     st.caption(
         "这是策略资金配额的主配置入口。资金配额合计不能超过 100%；未分配部分就是现金和风险缓冲。"
     )
-    budget_rows = store.strategy_risk_budgets()
+    budget_rows = budgets_rows
     if not budget_rows:
         st.info("策略预算尚未初始化，请先进入组合风险页面生成默认预算。")
     else:
@@ -332,7 +343,7 @@ with budget_tab:
         )
 
 with attribution_tab:
-    @st.cache_data(ttl=30, max_entries=2, show_spinner=False)
+    @st.cache_data(ttl=60, max_entries=2, show_spinner=False)
     def load_attribution():
         return attribution_report(TradingStore(), FutuPaperBroker(Settings.load()))
 
@@ -365,7 +376,7 @@ with experiment_tab:
             sync_strategy_experiments(store, settings)
         st.success("当前策略版本已登记。")
         st.rerun()
-    experiment_frame = pd.DataFrame(store.strategy_experiments(limit=1000))
+    experiment_frame = pd.DataFrame(experiments)
     if experiment_frame.empty:
         st.info("尚无实验版本。统一服务下次启动时会自动登记。")
     else:
