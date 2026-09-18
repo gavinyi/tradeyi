@@ -841,7 +841,7 @@ def test_decide_volatility_action_uses_dynamic_time_stop():
     assert "时间衰减动态止损" in reason
 
 
-def test_single_contract_profit_take_exits_before_round_trip_giveback():
+def test_single_contract_profit_target_activates_trailing_runner(): 
     now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
     action, reason = decide_volatility_action(
         now=now,
@@ -861,8 +861,8 @@ def test_single_contract_profit_take_exits_before_round_trip_giveback():
         single_contract_take_profit=.18,
     )
 
-    assert action == "SELL"
-    assert "单张替代分批主动落袋" in reason
+    assert action == "HOLD"
+    assert "启动移动止盈" in reason
 
 
 def test_tiered_profit_lock_floor_scales_with_mfe():

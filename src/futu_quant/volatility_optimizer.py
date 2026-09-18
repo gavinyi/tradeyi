@@ -1007,15 +1007,13 @@ def decide_volatility_action(
         else max(0.0, float(profit_giveback_from_peak or 0.0))
     )
     held = now - opened_at
-    if (
-        quantity == 1
-        and single_contract_take_profit > 0
-        and pnl_ratio >= single_contract_take_profit
-    ):
+    # A single contract cannot be partially realized. At the old 18% target,
+    # keep the runner and let peak-based protection decide the eventual exit.
+    if quantity == 1 and single_contract_take_profit > 0 and pnl_ratio >= single_contract_take_profit:
         return (
-            "SELL",
-            f"单张替代分批主动落袋：当前盈利{pnl_ratio:.1%} ≥ "
-            f"{single_contract_take_profit:.1%}；先兑现原合约，后续只用新信号/低成本表达做 runner",
+            "HOLD",
+            f"单张达到{single_contract_take_profit:.1%}，启动移动止盈；"
+            "峰值回撤达到保护阈值或硬止损时退出",
         )
     if tiered_profit_lock_enabled and protection_active:
         tier_floor, tier_label = volatility_profit_lock_floor(peak_pnl_ratio)
