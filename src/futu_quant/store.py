@@ -1287,6 +1287,14 @@ class TradingStore:
             )
             return cursor.rowcount > 0
 
+    def cancel_oco_group(self, oco_id: str, reason: str = "") -> bool:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE oco_groups SET status='CANCELLED',trigger_reason=?,updated_at=? WHERE oco_id=? AND status IN ('ARMED','TRIGGERED','CANCEL_PENDING')",
+                (reason, self.now(), oco_id),
+            )
+            return cursor.rowcount > 0
+
     def heartbeats(self) -> list[dict]:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(
