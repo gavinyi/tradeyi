@@ -1080,6 +1080,26 @@ def run_campaign(
             })
             print(f"{code}: BLOCKED ({block_reason})")
             return
+        if trigger_mode == "VOLATILITY":
+            batch_id = (
+                f"{strategy_id}:{campaign.get('campaign_id', code)}:cycle"
+                f"{int(campaign_state.get('entry_cycle', 0))}:stage{stages_filled + 1}"
+            )
+            stop_price = entry_unit_price * (1 - float(campaign.get("stop_loss", .35)))
+            initial_risk = max(0.0, (entry_unit_price - stop_price) * multiplier * per_stage)
+            executor.store.create_position_batch(
+                batch_id, strategy_id=strategy_id,
+                campaign_id=str(campaign.get("campaign_id", code)), symbol=code,
+                quantity=per_stage, entry_price=entry_unit_price, opened_at=now.isoformat(),
+                underlying=str(campaign.get("underlying", "")),
+                structure=str(campaign.get("structure", "LONG_OPTION")),
+                initial_risk=initial_risk,
+                allocation_policy=str(campaign.get("exit_allocation_policy", "FIFO")),
+                metadata={"entry_cycle": int(campaign_state.get("entry_cycle", 0)),
+                          "initial_risk_basis": "premium_to_stop"},
+            )
+            campaign_state["active_batch_id"] = batch_id
+            campaign_state.setdefault("initial_risk", initial_risk)
         if len(order_legs) > 1 and execution_mode != "SHADOW":
             active_combo_id = automatic_combo_id(
                 strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
@@ -1149,6 +1169,9 @@ def run_campaign(
                 f"{cycle_suffix}:OPEN:stage{stages_filled + 1}:leg{leg_number}",
                 leg["code"], side, per_stage * int(leg.get("ratio", 1)), leg_price,
                 {"multiplier": float(leg_quote.get("option_contract_multiplier", multiplier)),
+                 "batch_id": campaign_state.get("active_batch_id"),
+                 "entry_cycle": int(campaign_state.get("entry_cycle", 0)),
+                 "initial_risk": campaign_state.get("initial_risk"),
                  "reason": reason, "underlying": campaign["underlying"],
                  "structure": campaign.get("structure"), "combo_primary": code,
                  "entry_tier": campaign.get("entry_tier", campaign.get("adaptive_risk_tier")),
@@ -1241,7 +1264,9 @@ def run_campaign(
                 leg["code"], closing_side, exit_quantity * int(leg.get("ratio", 1)), leg_price,
                 {"multiplier": float(leg_quote.get("option_contract_multiplier", 100)),
                  "reason": reason, "urgent": True, "structure": campaign.get("structure"),
-                 "combo_primary": code, "partial_exit_tier": partial_exit_tier,
+                 "combo_primary": code, "batch_id": campaign_state.get("selected_exit_tranche_id") or campaign_state.get("active_batch_id"),
+                 "oco_id": campaign_state.get("active_oco_id"),
+                 "partial_exit_tier": partial_exit_tier,
                  "planned_order_quantity": exit_quantity,
                  **exit_price_context},
             )

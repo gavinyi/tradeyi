@@ -95,7 +95,7 @@ def batch_r_multiple(*, mark: float, entry_price: float, stop_price: float) -> f
     risk = float(entry_price) - float(stop_price)
     if risk <= 0 or entry_price <= 0:
         return None
-    return (float(mark) - float(entry_price)) / risk
+    return round((float(mark) - float(entry_price)) / risk, 12)
 
 
 def volatility_batch_metrics(
@@ -109,7 +109,7 @@ def volatility_batch_metrics(
     return {
         "pnl_ratio": pnl,
         "peak_pnl_ratio": peak_pnl,
-        "mfe_pnl_ratio": peak_pnl,
+        "mfe_pnl_ratio": round(peak_pnl, 12),
         "mae_pnl_ratio": min(float(batch.get("mae_pnl_ratio", pnl) or pnl), pnl),
         "profit_capture_ratio": volatility_profit_capture_ratio(pnl, peak_pnl),
         "r_multiple": batch_r_multiple(mark=mark, entry_price=entry, stop_price=stop),
@@ -160,7 +160,10 @@ def volatility_profit_protection_profile(
 ) -> dict[str, object]:
     tier = volatility_entry_tier(regime or {})
     try:
-        expiry = pd.to_datetime(campaign.get("strike_time")).date()
+        parsed_expiry = pd.to_datetime(campaign.get("strike_time"), errors="coerce")
+        if pd.isna(parsed_expiry):
+            raise ValueError("missing expiry")
+        expiry = parsed_expiry.date()
         days_to_expiry = (expiry - datetime.now(ZoneInfo("America/New_York")).date()).days
     except (TypeError, ValueError):
         days_to_expiry = 99
@@ -1160,7 +1163,8 @@ def sync_volatility_position_cycle(
             "entry_time": now.isoformat(), "entry_price": float(cost),
             "stop_price": float(cost) * .65 if cost > 0 else 0.0,
             "quantity": int(quantity), "peak_mark": float(last),
-            "mae_pnl_ratio": 0.0, "mfe_pnl_ratio": 0.0,
+            "mae_pnl_ratio": min(0.0, float(last) / float(cost) - 1) if cost > 0 else 0.0,
+            "mfe_pnl_ratio": max(0.0, float(last) / float(cost) - 1) if cost > 0 else 0.0,
         }]
         transition = "OPENED"
     else:
@@ -1189,6 +1193,6 @@ def sync_volatility_position_cycle(
         denominator = float(cost) * max(1, int(quantity))
         state.setdefault("initial_risk", denominator * .35 if denominator > 0 else 0.0)
         current_pnl = float(last) / float(cost) - 1 if cost > 0 else 0.0
-        state["mae_pnl_ratio"] = min(float(state.get("mae_pnl_ratio", current_pnl)), current_pnl)
+        state["mae_pnl_ratio"] = min(float(state.get("mae_pnl_ratio", 0.0)), current_pnl)
         state["mfe_pnl_ratio"] = max(float(state.get("mfe_pnl_ratio", current_pnl)), current_pnl)
     return transition
