@@ -313,9 +313,15 @@ with stress_tab:
     st.write("压力测试只读取当前模拟持仓和行情，不会提交订单。")
     if st.button("运行组合压力测试", type="primary"):
         try:
-            positions = broker.positions()
+            cached_positions = store.broker_snapshot("positions")
+            cached_info = store.broker_snapshot("account_info")
+            positions = pd.DataFrame((cached_positions or {}).get("payload", []))
+            info = pd.DataFrame((cached_info or {}).get("payload", []))
+            if positions.empty:
+                positions = broker.positions()
             quotes = broker.snapshots(positions["code"].tolist()) if not positions.empty else pd.DataFrame()
-            info = broker.account_info()
+            if info.empty:
+                info = broker.account_info()
             equity = float(info.iloc[0]["total_assets"]) if not info.empty else 0
             result = stress_test(positions, quotes, equity)
             st.dataframe(result, hide_index=True, column_config={
