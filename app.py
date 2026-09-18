@@ -264,7 +264,7 @@ try:
     if info.empty or positions.empty:
         cached_accounts = store.broker_snapshot("accounts")
         cached_orders = store.broker_snapshot("orders")
-        if not accounts.empty and cached_accounts:
+        if accounts.empty and cached_accounts:
             accounts = pd.DataFrame(cached_accounts["payload"])
         if orders.empty and cached_orders:
             orders = pd.DataFrame(cached_orders["payload"])
