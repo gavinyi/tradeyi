@@ -314,7 +314,15 @@ with config_tab:
 
     st.subheader("虚拟持仓归属")
     st.caption("可新增分配，也可选择已有记录修改数量/成本。数量设为 0 后仍可再次编辑或删除。")
-    positions = broker.positions()
+    @st.cache_data(ttl=30, max_entries=2, show_spinner=False)
+    def load_positions_snapshot() -> pd.DataFrame:
+        try:
+            return broker.positions()
+        except Exception:
+            cached = store.broker_snapshot("positions")
+            return pd.DataFrame((cached or {}).get("payload", []))
+
+    positions = load_positions_snapshot()
     allocations = pd.DataFrame(store.virtual_allocations())
     if not allocations.empty:
         st.dataframe(china_time_columns(allocations).rename(columns={

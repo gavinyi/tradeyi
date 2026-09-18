@@ -28,8 +28,13 @@ with st.expander("默认风险边界", expanded=True):
 
 underlying = st.selectbox("正股/ETF", settings.watchlist)
 
+@st.cache_data(ttl=900, max_entries=20, show_spinner=False)
+def load_expirations(code: str) -> pd.DataFrame:
+    return broker.option_expirations(code)
+
+
 try:
-    expirations = broker.option_expirations(underlying)
+    expirations = load_expirations(underlying)
     min_dte = st.number_input("最小剩余天数（DTE）", 0, 365, 0)
     eligible = expirations[expirations["option_expiry_date_distance"] >= min_dte]
     if eligible.empty:
@@ -50,7 +55,8 @@ try:
         with st.spinner("正在读取期权链和行情……"):
             chain = broker.option_chain(underlying, expiration)
             chain = chain[chain["option_type"] == option_type]
-            quotes = broker.snapshots(chain["code"].tolist())
+            quotes = broker.snapshots(chain["code"].tolist()[:300])
+            chain = chain[chain["code"].isin(quotes["code"])]
             merged = chain.merge(quotes, on="code", suffixes=("", "_quote"))
             mid = (merged["bid_price"] + merged["ask_price"]) / 2
             merged["mid_price"] = mid

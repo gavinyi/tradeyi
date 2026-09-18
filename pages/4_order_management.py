@@ -157,8 +157,17 @@ def shadow_order_sheet() -> None:
         st.dataframe(pending_shadow[columns], width="stretch", hide_index=True)
 
 
+@st.cache_data(ttl=30, max_entries=2, show_spinner=False)
+def load_orders_snapshot() -> pd.DataFrame:
+    try:
+        return broker.orders()
+    except Exception:
+        cached = store.broker_snapshot("orders")
+        return pd.DataFrame((cached or {}).get("payload", []))
+
+
 try:
-    orders = broker.orders()
+    orders = load_orders_snapshot()
     if orders.empty:
         stock_orders = option_orders = orders
     else:
