@@ -4,7 +4,10 @@ import atexit
 from contextlib import contextmanager
 from functools import wraps
 from typing import Iterator
+import logging
+import logging.handlers
 import os
+from pathlib import Path
 import socket
 import threading
 import time
@@ -26,6 +29,7 @@ from futu import (
     TrdSide,
 )
 from futu.common.constant import ContextStatus
+from futu.common.ft_logger import FTLog
 
 from .config import Settings
 from .option_chain_cache import (
@@ -52,6 +56,27 @@ _POOL_REGISTRY_LOCK = threading.Lock()
 # Substrings that indicate a transport-level failure worth a single automatic
 # reconnect-and-retry for idempotent read operations.  Order placement /
 # cancellation is never retried automatically.
+def configure_futu_process_log(role: str) -> Path:
+    """Route this process's Futu SDK file log to an isolated project file.
+
+    Futu's SDK logger is process-global and otherwise writes to one shared
+    rotating file under AppData, which is unsafe when UI/service/radar run
+    together on Windows.
+    """
+    safe_role = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in role)
+    directory = Path(os.getenv("FUTU_LOG_DIR", "data/futu-logs"))
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"futu-{safe_role or 'process'}.log"
+    sdk_logger = FTLog()
+    file_logger = sdk_logger.file_logger
+    file_logger.handlers.clear()
+    handler = logging.handlers.WatchedFileHandler(target, encoding="utf-8") if os.name != "nt" else logging.FileHandler(target, encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(sdk_logger.formatter)
+    file_logger.addHandler(handler)
+    return target
+
+
 _RETRYABLE_READ_TOKENS = (
     "disconn", "timeout", "timed out", "etimedout", "callclose",
     "connection reset", "reset by peer", "broken pipe", "wait_reconnect",
@@ -156,6 +181,9 @@ class FutuPaperBroker:
         except AttributeError as exc:
             raise BrokerError(f"Unknown FUTU_SECURITY_FIRM: {settings.security_firm}") from exc
         self._frame_cache: dict[str, tuple[float, pd.DataFrame]] = {}
+        role = os.getenv("FUTU_LOG_ROLE", "process")
+        if role:
+            configure_futu_process_log(role)
 
     # ---- persistent pooled connections ------------------------------------
 

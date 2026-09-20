@@ -43,8 +43,6 @@ MIGRATIONS = (
             initial_risk REAL NOT NULL DEFAULT 0, metadata_json TEXT NOT NULL DEFAULT '{}',
             FOREIGN KEY(batch_id) REFERENCES position_batches(batch_id)
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_lots_fill
-            ON batch_lots(batch_id,fill_id) WHERE fill_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS exit_allocations (
             id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL,
             close_fill_id INTEGER, close_intent_id INTEGER, allocated_qty REAL NOT NULL,
