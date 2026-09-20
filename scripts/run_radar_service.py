@@ -8,9 +8,10 @@ import threading
 import time
 from zoneinfo import ZoneInfo
 
+os.environ.setdefault("FUTU_LOG_ROLE", "radar")
+
 from futu_quant.alerts import AlertManager
 from futu_quant.broker import FutuPaperBroker
-os.environ.setdefault("FUTU_LOG_ROLE", "radar")
 from futu_quant.config import Settings, load_volatility_symbols
 from futu_quant.filelock import FileLockError, lock_exclusive
 from futu_quant.market_calendar import USMarketCalendar

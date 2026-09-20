@@ -12,6 +12,7 @@ __pycache__/
 
 # ---- 运行时数据（大文件/日志/缓存，绝不提交）----
 data/*.log
+data/futu-logs/
 data/*.db*
 data/*.pid
 data/*.lock

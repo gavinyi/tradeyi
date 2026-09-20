@@ -65,6 +65,8 @@ def configure_futu_process_log(role: str) -> Path:
     """
     safe_role = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in role)
     directory = Path(os.getenv("FUTU_LOG_DIR", "data/futu-logs"))
+    if not directory.is_absolute():
+        directory = Path(__file__).resolve().parents[2] / directory
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / f"futu-{safe_role or 'process'}.log"
     sdk_logger = FTLog()

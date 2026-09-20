@@ -13,10 +13,11 @@ import threading
 import time
 from zoneinfo import ZoneInfo
 
+os.environ.setdefault("FUTU_LOG_ROLE", "service")
+
 from futu_quant.alerts import AlertManager
 from futu_quant.approval import publish_approval_runtime_manifest
 from futu_quant.broker import BrokerError, FutuPaperBroker
-os.environ.setdefault("FUTU_LOG_ROLE", "service")
 from futu_quant.config import Settings
 from futu_quant.execution import ExecutionManager
 from futu_quant.market_calendar import USMarketCalendar

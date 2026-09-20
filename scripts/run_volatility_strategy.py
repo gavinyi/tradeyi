@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("FUTU_LOG_ROLE", "volatility")
+
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_volatility_campaigns, upsert_campaign, delete_campaign
 from futu_quant.execution import ExecutionManager

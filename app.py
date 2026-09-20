@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import streamlit as st
 
-import os
-
 os.environ.setdefault("FUTU_LOG_ROLE", "streamlit")
+
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.account_metrics import account_pnl_metrics
 from futu_quant.config import Settings
