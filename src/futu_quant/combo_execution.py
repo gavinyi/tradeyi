@@ -199,7 +199,7 @@ class ComboExecutionManager:
             if combo["status"] in {"EXECUTING", "CLOSING", "ROLLBACK_PENDING", "FAILED"}:
                 legs = self.store.option_combo_legs(combo["combo_id"])
                 if combo["status"] == "FAILED" and not self._combo_has_broker_exposure(combo["combo_id"]):
-                continue
+                    continue
                 if combo["status"] == "FAILED":
                     self.store.update_option_combo(combo["combo_id"], "ROLLBACK_PENDING", "失败组合仍有券商暴露，自动恢复残腿平仓")
                     self.store.option_combo_event(combo["combo_id"], "FAILED_WITH_EXPOSURE_RECOVERED", "ROLLBACK_PENDING", "失败状态仍有残腿，恢复回滚平仓")
@@ -268,6 +268,15 @@ class ComboExecutionManager:
             self.store.update_option_combo(combo["combo_id"], final)
             return
         self._emergency_naked_check(combo, legs)
+        # A close order can be submitted by the emergency naked-short path.
+        # Do not submit a duplicate combo close while that intent is working.
+        for active_leg in filled:
+            close_id = active_leg.get("close_intent_id")
+            if not close_id:
+                continue
+            close_intent = self.store.intent(int(close_id))
+            if close_intent and str(close_intent.get("status")) in WORKING:
+                return
         failed_closes = [leg for leg in filled if leg["status"] == "CLOSE_FAILED"]
         if failed_closes:
             leg = failed_closes[0]
@@ -303,6 +312,8 @@ class ComboExecutionManager:
             if quantity <= 0:
                 self.store.update_option_combo_leg(
                     leg["id"], status="CLOSED", close_intent_id=None,
+                    close_filled_quantity=float(leg.get("filled_quantity", 0) or 0),
+                    remaining_quantity=0,
                     error=quantity_reason,
                 )
                 self.store.option_combo_event(
