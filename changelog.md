@@ -12,6 +12,68 @@
 6. 如果改动影响自动下单，必须记录是否已重启统一交易服务。
 7. 只改测试、文档或文案，也要简短记录。
 
+## 2026-09-21：成熟期权生命周期、重入保护与组合安全整改
+
+原因：
+
+- 近期出现 AMD、QQQ 卖出后短时间重新买入，以及 COIN 止盈后再次暴露风险的问题；
+- 原有波动率活动允许强信号绕过冷却，且同一信号周期、同一合约和临近到期合约缺少足够的重入约束；
+- 多腿组合在部分成交、残腿、主腿归零和保护关系校验方面需要更严格的成熟期权交易规则。
+
+改动：
+
+1. 退出生命周期与重入保护：
+   - 引入退出 episode、`signal_epoch`、`exit_signal_epoch` 和活动合约标识；
+   - 强化 `OPEN`、退出中、平仓确认、冷却、滚动、关闭和阻断等状态语义；
+   - SELL 意图改为 episode 级幂等键，避免退出原因文案变化导致重复平仓意图；
+   - 多腿组合任一腿处于 `EXECUTING`、`CLOSING`、`ROLLBACK_PENDING` 或失衡状态时，禁止新的开仓/重复平仓。
+2. 冷却与重复交易控制：
+   - `volatility_default_cooldown_bypass_enabled` 默认从 `true` 改为 `false`；
+   - 止盈、盈利保护、硬止损和到期退出后，不允许立即买回同一合约；
+   - 新信号必须经历动态状态 `inactive → active` 才生成新的 signal epoch；
+   - 同一合约止盈后默认冷却 24 小时。
+3. 到期日与滚动保护：
+   - 新增最小/最大 DTE 配置，默认 5–21 天；
+   - 滚动候选不再固定使用未来 21 天范围；
+   - 候选窗口扩展为最多 5 个候选；
+   - 临近到期退出后禁止回到原到期日，空合约或无有效候选不得进入执行流程；
+   - 页面可配置最短和最远 DTE。
+4. 多腿组合安全：
+   - 校验组合腿数量必须为有限正整数，价格必须为有限正数；
+   - 禁止重复合约腿；
+   - 增加 Call/Put 行权价方向和到期日保护关系校验；
+   - 同步部分开仓、部分平仓、剩余数量和 broker 状态；
+   - Migration 4 增加 `close_filled_quantity`、`broker_status`、`remaining_quantity`、`last_broker_update`；
+   - 组合未完全平仓前不得提前标记 `CLOSED`。
+5. 单张仓位与批次口径：
+   - 单张期权继续明确为整仓退出，不伪装为分批止盈；
+   - 多张持仓继续支持 FIFO、LIFO、RISK_PRIORITY，默认 FIFO；
+   - 保留每批初始风险、MFE、MAE、捕获率和 R 倍数审计。
+6. 可观测性与文档：
+   - 行情不足导致退出等待时记录 `OPTION_EXIT_WAITING_FOR_BID`；
+   - 更新 `docs/strategy_architecture.md`，记录成熟期权生命周期、冷却、滚动、组合失衡和应用层 OCO 限制；
+   - 文档引用 OCC、Cboe Greeks 和 IBKR Bracket/OCA 资料，明确 Futu OpenD 不提供交易所级原子 OCO。
+
+默认参数变化：
+
+```text
+强信号绕过冷却：开启 → 关闭
+同一合约止盈冷却：新增，默认 24 小时
+最短 DTE：新增，默认 5 天
+最远 DTE：原固定约 21 天 → 可配置，默认 21 天
+退出分配：FIFO（保持默认兼容）
+执行模式：保持 PAPER，不新增真实交易路径
+```
+
+验证：
+
+- `pytest tests/test_volatility_optimizer.py tests/test_combo_execution.py tests/test_combo_analytics.py -q`：69 项通过；
+- `pytest tests/test_volatility_exit_routing.py tests/test_gamma_automation.py tests/test_gamma_debug.py tests/test_gamma_risk_modes.py tests/test_order_and_option_lifecycle.py tests/test_volatility_orphans.py -q`：36 项通过；
+- `python scripts/check_streamlit_pages.py`：40 页静态巡检，错误 0，警告 0；
+- 修改文件通过 `py_compile` 与 `git diff --check`；
+- 已提交并推送：`669b03b feat: harden mature options lifecycle and reentry`；
+- 本次改动保持现有 `ExecutionManager.submit_limit()`、PAPER/SHADOW 门控和风险引擎不变。
+
 ## 2026-08-15：每日复盘升级为数据闭环与策略质量诊断
 
 原因：
