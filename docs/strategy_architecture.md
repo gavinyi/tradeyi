@@ -57,6 +57,24 @@
 
 共享执行编排器只负责获取行情、读取持仓、调用对应退出策略并提交模拟订单。策略语义必须保留在各自的纯决策函数中。
 
+## 成熟期权生命周期与重入保护（1-11项整改）
+
+波动率期权活动采用显式生命周期：`OPEN`、`EXIT_PENDING`、`FLAT_PENDING_CONFIRMATION`、`COOLDOWN`、`ROLLED`、`CLOSED`、`BLOCKED`。退出订单提交不等于退出完成；只有成交回报、富途持仓和本地 fill ledger 三者确认归零后，才开始按退出原因计冷却。
+
+- 默认关闭强信号绕过冷却；止盈、盈利保护、硬止损和到期退出后禁止立即买回同一合约。
+- 记录 `exit_episode`、`signal_epoch`、`exit_signal_epoch` 和合约代码，防止同一信号周期重复入场。只有动态状态真正经历 inactive→active，才产生新的信号 epoch。
+- 同一标的、同一合约和同一到期日分别执行冷却；到期退出后只能滚动到更远到期日，默认新合约 DTE 为 5–21 天，且不得回滚原到期日。
+- 多腿组合以 `combo_id` 和全部腿为交易单元。任一腿处于 EXECUTING/CLOSING/ROLLBACK_PENDING/失衡，均禁止新开仓；主腿归零不能掩盖残余保护腿或风险腿。
+- 止盈参考可成交盘口、标的方向、IV/RV、Delta/Gamma/Theta/Vega 和 R 倍数；单张持仓明确为整张退出，不伪装成分批止盈。
+- FIFO 是默认批次分配口径，LIFO/RISK_PRIORITY 只能显式选择；批次、组合、退出 episode 和重入原因必须可审计。
+
+该设计参考 OCC 的标准化期权风险披露（到期、行权、流动性和组合风险）、Cboe Greeks 教材及 IBKR Bracket/OCA 生命周期文档。Futu OpenD 未提供交易所级原子 OCO，因此本系统的 OCO/Bracket 仍为应用层状态机，必须依赖成交确认、撤单确认和组合失衡保护。
+
+参考：
+- OCC：[Characteristics and Risks of Standardized Options](https://prd-web.theocc.com/getmedia/23e090c7-000e-46f7-bd0c-148b3365caec/eo-short-put.pdf)
+- Cboe：[Learning the Greeks](https://www.cboe.com/insights/posts/learning-the-greeks-an-experts-perspective)
+- IBKR：[Bracket Orders & OCA Groups](https://ibkrcampus.com/docs/web-api/v1/endpoints/orders/bracket-orders-oca-groups)
+
 ## 批次级止盈与保护
 
 `volatility_long_gamma` 同时维护整仓周期状态和批次级状态：

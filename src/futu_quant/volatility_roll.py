@@ -123,12 +123,16 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     if direction is None:
         return campaign, direction_reason
     expirations = broker.option_expirations(underlying).copy()
-    latest = date.today() + timedelta(days=21)
+    min_dte = max(1, int(float(campaign.get("maturity_min_dte", 5) or 5)))
+    max_dte = max(min_dte, int(float(campaign.get("maturity_max_dte", 21) or 21)))
+    today = date.today()
+    earliest = today + timedelta(days=min_dte)
+    latest = today + timedelta(days=max_dte)
     valid = expirations[
         # 当日到期合约在收盘后不再作为新入场表达，避免反复生成已过期代码。
-        (pd.to_datetime(expirations["strike_time"]).dt.date > date.today())
+        (pd.to_datetime(expirations["strike_time"]).dt.date >= earliest)
         & (pd.to_datetime(expirations["strike_time"]).dt.date <= latest)
-    ].sort_values("strike_time").head(3)
+    ].sort_values("strike_time").head(5)
     if valid.empty:
         return campaign, "未来21天没有可滚动的期权到期日"
     chain = pd.concat(

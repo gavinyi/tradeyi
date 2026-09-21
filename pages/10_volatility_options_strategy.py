@@ -540,7 +540,8 @@ with config_tab:
     left, middle, right = st.columns(3)
     underlying = left.selectbox("正股", load_volatility_symbols())
     direction_choice = middle.segmented_control("方向", ["自动判断", "CALL", "PUT"], default="自动判断")
-    max_days = right.number_input("最远到期天数", 0, 45, 21)
+    maturity_min_dte = left.number_input("最短到期天数（DTE）", 1, 45, setting_int("volatility_default_maturity_min_dte", 5))
+    max_days = right.number_input("最远到期天数（DTE）", maturity_min_dte, 90, setting_int("volatility_default_maturity_max_dte", 21))
     min_oi = left.number_input("最低未平仓量", 0, 1_000_000, 500, step=50)
     max_spread = middle.number_input("绝对最大买卖价差（%）", 1.0, 100.0, 12.0)
     max_moneyness = right.number_input("最大价内/价外距离（%）", 0.0, 50.0, 10.0)
@@ -754,7 +755,7 @@ with config_tab:
             help="超过持仓时间后，只允许从峰值回吐这么多比例。",
         )
         tighten_right.info("行业默认：18% 主动落袋，60 分钟后回吐阈值收紧到 12%。")
-    with st.expander("按退出原因冷却", expanded=False):
+    with st.expander("按退出原因冷却与重入保护", expanded=False):
         cooldown_left, cooldown_middle, cooldown_right = st.columns(3)
         cooldown_take_profit = cooldown_left.number_input("止盈后冷却小时", 0, 168, value=setting_int("volatility_default_cooldown_take_profit_hours", 4))
         cooldown_profit_protection = cooldown_middle.number_input("盈利保护后冷却小时", 0, 168, value=setting_int("volatility_default_cooldown_profit_protection_hours", 8))
@@ -762,6 +763,15 @@ with config_tab:
         cooldown_expiry = cooldown_left.number_input("到期风险退出后冷却小时", 0, 168, value=setting_int("volatility_default_cooldown_expiry_hours", 0))
         cooldown_decay = cooldown_middle.number_input("IV/Gamma衰减后冷却小时", 0, 168, value=setting_int("volatility_default_cooldown_decay_hours", 8))
         cooldown_contraction = cooldown_right.number_input("波动收缩后冷却小时", 0, 168, value=setting_int("volatility_default_cooldown_contraction_hours", 6))
+        cooldown_bypass = st.toggle(
+            "允许强信号绕过冷却（不建议）",
+            value=setting_bool("volatility_default_cooldown_bypass_enabled", False),
+            help="成熟期权模式默认关闭。开启后极强信号可能在退出后提前重入，会增加过度交易和利润回吐风险。",
+        )
+        same_contract_cooldown = st.number_input(
+            "同一合约止盈后冷却小时", 1, 168,
+            value=setting_int("volatility_default_same_contract_cooldown_hours", 24),
+        )
 
     volatility_exit_parameters = {
         "max_hold_hours": int(max_hold_hours),
@@ -811,6 +821,8 @@ with config_tab:
         "cooldown_expiry_hours": int(cooldown_expiry),
         "cooldown_decay_hours": int(cooldown_decay),
         "cooldown_contraction_hours": int(cooldown_contraction),
+        "cooldown_bypass_enabled": bool(cooldown_bypass),
+        "same_contract_cooldown_hours": int(same_contract_cooldown),
     }
 
     volatility_exit_default_settings = {
@@ -861,6 +873,12 @@ with config_tab:
         "volatility_default_cooldown_expiry_hours": int(cooldown_expiry),
         "volatility_default_cooldown_decay_hours": int(cooldown_decay),
         "volatility_default_cooldown_contraction_hours": int(cooldown_contraction),
+        "volatility_default_maturity_min_dte": int(maturity_min_dte),
+        "volatility_default_maturity_max_dte": int(max_days),
+        "volatility_default_cooldown_bypass_enabled": str(bool(cooldown_bypass)).lower(),
+        "volatility_default_same_contract_cooldown_hours": int(same_contract_cooldown),
+        "volatility_default_maturity_min_dte": int(maturity_min_dte),
+        "volatility_default_maturity_max_dte": int(max_days),
     }
     with st.container(border=True):
         st.subheader("保存退出/保护参数")

@@ -59,6 +59,13 @@ MIGRATIONS = (
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
     """),
+    Migration(4, "combo_lifecycle_safety", """
+        ALTER TABLE option_combo_legs ADD COLUMN close_filled_quantity REAL NOT NULL DEFAULT 0;
+        ALTER TABLE option_combo_legs ADD COLUMN broker_status TEXT NOT NULL DEFAULT '';
+        ALTER TABLE option_combo_legs ADD COLUMN remaining_quantity REAL NOT NULL DEFAULT 0;
+        ALTER TABLE option_combo_legs ADD COLUMN last_broker_update TEXT;
+        CREATE INDEX IF NOT EXISTS idx_combo_legs_symbol_status ON option_combo_legs(symbol,status);
+    """),
 )
 
 

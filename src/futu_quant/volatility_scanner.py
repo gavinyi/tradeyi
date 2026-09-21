@@ -329,7 +329,7 @@ def scan_volatility_watchlist(
                         "cooldown_decay_hours": 8,
                         "cooldown_contraction_hours": 6,
                         "cooldown_bypass_enabled": _setting_bool(
-                            store, "volatility_default_cooldown_bypass_enabled", True,
+                            store, "volatility_default_cooldown_bypass_enabled", False,
                         ),
                         "cooldown_bypass_stop_loss": _setting_bool(
                             store, "volatility_default_cooldown_bypass_stop_loss", False,
@@ -346,7 +346,17 @@ def scan_volatility_watchlist(
                         "cooldown_bypass_min_volume_ratio": _setting_float(
                             store, "volatility_default_cooldown_bypass_min_volume_ratio", 1.5,
                         ),
-                        "cooldown_hours": 24, "enabled": True,
+                        "cooldown_hours": 24,
+                        "same_contract_cooldown_hours": _setting_float(
+                            store, "volatility_default_same_contract_cooldown_hours", 24,
+                        ),
+                        "maturity_min_dte": _setting_float(
+                            store, "volatility_default_maturity_min_dte", 5,
+                        ),
+                        "maturity_max_dte": _setting_float(
+                            store, "volatility_default_maturity_max_dte", 21,
+                        ),
+                        "enabled": True,
                     }
                     rolled, roll_reason = _timed_call(
                         lambda: roll_campaign(broker, seed, store), timeout_seconds=45,

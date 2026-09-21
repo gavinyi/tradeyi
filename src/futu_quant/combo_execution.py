@@ -16,12 +16,37 @@ WORKING = {"CREATED", "WAITING_SUBMIT", "SUBMITTING", "SUBMITTED", "FILLED_PART"
 FAILED = {"FAILED", "REJECTED", "CANCELLED", "CANCELLED_ALL", "UNKNOWN", "APPROVAL_REQUIRED"}
 
 
+def _finite_positive(value, *, integer: bool = False) -> float:
+    if isinstance(value, bool):
+        raise ValueError("组合数量/价格不能是布尔值")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError("组合数量和价格必须是有限正数")
+    if integer and not number.is_integer():
+        raise ValueError("组合腿数量必须是整数")
+    return number
+
+
+def _protected_relation(long_contract, short_contract) -> bool:
+    return (
+        long_contract.option_type == short_contract.option_type
+        and long_contract.expiration >= short_contract.expiration
+        and (
+            (short_contract.option_type in {"C", "CALL"} and long_contract.strike > short_contract.strike)
+            or (short_contract.option_type in {"P", "PUT"} and long_contract.strike < short_contract.strike)
+        )
+    )
+
+
 def validate_combo(combo: dict, legs: list[dict]) -> tuple[float, float]:
     if not 2 <= len(legs) <= 4:
         raise ValueError("期权组合必须包含 2 至 4 条腿")
     underlying = str(combo.get("underlying", "")).upper()
     if not underlying.startswith("US."):
         raise ValueError("组合正股代码必须使用 US.* 格式")
+    symbols = [str(leg.get("symbol", "")).upper() for leg in legs]
+    if len(set(symbols)) != len(symbols):
+        raise ValueError("组合不得包含重复期权合约腿")
     parsed = []
     for leg in legs:
         contract = parse_option_code(str(leg.get("symbol", "")).upper())
@@ -29,8 +54,8 @@ def validate_combo(combo: dict, legs: list[dict]) -> tuple[float, float]:
             raise ValueError("每条腿都必须是同一正股的标准富途期权代码")
         if leg.get("side") not in {"BUY", "SELL"}:
             raise ValueError("组合腿方向只能是 BUY 或 SELL")
-        if int(leg.get("quantity", 0)) <= 0 or float(leg.get("limit_price", 0)) <= 0:
-            raise ValueError("每条腿的数量和限价必须大于 0")
+        _finite_positive(leg.get("quantity", 0), integer=True)
+        _finite_positive(leg.get("limit_price", 0))
         parsed.append((leg, contract))
     # Every opening short must be capped by a filled-first long option with the
     # same expiry/type and sufficient quantity. This deliberately excludes naked legs.
@@ -41,8 +66,7 @@ def validate_combo(combo: dict, legs: list[dict]) -> tuple[float, float]:
             int(long["quantity"])
             for long, long_contract in parsed
             if long["side"] == "BUY"
-            and long_contract.expiration >= contract.expiration
-            and long_contract.option_type == contract.option_type
+            and _protected_relation(long_contract, contract)
         )
         if covered < int(short["quantity"]):
             raise ValueError(f"卖出腿 {short['symbol']} 没有足量、同到期日的价差保护腿")
@@ -494,13 +518,24 @@ class ComboExecutionManager:
                 continue
             status = str(intent["status"])
             if leg.get("close_intent_id"):
-                if status in FINAL_FILLED:
-                    self.store.update_option_combo_leg(leg["id"], status="CLOSED")
+                close_filled = min(
+                    float(leg.get("quantity", 0) or 0),
+                    max(float(intent.get("filled_quantity") or 0), float(leg.get("close_filled_quantity", 0) or 0)),
+                )
+                if status in FINAL_FILLED or status in WORKING:
+                    self.store.update_option_combo_leg(
+                        leg["id"], close_filled_quantity=close_filled,
+                        remaining_quantity=max(float(leg.get("filled_quantity", 0) or 0) - close_filled, 0),
+                        status="CLOSED" if status in FINAL_FILLED and close_filled >= float(leg.get("filled_quantity", 0) or 0) else "CLOSE_WORKING",
+                    )
                 elif status in FAILED:
                     self.store.update_option_combo_leg(leg["id"], status="CLOSE_FAILED", error=intent.get("error") or status)
-            elif status in FINAL_FILLED:
+            elif status in FINAL_FILLED or status in WORKING:
+                filled = min(float(leg.get("quantity", 0) or 0), float(intent.get("filled_quantity") or 0))
                 self.store.update_option_combo_leg(
-                    leg["id"], status="FILLED", filled_quantity=float(intent.get("filled_quantity") or leg["quantity"]),
+                    leg["id"], status="FILLED" if status in FINAL_FILLED and filled >= float(leg.get("quantity", 0) or 0) else "OPEN_PARTIAL",
+                    filled_quantity=max(float(leg.get("filled_quantity", 0) or 0), filled),
+                    remaining_quantity=max(float(leg.get("quantity", 0) or 0) - filled, 0),
                     average_fill_price=float(intent.get("average_fill_price") or leg["limit_price"]),
                 )
             elif status in FAILED:
@@ -513,13 +548,12 @@ class ComboExecutionManager:
             for leg in legs
             if leg["side"] == "BUY" and leg["status"] == "FILLED"
             and (contract := parse_option_code(leg["symbol"])) is not None
-            and contract.expiration >= short_contract.expiration
-            and contract.option_type == short_contract.option_type
+            and _protected_relation(contract, short_contract)
         ) >= int(short["quantity"])
 
     def _emergency_naked_check(self, combo: dict, legs: list[dict]) -> None:
         for leg in legs:
-            if leg["side"] == "SELL" and leg["status"] == "FILLED" and not self._short_is_protected(leg, legs):
+            if leg["side"] == "SELL" and float(leg.get("filled_quantity", 0) or 0) > 0 and not self._short_is_protected(leg, legs):
                 self.alerts.send(
                     "ERROR", "COMBO_NAKED_EXPOSURE",
                     f"组合 {combo['combo_id']} 的 {leg['symbol']} 保护缺失，"

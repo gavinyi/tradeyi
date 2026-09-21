@@ -33,7 +33,8 @@ from futu_quant.volatility_optimizer import (
     decide_volatility_action, sync_volatility_position_cycle,
     volatility_partial_exit_plan,
     volatility_cooldown_hours, volatility_exit_reason,
-    volatility_cooldown_bypass_allowed, volatility_profit_protection_profile,
+    same_signal_epoch_reentry_allowed, volatility_cooldown_bypass_allowed,
+    volatility_profit_protection_profile,
     volatility_direction_size_factor, volatility_entry_confirmation,
     volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
     volatility_threshold_profile, loss_adaptive_premium_budget,
@@ -302,6 +303,9 @@ def run_campaign(
         state[state_key] = state.pop(code)
     campaign_state = state.setdefault(state_key, {"peak": 0.0})
     trigger_mode = campaign.get("trigger_mode", "EARNINGS")
+    if trigger_mode == "VOLATILITY":
+        campaign_state["active_contract_code"] = code
+        campaign_state.setdefault("signal_epoch", 0)
     if issues:
         executor.store.audit("GAMMA_VALIDATION_WARNING", {
             "code": code, "trigger_mode": trigger_mode, "warnings": issues,
@@ -409,8 +413,28 @@ def run_campaign(
         print(f"{code}: CLOSED (campaign exit completed)")
         return
     orders = orders_snapshot if orders_snapshot is not None else broker.orders()
+    pending_codes = {code.upper(), *valid_leg_codes}
+    combo_state = None
+    if trigger_mode == "VOLATILITY" and len(valid_leg_codes) > 1:
+        combo_state = find_open_combo_for_campaign(
+            executor.store, strategy_id=strategy_id,
+            underlying=str(campaign.get("underlying", "")),
+            structure=str(campaign.get("structure", "")),
+            leg_symbols=set(valid_leg_codes),
+        )
+        if combo_state and combo_state.get("status") in {
+            "EXECUTING", "CLOSING", "ROLLBACK_PENDING", "IMBALANCED",
+        }:
+            executor.store.decision_if_changed(
+                strategy_id, code, "HOLD",
+                f"组合仍处于{combo_state.get('status')}，禁止新的开仓或重复平仓",
+                {"combo_id": combo_state.get("combo_id"), "exit_state": combo_state.get("status"),
+                 "leg_symbols": sorted(pending_codes)}, repeat_after_seconds=300,
+            )
+            return
     pending = (
-        orders[(orders["code"] == code) & orders["order_status"].map(broker.is_cancellable_status)]
+        orders[orders["code"].astype(str).str.upper().isin(pending_codes)
+               & orders["order_status"].map(broker.is_cancellable_status)]
         if not orders.empty else orders
     )
     if not pending.empty:
@@ -556,15 +580,19 @@ def run_campaign(
         was_regime_active = bool(campaign_state.get("regime_was_active", False))
         if regime["active"]:
             if not was_regime_active or not campaign_state.get("signal_started_at"):
+                campaign_state["signal_epoch"] = int(campaign_state.get("signal_epoch", 0) or 0) + 1
                 campaign_state["signal_started_at"] = now.isoformat()
                 campaign_state["signal_start_volume_ratio"] = float(
                     regime.get("volume_ratio", 0) or 0
                 )
             campaign_state["signal_active"] = True
-        elif float(regime["zscore_20d"]) < 1.2:
+        else:
+            # Any inactive transition ends the old confirmation epoch.  Do not
+            # keep a stale signal alive merely because z-score remains elevated.
             campaign_state["signal_active"] = False
             campaign_state.pop("signal_started_at", None)
             campaign_state.pop("signal_start_volume_ratio", None)
+            campaign_state["regime_was_active"] = False
         campaign_state["regime_was_active"] = bool(regime["active"])
         signal_started_at = campaign_state.get("signal_started_at")
         event_time = (
@@ -644,6 +672,20 @@ def run_campaign(
         cooldown_key = f"volatility_cooldown:{campaign['underlying']}"
         last_exit = state.get(cooldown_key)
         if quantity <= 0 and last_exit:
+            epoch_allowed, epoch_reason = same_signal_epoch_reentry_allowed(
+                last_exit_epoch=campaign_state.get("exit_signal_epoch"),
+                current_epoch=campaign_state.get("signal_epoch"),
+            )
+            if not epoch_allowed:
+                reason = f"同一信号周期禁止重入：{epoch_reason}"
+                executor.store.decision_if_changed(
+                    strategy_id, code, "HOLD", reason,
+                    {"exit_state": "COOLDOWN", "signal_epoch": campaign_state.get("signal_epoch"),
+                     "exit_signal_epoch": campaign_state.get("exit_signal_epoch")},
+                    repeat_after_seconds=300,
+                )
+                print(f"{code}: HOLD ({reason})")
+                return
             cooldown_duration = float(state.get(
                 f"volatility_cooldown_hours:{campaign['underlying']}",
                 campaign.get("cooldown_hours", 24),
@@ -1177,6 +1219,9 @@ def run_campaign(
             )
             print(result)
     elif action == "SELL" and quantity > 0:
+        if not campaign_state.get("pending_exit_episode"):
+            campaign_state["exit_episode"] = int(campaign_state.get("exit_episode", 0) or 0) + 1
+            campaign_state["pending_exit_episode"] = True
         close_legs, close_route = volatility_exit_close_legs(campaign, code, legs)
         if close_route == "EXIT_ONLY":
             executor.store.audit("VOLATILITY_EXIT_ONLY_SINGLE_LEG_CLOSE", {
@@ -1243,7 +1288,7 @@ def run_campaign(
                     "planned_order_quantity": exit_quantity,
                     "exit_price_context": exit_price_context,
                 })
-                executor.store.audit("OPTION_EXIT_WAITING_FOR_LIMIT_PRICE", {
+                executor.store.audit("OPTION_EXIT_WAITING_FOR_BID", {
                     "symbol": leg["code"], "strategy_id": strategy_id,
                     "reason": wait_reason,
                     "position_quantity": quantity,
@@ -1255,7 +1300,7 @@ def run_campaign(
             result = executor.submit_limit(
                 strategy_id,
                 f"{campaign['event_date']}:{campaign.get('campaign_id', code)}"
-                f"{cycle_suffix}:CLOSE:{reason}:leg{leg_number}",
+                f"{cycle_suffix}:CLOSE:episode{int(campaign_state.get('exit_episode', 0))}:leg{leg_number}",
                 leg["code"], closing_side, exit_quantity * int(leg.get("ratio", 1)), leg_price,
                 {"multiplier": float(leg_quote.get("option_contract_multiplier", 100)),
                  "reason": reason, "urgent": True, "structure": campaign.get("structure"),

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import math
 import sqlite3
 from typing import Iterator
 
@@ -1329,6 +1330,11 @@ class TradingStore:
     def create_option_combo(self, combo: dict, legs: list[dict]) -> str:
         now = self.now()
         combo_id = str(combo["combo_id"])
+        for leg in legs:
+            if isinstance(leg.get("quantity"), bool) or float(leg.get("quantity", 0)) <= 0 or not float(leg.get("quantity", 0)).is_integer():
+                raise ValueError("组合腿数量必须是正整数")
+            if not math.isfinite(float(leg.get("limit_price", 0))) or float(leg.get("limit_price", 0)) <= 0:
+                raise ValueError("组合腿限价必须是有限正数")
         with self.connection() as connection:
             connection.execute(
                 """INSERT INTO option_combos
@@ -1383,7 +1389,8 @@ class TradingStore:
 
     def update_option_combo_leg(self, leg_id: int, **values) -> None:
         allowed = {"status", "intent_id", "close_intent_id", "filled_quantity",
-                   "average_fill_price", "error", "close_attempts", "limit_price"}
+                   "average_fill_price", "close_filled_quantity", "broker_status",
+                   "remaining_quantity", "last_broker_update", "error", "close_attempts", "limit_price"}
         fields = {key: value for key, value in values.items() if key in allowed}
         if not fields:
             return

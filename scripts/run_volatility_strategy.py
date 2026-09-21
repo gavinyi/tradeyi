@@ -82,7 +82,7 @@ def run_once(reconcile: bool = True) -> None:
         executor.reconcile()
     positions = broker.positions()
     orders = broker.orders()
-    stale_cleaned = close_stale_expired_combos(executor.store, positions, date.today())
+    stale_cleaned = close_stale_expired_combos(executor.store, positions, datetime.now().astimezone().date())
     if stale_cleaned:
         executor.store.audit(
             "VOLATILITY_STALE_EXPIRED_COMBOS_CLOSED",
@@ -230,7 +230,8 @@ def run_once(reconcile: bool = True) -> None:
             except ValueError:
                 due_for_review = True
         expiry = pd.to_datetime(campaign.get("strike_time"), errors="coerce")
-        needs_expiry_roll = pd.isna(expiry) or expiry.date() <= date.today()
+        min_dte = max(1, int(float(campaign.get("maturity_min_dte", 5) or 5)))
+        needs_expiry_roll = pd.isna(expiry) or (expiry.date() - datetime.now().astimezone().date()).days < min_dte
         quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
             campaign,
             default_min_score=max(70.0, float(campaign.get("minimum_entry_quality_score", 70))),
@@ -346,6 +347,11 @@ def run_once(reconcile: bool = True) -> None:
             continue
         campaign = {**campaign, "trigger_mode": "VOLATILITY"}
         try:
+            if not campaign.get("code") or campaign.get("exit_only") and not any(
+                str(leg.get("code", "")).upper() in set(positions.get("code", []))
+                for leg in (campaign.get("legs") or [{"code": campaign.get("code")}])
+            ):
+                continue
             run_campaign(
                 broker, executor, campaign, state, "volatility_long_gamma",
                 positions_snapshot=positions, orders_snapshot=orders,

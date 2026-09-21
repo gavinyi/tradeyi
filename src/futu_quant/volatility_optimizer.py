@@ -626,6 +626,17 @@ def volatility_cooldown_hours(
     return values["default"]
 
 
+def same_signal_epoch_reentry_allowed(
+    *, last_exit_epoch: int | None, current_epoch: int | None,
+) -> tuple[bool, str]:
+    """Block re-entry while the market is still in the signal that caused exit."""
+    if last_exit_epoch is None or current_epoch is None:
+        return True, "无可比对的信号周期"
+    if int(last_exit_epoch) == int(current_epoch):
+        return False, f"仍处于上次退出的信号周期 epoch={int(current_epoch)}"
+    return True, f"检测到新的信号周期 epoch={int(current_epoch)}"
+
+
 def volatility_cooldown_bypass_allowed(
     reason: str,
     regime: dict,
@@ -1146,7 +1157,9 @@ def sync_volatility_position_cycle(
         for key in (
             "position_opened_at", "peak", "entry_iv_actual",
             "entry_gamma_theta_efficiency_actual", "contraction_confirmations",
-            "pending_exit_reason", "partial_exit_tiers", "tranches",
+            "pending_exit_reason", "pending_exit_episode", "selected_exit_tranche_id",
+            "partial_exit_tiers", "tranches", "active_batch_id", "initial_risk",
+            "adverse_signal_confirmations", "regime_was_active", "signal_active",
         ):
             state.pop(key, None)
         state["previous_position_quantity"] = 0
