@@ -196,7 +196,13 @@ class ComboExecutionManager:
         results = []
         active_combo_ids = active_combo_ids or set()
         for combo in self.store.option_combos(limit=500):
-            if combo["status"] in {"EXECUTING", "CLOSING", "ROLLBACK_PENDING"}:
+            if combo["status"] in {"EXECUTING", "CLOSING", "ROLLBACK_PENDING", "FAILED"}:
+                legs = self.store.option_combo_legs(combo["combo_id"])
+                if combo["status"] == "FAILED" and not self._combo_has_broker_exposure(combo["combo_id"]):
+                continue
+                if combo["status"] == "FAILED":
+                    self.store.update_option_combo(combo["combo_id"], "ROLLBACK_PENDING", "失败组合仍有券商暴露，自动恢复残腿平仓")
+                    self.store.option_combo_event(combo["combo_id"], "FAILED_WITH_EXPOSURE_RECOVERED", "ROLLBACK_PENDING", "失败状态仍有残腿，恢复回滚平仓")
                 results.append(self.advance(combo["combo_id"]))
             elif (
                 close_orphan_open
@@ -266,14 +272,13 @@ class ComboExecutionManager:
         if failed_closes:
             leg = failed_closes[0]
             attempts = int(leg.get("close_attempts", 0))
+            message = f"{leg['symbol']} 组合平仓未成交，继续风险回滚"
             if attempts >= 3:
-                message = f"{leg['symbol']} 连续 3 次组合平仓失败，需要人工处理"
-                self.store.update_option_combo(combo["combo_id"], "FAILED", message)
+                self.store.update_option_combo(combo["combo_id"], "ROLLBACK_PENDING", message)
                 self.alerts.send(
                     "ERROR", "COMBO_CLOSE_FAILED", message,
                     incident_key=f"COMBO_CLOSE_FAILED:{combo['combo_id']}:{leg['id']}",
                 )
-                return
             self.store.update_option_combo_leg(
                 leg["id"], status="FILLED", close_intent_id=None, error="",
             )
@@ -468,7 +473,7 @@ class ComboExecutionManager:
     def _reprice_working_combo(self, combo: dict, legs: list[dict]) -> None:
         now = datetime.now(timezone.utc)
         for leg in legs:
-            if leg["status"] != "WORKING" or not leg.get("intent_id"):
+            if leg["status"] not in {"WORKING", "CLOSE_WORKING"} or not leg.get("intent_id"):
                 continue
             intent = self.store.intent(int(leg["intent_id"]))
             if not intent or not intent.get("broker_order_id") or int(intent.get("reprice_count", 0)) >= 4:
