@@ -139,6 +139,11 @@ class ComboExecutionManager:
         if combo["status"] not in {"DRAFT", "FAILED"}:
             return combo
         if combo["status"] == "FAILED":
+            if self._combo_has_broker_exposure(combo_id):
+                self.store.update_option_combo(combo_id, "ROLLBACK_PENDING", "失败组合仍有券商暴露，禁止重新开仓并转入回滚")
+                self.store.option_combo_event(combo_id, "FAILED_RETRY_BLOCKED_EXPOSURE", "ROLLBACK_PENDING", "失败组合存在实际持仓，禁止盲目重试")
+                self.advance(combo_id)
+                return self._required_combo(combo_id)
             self._prepare_retry(combo, legs)
             combo = self._required_combo(combo_id)
             legs = self.store.option_combo_legs(combo_id)

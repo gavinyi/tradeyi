@@ -37,6 +37,35 @@ def test_combo_rejects_unprotected_short():
         validate_combo(combo_config(), legs)
 
 
+def test_failed_combo_with_broker_exposure_cannot_restart(tmp_path):
+    class FakeBroker:
+        def snapshots(self, symbols):
+            return pd.DataFrame([{
+                "code": symbol, "bid_price": 0.95, "ask_price": 1.05,
+                "option_volume": 1000, "option_open_interest": 5000,
+            } for symbol in symbols])
+
+        def cancel_order(self, order_id):
+            return pd.DataFrame([{"order_id": order_id}])
+
+    store = TradingStore(tmp_path / "failed-exposure.db")
+    combo_id = create_combo(store, combo_config(), vertical_legs())
+    store.update_option_combo(combo_id, "FAILED")
+    for leg in store.option_combo_legs(combo_id):
+        store.update_option_combo_leg(leg["id"], status="FILLED", filled_quantity=1)
+
+    class ExposedBroker(FakeBroker):
+        def positions(self, refresh=False):
+            return pd.DataFrame([
+                {"code": "US.NVDA260717C220000", "qty": 1},
+                {"code": "US.NVDA260717C210000", "qty": -1},
+            ])
+
+    manager = ComboExecutionManager(ExposedBroker(), store, FakeExecutor(store))
+    result = manager.start(combo_id)
+    assert result["status"] == "ROLLBACK_PENDING"
+
+
 def test_combo_rejects_net_debit_above_limit():
     config = combo_config()
     config["max_net_debit"] = 0.3

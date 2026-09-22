@@ -323,6 +323,22 @@ def run_campaign(
             safe_datetime(campaign.get("event_date"), now).date(), event_clock, tzinfo=NY
         )
     positions = positions_snapshot if positions_snapshot is not None else broker.positions()
+    # Hard safety stop: a live naked short option is never left to normal strategy logic.
+    naked_rows = positions[
+        positions["code"].astype(str).str.upper().isin({str(item).upper() for item in valid_leg_codes})
+        & (pd.to_numeric(positions["qty"], errors="coerce") < 0)
+    ] if not positions.empty and "qty" in positions.columns else positions.iloc[0:0]
+    if not naked_rows.empty and trigger_mode == "VOLATILITY":
+        executor.store.audit("VOLATILITY_NAKED_SHORT_BLOCK", {
+            "underlying": campaign.get("underlying"),
+            "symbols": naked_rows["code"].astype(str).tolist(),
+            "quantities": pd.to_numeric(naked_rows["qty"], errors="coerce").tolist(),
+        }, strategy_id)
+        executor.store.decision_if_changed(
+            strategy_id, code, "BLOCKED", "检测到期权裸空残腿，已停止正常策略并转入风险接管",
+            {"naked_short": naked_rows["code"].astype(str).tolist()}, repeat_after_seconds=300,
+        )
+        return
     position = positions[positions["code"] == code] if not positions.empty else positions
     quantity = int(position.iloc[0]["qty"]) if not position.empty else 0
     cost = float(position.iloc[0]["cost_price"]) if not position.empty else 0.0

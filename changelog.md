@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-09-22：暂停非对称收益风险的波动率自动开仓并强化残腿接管
+
+原因：
+
+- QQQ 价差出现“保护腿先平、空头风险腿未成交回补”的残腿事故；
+- 单个小盈利可能只有几十美元，但异常残腿可能扩大到数百甚至上千美元，收益/风险明显不对称；
+- 在风险闸门和组合平仓修复完成并验证前，不应继续允许波动率策略自动增加新风险。
+
+立即处置：
+
+1. 已通过现有 `ExecutionManager.submit_limit()` 安全链提交 QQQ 空头残腿接管订单，确认 `US.QQQ260922C735000` 已回补成交，券商数量为 0，组合状态为 `CLOSED`。
+2. 已将以下运行时设置关闭：
+   - `strategy_enabled:Volatility Long Gamma=false`；
+   - `strategy_enabled:volatility_long_gamma=false`；
+   - `volatility_auto_entries_paused=true`。
+3. 保留组合监控、订单对账和减仓/风险处置路径；暂停只针对新的波动率自动开仓，不阻止风险仓位平仓。
+
+代码整改：
+
+1. 组合失败状态不再等同于风险解除：
+   - `FAILED` 且仍存在券商暴露时，自动恢复为 `ROLLBACK_PENDING`；
+   - 禁止对仍有实际持仓的失败组合盲目重新开仓；
+   - 已存在紧急回补订单时，禁止组合逻辑重复提交第二张平仓单；
+   - 只有确认所有相关券商数量归零后才可进入 `CLOSED`。
+2. 新增裸空硬闸门：
+   - 波动率策略检测到任一组合腿为负数量时，阻止正常策略继续运行并记录 `VOLATILITY_NAKED_SHORT_BLOCK`；
+   - 将该状态转交风险接管，不再允许同一活动继续开新仓。
+3. 新增收益/风险比硬门槛：
+   - 定义风险结构的模型预期收益不得低于 50%；
+   - 不满足风险收益比的价差不会进入自动执行；
+   - 原有权利金预算、Greeks、价差、IV/RV 和组合最大亏损检查继续保留。
+
+验证：
+
+- `pytest tests/test_combo_execution.py tests/test_combo_analytics.py tests/test_volatility_structures.py tests/test_volatility_optimizer.py -q`：71 项通过；
+- QQQ 接管订单 `9012182`：`FILLED_ALL`，成交价 `$11.38`，数量 1；
+- `US.QQQ260922C735000` 券商持仓已确认 `qty=0`；
+- 组合 `auto-d9b9587cf78bd506` 已确认 `CLOSED`；
+- 保持 PAPER/SIMULATE 环境，未新增真实交易路径。
+
 本文件记录系统功能、策略逻辑、风控规则和页面行为的每次重要改动。后续每次修改代码、配置默认值、交易规则或页面交互，都必须同步更新本文件。
 
 ## 维护规则
