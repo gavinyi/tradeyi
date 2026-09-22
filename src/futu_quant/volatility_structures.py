@@ -73,9 +73,9 @@ def _package(
         risk_per_share = max(0.01, entry_debit)
     expected_return = (exit_value - entry_debit) / risk_per_share
     max_loss = risk_per_share * 100
-    # A defined-risk spread must have materially positive payoff before fees;
-    # otherwise a small win / large loss profile is rejected at construction.
-    risk_reward_ok = expected_return >= max(float(minimum_expected_return), 0.50)
+    # Preserve the prior configurable tier threshold; risk containment is handled
+    # by max-loss budget and the combo rollback/naked-exposure guards.
+    risk_reward_ok = expected_return >= float(minimum_expected_return)
     eligible = bool(
         entry_debit > 0
         and max_loss <= premium_budget
@@ -94,7 +94,7 @@ def _package(
         reasons.append(f"最大风险 ${max_loss:,.0f} 超过预算 ${premium_budget:,.0f}")
     if not risk_reward_ok:
         reasons.append(
-            f"风险收益比 {expected_return:.2%} 低于硬门槛 {max(float(minimum_expected_return), 0.50):.2%}"
+            f"短周期净期望收益 {expected_return:.2%} 低于 {float(minimum_expected_return):.2%}"
         )
     if net_gamma <= 0:
         reasons.append("组合净 Gamma 不为正")
