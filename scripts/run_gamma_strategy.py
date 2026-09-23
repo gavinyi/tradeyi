@@ -1361,17 +1361,32 @@ def run_once(reconcile: bool = True) -> None:
     orders = broker.orders()
     state = load_state()
     campaigns = load_gamma_campaigns()
-    active_keys = {f"earnings_gamma:{item['code']}" for item in campaigns}
+    active_keys = {
+        f"{strategy_id}:{item['code']}"
+        for item in campaigns
+        for strategy_id in (
+            ["volatility_long_gamma"]
+            if item.get("trigger_mode", "EARNINGS") == "VOLATILITY"
+            else ["earnings_gamma"]
+        )
+    }
     state = {
         key: value for key, value in state.items()
-        if not key.startswith("earnings_gamma:") or key in active_keys
+        if not (key.startswith("earnings_gamma:") or key.startswith("volatility_long_gamma:"))
+        or key in active_keys
     }
     executor.store.prune_campaign_states("earnings_gamma:", active_keys)
+    executor.store.prune_campaign_states("volatility_long_gamma:", active_keys)
     for campaign in campaigns:
-        if campaign.get("enabled", True) and campaign.get("trigger_mode", "EARNINGS") == "EARNINGS":
+        if campaign.get("enabled", True):
+            strategy_id = (
+                "volatility_long_gamma"
+                if campaign.get("trigger_mode", "EARNINGS") == "VOLATILITY"
+                else "earnings_gamma"
+            )
             try:
                 run_campaign(
-                    broker, executor, campaign, state,
+                    broker, executor, campaign, state, strategy_id=strategy_id,
                     positions_snapshot=positions, orders_snapshot=orders,
                 )
             except (BrokerError, ValueError, KeyError) as exc:
