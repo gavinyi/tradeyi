@@ -70,7 +70,8 @@ def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float
     quotes = broker.snapshots([leg["symbol"] for leg in legs])
     detail, package = combo_market_snapshot(legs, quotes)
     if detail.empty:
-        return 1, 0.0, 0.0
+        quantity = max(int(float(leg.get("filled_quantity", 0) or 0)) for leg in legs)
+        return quantity, 0.0, 0.0
     entry_debit = sum(
         (1 if leg["side"] == "BUY" else -1)
         * float(leg.get("filled_quantity", 0) or 0)
@@ -78,7 +79,8 @@ def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float
         for leg in legs
     )
     current_value = float(package.get("executable_net_debit", 0) or 0)
-    return 1, max(0.01, entry_debit), current_value
+    quantity = max(int(float(leg.get("filled_quantity", 0) or 0)) for leg in legs)
+    return quantity, max(0.01, entry_debit), current_value
 
 
 def refreshed_trade_quotes(
@@ -305,6 +307,7 @@ def run_campaign(
     trigger_mode = campaign.get("trigger_mode", "EARNINGS")
     if trigger_mode == "VOLATILITY":
         campaign_state["active_contract_code"] = code
+        campaign_state.setdefault("exit_signal_epoch", None)
         campaign_state.setdefault("signal_epoch", 0)
     if issues:
         executor.store.audit("GAMMA_VALIDATION_WARNING", {
@@ -335,9 +338,12 @@ def run_campaign(
             "quantities": pd.to_numeric(naked_rows["qty"], errors="coerce").tolist(),
         }, strategy_id)
         executor.store.decision_if_changed(
-            strategy_id, code, "BLOCKED", "检测到期权裸空残腿，已停止正常策略并转入风险接管",
-            {"naked_short": naked_rows["code"].astype(str).tolist()}, repeat_after_seconds=300,
+            strategy_id, code, "BLOCKED", "检测到期权裸空残腿，禁止新开仓并继续执行风险接管",
+            {"naked_short": naked_rows["code"].astype(str).tolist(), "reduce_only_takeover": True},
+            repeat_after_seconds=300,
         )
+        # Do not fall through to a new entry; the combo/orphan monitor owns the
+        # reduce-only BUY/SELL recovery path and must continue operating.
         return
     position = positions[positions["code"] == code] if not positions.empty else positions
     quantity = int(position.iloc[0]["qty"]) if not position.empty else 0
@@ -557,6 +563,7 @@ def run_campaign(
         sync_volatility_position_cycle(
             campaign_state, quantity=quantity, cost=cost, last=executable_mark,
             current_iv=current_iv, current_efficiency=current_efficiency, now=now,
+            allocation_policy=str(campaign.get("exit_allocation_policy", "FIFO")),
         )
     else:
         campaign_state["peak"] = max(float(campaign_state.get("peak", 0)), executable_mark)
@@ -606,6 +613,7 @@ def run_campaign(
             # Any inactive transition ends the old confirmation epoch.  Do not
             # keep a stale signal alive merely because z-score remains elevated.
             campaign_state["signal_active"] = False
+            campaign_state["exit_signal_epoch"] = campaign_state.get("signal_epoch")
             campaign_state.pop("signal_started_at", None)
             campaign_state.pop("signal_start_volume_ratio", None)
             campaign_state["regime_was_active"] = False
@@ -1049,19 +1057,18 @@ def run_campaign(
                 volatility_combo_entry_allowed(campaign)
             )
             if not combo_entry_allowed:
-                order_legs = [{"code": code, "side": "BUY", "ratio": 1, "role": "PRIMARY"}]
-                executor.store.audit("VOLATILITY_COMBO_FALLBACK_LONG_OPTION", {
+                executor.store.audit("VOLATILITY_COMBO_BLOCKED", {
                     "symbol": code,
                     "underlying": campaign["underlying"],
                     "structure": campaign.get("structure"),
                     "reason": combo_entry_reason,
                     "checks": combo_entry_checks,
                 }, strategy_id)
-                decision_payload.update({
-                    "combo_fallback": True,
-                    "combo_fallback_reason": combo_entry_reason,
+                executor.store.decision(strategy_id, code, "BLOCKED", f"组合质量未通过，拒绝退化为单腿：{combo_entry_reason}", {
                     "combo_quality_checks": combo_entry_checks,
                 })
+                print(f"{code}: BLOCKED (组合质量未通过，拒绝退化为单腿)")
+                return
         entry_unit_price = (
             float(campaign.get("structure_net_debit", ask))
             if len(order_legs) > 1 else ask
@@ -1329,8 +1336,7 @@ def run_campaign(
             )
             print(result)
             if trigger_mode == "VOLATILITY" and result.status in {
-                "SHADOW", "SHADOW_PART", "SHADOW_FILLED", "SUBMITTED",
-                "FILLED_PART", "FILLED",
+                "SHADOW", "SHADOW_PART", "SHADOW_FILLED", "FILLED_PART", "FILLED",
             }:
                 if partial_exit_tier:
                     tiers = list(campaign_state.get("partial_exit_tiers") or [])

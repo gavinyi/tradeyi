@@ -2049,8 +2049,8 @@ class TradingStore:
         with self.connection() as connection:
             if broker_deal_id:
                 existing = connection.execute(
-                    "SELECT id FROM fill_ledger WHERE source=? AND broker_deal_id=?",
-                    (source, str(broker_deal_id)),
+                    "SELECT id FROM fill_ledger WHERE broker_deal_id=?",
+                    (str(broker_deal_id),),
                 ).fetchone()
                 if existing:
                     return int(existing["id"])

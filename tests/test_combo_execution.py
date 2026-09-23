@@ -45,6 +45,9 @@ def test_failed_combo_with_broker_exposure_cannot_restart(tmp_path):
                 "option_volume": 1000, "option_open_interest": 5000,
             } for symbol in symbols])
 
+        def positions(self, refresh=False):
+            return pd.DataFrame(columns=["code", "qty"])
+
         def cancel_order(self, order_id):
             return pd.DataFrame([{"order_id": order_id}])
 

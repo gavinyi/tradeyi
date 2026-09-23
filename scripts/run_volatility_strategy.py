@@ -16,7 +16,7 @@ from futu_quant.volatility_orphans import (
 )
 from futu_quant.option_lifecycle import parse_option_code
 from datetime import date, datetime, timezone
-import os
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import pandas as pd
 if __package__:
@@ -231,7 +231,8 @@ def run_once(reconcile: bool = True) -> None:
                 due_for_review = True
         expiry = pd.to_datetime(campaign.get("strike_time"), errors="coerce")
         min_dte = max(1, int(float(campaign.get("maturity_min_dte", 5) or 5)))
-        needs_expiry_roll = pd.isna(expiry) or (expiry.date() - datetime.now().astimezone().date()).days < min_dte
+        ny_today = datetime.now(ZoneInfo("America/New_York")).date()
+        needs_expiry_roll = pd.isna(expiry) or (expiry.date() - ny_today).days < min_dte
         quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
             campaign,
             default_min_score=max(70.0, float(campaign.get("minimum_entry_quality_score", 70))),

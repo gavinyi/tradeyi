@@ -591,6 +591,7 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         lambda: ComboExecutionManager(broker, store, executor).monitor_all(
             active_volatility_combo_ids(store),
             close_orphan_open=True,
+            allow_open_execution=session.regular_open(now),
         ),
     )
     if session.regular_open(now) and due(store, "last_run:combo_market_snapshot", 60, now):

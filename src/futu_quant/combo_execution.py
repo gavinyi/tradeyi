@@ -13,7 +13,8 @@ from .option_lifecycle import parse_option_code
 
 FINAL_FILLED = {"FILLED", "SHADOW_FILLED"}
 WORKING = {"CREATED", "WAITING_SUBMIT", "SUBMITTING", "SUBMITTED", "FILLED_PART", "SHADOW"}
-FAILED = {"FAILED", "REJECTED", "CANCELLED", "CANCELLED_ALL", "UNKNOWN", "APPROVAL_REQUIRED"}
+FAILED = {"FAILED", "REJECTED", "CANCELLED", "CANCELLED_ALL", "CANCELLED_PART", "UNKNOWN", "APPROVAL_REQUIRED"}
+OPEN_PARTIAL = {"FILLED_PART", "PARTIAL_FILLED", "OPEN_PARTIAL"}
 
 
 def _finite_positive(value, *, integer: bool = False) -> float:
@@ -139,12 +140,23 @@ class ComboExecutionManager:
         if combo["status"] not in {"DRAFT", "FAILED"}:
             return combo
         if combo["status"] == "FAILED":
-            if self._combo_has_broker_exposure(combo_id):
-                self.store.update_option_combo(combo_id, "ROLLBACK_PENDING", "失败组合仍有券商暴露，禁止重新开仓并转入回滚")
-                self.store.option_combo_event(combo_id, "FAILED_RETRY_BLOCKED_EXPOSURE", "ROLLBACK_PENDING", "失败组合存在实际持仓，禁止盲目重试")
-                self.advance(combo_id)
-                return self._required_combo(combo_id)
-            self._prepare_retry(combo, legs)
+            if not hasattr(self.broker, "positions"):
+                if any(float(leg.get("filled_quantity", 0) or 0) > 0 for leg in legs):
+                    raise ValueError("组合已有成交腿，禁止直接重试；请先完成回滚或人工风险处置")
+                self._prepare_retry(combo, legs)
+            else:
+                try:
+                    exposed = self._combo_has_broker_exposure(combo_id)
+                except RuntimeError:
+                    if any(float(leg.get("filled_quantity", 0) or 0) > 0 for leg in legs):
+                        raise ValueError("无法确认券商暴露，且组合存在本地成交腿，禁止重试")
+                    raise
+                if exposed:
+                    self.store.update_option_combo(combo_id, "ROLLBACK_PENDING", "失败组合仍有券商暴露，禁止重新开仓并转入回滚")
+                    self.store.option_combo_event(combo_id, "FAILED_RETRY_BLOCKED_EXPOSURE", "ROLLBACK_PENDING", "失败组合存在实际持仓，禁止盲目重试")
+                    self.advance(combo_id)
+                    return self._required_combo(combo_id)
+                self._prepare_retry(combo, legs)
             combo = self._required_combo(combo_id)
             legs = self.store.option_combo_legs(combo_id)
         if combo.get("requires_parent_closed") and combo.get("parent_combo_id"):
@@ -173,6 +185,14 @@ class ComboExecutionManager:
         if any(float(leg.get("filled_quantity", 0) or 0) > 0 for leg in legs):
             raise ValueError("组合已有成交腿，禁止直接重试；请先完成回滚或人工风险处置")
         for leg in legs:
+            for intent_id in (leg.get("intent_id"), leg.get("close_intent_id")):
+                intent = self.store.intent(int(intent_id)) if intent_id else None
+                if intent and intent.get("broker_order_id") and str(intent.get("status")) in WORKING | OPEN_PARTIAL:
+                    try:
+                        self.broker.cancel_order(intent["broker_order_id"])
+                    except Exception as exc:
+                        raise RuntimeError(f"重试前撤销旧券商订单失败：{intent['broker_order_id']}：{exc}") from exc
+        for leg in legs:
             self.store.update_option_combo_leg(
                 leg["id"], status="PLANNED", intent_id=None, close_intent_id=None,
                 filled_quantity=0, average_fill_price=0, error="", close_attempts=0,
@@ -197,12 +217,16 @@ class ComboExecutionManager:
         active_combo_ids: set[str] | None = None,
         *,
         close_orphan_open: bool = False,
+        allow_open_execution: bool = True,
     ) -> list[dict]:
         results = []
         active_combo_ids = active_combo_ids or set()
         for combo in self.store.option_combos(limit=500):
             if combo["status"] in {"EXECUTING", "CLOSING", "ROLLBACK_PENDING", "FAILED"}:
                 legs = self.store.option_combo_legs(combo["combo_id"])
+                if combo["status"] == "EXECUTING" and not allow_open_execution:
+                    self._cancel_working(legs)
+                    continue
                 if combo["status"] == "FAILED" and not self._combo_has_broker_exposure(combo["combo_id"]):
                     continue
                 if combo["status"] == "FAILED":
@@ -269,8 +293,23 @@ class ComboExecutionManager:
     def _advance_close(self, combo: dict, legs: list[dict]) -> None:
         filled = [leg for leg in legs if leg["filled_quantity"] > 0]
         if not filled:
-            final = "FAILED" if combo["status"] == "ROLLBACK_PENDING" else "CLOSED"
-            self.store.update_option_combo(combo["combo_id"], final)
+            if combo["status"] == "ROLLBACK_PENDING":
+                try:
+                    if self._combo_has_broker_exposure(combo["combo_id"]):
+                        self.store.option_combo_event(
+                            combo["combo_id"], "ROLLBACK_EXPOSURE_UNCONFIRMED", "ROLLBACK_PENDING",
+                            "本地成交记录为空但券商仍有暴露，继续等待风险接管",
+                        )
+                        return
+                except RuntimeError:
+                    self.store.option_combo_event(
+                        combo["combo_id"], "ROLLBACK_BROKER_QUERY_UNKNOWN", "ROLLBACK_PENDING",
+                        "无法确认券商持仓，拒绝将回滚标记为失败结束",
+                    )
+                    return
+                self.store.update_option_combo(combo["combo_id"], "FAILED", "回滚无本地成交且券商确认无暴露")
+                return
+            self.store.update_option_combo(combo["combo_id"], "CLOSED")
             return
         self._emergency_naked_check(combo, legs)
         # A close order can be submitted by the emergency naked-short path.
@@ -390,17 +429,29 @@ class ComboExecutionManager:
         except TypeError:
             try:
                 positions = self.broker.positions()
-            except Exception:
-                return None
-        except Exception:
-            return None
+            except Exception as exc:
+                raise RuntimeError(f"券商持仓查询失败：{exc}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"券商持仓查询失败：{exc}") from exc
         if positions is None:
-            return pd.DataFrame()
+            raise RuntimeError("券商持仓查询返回空值")
         return positions if isinstance(positions, pd.DataFrame) else pd.DataFrame(positions)
 
     def _combo_has_broker_exposure(self, combo_id: str) -> bool:
+        if not hasattr(self.broker, "positions"):
+            # Test/replay adapters without broker positions cannot report live
+            # exposure; production Futu brokers always implement this method.
+            return False
         positions = self._positions_snapshot()
-        if positions is None or positions.empty or "code" not in positions.columns:
+        if positions is None:
+            raise RuntimeError("券商持仓查询不可用，拒绝将组合暴露判定为零")
+        if "code" not in positions.columns:
+            # A valid empty broker response may omit columns in lightweight PAPER
+            # adapters; only treat non-empty malformed data as unknown.
+            if not positions.empty:
+                raise RuntimeError("券商持仓响应缺少 code，拒绝将组合暴露判定为零")
+            return False
+        if positions.empty:
             return False
         leg_codes = {
             str(leg.get("symbol", "")).upper()
@@ -441,9 +492,13 @@ class ComboExecutionManager:
         combo closes.
         """
         requested = max(0, int(requested))
-        positions = self._positions_snapshot()
-        if positions is None or "code" not in positions.columns:
+        if not hasattr(self.broker, "positions"):
             return requested, ""
+        positions = self._positions_snapshot()
+        if positions is None:
+            return requested, "券商持仓不可用，保留本地数量并继续减仓尝试"
+        if "code" not in positions.columns:
+            raise RuntimeError("券商持仓响应缺少 code，拒绝计算减仓数量")
         symbol = str(leg.get("symbol", "")).upper()
         matched = positions[positions["code"].astype(str).str.upper() == symbol]
         if matched.empty:
@@ -460,7 +515,9 @@ class ComboExecutionManager:
         sellable = sum(value for value in sellable_values if value is not None)
         if closing_side == "SELL":
             exposure = max(qty, 0.0)
-            if sellable > 0:
+            if sellable_values and sellable <= 0:
+                exposure = 0.0
+            elif sellable_values:
                 exposure = min(exposure if exposure > 0 else sellable, sellable)
             if exposure <= 0:
                 return 0, f"富途当前多头数量 {qty:g}，没有可卖出的多头腿"
@@ -489,7 +546,7 @@ class ComboExecutionManager:
     def _reprice_working_combo(self, combo: dict, legs: list[dict]) -> None:
         now = datetime.now(timezone.utc)
         for leg in legs:
-            if leg["status"] not in {"WORKING", "CLOSE_WORKING"} or not leg.get("intent_id"):
+            if leg["status"] not in {"WORKING", "CLOSE_WORKING", "OPEN_PARTIAL"} or not leg.get("intent_id"):
                 continue
             intent = self.store.intent(int(leg["intent_id"]))
             if not intent or not intent.get("broker_order_id") or int(intent.get("reprice_count", 0)) >= 4:
@@ -543,7 +600,7 @@ class ComboExecutionManager:
                     float(leg.get("quantity", 0) or 0),
                     max(float(intent.get("filled_quantity") or 0), float(leg.get("close_filled_quantity", 0) or 0)),
                 )
-                if status in FINAL_FILLED or status in WORKING:
+                if status in FINAL_FILLED or status in WORKING or status in OPEN_PARTIAL:
                     self.store.update_option_combo_leg(
                         leg["id"], close_filled_quantity=close_filled,
                         remaining_quantity=max(float(leg.get("filled_quantity", 0) or 0) - close_filled, 0),
@@ -551,7 +608,7 @@ class ComboExecutionManager:
                     )
                 elif status in FAILED:
                     self.store.update_option_combo_leg(leg["id"], status="CLOSE_FAILED", error=intent.get("error") or status)
-            elif status in FINAL_FILLED or status in WORKING:
+            elif status in FINAL_FILLED or status in WORKING or status in OPEN_PARTIAL:
                 filled = min(float(leg.get("quantity", 0) or 0), float(intent.get("filled_quantity") or 0))
                 self.store.update_option_combo_leg(
                     leg["id"], status="FILLED" if status in FINAL_FILLED and filled >= float(leg.get("quantity", 0) or 0) else "OPEN_PARTIAL",
@@ -584,7 +641,7 @@ class ComboExecutionManager:
 
     def _cancel_working(self, legs: list[dict]) -> None:
         for leg in legs:
-            if leg["status"] != "WORKING" or not leg.get("intent_id"):
+            if leg["status"] not in {"WORKING", "CLOSE_WORKING", "OPEN_PARTIAL"} or not leg.get("intent_id"):
                 continue
             intent = self.store.intent(int(leg["intent_id"]))
             if intent and intent.get("broker_order_id"):

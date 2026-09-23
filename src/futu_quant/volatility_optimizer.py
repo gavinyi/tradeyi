@@ -630,8 +630,10 @@ def same_signal_epoch_reentry_allowed(
     *, last_exit_epoch: int | None, current_epoch: int | None,
 ) -> tuple[bool, str]:
     """Block re-entry while the market is still in the signal that caused exit."""
-    if last_exit_epoch is None or current_epoch is None:
-        return True, "无可比对的信号周期"
+    if last_exit_epoch is None:
+        return False, "缺少上次退出信号周期，按安全规则禁止重入"
+    if current_epoch is None:
+        return False, "当前信号周期未知，按安全规则禁止重入"
     if int(last_exit_epoch) == int(current_epoch):
         return False, f"仍处于上次退出的信号周期 epoch={int(current_epoch)}"
     return True, f"检测到新的信号周期 epoch={int(current_epoch)}"
@@ -1149,6 +1151,7 @@ def decide_volatility_action(
 def sync_volatility_position_cycle(
     state: dict, *, quantity: int, cost: float, last: float, current_iv: float,
     current_efficiency: float, now: datetime,
+    allocation_policy: str = "FIFO",
 ) -> str:
     """Synchronize per-position baselines and never leak them across entry cycles."""
     previous_quantity = int(state.get("previous_position_quantity", 0) or 0)
@@ -1162,6 +1165,10 @@ def sync_volatility_position_cycle(
             "adverse_signal_confirmations", "regime_was_active", "signal_active",
         ):
             state.pop(key, None)
+        if transition == "CLOSED" and state.get("signal_epoch") is not None:
+            state["exit_signal_epoch"] = state.get("signal_epoch")
+            state["last_exit_at"] = now.isoformat()
+            state["exit_contract_code"] = str(state.get("active_contract_code", ""))
         state["previous_position_quantity"] = 0
         return transition
     if previous_quantity <= 0 or not state.get("position_opened_at"):
@@ -1194,7 +1201,14 @@ def sync_volatility_position_cycle(
             })
         elif quantity < previous_quantity:
             remaining = quantity
-            for tranche in tranches:
+            ordered = list(range(len(tranches)))
+            policy = str(allocation_policy or "FIFO").upper()
+            if policy == "LIFO":
+                ordered.reverse()
+            elif policy == "RISK_PRIORITY":
+                ordered.sort(key=lambda i: float(tranches[i].get("initial_risk", 0) or 0), reverse=True)
+            for index in ordered:
+                tranche = tranches[index]
                 used = min(int(tranche.get("quantity", 0)), remaining)
                 tranche["quantity"] = used
                 remaining -= used
