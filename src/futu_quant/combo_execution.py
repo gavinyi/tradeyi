@@ -127,10 +127,14 @@ def find_open_combo_for_campaign(
 
 
 class ComboExecutionManager:
-    def __init__(self, broker, store, executor):
+    def __init__(self, broker, store, executor, positions_snapshot: pd.DataFrame | None = None):
         self.broker = broker
         self.store = store
         self.executor = executor
+        # A service cycle may inspect many failed/orphaned combos. Reuse the
+        # single broker position snapshot for every exposure check instead of
+        # issuing one slow OpenD query per combo.
+        self._positions_snapshot_cache = positions_snapshot
         self.alerts = AlertManager(store)
 
     def start(self, combo_id: str) -> dict:
@@ -422,6 +426,8 @@ class ComboExecutionManager:
         )
 
     def _positions_snapshot(self) -> pd.DataFrame | None:
+        if self._positions_snapshot_cache is not None:
+            return self._positions_snapshot_cache
         if not hasattr(self.broker, "positions"):
             return None
         try:
@@ -435,7 +441,8 @@ class ComboExecutionManager:
             raise RuntimeError(f"券商持仓查询失败：{exc}") from exc
         if positions is None:
             raise RuntimeError("券商持仓查询返回空值")
-        return positions if isinstance(positions, pd.DataFrame) else pd.DataFrame(positions)
+        self._positions_snapshot_cache = positions if isinstance(positions, pd.DataFrame) else pd.DataFrame(positions)
+        return self._positions_snapshot_cache
 
     def _combo_has_broker_exposure(self, combo_id: str) -> bool:
         if not hasattr(self.broker, "positions"):

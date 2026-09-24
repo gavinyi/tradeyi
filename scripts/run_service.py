@@ -544,10 +544,12 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         store.heartbeat("order_push", "HEALTHY", "推送通道待命，轮询兜底正常", os.getpid())
         mark_run(store, "last_run:heartbeat:order_push", now)
     run_task(store, alerts, "shadow_matching", lambda: match_shadow_orders(store, broker))
+    positions_snapshot = None
     if due(store, "last_run:equity_snapshot", 60, now):
         try:
             account = broker.account_info()
             positions = broker.positions()
+            positions_snapshot = positions
             store.save_broker_snapshot("accounts", broker.accounts())
             store.save_broker_snapshot("account_info", account)
             store.save_broker_snapshot("positions", positions)
@@ -588,7 +590,9 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     store.set_setting("connectivity_degraded", str(not connected).lower())
     run_task(
         store, alerts, "option_combo_monitor",
-        lambda: ComboExecutionManager(broker, store, executor).monitor_all(
+        lambda: ComboExecutionManager(
+            broker, store, executor, positions_snapshot=positions_snapshot,
+        ).monitor_all(
             active_volatility_combo_ids(store),
             close_orphan_open=True,
             allow_open_execution=session.regular_open(now),
