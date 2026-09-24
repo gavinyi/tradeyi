@@ -90,9 +90,9 @@ def maintenance(store, broker) -> dict:
     log = Path("data/service.log")
     max_log_bytes = int(os.getenv("MAX_LOG_BYTES", str(10 * 1024 * 1024)))
     if log.exists() and log.stat().st_size > max_log_bytes:
-        rotated = log.with_suffix(".log.1")
-        rotated.unlink(missing_ok=True)
-        shutil.move(log, rotated)
-        result["log_rotation"] = "ROTATED"
+        # Windows cannot rename an actively inherited stdout handle. The service
+        # and UI must never fail a health cycle trying to rotate their live log.
+        # Leave the file in place and report a deferred rotation instead.
+        result["log_rotation"] = "DEFERRED_LIVE_LOG"
     store.audit("HEALTH_CHECK", result)
     return result

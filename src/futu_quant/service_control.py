@@ -86,11 +86,16 @@ def start() -> ServiceStatus:
             current = status()
             if current.running:
                 return current
-    log = LOG_FILE.open("a")
-    process = subprocess.Popen(  # noqa: S603
-        [sys.executable, str(ROOT / "scripts" / "run_service.py")], cwd=ROOT,
-        stdout=log, stderr=log, start_new_session=True,
-    )
+    # Close the parent descriptor immediately; otherwise Windows keeps the live
+    # service log locked across UI/service control operations.
+    log = LOG_FILE.open("a", encoding="utf-8")
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            [sys.executable, str(ROOT / "scripts" / "run_service.py")], cwd=ROOT,
+            stdout=log, stderr=log, start_new_session=True,
+        )
+    finally:
+        log.close()
     # run_service writes its PID only after acquiring the singleton lock. Writing it
     # here could overwrite the real owner's PID when a second start is rejected.
     for _ in range(20):
@@ -155,11 +160,14 @@ def restart() -> ServiceStatus:
     RESTART_FILE.write_text(str(current.pid))
     stopped = stop(stop_radar=False)
     if stopped.running:
-        with LOG_FILE.open("a") as log:
+        log = LOG_FILE.open("a", encoding="utf-8")
+        try:
             subprocess.Popen(  # noqa: S603
                 [sys.executable, "-m", "futu_quant.service_control", "handoff", str(current.pid)],
                 cwd=ROOT, stdout=log, stderr=log, start_new_session=True,
             )
+        finally:
+            log.close()
         return ServiceStatus(
             True, stopped.pid, "旧服务正在停止；退出后会自动启动新服务",
             stopped.uptime_seconds, True,
