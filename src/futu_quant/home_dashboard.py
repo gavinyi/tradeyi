@@ -148,18 +148,21 @@ def _load_store_snapshot() -> dict[str, pd.DataFrame]:
 @st.cache_data(ttl=30, max_entries=2, show_spinner=False)
 def _account_snapshot(_broker) -> dict[str, Any]:
     store = TradingStore()
-    try:
-        info = _broker.account_info()
-        positions = _broker.positions()
-        store.save_broker_snapshot("account_info", info)
-        store.save_broker_snapshot("positions", positions)
-        return {"ok": True, "error": "", "info": info, "positions": positions}
-    except Exception as exc:  # noqa: BLE001 - homepage must remain usable during OpenD faults
-        snapshots = {key: store.broker_snapshot(key) for key in ("account_info", "positions")}
-        info = pd.DataFrame((snapshots["account_info"] or {}).get("payload", []))
-        positions = pd.DataFrame((snapshots["positions"] or {}).get("payload", []))
-        captured = [item["captured_at"] for item in snapshots.values() if item]
-        return {"ok": False, "error": f"{exc}；已回退到最近快照 {max(captured) if captured else '无'}", "info": info, "positions": positions}
+    snapshots = {key: store.broker_snapshot(key) for key in ("account_info", "positions")}
+    info = pd.DataFrame((snapshots["account_info"] or {}).get("payload", []))
+    positions = pd.DataFrame((snapshots["positions"] or {}).get("payload", []))
+    captured = [item["captured_at"] for item in snapshots.values() if item]
+    captured_at = max(captured) if captured else "无"
+    # The scheduler refreshes these snapshots independently. Do not issue a
+    # synchronous OpenD positions query during every Streamlit fragment rerun.
+    if info.empty and positions.empty:
+        return {"ok": False, "error": "暂无券商快照；等待交易服务刷新", "info": info, "positions": positions}
+    return {
+        "ok": True,
+        "error": f"使用交易服务快照（{captured_at}）",
+        "info": info,
+        "positions": positions,
+    }
 
 
 def _latest_data_age(snapshot: dict[str, pd.DataFrame]) -> tuple[str, str]:
@@ -754,7 +757,9 @@ def _render_live_dashboard(_broker, _account_page=None) -> None:
             st.rerun(scope="fragment")
 
     if not account["ok"]:
-        st.warning(f"账户行情暂不可用，系统与策略图仍可查看：{account['error']}")
+        st.warning(f"账户快照暂不可用，系统与策略图仍可查看：{account['error']}")
+    else:
+        st.caption(account["error"])
 
     _render_attention_center(snapshot, account, _account_page)
     st.space("small")
