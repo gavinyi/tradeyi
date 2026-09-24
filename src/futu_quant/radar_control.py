@@ -82,14 +82,11 @@ def start() -> RadarStatus:
         return current
     STOP_FILE.unlink(missing_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    log = LOG_FILE.open("a", encoding="utf-8")
-    try:
-        process = subprocess.Popen(
-            [sys.executable, str(ROOT / "scripts" / "run_radar_service.py")],
-            cwd=ROOT, stdout=log, stderr=log, start_new_session=True,
-        )
-    finally:
-        log.close()
+    process = subprocess.Popen(
+        [sys.executable, str(ROOT / "scripts" / "run_radar_service.py")],
+        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     time.sleep(.5)
     current = status()
     return current if current.running else RadarStatus(True, process.pid, "雷达正在启动", 0)
