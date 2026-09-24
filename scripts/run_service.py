@@ -4,6 +4,8 @@ import argparse
 from datetime import datetime, timedelta
 import os
 from pathlib import Path
+
+import pandas as pd
 import platform
 import shlex
 import signal
@@ -588,10 +590,19 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
             alerts.send("ERROR", "EQUITY_SNAPSHOT_FAILED", str(exc))
     connected = run_task(store, alerts, "order_reconciliation", executor.reconcile)
     store.set_setting("connectivity_degraded", str(not connected).lower())
+    combo_positions_snapshot = positions_snapshot
+    if combo_positions_snapshot is None:
+        try:
+            cached_positions = store.broker_snapshot("positions")
+            payload = (cached_positions or {}).get("payload", [])
+            if payload:
+                combo_positions_snapshot = pd.DataFrame(payload)
+        except Exception:
+            combo_positions_snapshot = None
     run_task(
         store, alerts, "option_combo_monitor",
         lambda: ComboExecutionManager(
-            broker, store, executor, positions_snapshot=positions_snapshot,
+            broker, store, executor, positions_snapshot=combo_positions_snapshot,
         ).monitor_all(
             active_volatility_combo_ids(store),
             close_orphan_open=True,
