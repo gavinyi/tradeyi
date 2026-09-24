@@ -187,6 +187,8 @@ class TradingStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_task_runs_task_started
                     ON task_runs(task_id,started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_task_runs_id_desc
+                    ON task_runs(id DESC);
                 CREATE TABLE IF NOT EXISTS option_combos (
                     combo_id TEXT PRIMARY KEY,
                     strategy_id TEXT NOT NULL,
@@ -491,6 +493,10 @@ class TradingStore:
             }.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE order_intents ADD COLUMN {name} {definition}")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_logs_id_desc ON decision_logs(id DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_operational_events_id_desc ON operational_events(id DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_alerts_id_desc ON alerts(id DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_equity_snapshots_id_desc ON equity_snapshots(id DESC)")
             connection.execute(
                 """INSERT INTO fill_ledger
                 (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,

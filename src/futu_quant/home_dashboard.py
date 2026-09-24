@@ -132,12 +132,12 @@ def _load_store_snapshot() -> dict[str, pd.DataFrame]:
     store = TradingStore()
     return {
         "heartbeats": _safe_frame(store.heartbeats()),
-        "tasks": _safe_frame(store.task_runs(limit=3000)),
-        "decisions": _safe_frame(store.decisions(limit=5000)),
-        "intents": _safe_frame(store.intents(limit=5000)),
-        "events": _safe_frame(store.operational_events(limit=1000)),
-        "alerts": _safe_frame(store.alerts(limit=300)),
-        "equity": _safe_frame(store.equity_history(limit=2000)),
+        "tasks": _safe_frame(store.task_runs(limit=1000)),
+        "decisions": _safe_frame(store.decisions(limit=1500)),
+        "intents": _safe_frame(store.intents(limit=1000)),
+        "events": _safe_frame(store.operational_events(limit=500)),
+        "alerts": _safe_frame(store.alerts(limit=200)),
+        "equity": _safe_frame(store.equity_history(limit=1000)),
         "incidents": _safe_frame(store.incidents(status="OPEN", limit=100)),
         "shadow_positions": _safe_frame(store.shadow_open_positions()),
         "budgets": _safe_frame(store.strategy_risk_budgets()),
@@ -738,13 +738,16 @@ def _render_risk_pulse(snapshot: dict[str, pd.DataFrame]) -> None:
 
 @st.fragment(run_every="30s")
 def _render_live_dashboard(_broker, _account_page=None) -> None:
+    # Keep the homepage responsive when OpenD is slow: the account snapshot is
+    # cached and may fall back to the last broker snapshot instead of blocking
+    # every Streamlit fragment rerun on a fresh position query.
     snapshot = _load_store_snapshot()
     account = _account_snapshot(_broker)
 
     refresh_left, refresh_right = st.columns([1, 0.22], vertical_alignment="center")
     with refresh_left:
         china_now = pd.Timestamp.now(tz=CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        st.caption(f":material/autorenew: 每 10 秒自动刷新 · 本次刷新 {china_now}（中国时间）")
+        st.caption(f":material/autorenew: 每 30 秒自动刷新 · 本次刷新 {china_now}（中国时间）")
     with refresh_right:
         if st.button("立即刷新", icon=":material/refresh:", width="stretch"):
             _load_store_snapshot.clear()
