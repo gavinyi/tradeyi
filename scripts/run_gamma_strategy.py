@@ -36,7 +36,7 @@ from futu_quant.volatility_optimizer import (
     same_signal_epoch_reentry_allowed, volatility_cooldown_bypass_allowed,
     volatility_profit_protection_profile,
     volatility_direction_size_factor, volatility_entry_confirmation,
-    volatility_signal_state,
+    volatility_signal_state, volatility_cooldown_reentry_allowed,
     volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
     volatility_threshold_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
@@ -705,7 +705,15 @@ def run_campaign(
         cooldown_key = f"volatility_cooldown:{campaign['underlying']}"
         last_exit = state.get(cooldown_key)
         if quantity <= 0 and last_exit:
-            epoch_allowed, epoch_reason = same_signal_epoch_reentry_allowed(
+            cooldown_duration = float(state.get(
+                f"volatility_cooldown_hours:{campaign['underlying']}",
+                campaign.get("cooldown_hours", 24),
+            ))
+            remaining = cooldown_duration - (
+                now - safe_datetime(last_exit, now - timedelta(hours=cooldown_duration + 1))
+            ).total_seconds() / 3600
+            epoch_allowed, epoch_reason = volatility_cooldown_reentry_allowed(
+                remaining_hours=remaining,
                 last_exit_epoch=signal_state.get("exit_signal_epoch"),
                 current_epoch=signal_state.get("signal_epoch"),
             )
@@ -719,13 +727,6 @@ def run_campaign(
                 )
                 print(f"{code}: HOLD ({reason})")
                 return
-            cooldown_duration = float(state.get(
-                f"volatility_cooldown_hours:{campaign['underlying']}",
-                campaign.get("cooldown_hours", 24),
-            ))
-            remaining = cooldown_duration - (
-                now - safe_datetime(last_exit, now - timedelta(hours=cooldown_duration + 1))
-            ).total_seconds() / 3600
             if remaining > 0:
                 cooldown_reason = str(state.get(
                     f"volatility_cooldown_reason:{campaign['underlying']}", "未记录退出原因",

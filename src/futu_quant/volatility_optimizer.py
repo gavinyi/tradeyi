@@ -658,6 +658,22 @@ def same_signal_epoch_reentry_allowed(
     return True, f"检测到新的信号周期 epoch={int(current_epoch)}"
 
 
+def volatility_cooldown_reentry_allowed(
+    *, remaining_hours: float, last_exit_epoch: int | None, current_epoch: int | None,
+) -> tuple[bool, str]:
+    """Allow a re-entry once the time cooldown has actually expired.
+
+    Older campaign state may not contain the exit epoch.  That missing field
+    must not turn an already-expired cooldown into a permanent block.
+    """
+    if float(remaining_hours) <= 0:
+        return True, "退出冷却已结束，允许重新评估入场"
+    allowed, reason = same_signal_epoch_reentry_allowed(
+        last_exit_epoch=last_exit_epoch, current_epoch=current_epoch,
+    )
+    return allowed, reason
+
+
 def volatility_cooldown_bypass_allowed(
     reason: str,
     regime: dict,

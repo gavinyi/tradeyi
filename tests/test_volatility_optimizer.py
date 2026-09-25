@@ -10,7 +10,7 @@ from futu_quant.volatility_optimizer import (
     volatility_profit_protection_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
     volatility_profit_capture_ratio, volatility_profit_lock_floor,
-    same_signal_epoch_reentry_allowed,
+    same_signal_epoch_reentry_allowed, volatility_cooldown_reentry_allowed,
     select_partial_exit_batch, batch_r_multiple, volatility_batch_metrics,
     volatility_time_decay_stop,
 )
@@ -24,6 +24,22 @@ from futu_quant.volatility_optimizer import volatility_signal_state
 def test_same_signal_epoch_blocks_reentry_until_new_signal():
     assert same_signal_epoch_reentry_allowed(last_exit_epoch=3, current_epoch=3)[0] is False
     assert same_signal_epoch_reentry_allowed(last_exit_epoch=3, current_epoch=4)[0] is True
+
+
+def test_expired_cooldown_allows_reentry_without_legacy_exit_epoch():
+    allowed, reason = volatility_cooldown_reentry_allowed(
+        remaining_hours=-0.1, last_exit_epoch=None, current_epoch=1,
+    )
+    assert allowed
+    assert "冷却已结束" in reason
+
+
+def test_active_cooldown_still_requires_new_signal_epoch():
+    allowed, reason = volatility_cooldown_reentry_allowed(
+        remaining_hours=2, last_exit_epoch=None, current_epoch=1,
+    )
+    assert not allowed
+    assert "缺少上次退出信号周期" in reason
 
 
 def test_volatility_signal_state_survives_expression_roll():
