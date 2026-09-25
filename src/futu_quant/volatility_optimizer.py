@@ -330,10 +330,17 @@ def volatility_entry_quality_allowed(
         signal_active="动态" in tier or "强" in tier,
         strong_signal="强" in tier,
     )
-    min_score = max(70.0, float(campaign.get(
+    # Use the campaign/risk-tier threshold chosen by the same optimizer that
+    # selected the saved expression.  A hard-coded 70 here made valid strong-
+    # signal alternatives (54–69) impossible to execute.
+    min_score = float(campaign.get(
         "minimum_entry_quality_score",
         default_min_score,
-    ) or default_min_score))
+    ) or default_min_score)
+    if "强" in tier:
+        min_score = min(min_score, 54.0)
+    elif "动态" in tier:
+        min_score = min(min_score, 58.0)
     configured_min_expected = float(campaign.get(
         "minimum_model_expected_return", default_min_expected_return,
     ) or default_min_expected_return)

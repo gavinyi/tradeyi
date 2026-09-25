@@ -26,6 +26,21 @@ def test_same_signal_epoch_blocks_reentry_until_new_signal():
     assert same_signal_epoch_reentry_allowed(last_exit_epoch=3, current_epoch=4)[0] is True
 
 
+def test_strong_signal_quality_gate_matches_candidate_threshold():
+    allowed, reason, checks = volatility_entry_quality_allowed({
+        "adaptive_risk_tier": "强波动精选",
+        "minimum_entry_quality_score": 54,
+        "volatility_quality_score": 56,
+        "spread_pct": 3,
+        "option_open_interest": 1000,
+        "volume": 100,
+        "model_expected_return": .20,
+    })
+    assert allowed
+    assert checks["minimum_quality_score"] == 54
+    assert "通过" in reason
+
+
 def test_expired_cooldown_allows_reentry_without_legacy_exit_epoch():
     allowed, reason = volatility_cooldown_reentry_allowed(
         remaining_hours=-0.1, last_exit_epoch=None, current_epoch=1,

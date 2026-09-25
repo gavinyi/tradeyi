@@ -1018,9 +1018,12 @@ def run_campaign(
             ).isoformat(),
             "event_time": event_time.isoformat(),
         })
-    if action == "HOLD":
+    # A strategy action is not a broker order.  Keep the pre-trade signal
+    # distinguishable from the later BLOCKED/SUBMITTED/FILLED result.
+    if action == "BUY" and quantity <= 0:
         executor.store.decision_if_changed(
-            strategy_id, code, action, reason, decision_payload, repeat_after_seconds=900,
+            strategy_id, code, "SIGNAL_BUY", reason, decision_payload,
+            repeat_after_seconds=900,
         )
     else:
         executor.store.decision_if_changed(
