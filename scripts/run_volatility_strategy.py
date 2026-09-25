@@ -169,6 +169,9 @@ def run_once(reconcile: bool = True) -> None:
     )
     active_keys = {
         f"volatility_long_gamma:{item['code']}" for item in campaigns
+    } | {
+        f"volatility_long_gamma:signal:{str(item.get('underlying') or '').upper()}"
+        for item in campaigns if str(item.get('underlying') or '').strip()
     } | protected_keys
     state = {
         key: value for key, value in state.items()

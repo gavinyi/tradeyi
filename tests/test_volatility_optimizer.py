@@ -18,10 +18,36 @@ from futu_quant.volatility_roll import should_replace_campaign
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from futu_quant.volatility_optimizer import volatility_signal_state
+
 
 def test_same_signal_epoch_blocks_reentry_until_new_signal():
     assert same_signal_epoch_reentry_allowed(last_exit_epoch=3, current_epoch=3)[0] is False
     assert same_signal_epoch_reentry_allowed(last_exit_epoch=3, current_epoch=4)[0] is True
+
+
+def test_volatility_signal_state_survives_expression_roll():
+    state = {
+        "volatility_long_gamma:US.MSFT261002C505000": {
+            "signal_started_at": "2026-09-25T10:00:00-04:00",
+            "signal_start_volume_ratio": 4.0,
+            "signal_active": True,
+            "regime_was_active": True,
+            "signal_epoch": 7,
+        }
+    }
+    first = volatility_signal_state(
+        state, state["volatility_long_gamma:US.MSFT261002C505000"],
+        "volatility_long_gamma", "US.MSFT", "US.MSFT261002C505000",
+    )
+    second = volatility_signal_state(
+        state, {}, "volatility_long_gamma", "US.MSFT", "US.MSFT261002C520000",
+    )
+    assert second is first
+    assert second["signal_started_at"] == "2026-09-25T10:00:00-04:00"
+    assert second["signal_start_volume_ratio"] == 4.0
+    assert second["signal_epoch"] == 7
+    assert second["active_contract_code"] == "US.MSFT261002C520000"
 
 
 def test_contract_rank_rejects_expensive_deep_itm_option():

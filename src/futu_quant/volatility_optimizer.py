@@ -10,6 +10,25 @@ import pandas as pd
 from .gamma_risk import market_number, normalize_iv, realized_volatility
 
 
+def volatility_signal_state(
+    state: dict, campaign_state: dict, strategy_id: str, underlying: str, code: str,
+) -> dict:
+    """Return confirmation state shared by option expressions of one underlying."""
+    signal_key = f"{strategy_id}:signal:{str(underlying or '').upper()}"
+    signal_state = state.setdefault(signal_key, {})
+    if not signal_state.get("signal_started_at") and campaign_state.get("signal_started_at"):
+        for key in (
+            "signal_started_at", "signal_start_volume_ratio", "signal_active",
+            "regime_was_active", "signal_epoch", "exit_signal_epoch",
+        ):
+            if key in campaign_state:
+                signal_state[key] = campaign_state[key]
+    signal_state["active_contract_code"] = code
+    signal_state.setdefault("exit_signal_epoch", None)
+    signal_state.setdefault("signal_epoch", 0)
+    return signal_state
+
+
 VOLATILITY_EXIT_PRIORITY = [
     ("到期/行权风险", "临近到期收盘先退出，避免自动行权或流动性塌陷。"),
     ("硬止损", "单笔亏损超过硬止损立即退出，不等待最短持有时间。"),

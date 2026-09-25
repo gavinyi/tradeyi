@@ -36,6 +36,7 @@ from futu_quant.volatility_optimizer import (
     same_signal_epoch_reentry_allowed, volatility_cooldown_bypass_allowed,
     volatility_profit_protection_profile,
     volatility_direction_size_factor, volatility_entry_confirmation,
+    volatility_signal_state,
     volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
     volatility_threshold_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
@@ -305,7 +306,15 @@ def run_campaign(
         state[state_key] = state.pop(code)
     campaign_state = state.setdefault(state_key, {"peak": 0.0})
     trigger_mode = campaign.get("trigger_mode", "EARNINGS")
+    # Entry confirmation belongs to the underlying volatility episode, not to
+    # whichever option expression happens to be the best candidate this cycle.
+    # Candidate rolls are expected during an active signal and must not reset a
+    # confirmation timer from (for example) MSFT C505 to MSFT C520.
+    signal_state = campaign_state
     if trigger_mode == "VOLATILITY":
+        signal_state = volatility_signal_state(
+            state, campaign_state, strategy_id, campaign.get("underlying", ""), code,
+        )
         campaign_state["active_contract_code"] = code
         campaign_state.setdefault("exit_signal_epoch", None)
         campaign_state.setdefault("signal_epoch", 0)
@@ -314,7 +323,7 @@ def run_campaign(
             "code": code, "trigger_mode": trigger_mode, "warnings": issues,
         }, strategy_id)
     if trigger_mode == "VOLATILITY":
-        signal_started_at = campaign_state.get("signal_started_at")
+        signal_started_at = signal_state.get("signal_started_at")
         event_time = (
             safe_datetime(signal_started_at, now) if signal_started_at else now
         ) + timedelta(
@@ -600,25 +609,25 @@ def run_campaign(
             owner, underlying_bars, effective_z, effective_move,
         )
         regime["adaptive_profile"] = adaptive
-        was_regime_active = bool(campaign_state.get("regime_was_active", False))
+        was_regime_active = bool(signal_state.get("regime_was_active", False))
         if regime["active"]:
-            if not was_regime_active or not campaign_state.get("signal_started_at"):
-                campaign_state["signal_epoch"] = int(campaign_state.get("signal_epoch", 0) or 0) + 1
-                campaign_state["signal_started_at"] = now.isoformat()
-                campaign_state["signal_start_volume_ratio"] = float(
+            if not was_regime_active or not signal_state.get("signal_started_at"):
+                signal_state["signal_epoch"] = int(signal_state.get("signal_epoch", 0) or 0) + 1
+                signal_state["signal_started_at"] = now.isoformat()
+                signal_state["signal_start_volume_ratio"] = float(
                     regime.get("volume_ratio", 0) or 0
                 )
-            campaign_state["signal_active"] = True
+            signal_state["signal_active"] = True
         else:
             # Any inactive transition ends the old confirmation epoch.  Do not
             # keep a stale signal alive merely because z-score remains elevated.
-            campaign_state["signal_active"] = False
-            campaign_state["exit_signal_epoch"] = campaign_state.get("signal_epoch")
-            campaign_state.pop("signal_started_at", None)
-            campaign_state.pop("signal_start_volume_ratio", None)
-            campaign_state["regime_was_active"] = False
-        campaign_state["regime_was_active"] = bool(regime["active"])
-        signal_started_at = campaign_state.get("signal_started_at")
+            signal_state["signal_active"] = False
+            signal_state["exit_signal_epoch"] = signal_state.get("signal_epoch")
+            signal_state.pop("signal_started_at", None)
+            signal_state.pop("signal_start_volume_ratio", None)
+            signal_state["regime_was_active"] = False
+        signal_state["regime_was_active"] = bool(regime["active"])
+        signal_started_at = signal_state.get("signal_started_at")
         event_time = (
             safe_datetime(signal_started_at, now) if signal_started_at else now
         ) + timedelta(hours=int(campaign.get("entry_hours", 6)))
@@ -635,7 +644,7 @@ def run_campaign(
             float(campaign.get("minimum_underlying_move", 0.020 if trigger_mode == "VOLATILITY" else 0.003)),
         )
     if trigger_mode == "VOLATILITY":
-        direction_ok = bool(direction_ok and campaign_state.get("signal_active", False))
+        direction_ok = bool(direction_ok and signal_state.get("signal_active", False))
         direction_reason = f"{direction_reason}；动态状态：{regime['reason']}"
         if quantity <= 0 and campaign.get("optimizer_version") != 2:
             reason = "旧版波动率活动尚未完成动态状态和合约质量评分，请重新生成候选"
@@ -645,12 +654,12 @@ def run_campaign(
         if quantity <= 0:
             entry_confirmed, confirmation_reason = volatility_entry_confirmation(
                 now=now,
-                signal_started_at=campaign_state.get("signal_started_at"),
+                signal_started_at=signal_state.get("signal_started_at"),
                 regime=regime,
                 confirmation_minutes=float(
                     campaign.get("entry_confirmation_minutes", 5)
                 ),
-                signal_start_volume_ratio=campaign_state.get(
+                signal_start_volume_ratio=signal_state.get(
                     "signal_start_volume_ratio"
                 ),
                 minimum_volume_ratio=float(
@@ -684,8 +693,8 @@ def run_campaign(
                         "direction_reason": direction_reason,
                         "direction_metrics": direction_metrics,
                         "volatility_regime": regime,
-                        "signal_started_at": campaign_state.get("signal_started_at"),
-                        "signal_start_volume_ratio": campaign_state.get(
+                        "signal_started_at": signal_state.get("signal_started_at"),
+                        "signal_start_volume_ratio": signal_state.get(
                             "signal_start_volume_ratio"
                         ),
                     },
@@ -697,15 +706,15 @@ def run_campaign(
         last_exit = state.get(cooldown_key)
         if quantity <= 0 and last_exit:
             epoch_allowed, epoch_reason = same_signal_epoch_reentry_allowed(
-                last_exit_epoch=campaign_state.get("exit_signal_epoch"),
-                current_epoch=campaign_state.get("signal_epoch"),
+                last_exit_epoch=signal_state.get("exit_signal_epoch"),
+                current_epoch=signal_state.get("signal_epoch"),
             )
             if not epoch_allowed:
                 reason = f"同一信号周期禁止重入：{epoch_reason}"
                 executor.store.decision_if_changed(
                     strategy_id, code, "HOLD", reason,
-                    {"exit_state": "COOLDOWN", "signal_epoch": campaign_state.get("signal_epoch"),
-                     "exit_signal_epoch": campaign_state.get("exit_signal_epoch")},
+                    {"exit_state": "COOLDOWN", "signal_epoch": signal_state.get("signal_epoch"),
+                     "exit_signal_epoch": signal_state.get("exit_signal_epoch")},
                     repeat_after_seconds=300,
                 )
                 print(f"{code}: HOLD ({reason})")
@@ -856,7 +865,7 @@ def run_campaign(
                 stages_filled=stages_filled, max_stages=effective_max_stages,
                 pnl_ratio=pnl_ratio, peak_pnl_ratio=peak_pnl_ratio,
                 drawdown_from_peak=drawdown, directional_confirmation=direction_ok,
-                signal_active=bool(campaign_state.get("signal_active", False)),
+                signal_active=bool(signal_state.get("signal_active", False)),
                 profit_target=float(campaign["profit_target"]),
                 stop_loss=float(campaign["stop_loss"]),
                 trailing_stop=float(campaign["trailing_stop"]),
@@ -976,8 +985,8 @@ def run_campaign(
             "effective_premium_budget": campaign.get(
                 "effective_premium_budget", campaign.get("max_premium_per_stage")
             ),
-            "signal_started_at": campaign_state.get("signal_started_at"),
-            "signal_start_volume_ratio": campaign_state.get(
+            "signal_started_at": signal_state.get("signal_started_at"),
+            "signal_start_volume_ratio": signal_state.get(
                 "signal_start_volume_ratio"
             ),
             "entry_window_end": event_time.isoformat(),
