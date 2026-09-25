@@ -30,14 +30,14 @@ def test_strong_signal_quality_gate_matches_candidate_threshold():
     allowed, reason, checks = volatility_entry_quality_allowed({
         "adaptive_risk_tier": "强波动精选",
         "minimum_entry_quality_score": 54,
-        "volatility_quality_score": 56,
+        "volatility_quality_score": 62,
         "spread_pct": 3,
         "option_open_interest": 1000,
         "volume": 100,
         "model_expected_return": .20,
     })
     assert allowed
-    assert checks["minimum_quality_score"] == 54
+    assert checks["minimum_quality_score"] == 60
     assert "通过" in reason
 
 

@@ -338,9 +338,9 @@ def volatility_entry_quality_allowed(
         default_min_score,
     ) or default_min_score)
     if "强" in tier:
-        min_score = min(min_score, 54.0)
+        min_score = max(min_score, 60.0)
     elif "动态" in tier:
-        min_score = min(min_score, 58.0)
+        min_score = max(min_score, 62.0)
     configured_min_expected = float(campaign.get(
         "minimum_model_expected_return", default_min_expected_return,
     ) or default_min_expected_return)

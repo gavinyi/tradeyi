@@ -787,6 +787,18 @@ def run_campaign(
         if size_factor < 1:
             per_stage = max(1, int(per_stage * size_factor))
             effective_max_stages = min(effective_max_stages, 1)
+        # Mid-quality expressions may enter only as a single-contract probe;
+        # high-quality expressions retain the configured staged sizing.
+        quality_score = market_number(campaign.get("volatility_quality_score"), 0.0)
+        quality_tier = str(campaign.get("adaptive_risk_tier", campaign.get("entry_tier", "")))
+        reduced_size_floor = 62.0 if "动态" in quality_tier and "强" not in quality_tier else 60.0
+        if reduced_size_floor <= quality_score < 70.0:
+            per_stage = 1
+            effective_max_stages = 1
+            size_reason = (
+                f"质量分 {quality_score:.1f} 处于 {reduced_size_floor:.0f}–69.9，"
+                "仅允许单张试探仓位"
+            )
     stages_filled = quantity // max(1, per_stage)
     if trigger_mode == "VOLATILITY":
         decay_reason = None
@@ -1143,7 +1155,7 @@ def run_campaign(
         if trigger_mode == "VOLATILITY":
             quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
                 campaign,
-                default_min_score=max(70.0, float(campaign.get("minimum_entry_quality_score", 70))),
+                default_min_score=float(campaign.get("minimum_entry_quality_score", 70) or 70),
                 default_min_expected_return=float(
                     campaign.get("minimum_model_expected_return", .02)
                 ),
