@@ -84,11 +84,28 @@ def run_once(
         required = tuple(dict.fromkeys(("US.SPY", *symbols)))
         frames = {symbol: broker.candles(symbol, count=260) for symbol in required}
         managed_positions = (
-            positions[positions["code"].isin(symbols) & (positions["qty"] > 0)]
+            positions[positions["code"].isin(symbols) & (positions["qty"] != 0)]
             if not positions.empty else positions
         )
         held_symbols = set(managed_positions["code"].astype(str)) if not managed_positions.empty else set()
+        # A negative stock position is an external/short exposure, not a
+        # missing bootstrap position. Do not repeatedly submit a new BUY while
+        # the broker/local ownership of that short is unresolved.
+        negative_symbols = {
+            str(row["code"])
+            for _, row in managed_positions.iterrows()
+            if float(row.get("qty", 0) or 0) < 0
+        }
         missing_symbols = set(symbols) - held_symbols
+        if negative_symbols:
+            blocked = ",".join(sorted(negative_symbols))
+            reason = f"检测到负仓位 {blocked}，禁止自动建仓，等待券商/本地账本对账"
+            print(f"Core Satellite blocked: {reason}")
+            executor.store.decision(
+                "core_satellite", None, "BLOCKED", reason,
+                {"negative_symbols": sorted(negative_symbols)},
+            )
+            return
         if missing_symbols:
             today_orders = broker.orders()
             pending_managed = (
