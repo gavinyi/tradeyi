@@ -725,12 +725,10 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     elif "Earnings Gamma" in configured:
         store.heartbeat("earnings_gamma", "HEALTHY", "等待美股常规交易时段", os.getpid())
     if "Volatility Long Gamma" in configured and session.regular_open(now):
-        # Keep active positions responsive, but do not rescan an empty campaign
-        # universe at the same high frequency as the exit monitor.
-        volatility_interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "30")))
-        interval = volatility_interval
-        if not store.virtual_positions():
-            interval = max(interval, int(os.getenv("VOLATILITY_EMPTY_INTERVAL_SECONDS", "300")))
+        # Run the exit/entry monitor at its configured cadence whether or not
+        # the account currently holds an option. Expression review has its own
+        # slower timer inside run_volatility_once; never throttle risk checks.
+        interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "30")))
         if due(store, "last_run:volatility_long_gamma", interval, now):
             run_task(
                 store, alerts, "volatility_long_gamma",
