@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 import os
 from pathlib import Path
 
-import pandas as pd
 import platform
 import shlex
 import signal
@@ -590,15 +589,10 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
             alerts.send("ERROR", "EQUITY_SNAPSHOT_FAILED", str(exc))
     connected = run_task(store, alerts, "order_reconciliation", executor.reconcile)
     store.set_setting("connectivity_degraded", str(not connected).lower())
+    # Never feed a persisted (possibly stale) positions snapshot into trade
+    # decisions. The combo monitor refreshes directly from the broker when the
+    # current cycle did not fetch live positions.
     combo_positions_snapshot = positions_snapshot
-    if combo_positions_snapshot is None:
-        try:
-            cached_positions = store.broker_snapshot("positions")
-            payload = (cached_positions or {}).get("payload", [])
-            if payload:
-                combo_positions_snapshot = pd.DataFrame(payload)
-        except Exception:
-            combo_positions_snapshot = None
     run_task(
         store, alerts, "option_combo_monitor",
         lambda: ComboExecutionManager(
@@ -730,11 +724,20 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         # slower timer inside run_volatility_once; never throttle risk checks.
         interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "30")))
         if due(store, "last_run:volatility_long_gamma", interval, now):
-            run_task(
+            started = time.monotonic()
+            succeeded = run_task(
                 store, alerts, "volatility_long_gamma",
                 lambda: run_volatility_once(reconcile=False),
             )
-            mark_run(store, "last_run:volatility_long_gamma", now)
+            elapsed = time.monotonic() - started
+            store.operational_event(
+                "volatility_long_gamma", "MONITOR_CYCLE_DURATION",
+                "HEALTHY" if succeeded and elapsed <= interval else "DEGRADED",
+                {"duration_seconds": round(elapsed, 3), "target_seconds": interval,
+                 "target_is_hard_timeout": False, "success": succeeded},
+            )
+            if succeeded:
+                mark_run(store, "last_run:volatility_long_gamma", now)
     elif "Volatility Long Gamma" in configured:
         store.heartbeat("volatility_long_gamma", "HEALTHY", "等待美股常规交易时段", os.getpid())
 

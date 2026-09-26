@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from futu_quant.performance import performance_buckets
 from futu_quant.store import TradingStore
 
@@ -9,7 +11,8 @@ def _intent(store, key, symbol, side, qty, price, when):
         "volatility_long_gamma", key, symbol, side, qty, price,
         {"multiplier": 100, "reference_price": price, "execution_mode": "PAPER"},
     )
-    store.update_intent(row["id"], "FILLED", filled_quantity=qty, average_fill_price=price, fees=1.25)
+    store.update_intent(row["id"], "SUBMITTED", key)
+    store.update_by_broker_order(key, "FILLED", qty, price, 1.25)
     store.record_fill(
         row["id"], qty, price, 1.25, source="TEST", filled_at=when,
         quote={"bid_price": price - .05, "ask_price": price + .05}, multiplier=100,
@@ -34,7 +37,7 @@ def test_performance_buckets_aggregates_costs_by_period(tmp_path):
 
     assert len(result) == 2
     assert result["手续费"].sum() == 2.5
-    assert result["价差成本"].sum() == 10.0
+    assert result["价差成本"].sum() == pytest.approx(10.0)
     assert result["行情覆盖率"].min() == 1.0
     assert result["成交金额"].sum() == 450.0
     assert result["已实现盈亏"].sum() == 50.0

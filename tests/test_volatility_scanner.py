@@ -30,6 +30,11 @@ class FakeStore:
             "decision": decision, "reason": reason, "payload": payload,
         })
 
+    def decision_if_changed(self, strategy_id, symbol, decision, reason,
+                            payload=None, repeat_after_seconds=900):
+        self.decision(strategy_id, symbol, decision, reason, payload)
+        return True
+
     def audit(self, event_type, payload, actor):
         self.audits.append({
             "event_type": event_type, "payload": payload, "actor": actor,
@@ -235,3 +240,25 @@ def test_rejected_candidate_enters_cooldown_until_signal_strengthens(monkeypatch
 
     assert len(roll_calls) == 1
     assert "冷却中" in second[0]["campaign_reason"]
+
+
+def test_scanner_limits_broker_snapshot_to_scanned_symbols(monkeypatch):
+    broker = FakeBroker()
+    store = FakeStore()
+    monkeypatch.setenv("RADAR_MAX_SYMBOLS_PER_SCAN", "5")
+    symbols = tuple(f"US.TEST{i}" for i in range(10))
+    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda: [])
+    monkeypatch.setattr(scanner, "volatility_threshold_profile", lambda _: {
+        "entry_zscore": 2.0, "minimum_underlying_move": .02,
+    })
+    monkeypatch.setattr(scanner, "volatility_regime", lambda *_: {
+        "active": False, "reason": "等待触发", "checks": [],
+        "intraday_return": .0, "zscore_20d": .0, "atr_ratio": .0,
+        "volume_ratio": 1.0, "direction_score": .0,
+    })
+
+    results = scanner.scan_volatility_watchlist(broker, store, symbols)
+
+    assert len(results) == 5
+    assert len(broker.snapshot_requests[0]) == 5
+    assert set(broker.snapshot_requests[0]) == {result["symbol"] for result in results}

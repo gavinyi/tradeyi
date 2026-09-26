@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import math
 import uuid
 
@@ -316,6 +317,7 @@ class ComboExecutionManager:
             self.store.update_option_combo(combo["combo_id"], "CLOSED")
             return
         self._emergency_naked_check(combo, legs)
+        self._reprice_working_combo(combo, legs)
         # A close order can be submitted by the emergency naked-short path.
         # Do not submit a duplicate combo close while that intent is working.
         for active_leg in filled:
@@ -323,7 +325,7 @@ class ComboExecutionManager:
             if not close_id:
                 continue
             close_intent = self.store.intent(int(close_id))
-            if close_intent and str(close_intent.get("status")) in WORKING:
+            if close_intent and str(close_intent.get("status")) in WORKING | OPEN_PARTIAL | {"CANCEL_REQUESTED"}:
                 return
         failed_closes = [leg for leg in filled if leg["status"] == "CLOSE_FAILED"]
         if failed_closes:
@@ -356,6 +358,7 @@ class ComboExecutionManager:
         side = ("BUY" if leg["side"] == "SELL" else "SELL") if closing else leg["side"]
         quantity = int(leg["filled_quantity"] if closing else leg["quantity"])
         if closing:
+            quantity = max(0, quantity - int(leg.get("close_filled_quantity", 0) or 0))
             quantity, quantity_reason = self._closing_quantity(leg, side, quantity)
             if quantity <= 0:
                 self.store.update_option_combo_leg(
@@ -384,13 +387,15 @@ class ComboExecutionManager:
         intent_key = (
             f"combo:{combo['combo_id']}:{'close' if closing else 'open'}:"
             f"{leg['id']}:attempt:{max(1, attempts)}"
+            + (f":close:{int(leg.get('close_attempts', 0)) + 1}" if closing else "")
         )
         try:
             result = self.executor.submit_limit(
                 combo["strategy_id"], intent_key, leg["symbol"], side, quantity, price,
                 {"underlying": combo["underlying"], "multiplier": 100, "combo_id": combo["combo_id"],
                  "combo_leg_id": leg["id"], "protected_short": protected_short,
-                 "reduce_only": closing, "urgent": closing, "smart_execution": closing},
+                 "reduce_only": closing, "urgent": closing, "smart_execution": closing,
+                  "close_filled_before": float(leg.get("close_filled_quantity", 0) or 0) if closing else 0},
             )
         except Exception as exc:
             saved = next(
@@ -471,7 +476,9 @@ class ComboExecutionManager:
             quantity = self._position_number(
                 row, ("qty", "quantity", "position", "position_qty"),
             )
-            if quantity is not None and abs(quantity) > 1e-9:
+            if quantity is None:
+                raise RuntimeError("券商持仓数量未知，拒绝判定组合无暴露")
+            if abs(quantity) > 1e-9:
                 return True
         return False
 
@@ -501,9 +508,11 @@ class ComboExecutionManager:
         requested = max(0, int(requested))
         if not hasattr(self.broker, "positions"):
             return requested, ""
+        # Never reuse a service-cycle snapshot after an intervening close fill.
+        self._positions_snapshot_cache = None
         positions = self._positions_snapshot()
         if positions is None:
-            return requested, "券商持仓不可用，保留本地数量并继续减仓尝试"
+            raise RuntimeError("券商持仓不可用，拒绝计算减仓数量")
         if "code" not in positions.columns:
             raise RuntimeError("券商持仓响应缺少 code，拒绝计算减仓数量")
         symbol = str(leg.get("symbol", "")).upper()
@@ -511,10 +520,13 @@ class ComboExecutionManager:
         if matched.empty:
             return 0, "富途当前无该合约持仓，视为已经平掉"
 
-        qty = sum(
-            self._position_number(row, ("qty", "quantity", "position", "position_qty")) or 0.0
+        quantities = [
+            self._position_number(row, ("qty", "quantity", "position", "position_qty"))
             for _, row in matched.iterrows()
-        )
+        ]
+        if any(value is None for value in quantities):
+            raise RuntimeError("券商持仓数量未知，拒绝计算减仓数量")
+        qty = sum(quantities)
         sellable_values = [
             self._position_number(row, ("can_sell_qty", "sellable_qty", "avail_qty", "available_qty"))
             for _, row in matched.iterrows()
@@ -553,10 +565,18 @@ class ComboExecutionManager:
     def _reprice_working_combo(self, combo: dict, legs: list[dict]) -> None:
         now = datetime.now(timezone.utc)
         for leg in legs:
-            if leg["status"] not in {"WORKING", "CLOSE_WORKING", "OPEN_PARTIAL"} or not leg.get("intent_id"):
+            if leg["status"] not in {"WORKING", "CLOSE_WORKING", "OPEN_PARTIAL"}:
                 continue
-            intent = self.store.intent(int(leg["intent_id"]))
-            if not intent or not intent.get("broker_order_id") or int(intent.get("reprice_count", 0)) >= 4:
+            closing = leg["status"] == "CLOSE_WORKING"
+            intent_id = leg.get("close_intent_id" if closing else "intent_id")
+            if not intent_id:
+                continue
+            intent = self.store.intent(int(intent_id))
+            if (not intent or str(intent.get("status")) not in WORKING | OPEN_PARTIAL
+                    or not intent.get("broker_order_id") or int(intent.get("reprice_count", 0)) >= 4):
+                continue
+            side = ("SELL" if leg["side"] == "BUY" else "BUY") if closing else leg["side"]
+            if intent.get("side") != side:
                 continue
             anchor = intent.get("last_reprice_at") or intent["created_at"]
             if (now - datetime.fromisoformat(anchor)).total_seconds() < 30:
@@ -564,11 +584,13 @@ class ComboExecutionManager:
             try:
                 quote = self.broker.snapshots([leg["symbol"]]).iloc[0]
                 current = float(intent["limit_price"])
-                market = float(quote.get("ask_price" if leg["side"] == "BUY" else "bid_price", 0) or 0)
-                if market <= 0:
+                market = float(quote.get("ask_price" if side == "BUY" else "bid_price", 0) or 0)
+                if not math.isfinite(market) or market <= 0:
+                    continue
+                if (side == "BUY" and market <= current) or (side == "SELL" and market >= current):
                     continue
                 step = max(0.01, round(abs(market - current) / 4, 2))
-                target = min(market, current + step) if leg["side"] == "BUY" else max(market, current - step)
+                target = min(market, current + step) if side == "BUY" else max(market, current - step)
                 projected = sum(
                     (1 if item["side"] == "BUY" else -1) * int(item["quantity"])
                     * (target if item["id"] == leg["id"] else float(item["limit_price"]))
@@ -576,13 +598,14 @@ class ComboExecutionManager:
                 )
                 max_debit = float(combo["max_net_debit"] or 0)
                 min_credit = float(combo["min_net_credit"] or 0)
-                if (projected > 0 and (max_debit <= 0 or projected > max_debit)) or (
+                if not closing and ((projected > 0 and (max_debit <= 0 or projected > max_debit)) or (
                     projected < 0 and -projected < min_credit
-                ):
+                )):
                     continue
                 self.broker.modify_limit_order(intent["broker_order_id"], int(intent["quantity"]), target)
                 self.store.record_reprice(intent["id"], target)
-                self.store.update_option_combo_leg(leg["id"], limit_price=target)
+                if not closing:
+                    self.store.update_option_combo_leg(leg["id"], limit_price=target)
                 self.store.option_combo_event(
                     combo["combo_id"], "PACKAGE_REPRICED", "EXECUTING",
                     f"{leg['symbol']} 限价调整为 ${target:.2f}，组合净价仍在边界内",
@@ -603,18 +626,25 @@ class ComboExecutionManager:
                 continue
             status = str(intent["status"])
             if leg.get("close_intent_id"):
+                before = float(json.loads(intent.get("metadata_json") or "{}").get("close_filled_before") or 0)
                 close_filled = min(
-                    float(leg.get("quantity", 0) or 0),
-                    max(float(intent.get("filled_quantity") or 0), float(leg.get("close_filled_quantity", 0) or 0)),
+                    float(leg.get("filled_quantity", 0) or 0),
+                    max(float(leg.get("close_filled_quantity", 0) or 0),
+                        before + float(intent.get("filled_quantity") or 0)),
                 )
                 if status in FINAL_FILLED or status in WORKING or status in OPEN_PARTIAL:
                     self.store.update_option_combo_leg(
                         leg["id"], close_filled_quantity=close_filled,
                         remaining_quantity=max(float(leg.get("filled_quantity", 0) or 0) - close_filled, 0),
-                        status="CLOSED" if status in FINAL_FILLED and close_filled >= float(leg.get("filled_quantity", 0) or 0) else "CLOSE_WORKING",
+                        status=("CLOSED" if close_filled >= float(leg.get("filled_quantity", 0) or 0)
+                                else "CLOSE_FAILED" if status in FINAL_FILLED else "CLOSE_WORKING"),
                     )
                 elif status in FAILED:
-                    self.store.update_option_combo_leg(leg["id"], status="CLOSE_FAILED", error=intent.get("error") or status)
+                    self.store.update_option_combo_leg(
+                        leg["id"], status="CLOSE_FAILED", close_filled_quantity=close_filled,
+                        remaining_quantity=max(float(leg.get("filled_quantity", 0) or 0) - close_filled, 0),
+                        error=intent.get("error") or status,
+                    )
             elif status in FINAL_FILLED or status in WORKING or status in OPEN_PARTIAL:
                 filled = min(float(leg.get("quantity", 0) or 0), float(intent.get("filled_quantity") or 0))
                 self.store.update_option_combo_leg(
@@ -648,10 +678,13 @@ class ComboExecutionManager:
 
     def _cancel_working(self, legs: list[dict]) -> None:
         for leg in legs:
-            if leg["status"] not in {"WORKING", "CLOSE_WORKING", "OPEN_PARTIAL"} or not leg.get("intent_id"):
+            if leg["status"] not in {"WORKING", "CLOSE_WORKING", "OPEN_PARTIAL"}:
                 continue
-            intent = self.store.intent(int(leg["intent_id"]))
-            if intent and intent.get("broker_order_id"):
+            intent_id = leg.get("close_intent_id" if leg["status"] == "CLOSE_WORKING" else "intent_id")
+            if not intent_id:
+                continue
+            intent = self.store.intent(int(intent_id))
+            if intent and str(intent.get("status")) in WORKING | OPEN_PARTIAL and intent.get("broker_order_id"):
                 try:
                     self.broker.cancel_order(intent["broker_order_id"])
                     self.store.update_intent(intent["id"], "CANCEL_REQUESTED")

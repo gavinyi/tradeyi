@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -92,9 +93,11 @@ def should_replace_campaign(current: dict, candidate: dict) -> tuple[bool, str]:
 def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     underlying = campaign["underlying"]
     # 活动策略不能继续持有或复核已到期合约；到期合约必须滚动到未来期限。
+    # 到期判定使用纽约交易所时区，避免本地时区偏差导致误判。
     current_code = str(campaign.get("code", ""))
     current_contract = parse_option_code(current_code) if current_code else None
-    if current_contract is not None and current_contract.expiration < date.today():
+    ny_today = datetime.now(ZoneInfo("America/New_York")).date()
+    if current_contract is not None and current_contract.expiration < ny_today:
         campaign = dict(campaign)
         campaign["code"] = ""
         campaign["status"] = "EXPIRED"
@@ -125,7 +128,7 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     expirations = broker.option_expirations(underlying).copy()
     min_dte = max(1, int(float(campaign.get("maturity_min_dte", 5) or 5)))
     max_dte = max(min_dte, int(float(campaign.get("maturity_max_dte", 21) or 21)))
-    today = date.today()
+    today = ny_today
     earliest = today + timedelta(days=min_dte)
     latest = today + timedelta(days=max_dte)
     valid = expirations[
@@ -157,6 +160,7 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     )
     candidates = rank_volatility_contracts(
         candidates, spot, rv,
+        ny_today,
         signal_active=bool(regime.get("active")),
         strong_signal=bool(
             regime.get("strong_signal_override") and regime.get("trigger_confirmed")
@@ -230,7 +234,7 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         "structure_max_loss": float(selected.get(
             "structure_max_loss", market_number(selected_contract.get("ask_price")) * 100
         )),
-        "event_date": date.today().isoformat(), "strike_time": str(selected["strike_time"]),
+        "event_date": ny_today.isoformat(), "strike_time": str(selected["strike_time"]),
         "entry_iv": float(analysis["隐含波动率"]),
         "entry_gamma_theta_efficiency": float(selected_contract.get("gamma_theta_efficiency", 0)),
         "regime_profile": regime, "optimizer_version": 2, "enabled": True,
@@ -263,7 +267,7 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         "expected_return_policy": "TIERED",
         "budget_alternative": bool(selected_contract.get("budget_alternative", False)),
         "volatility_filter_reason": str(selected.get("volatility_filter_reason", "")),
-        "last_expression_review": date.today().isoformat(),
+        "last_expression_review": ny_today.isoformat(),
         "entry_tier": entry_tier,
         "base_premium_budget": float(campaign.get("max_premium_per_stage", 1000)),
         "effective_premium_budget": premium_budget,

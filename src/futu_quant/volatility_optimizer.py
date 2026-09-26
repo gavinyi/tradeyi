@@ -1118,14 +1118,8 @@ def decide_volatility_action(
         else max(0.0, float(profit_giveback_from_peak or 0.0))
     )
     held = now - opened_at
-    # A single contract cannot be partially realized. At the old 18% target,
-    # keep the runner and let peak-based protection decide the eventual exit.
-    if quantity == 1 and single_contract_take_profit > 0 and pnl_ratio >= single_contract_take_profit:
-        return (
-            "HOLD",
-            f"单张达到{single_contract_take_profit:.1%}，启动移动止盈；"
-            "峰值回撤达到保护阈值或硬止损时退出",
-        )
+    # A single contract cannot be partially realized. Keep it running above
+    # the target, but evaluate every lock/giveback rule before deciding HOLD.
     if tiered_profit_lock_enabled and protection_active:
         tier_floor, tier_label = volatility_profit_lock_floor(peak_pnl_ratio)
         effective_floor = max(float(minimum_locked_profit or 0.0), tier_floor)
@@ -1167,6 +1161,12 @@ def decide_volatility_action(
         return "SELL", f"波动率仓位已持有{max_hold_hours:g}小时，触发最长持有退出"
     if decay_reason and held >= timedelta(minutes=minimum_hold_minutes):
         return "SELL", decay_reason
+    if quantity == 1 and single_contract_take_profit > 0 and pnl_ratio >= single_contract_take_profit:
+        return (
+            "HOLD",
+            f"单张达到{single_contract_take_profit:.1%}，启动移动止盈；"
+            "阶梯锁盈与峰值回撤保护持续生效",
+        )
     if (
         stages_filled < max_stages
         and signal_active

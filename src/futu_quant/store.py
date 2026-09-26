@@ -649,6 +649,17 @@ class TradingStore:
             ).fetchone()
             if previous is None:
                 return
+            # Late submit/cancel acknowledgements must not revive a filled order.
+            terminal = {"FILLED", "SHADOW_FILLED", "CANCELLED", "CANCELLED_ALL",
+                        "CANCELLED_PART", "REJECTED", "FAILED", "SHADOW_EXPIRED"}
+            if previous["status"] in terminal and status != previous["status"]:
+                return
+            if previous["status"] in {"FILLED_PART", "PARTIAL_FILLED", "CANCEL_REQUESTED"} and status in {
+                "CREATED", "WAITING_SUBMIT", "SUBMITTING", "SUBMITTED"
+            }:
+                return
+            if previous["status"] == "CANCEL_REQUESTED" and status in {"FILLED_PART", "PARTIAL_FILLED"}:
+                return
             connection.execute(
                 """UPDATE order_intents SET status=?, broker_order_id=COALESCE(?,broker_order_id),
                 error=?, updated_at=? WHERE id=?""",
@@ -868,6 +879,15 @@ class TradingStore:
                 (str(broker_order_id),),
             ).fetchone()
             previous_qty = float(previous["filled_quantity"] or 0) if previous else 0.0
+            if previous:
+                terminal = {"FILLED", "SHADOW_FILLED", "CANCELLED", "CANCELLED_ALL",
+                            "CANCELLED_PART", "REJECTED", "FAILED", "SHADOW_EXPIRED"}
+                earlier = {"CREATED", "WAITING_SUBMIT", "SUBMITTING", "SUBMITTED"}
+                if (float(filled_quantity or 0) < previous_qty
+                        or previous["status"] in terminal and status != previous["status"]
+                        or previous["status"] in {"FILLED_PART", "PARTIAL_FILLED", "CANCEL_REQUESTED"}
+                        and status in earlier):
+                    return
             connection.execute(
                 """UPDATE order_intents SET status=?,filled_quantity=?,average_fill_price=?,fees=?,
                 last_broker_update=?,updated_at=? WHERE broker_order_id=?""",
@@ -1190,6 +1210,15 @@ class TradingStore:
                 (batch_id, fill_id, intent_id, timestamp, price, quantity, quantity, initial_risk,
                  _json_dumps(metadata or {})),
             )
+            # The batch header is a materialized summary of its lots, not merely
+            # the first fill passed to create_position_batch.
+            connection.execute(
+                """UPDATE position_batches SET
+                entry_qty=(SELECT SUM(open_qty) FROM batch_lots WHERE batch_id=?),
+                remaining_qty=(SELECT SUM(remaining_qty) FROM batch_lots WHERE batch_id=?),
+                status='OPEN',updated_at=? WHERE batch_id=?""",
+                (batch_id, batch_id, self.now(), batch_id),
+            )
 
     def allocate_exit(self, batch_id: str, *, quantity: float, close_price: float,
                       policy: str = "FIFO", close_intent_id: int | None = None,
@@ -1202,6 +1231,9 @@ class TradingStore:
                 (batch_id,),
             ).fetchall()
             ordered = list(rows)
+            available = sum(float(row["remaining_qty"]) for row in ordered)
+            if available + 1e-9 < quantity:
+                raise ValueError(f"批次 {batch_id} 可分配数量不足，剩余 {quantity - available:g}")
             mode = str(policy or "FIFO").upper()
             if mode == "LIFO":
                 ordered.reverse()
@@ -1224,8 +1256,17 @@ class TradingStore:
                 )
                 allocations.append({"lot_id": row["id"], "quantity": allocated, "realized_pnl": pnl})
                 remaining -= allocated
-            if remaining > 0:
+            if remaining > 1e-9:
                 raise ValueError(f"批次 {batch_id} 可分配数量不足，剩余 {remaining:g}")
+            connection.execute(
+                """UPDATE position_batches SET
+                remaining_qty=(SELECT COALESCE(SUM(remaining_qty),0) FROM batch_lots WHERE batch_id=?),
+                status=CASE WHEN (SELECT COALESCE(SUM(remaining_qty),0)
+                                  FROM batch_lots WHERE batch_id=?) <= 1e-9
+                            THEN 'CLOSED' ELSE 'OPEN' END,
+                updated_at=? WHERE batch_id=?""",
+                (batch_id, batch_id, self.now(), batch_id),
+            )
             return allocations
 
     def create_position_batch(
@@ -1251,13 +1292,15 @@ class TradingStore:
     def position_batches(self, strategy_id: str | None = None, symbol: str | None = None) -> list[dict]:
         clauses, params = [], []
         if strategy_id:
-            clauses.append("strategy_id=?"); params.append(strategy_id)
+            clauses.append("strategy_id=?")
+            params.append(strategy_id)
         if symbol:
-            clauses.append("symbol=?"); params.append(symbol)
+            clauses.append("symbol=?")
+            params.append(symbol)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(
-                f"SELECT * FROM position_batches{where} ORDER BY opened_at,id", params
+                f"SELECT * FROM position_batches{where} ORDER BY opened_at,batch_id", params
             ).fetchall()]
 
     def update_batch_metrics(self, batch_id: str, *, remaining_qty: float | None = None,
@@ -1267,10 +1310,13 @@ class TradingStore:
         for name, value in (("remaining_qty", remaining_qty), ("mfe_pnl_ratio", mfe_pnl_ratio),
                             ("mae_pnl_ratio", mae_pnl_ratio), ("r_multiple", r_multiple), ("status", status)):
             if value is not None:
-                fields.append(f"{name}=?"); params.append(value)
+                fields.append(f"{name}=?")
+                params.append(value)
         if not fields:
             return
-        fields.append("updated_at=?"); params.append(self.now()); params.append(batch_id)
+        fields.append("updated_at=?")
+        params.append(self.now())
+        params.append(batch_id)
         with self.connection() as connection:
             connection.execute(f"UPDATE position_batches SET {', '.join(fields)} WHERE batch_id=?", params)
 
@@ -2129,13 +2175,17 @@ class TradingStore:
     ) -> list[dict]:
         clauses, params = [], []
         if start:
-            clauses.append("filled_at >= ?"); params.append(start)
+            clauses.append("filled_at >= ?")
+            params.append(start)
         if end:
-            clauses.append("filled_at < ?"); params.append(end)
+            clauses.append("filled_at < ?")
+            params.append(end)
         if strategy_id:
-            clauses.append("strategy_id = ?"); params.append(strategy_id)
+            clauses.append("strategy_id = ?")
+            params.append(strategy_id)
         if symbol:
-            clauses.append("symbol = ?"); params.append(symbol)
+            clauses.append("symbol = ?")
+            params.append(symbol)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(

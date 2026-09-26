@@ -69,7 +69,7 @@ def test_radar_status_reports_stopping_without_process_lookup(tmp_path: Path, mo
     stop_file.touch()
     monkeypatch.setattr(radar_control, "PID_FILE", pid_file)
     monkeypatch.setattr(radar_control, "STOP_FILE", stop_file)
-    monkeypatch.setattr(radar_control.os, "kill", lambda _pid, _signal: None)
+    monkeypatch.setattr(radar_control, "_pid_alive", lambda _pid: True)
 
     result = radar_control.status()
 
@@ -287,6 +287,7 @@ def test_quote_context_uses_async_constructor_and_is_closed(monkeypatch):
 
     class Context:
         closed = False
+        status = broker_module.ContextStatus.READY
 
         def set_sync_query_connect_timeout(self, _value):
             pass
@@ -309,4 +310,5 @@ def test_quote_context_uses_async_constructor_and_is_closed(monkeypatch):
         assert context.closed is False
 
     assert captured["is_async_connect"] is True
-    assert context.closed is True
+    # Quote contexts are intentionally pooled between calls; closure occurs on pool shutdown.
+    assert context.closed is False

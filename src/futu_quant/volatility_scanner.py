@@ -88,16 +88,26 @@ def scan_volatility_watchlist(
     broker, store, symbols: tuple[str, ...] | None = None,
 ) -> list[dict]:
     results = []
-    if symbols is None:
-        scan_symbols = load_volatility_symbols()
-    else:
-        scan_symbols = tuple(dict.fromkeys(symbols))
+    scan_symbols = tuple(dict.fromkeys(
+        load_volatility_symbols() if symbols is None else symbols
+    ))
     if not scan_symbols:
         store.heartbeat(
             "volatility_scanner", "HEALTHY",
             "未配置波动率策略标的，跳过雷达扫描", os.getpid(),
         )
         return results
+    campaigns = load_volatility_campaigns()
+    active_underlyings = {
+        str(item.get("underlying", "")) for item in campaigns
+        if item.get("enabled", True)
+    }
+    ordered_symbols = tuple(
+        sorted(scan_symbols, key=lambda item: (item not in active_underlyings, item))
+    )
+    # Limit the OpenD batch itself, not only the later per-symbol scan.
+    max_symbols = max(5, int(os.getenv("RADAR_MAX_SYMBOLS_PER_SCAN", "40")))
+    scan_symbols = ordered_symbols[:max_symbols]
     snapshot_frame = _timed_call(
         lambda: broker.snapshots_tolerant(list(scan_symbols)), timeout_seconds=15,
     )
@@ -108,18 +118,6 @@ def scan_volatility_watchlist(
         market_move = float(spy["last_price"]) / float(spy["prev_close_price"]) - 1
     except Exception:
         pass
-    total_symbols = len(scan_symbols)
-    campaigns = load_volatility_campaigns()
-    active_underlyings = {
-        str(item.get("underlying", "")) for item in campaigns
-        if item.get("enabled", True)
-    }
-    ordered_symbols = tuple(
-        sorted(scan_symbols, key=lambda item: (item not in active_underlyings, item))
-    )
-    # Discovery scans should not spend the whole OpenD budget on a large tail.
-    max_symbols = max(5, int(os.getenv("RADAR_MAX_SYMBOLS_PER_SCAN", "40")))
-    scan_symbols = ordered_symbols[:max_symbols]
     total_symbols = len(scan_symbols)
     for index, symbol in enumerate(scan_symbols, 1):
         if index == 1 or index == total_symbols or index % 10 == 0:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 os.environ.setdefault("FUTU_LOG_ROLE", "volatility")
 
@@ -180,17 +181,79 @@ def run_once(reconcile: bool = True) -> None:
     executor.store.prune_campaign_states("volatility_long_gamma:", active_keys)
     rolled_pairs = []
     prepared = []
+    failures = []
+    interrupted = False
+
+    def execute_campaign(campaign):
+        if not campaign.get("enabled", True):
+            return
+        campaign = {**campaign, "trigger_mode": "VOLATILITY"}
+        try:
+            if not campaign.get("code") or campaign.get("exit_only") and not any(
+                str(leg.get("code", "")).upper() in set(positions.get("code", []))
+                for leg in (campaign.get("legs") or [{"code": campaign.get("code")}])
+            ):
+                return
+            started = time.monotonic()
+            try:
+                run_campaign(
+                    broker, executor, campaign, state, "volatility_long_gamma",
+                    positions_snapshot=positions, orders_snapshot=orders,
+                )
+            finally:
+                executor.store.operational_event(
+                    "volatility_long_gamma", "CAMPAIGN_EXECUTION_DURATION", "INFO",
+                    {"code": campaign.get("code"),
+                     "duration_seconds": round(time.monotonic() - started, 3)},
+                )
+        except (BrokerError, ValueError, KeyError) as exc:
+            failures.append(f"{campaign.get('code')}: {type(exc).__name__}: {exc}")
+            executor.store.operational_event(
+                "volatility_long_gamma", "CAMPAIGN_EXECUTION_FAILED", "ERROR",
+                {"code": campaign.get("code"), "exception_type": type(exc).__name__,
+                 "error": str(exc)},
+            )
+
+    def held_quantity(campaign):
+        code = str(campaign.get("code", ""))
+        broker_rows = positions[positions["code"] == code] if not positions.empty else positions
+        broker_qty = int(broker_rows.iloc[0]["qty"]) if not broker_rows.empty else 0
+        shadow_qty, _ = executor.store.shadow_position("volatility_long_gamma", code)
+        legs = {
+            str(leg.get("code", "")).upper()
+            for leg in (campaign.get("legs") or [])
+            if parse_option_code(str(leg.get("code", "")).upper()) is not None
+        }
+        combo = find_open_combo_for_campaign(
+            executor.store, strategy_id="volatility_long_gamma",
+            underlying=str(campaign.get("underlying", "")),
+            structure=str(campaign.get("structure", "")), leg_symbols=legs,
+        ) if len(legs) > 1 else None
+        return max(broker_qty, int(shadow_qty), 1 if combo else 0)
+
+    # Perform all held-position exits before any potentially blocking roll/review.
+    held_codes = set()
+    for campaign in campaigns:
+        if stop_requested():
+            interrupted = True
+            break
+        if held_quantity(campaign) > 0:
+            held_codes.add(str(campaign.get("code", "")))
+            execute_campaign(campaign)
     now = datetime.now(timezone.utc)
     maintenance_interval = max(
         60, int(os.getenv("VOLATILITY_EXPRESSION_REVIEW_SECONDS", "300"))
     )
     for campaign in campaigns:
+        if interrupted or str(campaign.get("code", "")) in held_codes:
+            continue
         if stop_requested():
             executor.store.audit(
                 "VOLATILITY_LOOP_INTERRUPTED_FOR_SERVICE_CONTROL",
                 {"reason": "检测到服务停止或重启请求，提前结束本轮波动率策略循环"},
                 "volatility_long_gamma",
             )
+            interrupted = True
             break
         current_code = str(campaign.get("code", ""))
         underlying = str(campaign.get("underlying", ""))
@@ -339,30 +402,22 @@ def run_once(reconcile: bool = True) -> None:
         else:
             delete_campaign("VOLATILITY_CAMPAIGNS", old_identity)
         upsert_campaign("VOLATILITY_CAMPAIGNS", rolled)
-    for campaign in prepared:
-        if stop_requested():
-            executor.store.audit(
-                "VOLATILITY_EXECUTION_INTERRUPTED_FOR_SERVICE_CONTROL",
-                {"reason": "检测到服务停止或重启请求，提前结束本轮波动率交易执行"},
-                "volatility_long_gamma",
-            )
-            break
-        if not campaign.get("enabled", True):
-            continue
-        campaign = {**campaign, "trigger_mode": "VOLATILITY"}
-        try:
-            if not campaign.get("code") or campaign.get("exit_only") and not any(
-                str(leg.get("code", "")).upper() in set(positions.get("code", []))
-                for leg in (campaign.get("legs") or [{"code": campaign.get("code")}])
-            ):
-                continue
-            run_campaign(
-                broker, executor, campaign, state, "volatility_long_gamma",
-                positions_snapshot=positions, orders_snapshot=orders,
-            )
-        except (BrokerError, ValueError, KeyError) as exc:
-            print(f"{campaign.get('code')}: ERROR {exc}")
+    if not interrupted:
+        for campaign in prepared:
+            if stop_requested():
+                executor.store.audit(
+                    "VOLATILITY_EXECUTION_INTERRUPTED_FOR_SERVICE_CONTROL",
+                    {"reason": "检测到服务停止或重启请求，提前结束本轮波动率交易执行"},
+                    "volatility_long_gamma",
+                )
+                interrupted = True
+                break
+            execute_campaign(campaign)
     save_state(state)
+    if failures:
+        raise RuntimeError(f"波动率策略 {len(failures)} 个活动执行失败：" + "；".join(failures[:5]))
+    if interrupted:
+        raise RuntimeError("检测到服务停止或重启请求，波动率策略本轮未完整执行")
 
 
 if __name__ == "__main__":

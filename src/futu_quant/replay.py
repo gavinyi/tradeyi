@@ -86,9 +86,13 @@ def run_resilience_drill() -> pd.DataFrame:
             executor.submit_limit("drill", "disconnect", "US.QQQ", "BUY", 1, 100)
         except ConnectionError:
             pass
-        failed = next(row for row in store.intents() if row["intent_key"].startswith("disconnect:"))
-        rows.append({"演练": "OpenD 断线", "结果": "通过" if failed["status"] == "FAILED" else "失败",
-                     "详情": failed["error"]})
+        uncertain = next(row for row in store.intents() if row["intent_key"].startswith("disconnect:"))
+        retry = executor.submit_limit("drill", "disconnect", "US.QQQ", "BUY", 1, 100)
+        rows.append({
+            "演练": "OpenD 断线结果未知",
+            "结果": "通过" if uncertain["status"] == "UNKNOWN" and retry.status == "UNKNOWN" else "失败",
+            "详情": uncertain["error"],
+        })
 
         store.approve_strategy(
             "drill", strategy_fingerprint("drill"), "resilience_drill_refresh",

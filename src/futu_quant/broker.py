@@ -190,7 +190,7 @@ class FutuPaperBroker:
     # ---- persistent pooled connections ------------------------------------
 
     def _pool_key(self) -> tuple:
-        account = self.settings.real_account_id if self.settings.trading_env == "REAL" else self.settings.acc_id
+        account = self.settings.real_account_id if self.settings.trading_env == "REAL" else getattr(self.settings, "acc_id", "")
         return (
             self.settings.host, self.settings.port, self.security_firm,
             self.trd_env, account,
@@ -591,7 +591,18 @@ class FutuPaperBroker:
         with self.quote_context() as ctx:
             return self._ok(ctx.get_order_book(symbol, num=max(1, min(10, depth))), "order book")
 
-    def place_limit_order(self, symbol: str, side: str, quantity: int, price: float) -> pd.DataFrame:
+    def place_limit_order(self, symbol: str, side: str, quantity: int, price: float,
+                          *, real_trade_context=None) -> pd.DataFrame:
+        if self.settings.trading_env == "REAL":
+            if real_trade_context is None:
+                raise BrokerError("实盘下单必须经由执行管理器的实盘门禁")
+            from .real_trading import check_real_trade
+            store, strategy_id, metadata, intent_id = real_trade_context
+            decision = check_real_trade(store, self.settings, strategy_id, symbol, side,
+                                        quantity, price, metadata,
+                                        exclude_intent_id=intent_id)
+            if not decision.allowed:
+                raise BrokerError(f"实盘下单门禁拒绝：{decision.reason}")
         if not self.settings.enable_paper_orders:
             raise BrokerError("券商下单开关未开启：ENABLE_PAPER_ORDERS=false")
         if not symbol.startswith("US.") or side not in {"BUY", "SELL"}:
@@ -608,7 +619,12 @@ class FutuPaperBroker:
                 operation,
             )
 
-    def cancel_order(self, order_id: str) -> pd.DataFrame:
+    def _check_order_environment(self, expected_env: str | None) -> None:
+        if expected_env is not None and expected_env != self.settings.trading_env:
+            raise BrokerError(f"订单执行环境 {expected_env} 与券商环境 {self.settings.trading_env} 不一致")
+
+    def cancel_order(self, order_id: str, *, expected_env: str | None = None) -> pd.DataFrame:
+        self._check_order_environment(expected_env)
         if not str(order_id).strip():
             raise BrokerError("Order ID is required")
         with self.trade_context() as ctx:
@@ -620,7 +636,9 @@ class FutuPaperBroker:
                 "cancel real order" if self.settings.trading_env == "REAL" else "cancel simulated order",
             )
 
-    def modify_limit_order(self, order_id: str, quantity: int, price: float) -> pd.DataFrame:
+    def modify_limit_order(self, order_id: str, quantity: int, price: float,
+                           *, expected_env: str | None = None) -> pd.DataFrame:
+        self._check_order_environment(expected_env)
         if not str(order_id).strip() or quantity <= 0 or price <= 0:
             raise BrokerError("Order ID, quantity and price are required")
         with self.trade_context() as ctx:

@@ -60,6 +60,8 @@ def session_status(
         return False, "当前交易环境不是 REAL", session
     if not settings.real_trading_enabled:
         return False, "REAL_TRADING_ENABLED 未开启", session
+    if not settings.real_account_id:
+        return False, "未配置 REAL_ACCOUNT_ID", session
     if settings.real_require_manual_confirm:
         expires_at = str(session.get("expires_at") or "")
         try:
@@ -73,8 +75,6 @@ def session_status(
             return False, "实盘人工确认会话已过期", session
         if str(session.get("account_id") or "") != str(settings.real_account_id or ""):
             return False, "确认会话账户与 REAL_ACCOUNT_ID 不一致", session
-    elif not settings.real_account_id:
-        return False, "未配置 REAL_ACCOUNT_ID", session
     return True, "实盘确认会话有效", session
 
 
@@ -113,12 +113,16 @@ def disable_session(store: TradingStore, actor: str = "streamlit_admin") -> None
     store.audit("REAL_TRADING_SESSION_DISABLED", {"actor": actor})
 
 
-def submitted_real_notional_since(store: TradingStore, iso_timestamp: str) -> float:
+def submitted_real_notional_since(store: TradingStore, iso_timestamp: str,
+                                  exclude_intent_id: int | None = None) -> float:
     total = 0.0
     for row in store.intents(limit=50_000):
+        if exclude_intent_id is not None and row.get("id") == exclude_intent_id:
+            continue
         if str(row.get("created_at") or "") < iso_timestamp:
             continue
-        if str(row.get("status")) not in {"SUBMITTED", "FILLED", "FILLED_PART"}:
+        # Unconfirmed broker outcomes may already consume live buying power.
+        if str(row.get("status")) not in {"SUBMITTING", "SUBMITTED", "UNKNOWN", "FILLED", "FILLED_PART", "CANCEL_REQUESTED"}:
             continue
         metadata = _parse_session(row.get("metadata_json"))
         if metadata.get("execution_mode") != "REAL" and not str(row.get("intent_key", "")).endswith(":REAL"):
@@ -138,6 +142,7 @@ def check_real_trade(
     price: float,
     metadata: dict[str, Any] | None = None,
     now: datetime | None = None,
+    exclude_intent_id: int | None = None,
 ) -> RealTradeDecision:
     metadata = metadata or {}
     if settings.trading_env != "REAL":
@@ -158,7 +163,7 @@ def check_real_trade(
             {"notional": notional},
         )
     day_start = ny_trading_day_start_utc(now)
-    used = submitted_real_notional_since(store, day_start.isoformat())
+    used = submitted_real_notional_since(store, day_start.isoformat(), exclude_intent_id)
     if used + notional > settings.real_max_daily_notional:
         return RealTradeDecision(
             False,
