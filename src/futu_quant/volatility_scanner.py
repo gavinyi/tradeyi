@@ -280,7 +280,7 @@ def scan_volatility_watchlist(
                             store, "volatility_default_profit_protection_giveback_strong", .18,
                         ),
                         "minimum_locked_profit_strong": _setting_float(
-                            store, "volatility_default_minimum_locked_profit_strong", .10,
+                            store, "volatility_default_minimum_locked_profit_strong", .06,
                         ),
                         "partial_profit_enabled": True,
                         "exit_allocation_policy": str(store.get_setting(

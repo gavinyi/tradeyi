@@ -44,7 +44,7 @@ VOLATILITY_EXIT_PRIORITY = [
 PROFIT_PROTECTION_DEFAULTS = {
     "常规": {"start": .10, "giveback": .20, "lock": .05},
     "动态波动": {"start": .12, "giveback": .22, "lock": .07},
-    "强波动": {"start": .10, "giveback": .18, "lock": .10},
+    "强波动": {"start": .10, "giveback": .18, "lock": .06},
     "临近到期": {"start": .10, "giveback": .20, "lock": .05},
 }
 

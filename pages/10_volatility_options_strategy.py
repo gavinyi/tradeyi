@@ -696,7 +696,7 @@ with config_tab:
         strong_label.write("强波动")
         protection_start_strong = strong_start_col.number_input("强波动启动", 0.01, 2.0, value=setting_float("volatility_default_profit_protection_start_strong", 0.20), step=0.01, label_visibility="collapsed")
         protection_giveback_strong = strong_giveback_col.number_input("强波动回吐", 0.01, 1.0, value=setting_float("volatility_default_profit_protection_giveback_strong", 0.30), step=0.01, label_visibility="collapsed")
-        locked_profit_strong = strong_lock_col.number_input("强波动锁定", 0.0, 1.0, value=setting_float("volatility_default_minimum_locked_profit_strong", 0.10), step=0.01, label_visibility="collapsed")
+        locked_profit_strong = strong_lock_col.number_input("强波动锁定", 0.0, 1.0, value=setting_float("volatility_default_minimum_locked_profit_strong", 0.06), step=0.01, label_visibility="collapsed")
     with st.expander("参数配置 · 分批止盈与冲高保护", expanded=False):
         st.caption(
             "2 张以上自动分批；1 张合约达到主动落袋线会先兑现原合约，"

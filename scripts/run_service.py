@@ -727,7 +727,7 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     if "Volatility Long Gamma" in configured and session.regular_open(now):
         # Keep active positions responsive, but do not rescan an empty campaign
         # universe at the same high frequency as the exit monitor.
-        volatility_interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "120")))
+        volatility_interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "30")))
         interval = volatility_interval
         if not store.virtual_positions():
             interval = max(interval, int(os.getenv("VOLATILITY_EMPTY_INTERVAL_SECONDS", "300")))
