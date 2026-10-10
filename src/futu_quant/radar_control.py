@@ -82,10 +82,13 @@ def start() -> RadarStatus:
         return current
     STOP_FILE.unlink(missing_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
     process = subprocess.Popen(
         [sys.executable, str(ROOT / "scripts" / "run_radar_service.py")],
         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
+        env=env,
     )
     time.sleep(.5)
     current = status()
