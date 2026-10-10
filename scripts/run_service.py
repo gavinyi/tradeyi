@@ -326,6 +326,9 @@ def activate_protective_recovery(
     store: TradingStore, alerts: AlertManager, strategy_id: str,
     message: str, failures: int, now: datetime,
 ) -> None:
+    session = MARKET_CALENDAR.session(now)
+    if not (session.is_session and session.extended_open(now)):
+        return
     positions = active_protected_option_positions(store)
     if not positions:
         return
@@ -390,7 +393,8 @@ def record_broker_failure(
         {"task": strategy_id, "failures": failures, "message": message},
     )
     activate_protective_recovery(store, alerts, strategy_id, message, failures, now)
-    if failures >= opend_threshold:
+    session = MARKET_CALENDAR.session(now)
+    if failures >= opend_threshold and session.is_session and session.extended_open(now):
         maybe_restart_opend(store, alerts, message, now)
 
 
