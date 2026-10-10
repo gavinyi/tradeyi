@@ -139,6 +139,9 @@ def futu_sdk_preflight(
     ) < cache_seconds:
         return True
     timeout = max(3.0, float(os.getenv("FUTU_SDK_PREFLIGHT_TIMEOUT_SECONDS", "12")))
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        env.setdefault("APPDATA", str(Path(__file__).resolve().parents[1] / "data" / "appdata"))
     try:
         result = subprocess.run(  # noqa: S603
             [sys.executable, "scripts/check_connection.py"],
@@ -147,6 +150,7 @@ def futu_sdk_preflight(
             stderr=subprocess.DEVNULL,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         message = f"OpenD SDK 预检超时超过 {timeout:.0f} 秒"

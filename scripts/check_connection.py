@@ -1,3 +1,12 @@
+import os
+from pathlib import Path
+import sys
+
+if sys.platform == "win32":
+    _local_appdata = Path(__file__).resolve().parents[1] / "data" / "appdata"
+    _local_appdata.mkdir(parents=True, exist_ok=True)
+    os.environ["APPDATA"] = str(_local_appdata)
+
 from futu_quant.broker import FutuPaperBroker
 from futu_quant.config import Settings
 
