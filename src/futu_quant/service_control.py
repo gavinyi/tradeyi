@@ -161,10 +161,13 @@ def restart() -> ServiceStatus:
     if stopped.running:
         # Handoff waits for the old service to release the log. Keep the
         # child detached from service.log so Windows can replace it safely.
+        env = os.environ.copy()
+        env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
         subprocess.Popen(  # noqa: S603
             [sys.executable, "-m", "futu_quant.service_control", "handoff", str(current.pid)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
         return ServiceStatus(
             True, stopped.pid, "旧服务正在停止；退出后会自动启动新服务",

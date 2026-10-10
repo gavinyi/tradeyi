@@ -209,14 +209,17 @@ def request_service_self_restart(
     STOP_FILE.touch()
     STOP_EVENT.set()
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with LOG_FILE.open("a") as log:
-        subprocess.Popen(  # noqa: S603
-            [sys.executable, "-m", "futu_quant.service_control", "handoff", str(os.getpid())],
-            cwd=Path(__file__).resolve().parents[1],
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
+    env = os.environ.copy()
+    if sys.platform == "win32":
+        env.setdefault("APPDATA", str(Path(__file__).resolve().parents[1] / "data" / "appdata"))
+    subprocess.Popen(  # noqa: S603
+        [sys.executable, "-m", "futu_quant.service_control", "handoff", str(os.getpid())],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        env=env,
+    )
     store.operational_event(
         "trading_service", "SELF_RESTART_REQUESTED", "DEGRADED",
         {"pid": os.getpid(), "reason": reason},
