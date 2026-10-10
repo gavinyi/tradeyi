@@ -148,3 +148,25 @@ def test_held_exit_precedes_flat_expression_review(tmp_path, monkeypatch):
     runner.run_once(reconcile=False)
     assert calls.index(("execute", held["code"])) < calls.index(("review", flat["code"]))
     assert calls.count(("execute", held["code"])) == 1
+
+
+def test_decision_if_changed_deduplicates_in_memory():
+    test_db = Path("data/test_decision_dedup.db")
+    try:
+        test_db.unlink(missing_ok=True)
+        store = TradingStore(str(test_db))
+        recorded1 = store.decision_if_changed(
+            "volatility_long_gamma", "US.TEST", "BLOCKED", "价差过大", repeat_after_seconds=900,
+        )
+        assert recorded1 is True
+        recorded2 = store.decision_if_changed(
+            "volatility_long_gamma", "US.TEST", "BLOCKED", "价差过大", repeat_after_seconds=900,
+        )
+        assert recorded2 is False
+        recorded3 = store.decision_if_changed(
+            "volatility_long_gamma", "US.TEST", "BLOCKED", "量比不足", repeat_after_seconds=900,
+        )
+        assert recorded3 is True
+    finally:
+        test_db.unlink(missing_ok=True)
+

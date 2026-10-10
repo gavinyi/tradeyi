@@ -88,9 +88,12 @@ def start() -> ServiceStatus:
                 return current
     # Close the parent descriptor immediately; otherwise Windows keeps the live
     # service log locked across UI/service control operations.
+    env = os.environ.copy()
+    env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
     process = subprocess.Popen(  # noqa: S603
         [sys.executable, str(ROOT / "scripts" / "run_service.py")], cwd=ROOT,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        env=env,
     )
     # run_service writes its PID only after acquiring the singleton lock. Writing it
     # here could overwrite the real owner's PID when a second start is rejected.

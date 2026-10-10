@@ -15,6 +15,10 @@ import time
 from zoneinfo import ZoneInfo
 
 os.environ.setdefault("FUTU_LOG_ROLE", "service")
+if sys.platform == "win32":
+    _local_appdata = Path(__file__).resolve().parents[1] / "data" / "appdata"
+    _local_appdata.mkdir(parents=True, exist_ok=True)
+    os.environ["APPDATA"] = str(_local_appdata)
 
 from futu_quant.alerts import AlertManager
 from futu_quant.approval import publish_approval_runtime_manifest

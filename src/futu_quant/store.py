@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import math
 import sqlite3
+import time
 from typing import Iterator
 
 
@@ -50,16 +51,21 @@ class TradingStore:
     def connection(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
         try:
             yield connection
-            connection.commit()
+            if connection.in_transaction:
+                connection.commit()
         finally:
             connection.close()
 
     def initialize(self) -> None:
         with self.connection() as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_intents'"
+            ).fetchone()
+            if existing is not None:
+                return
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS order_intents (
@@ -332,6 +338,8 @@ class TradingStore:
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_decision_logs_lookup
+                    ON decision_logs(strategy_id, symbol, id DESC);
                 CREATE TABLE IF NOT EXISTS virtual_allocations (
                     strategy_id TEXT NOT NULL,
                     symbol TEXT NOT NULL,
@@ -1880,10 +1888,13 @@ class TradingStore:
             deleted["task_runs"] = cursor.rowcount
         return deleted
 
+    _DECISION_CACHE: dict[tuple[str, str | None], tuple[str, str, float]] = {}
+
     def decision(
         self, strategy_id: str, symbol: str | None, decision: str, reason: str,
         payload: dict | None = None,
     ) -> None:
+        self._DECISION_CACHE[(strategy_id, symbol)] = (decision, reason, time.time())
         with self.connection() as connection:
             connection.execute(
                 """INSERT INTO decision_logs
@@ -1896,18 +1907,15 @@ class TradingStore:
         self, strategy_id: str, symbol: str | None, decision: str, reason: str,
         payload: dict | None = None, repeat_after_seconds: int = 900,
     ) -> bool:
-        with self.connection() as connection:
-            previous = connection.execute(
-                """SELECT decision,reason,created_at FROM decision_logs
-                WHERE strategy_id=? AND symbol IS ? ORDER BY id DESC LIMIT 1""",
-                (strategy_id, symbol),
-            ).fetchone()
-        if previous and previous["decision"] == decision and previous["reason"] == reason:
-            age = (
-                datetime.now(timezone.utc) - datetime.fromisoformat(previous["created_at"])
-            ).total_seconds()
-            if age < repeat_after_seconds:
-                return False
+        cache_key = (strategy_id, symbol)
+        now_ts = time.time()
+        cached = self._DECISION_CACHE.get(cache_key)
+        if cached is not None:
+            prev_decision, prev_reason, prev_ts = cached
+            if prev_decision == decision and prev_reason == reason:
+                if (now_ts - prev_ts) < repeat_after_seconds:
+                    return False
+
         self.decision(strategy_id, symbol, decision, reason, payload)
         return True
 

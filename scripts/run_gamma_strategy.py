@@ -44,6 +44,7 @@ from futu_quant.volatility_optimizer import (
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
 )
 from futu_quant.volatility_structures import automatic_combo_id
+from futu_quant.campaign_cleanup import campaign_expired
 from futu_quant.data_quality import (
     option_book_status, option_quote_freshness, quote_freshness,
 )
@@ -535,6 +536,20 @@ def run_campaign(
         )
         print(f"{code}: HOLD ({reason})")
         return
+
+    expired, expiry_reason = campaign_expired(campaign, now.date())
+    if expired and quantity <= 0:
+        reason = f"活动合约已全部过期且无持仓（{expiry_reason}），自动归档并不再发起开仓行情轮询"
+        executor.store.decision_if_changed(
+            strategy_id, code, "CLOSED", reason, {
+                "campaign_expired": True,
+                "expiry_reason": expiry_reason,
+                "position_quantity": 0,
+            }, repeat_after_seconds=86400,
+        )
+        print(f"{code}: CLOSED ({reason})")
+        return
+
     max_quote_spread_pct = float(campaign.get(
         "max_spread_pct", 12.0 if trigger_mode == "VOLATILITY" else 20.0
     ))
@@ -559,7 +574,7 @@ def run_campaign(
             f"{quote_check['book_reason']}；已重试 {len(quote_check['attempts'])} 次"
         )
         decision = "HOLD" if quantity > 0 else "BLOCKED"
-        executor.store.decision(strategy_id, code, decision, reason, {
+        payload = {
             "market_data_status": "WAITING_EXIT_LIQUIDITY" if quantity > 0 else "PRE_TRADE_BLOCKED",
             "underlying_quote_age_seconds": quote_check["underlying_age_seconds"],
             "option_quote_age_seconds": quote_check["option_age_seconds"],
@@ -570,17 +585,25 @@ def run_campaign(
             "position_quantity": quantity,
             "planned_order_quantity": 0,
             "trigger_mode": trigger_mode,
-        })
-        executor.store.audit(
-            "OPTION_MARKET_DATA_WAITING" if quantity > 0 else "OPTION_MARKET_DATA_BLOCKED",
-            {
-                "symbol": code, "underlying": campaign["underlying"],
-                "strategy_id": strategy_id, "reason": reason,
-                "attempts": quote_check["attempts"],
-                "position_quantity": quantity,
-            },
-            strategy_id,
-        )
+        }
+        if quantity <= 0:
+            should_record = executor.store.decision_if_changed(
+                strategy_id, code, decision, reason, payload, repeat_after_seconds=900,
+            )
+        else:
+            executor.store.decision(strategy_id, code, decision, reason, payload)
+            should_record = True
+        if should_record:
+            executor.store.audit(
+                "OPTION_MARKET_DATA_WAITING" if quantity > 0 else "OPTION_MARKET_DATA_BLOCKED",
+                {
+                    "symbol": code, "underlying": campaign["underlying"],
+                    "strategy_id": strategy_id, "reason": reason,
+                    "attempts": quote_check["attempts"],
+                    "position_quantity": quantity,
+                },
+                strategy_id,
+            )
         print(f"{code}: {decision} ({reason})")
         return
     if quantity > 0 and not quote_check["option_fresh"]:
@@ -1124,15 +1147,16 @@ def run_campaign(
 
         def record_pretrade_block(check: str, block_reason: str, details: dict) -> None:
             payload = {**decision_payload, "pre_trade_check": check, **details}
-            executor.store.decision(
-                strategy_id, code, "BLOCKED", block_reason, payload,
+            recorded = executor.store.decision_if_changed(
+                strategy_id, code, "BLOCKED", block_reason, payload, repeat_after_seconds=900,
             )
-            executor.store.audit(
-                "PRE_TRADE_BLOCKED", {
-                    "symbol": code, "underlying": campaign["underlying"],
-                    "check": check, "reason": block_reason, **details,
-                }, strategy_id,
-            )
+            if recorded:
+                executor.store.audit(
+                    "PRE_TRADE_BLOCKED", {
+                        "symbol": code, "underlying": campaign["underlying"],
+                        "check": check, "reason": block_reason, **details,
+                    }, strategy_id,
+                )
 
         if trigger_mode == "VOLATILITY" and volatility_new_entries_paused(executor.store):
             block_reason = "波动率期权新开仓已临时暂停：只保留已有持仓止盈、止损和组合平仓管理"

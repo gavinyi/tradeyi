@@ -12,6 +12,11 @@ import socket
 import threading
 import time
 
+if os.name == "nt":
+    _local_appdata = Path(__file__).resolve().parents[2] / "data" / "appdata"
+    _local_appdata.mkdir(parents=True, exist_ok=True)
+    os.environ["APPDATA"] = str(_local_appdata)
+
 import pandas as pd
 from futu import (
     AuType,
