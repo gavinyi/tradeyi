@@ -561,6 +561,8 @@ STRATEGY_LABELS = {
     "idempotency_audit": "订单幂等审计", "operations_report": "每日运营报告",
     "dynamic_allocation": "动态资金调度",
     "long_term_validation": "长期策略验证",
+    "daily_strategy_review": "每日策略复盘与执行质量",
+    "computer_shutdown": "每日电脑关机",
     "SMA Cross": "均线交叉策略", "RSI Mean Reversion": "RSI 均值回归策略",
     "20 Day Breakout": "20日突破策略",
 }
@@ -594,6 +596,8 @@ REASON_LABELS = {
 
 EVENT_LABELS = {
     "PROCESS_START": "进程启动", "PROCESS_STOP": "进程停止",
+    "DAILY_STRATEGY_REVIEW_PUBLISHED": "每日策略复盘已发布", "AUTO_COMPUTER_SHUTDOWN": "自动关机",
+    "AUTO_COMPUTER_SHUTDOWN_DRY_RUN": "自动关机演练", "TASK_BOARD_TIMER_CHANGED": "任务看板定时器变更",
     "STARTUP_RECOVERY": "启动恢复检查", "DAILY_SUMMARY": "24小时运行汇总",
     "NASDAQ_SOURCE_FAILED": "Nasdaq 财报源异常", "FUTU_SOURCE_FAILED": "富途财报源异常",
     "APPROVAL_ENFORCEMENT_CHANGED": "上线审批强制规则变更",

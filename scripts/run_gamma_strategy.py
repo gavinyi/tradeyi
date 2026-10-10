@@ -14,11 +14,12 @@ import pandas as pd
 os.environ.setdefault("FUTU_LOG_ROLE", "gamma")
 
 from futu_quant.broker import BrokerError, FutuPaperBroker
-from futu_quant.config import Settings, load_gamma_campaigns, load_volatility_campaigns
+from futu_quant.config import Settings, load_gamma_campaigns
 from futu_quant.execution import ExecutionManager
 from futu_quant.combo_analytics import combo_market_snapshot
 from futu_quant.combo_execution import (
     ComboExecutionManager, create_combo, find_open_combo_for_campaign,
+    _protected_relation,
 )
 from futu_quant.gamma_automation import decide_gamma_action
 from futu_quant.gamma_debug import diagnose_campaign, hard_campaign_issues
@@ -33,7 +34,7 @@ from futu_quant.volatility_optimizer import (
     decide_volatility_action, sync_volatility_position_cycle,
     volatility_partial_exit_plan,
     volatility_cooldown_hours, volatility_exit_reason,
-    same_signal_epoch_reentry_allowed, volatility_cooldown_bypass_allowed,
+    volatility_cooldown_bypass_allowed,
     volatility_profit_protection_profile,
     volatility_direction_size_factor, volatility_entry_confirmation,
     volatility_signal_state, volatility_cooldown_reentry_allowed,
@@ -41,7 +42,6 @@ from futu_quant.volatility_optimizer import (
     volatility_threshold_profile, loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
-    volatility_batch_metrics,
 )
 from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.data_quality import (
@@ -272,6 +272,56 @@ def volatility_exit_limit_price(
     }
 
 
+def _campaign_naked_short_rows(campaign: dict, positions: pd.DataFrame) -> pd.DataFrame:
+    """Return only genuinely uncovered short legs for this campaign.
+
+    A multi-leg option structure may intentionally contain a short leg.  The
+    broker position table exposes that leg as ``qty < 0`` even when a matching
+    long protective leg is present.  Naked-short takeover must therefore use
+    the campaign structure plus live quantities, not a sign-only test.
+    """
+    legs = campaign.get("legs") or []
+    if positions is None or positions.empty or "qty" not in positions.columns:
+        return positions.iloc[0:0] if positions is not None else pd.DataFrame()
+    normalized = positions.copy()
+    normalized["_code"] = normalized["code"].astype(str).str.upper()
+    normalized["_qty"] = pd.to_numeric(normalized["qty"], errors="coerce").fillna(0.0)
+    parsed = {
+        str(leg.get("code", "")).upper(): parse_option_code(str(leg.get("code", "")).upper())
+        for leg in legs
+    }
+    short_codes = [
+        code for code, contract in parsed.items()
+        if contract is not None and any(
+            str(leg.get("code", "")).upper() == code
+            and str(leg.get("side", "")).upper() == "SELL"
+            for leg in legs
+        )
+    ]
+    long_rows = normalized[normalized["_qty"] > 0]
+    uncovered: list[str] = []
+    for code in short_codes:
+        short_contract = parsed[code]
+        short_qty = max(0.0, -float(normalized.loc[normalized["_code"] == code, "_qty"].sum()))
+        if short_qty <= 0:
+            continue
+        protected_qty = 0.0
+        for long_code, long_contract in parsed.items():
+            if long_contract is None or long_code == code:
+                continue
+            leg_side = next(
+                (str(leg.get("side", "")).upper() for leg in legs
+                 if str(leg.get("code", "")).upper() == long_code),
+                "",
+            )
+            if leg_side != "BUY" or not _protected_relation(long_contract, short_contract):
+                continue
+            protected_qty += max(0.0, float(long_rows.loc[long_rows["_code"] == long_code, "_qty"].sum()))
+        if protected_qty + 1e-9 < short_qty:
+            uncovered.append(code)
+    return normalized[normalized["_code"].isin(uncovered)].drop(columns=["_code", "_qty"])
+
+
 def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
@@ -335,11 +385,10 @@ def run_campaign(
             safe_datetime(campaign.get("event_date"), now).date(), event_clock, tzinfo=NY
         )
     positions = positions_snapshot if positions_snapshot is not None else broker.positions()
-    # Hard safety stop: a live naked short option is never left to normal strategy logic.
-    naked_rows = positions[
-        positions["code"].astype(str).str.upper().isin({str(item).upper() for item in valid_leg_codes})
-        & (pd.to_numeric(positions["qty"], errors="coerce") < 0)
-    ] if not positions.empty and "qty" in positions.columns else positions.iloc[0:0]
+    # Hard safety stop: a live uncovered short option is never left to normal
+    # strategy logic. Multi-leg structures are checked by live ratio/protection,
+    # so a protected backspread is not misclassified as naked.
+    naked_rows = _campaign_naked_short_rows(campaign, positions)
     if not naked_rows.empty and trigger_mode == "VOLATILITY":
         executor.store.audit("VOLATILITY_NAKED_SHORT_BLOCK", {
             "underlying": campaign.get("underlying"),
@@ -568,6 +617,7 @@ def run_campaign(
         else bid if quantity > 0 and bid > 0
         else last
     )
+    previous_peak_mark = float(campaign_state.get("peak", 0) or 0)
     if trigger_mode == "VOLATILITY":
         sync_volatility_position_cycle(
             campaign_state, quantity=quantity, cost=cost, last=executable_mark,
@@ -583,6 +633,8 @@ def run_campaign(
         if quantity > 0 and cost > 0 else 0.0
     )
     peak = float(campaign_state.get("peak", 0))
+    if peak > previous_peak_mark and quantity > 0:
+        campaign_state["peak_reached_at"] = now.isoformat()
     drawdown = 1 - executable_mark / peak if peak > 0 else 0.0
     peak_pnl_ratio = (
         peak / cost - 1
@@ -928,6 +980,25 @@ def run_campaign(
                 ),
                 dynamic_stop_full_decay_minutes=float(
                     campaign.get("dynamic_time_stop_full_decay_minutes", 90)
+                ),
+                soft_profit_protection_start=float(
+                    campaign.get("soft_profit_protection_start", .08)
+                ),
+                soft_profit_lock_floor=float(
+                    campaign.get("soft_profit_lock_floor", .03)
+                ),
+                soft_profit_giveback=float(
+                    campaign.get("soft_profit_giveback", .35)
+                ),
+                rapid_giveback_threshold=float(
+                    campaign.get("rapid_giveback_threshold", .25)
+                ),
+                rapid_giveback_window_minutes=float(
+                    campaign.get("rapid_giveback_window_minutes", 15)
+                ),
+                peak_reached_at=(
+                    safe_datetime(campaign_state.get("peak_reached_at"), now)
+                    if campaign_state.get("peak_reached_at") else None
                 ),
             )
     else:

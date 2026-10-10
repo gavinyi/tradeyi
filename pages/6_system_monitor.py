@@ -13,8 +13,11 @@ from futu_quant.radar_control import status as radar_status
 from futu_quant.monitoring import heartbeat_display_status, heartbeat_stale_after
 from futu_quant.service_control import status as service_status
 from futu_quant.store import TradingStore
+from futu_quant.scheduled_tasks import (
+    BOARD_TIMERS, next_board_timer_run, set_timer_enabled, timer_default_enabled, timer_enabled_setting_key,
+)
 from futu_quant.ui import (
-    EVENT_LABELS, china_time_columns, readable_payload,
+    CHINA_TZ, EVENT_LABELS, china_time_columns, readable_payload,
     render_sidebar, translate_common_values,
 )
 
@@ -98,6 +101,31 @@ if view == "运行状态":
         st.caption("高频交易任务允许 2 分钟，系统维护允许 7 分钟，每日任务允许 25 小时；ERROR 始终表示执行异常。")
 
 elif view == "调度任务":
+    with st.container(border=True):
+        st.subheader("任务看板定时器")
+        timer_rows = []
+        for timer in BOARD_TIMERS:
+            enabled = store.get_setting(timer_enabled_setting_key(timer), str(timer_default_enabled(timer)).lower()) == "true"
+            timer_rows.append({
+                "timer": timer, "task_id": timer.task_id, "title": timer.title,
+                "schedule": f"每天 {timer.time:%H:%M}（中国时间）",
+                "next_run": next_board_timer_run(store, timer), "enabled": enabled,
+            })
+        timer_view = pd.DataFrame(timer_rows)
+        timer_view["next_run"] = timer_view["next_run"].map(lambda value: value.astimezone(CHINA_TZ).strftime("%Y-%m-%d %H:%M"))
+        timer_display = timer_view[["title", "task_id", "schedule", "next_run", "enabled"]]
+        st.dataframe(timer_display.rename(columns={"task_id": "任务代码", "title": "任务", "schedule": "定时器", "next_run": "下次预计执行", "enabled": "已启用"}), hide_index=True, column_config={"已启用": st.column_config.CheckColumn("已启用")})
+        with st.expander("启用/关闭定时器"):
+            for row in timer_rows:
+                key = f"timer_{row['task_id']}_enabled"
+                st.toggle(
+                    f"{row['title']}：{row['schedule']}",
+                    value=row["enabled"], key=key,
+                    label_visibility="collapsed",
+                    on_change=lambda _checked, code=row["task_id"]: set_timer_enabled(store, dict((t.task_id, t) for t in BOARD_TIMERS)[code], _checked),
+                )
+        st.caption("策略复盘定时器每天 04:15 生成 HTML 并登记 DSH IM 待投递；DSH agent 负责通过已连接的微信 chat 投递。电脑关机定时器每天 04:30，默认关闭，建议先用演练模式验证。")
+
     task_runs = pd.DataFrame(store.task_runs(limit=300))
     if task_runs.empty:
         st.info("服务尚无任务执行记录；启动后会记录每个任务的耗时与超时状态。")
@@ -120,7 +148,8 @@ elif view == "调度任务":
             completed = pd.to_numeric(task_runs["duration_seconds"], errors="coerce").dropna()
             st.metric("最近平均耗时", f"{completed.head(50).mean():.1f} 秒" if not completed.empty else "—", border=True)
         task_names = {
-            "shadow_matching": "Shadow 成交匹配", "order_reconciliation": "订单对账",
+            "shadow_matching": "Shadow 成交匹配", "daily_strategy_review": "每日策略复盘与执行质量",
+            "computer_shutdown": "每日电脑关机", "order_reconciliation": "订单对账",
             "option_combo_monitor": "期权组合执行监控",
             "combo_market_snapshot": "组合行情快照",
             "validation_calibration": "策略验证校准",

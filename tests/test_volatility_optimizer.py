@@ -307,6 +307,36 @@ def test_volatility_trailing_exit_requires_position_to_have_been_profitable():
     assert decide_volatility_action(peak_pnl_ratio=.20, **common)[0] == "SELL"
 
 
+def test_soft_profit_protection_handles_near_threshold_reversal():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    action, reason = decide_volatility_action(
+        now=now, opened_at=now - timedelta(minutes=20), quantity=1,
+        stages_filled=1, max_stages=1, pnl_ratio=.03, peak_pnl_ratio=.0986,
+        drawdown_from_peak=.063, directional_confirmation=False, signal_active=False,
+        profit_target=.50, stop_loss=.40, trailing_stop=.25, max_hold_hours=24,
+        profit_protection_start=.10, soft_profit_protection_start=.08,
+        soft_profit_lock_floor=.03, soft_profit_giveback=.35,
+        profit_giveback_from_peak=(.0986 - .03) / .0986,
+        peak_reached_at=now - timedelta(minutes=5),
+    )
+    assert action == "SELL"
+    assert "软启动锁盈" in reason
+
+
+def test_soft_profit_protection_does_not_exit_small_pullback():
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    action, _ = decide_volatility_action(
+        now=now, opened_at=now - timedelta(minutes=20), quantity=1,
+        stages_filled=1, max_stages=1, pnl_ratio=.07, peak_pnl_ratio=.09,
+        drawdown_from_peak=.018, directional_confirmation=True, signal_active=True,
+        profit_target=.50, stop_loss=.40, trailing_stop=.25, max_hold_hours=24,
+        profit_protection_start=.10, soft_profit_protection_start=.08,
+        soft_profit_lock_floor=.03, profit_giveback_from_peak=(.09 - .07) / .09,
+        peak_reached_at=now - timedelta(minutes=10),
+    )
+    assert action == "HOLD"
+
+
 def test_profit_protection_does_not_sell_before_configured_start():
     now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
     action, reason = decide_volatility_action(

@@ -85,6 +85,45 @@
 - 应用层 OCO/Bracket 状态使用 `oco_groups` 记录 TP/SL 触发和取消状态。OpenD 不提供原子 OCO，因此成交与取消存在竞态，任何未确认取消都禁止重复提交新的平仓保护单；
 - 绩效报告输出批次成交、MFE、MAE、捕获率、R 倍数、加仓次数和加仓实现盈亏。历史无批次数据只按旧 FIFO 口径展示，不回填猜测批次。
 
+## 任务看板定时器
+
+统一服务（`scripts/run_service.py`）内建两个中国时间的每日定时器，可在
+“系统监控 → 调度任务 → 任务看板定时器” 查看与启停：
+
+- **策略复盘与执行质量**：每天 04:15（中国时间）生成上一个美东交易日的
+  `build_strategy_review` HTML 报告，保存到 `data/reports/strategy_review_<日期>.html`，
+  并把结论与 HTML 登记为“待 DSH IM 投递”记录（`DAILY_STRATEGY_REVIEW_IM_PENDING`，默认启用）。
+  DSH 侧的定时 agent 到点读取该记录，用 agent 能力把复盘总结 + HTML 投递到用户已接好的
+  微信 chat（dsh IM 插件通道），投递成功后回写 delivered，避免重发。
+- **电脑关机**：每天 04:30（中国时间）执行系统关机（默认关闭，需手动开启；
+  建议先用 `AUTO_SHUTDOWN_DRY_RUN=true` 演练模式验证，演练只写审计记录不真正关机）。
+
+两个定时器均按“每日一次”幂等：当天已触发过则不再重复，服务停机错过触发点会在
+下一次服务周期自恢复补跑。开关持久化在 SQLite `system_settings`
+（`AUTO_DAILY_STRATEGY_REVIEW_ENABLED` / `AUTO_COMPUTER_SHUTDOWN_ENABLED`），
+触发时间记录在 `last_board_timer:*` 键中。
+
+### DSH 定时 agent 投递（04:15 复盘 → 微信）
+
+**分工**：Python `run_service.py` 是**精确**触发器（04:15 生成 HTML + 登记待投递、
+04:30 关机）；DSH 侧只挂**一条"轮询待投递"提醒**，让 agent 把已登记的复盘投到微信。
+两者解耦：精确定时由 Python 保证，微信投递走 agent 能力（提示词与 `schedule_create`
+命令见 `docs/dsh_schedule_prompts.md`）：
+
+1. Python 04:15：`run_daily_strategy_review` 生成 HTML、登记
+   `DAILY_STRATEGY_REVIEW_IM_PENDING`（PENDING）。
+2. DSH Schedule 轮询提醒（如每 10 分钟）触发 agent 跑
+   `uv run python scripts/dsh_task_board_agent.py poll`：
+   - `pending=false` → 本轮无货，agent 安静结束；
+   - `pending=true` → agent 把 `conclusion` 文本经当前 DSH IM 微信 chat 渠道发出，
+     再调 `dsh_im_return_file` 把 `html_path` 的 HTML 文件交给同一渠道自动上传。
+3. 发完跑 `uv run python scripts/dsh_task_board_agent.py deliver` 回写 DELIVERED；
+   后续轮次因记录已非 PENDING 而不再重发（"每日一次、不重发"由 PENDING→DELIVERED 守卫）。
+
+`scripts/dsh_task_board_agent.py` 的子命令（stdout 均为 JSON）：
+`review`（手动生成+登记）、`poll`（只读待投递，供 DSH 轮询）、`deliver`（标记已投递）、
+`shutdown`（04:30 关机，默认演练）。
+
 ## 页面层
 
 - “交易配置”维护正股策略。

@@ -61,6 +61,11 @@ from run_gamma_strategy import run_once as run_gamma_once
 from run_volatility_strategy import run_once as run_volatility_once
 from run_strategies import run_once as run_strategy_once
 from futu_quant.filelock import FileLockError, lock_exclusive
+from futu_quant.scheduled_tasks import (
+    DAILY_STRATEGY_REVIEW_TASK, SHUTDOWN_TASK,
+    run_daily_strategy_review, shutdown_computer,
+    timer_default_enabled, timer_enabled_setting_key, _timer_due,
+)
 
 
 NY = ZoneInfo("America/New_York")
@@ -103,6 +108,8 @@ TASK_TIMEOUTS = {
     "system_health": 90,
     "earnings_calendar": 180,
     "daily_report": 60,
+    "daily_strategy_review": 60,
+    "computer_shutdown": 30,
     "correlation_risk": 120,
     "research_data_backfill": 300,
 }
@@ -534,6 +541,30 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     now = datetime.now(NY)
     session = MARKET_CALENDAR.session(now)
     alerts = AlertManager(store)
+    # Board timers are operational tasks, not trading tasks: run them before
+    # broker preflight so a disconnected OpenD cannot suppress the 04:15
+    # review or the 04:30 shutdown.
+    china_now = now.astimezone(ZoneInfo("Asia/Shanghai"))
+    if store.get_setting(
+        timer_enabled_setting_key(DAILY_STRATEGY_REVIEW_TASK),
+        str(timer_default_enabled(DAILY_STRATEGY_REVIEW_TASK)).lower(),
+    ) == "true" and _timer_due(store, DAILY_STRATEGY_REVIEW_TASK, china_now):
+        run_task(
+            store, alerts, DAILY_STRATEGY_REVIEW_TASK.task_id,
+            lambda: run_daily_strategy_review(store, now=china_now),
+        )
+    if store.get_setting(
+        timer_enabled_setting_key(SHUTDOWN_TASK),
+        str(timer_default_enabled(SHUTDOWN_TASK)).lower(),
+    ) == "true" and _timer_due(store, SHUTDOWN_TASK, china_now):
+        run_task(
+            store, alerts, SHUTDOWN_TASK.task_id,
+            lambda: shutdown_computer(
+                store,
+                dry_run=os.getenv("AUTO_SHUTDOWN_DRY_RUN", "false").lower() == "true",
+                now=china_now,
+            ),
+        )
     if not futu_sdk_preflight(store, alerts, settings):
         store.set_setting("connectivity_degraded", "true")
         return
@@ -569,7 +600,20 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
                     before["total_assets"] if before else
                     today_rows[0]["total_assets"] if today_rows else row.get("total_assets", 0)
                 )
-                equity_loss = baseline_assets - float(row.get("total_assets", 0) or 0)
+                cash_value = float(row.get("cash", 0) or 0)
+                market_value = float(row.get("market_val", row.get("securities_assets", 0)) or 0)
+                total_assets = float(row.get("total_assets", 0) or 0)
+                snapshot_gap = abs(total_assets - (cash_value + market_value))
+                snapshot_tolerance = max(100.0, abs(total_assets) * 0.01)
+                snapshot_valid = snapshot_gap <= snapshot_tolerance
+                equity_loss = baseline_assets - total_assets if snapshot_valid else 0.0
+                if not snapshot_valid:
+                    store.operational_event(
+                        "trading_service", "EQUITY_SNAPSHOT_INVALID", "DEGRADED",
+                        {"total_assets": total_assets, "cash": cash_value,
+                         "market_value": market_value, "snapshot_gap": snapshot_gap,
+                         "tolerance": snapshot_tolerance},
+                    )
                 loss = max(0.0, position_loss, equity_loss)
                 limit = RiskLimits.load().max_daily_loss
                 if session.regular_open(now) and loss >= limit and not store.kill_switch():

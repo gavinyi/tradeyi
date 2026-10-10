@@ -800,9 +800,36 @@ def _render_quick_links(account_page=None) -> None:
             st.page_link("pages/7_risk_center.py", label="风控中心", icon=":material/shield:")
 
 
+def _render_kill_switch_banner(store: TradingStore) -> None:
+    """Show the persisted emergency-stop state prominently on the home dashboard."""
+    enabled = store.kill_switch()
+    recent = [
+        item for item in store.audit_events(limit=200)
+        if item.get("event_type") in {"DAILY_LOSS_KILL_SWITCH", "DAILY_LOSS_KILL_SWITCH_CLEARED"}
+    ]
+    latest = recent[0] if recent else None
+    if enabled:
+        payload = _json_loads(latest.get("payload_json")) if latest else {}
+        detail = (
+            f"最近事件：{_to_china_label(latest.get('created_at'))}；"
+            f"记录亏损：{_money(payload.get('loss'))}；"
+            "新增风险订单已暂停，请在核对账户权益快照后人工确认恢复。"
+            if latest else
+            "新增风险订单已暂停，请在核对账户权益快照后人工确认恢复。"
+        )
+        st.error(f"🚨 系统急停：已开启\n\n{detail}", icon=":material/pause_circle:")
+    else:
+        detail = (
+            f"上次急停事件：{_to_china_label(latest.get('created_at'))}"
+            if latest else "当前允许策略按风控规则运行"
+        )
+        st.success(f"✅ 系统急停：未开启\n\n{detail}", icon=":material/check_circle:")
+
+
 def render_home_dashboard(settings, broker, store, account_page=None) -> None:
     st.title("量化系统驾驶舱")
     st.caption("一眼判断：今天赚亏多少、钱分布在哪里、策略是否在运行、风险是否需要处理。")
+    _render_kill_switch_banner(store)
     st.info("当前为模拟盘环境；首页只展示状态，不会直接下单。", icon=":material/info:")
     _render_live_dashboard(broker, account_page)
     _render_quick_links(account_page)

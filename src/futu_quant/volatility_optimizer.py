@@ -1086,6 +1086,12 @@ def decide_volatility_action(
     dynamic_stop_floor: float = .12,
     dynamic_stop_start_minutes: float = 15,
     dynamic_stop_full_decay_minutes: float = 90,
+    soft_profit_protection_start: float | None = None,
+    soft_profit_lock_floor: float = 0.0,
+    soft_profit_giveback: float = .35,
+    rapid_giveback_threshold: float = .25,
+    rapid_giveback_window_minutes: float = 15,
+    peak_reached_at: datetime | None = None,
 ) -> tuple[str, str]:
     """Decide one volatility campaign action without earnings-event semantics."""
     if quantity <= 0:
@@ -1112,12 +1118,39 @@ def decide_volatility_action(
         trailing_stop if profit_protection_drawdown is None else profit_protection_drawdown
     )
     protection_active = peak_pnl_ratio >= profit_protection_start
+    soft_start = (
+        float(soft_profit_protection_start)
+        if soft_profit_protection_start is not None
+        else max(0.0, float(profit_protection_start) * .80)
+    )
+    soft_active = peak_pnl_ratio >= soft_start
     profit_giveback = (
         max(0.0, (peak_pnl_ratio - pnl_ratio) / peak_pnl_ratio)
         if profit_giveback_from_peak is None and peak_pnl_ratio > 0
         else max(0.0, float(profit_giveback_from_peak or 0.0))
     )
     held = now - opened_at
+    if soft_active and not protection_active:
+        rapid = (
+            peak_reached_at is not None
+            and (now - peak_reached_at).total_seconds() <= max(0.0, rapid_giveback_window_minutes) * 60
+            and profit_giveback >= max(0.0, rapid_giveback_threshold)
+        )
+        if soft_profit_lock_floor > 0 and pnl_ratio <= soft_profit_lock_floor:
+            return "SELL", (
+                f"软启动锁盈触发：峰值盈利{peak_pnl_ratio:.1%}，当前盈利{pnl_ratio:.1%} "
+                f"≤ 软锁盈线{soft_profit_lock_floor:.1%}"
+            )
+        if rapid:
+            return "SELL", (
+                f"快速回吐保护触发：峰值盈利{peak_pnl_ratio:.1%}，"
+                f"{rapid_giveback_window_minutes:g}分钟内回吐{profit_giveback:.1%}"
+            )
+        if profit_giveback >= max(0.0, soft_profit_giveback):
+            return "SELL", (
+                f"软启动回吐保护触发：峰值盈利{peak_pnl_ratio:.1%}，"
+                f"盈利回吐{profit_giveback:.1%} ≥ {soft_profit_giveback:.1%}"
+            )
     # A single contract cannot be partially realized. Keep it running above
     # the target, but evaluate every lock/giveback rule before deciding HOLD.
     if tiered_profit_lock_enabled and protection_active:
@@ -1202,7 +1235,7 @@ def sync_volatility_position_cycle(
         for key in (
             "position_opened_at", "peak", "entry_iv_actual",
             "entry_gamma_theta_efficiency_actual", "contraction_confirmations",
-            "pending_exit_reason", "pending_exit_episode", "selected_exit_tranche_id",
+            "pending_exit_reason", "pending_exit_episode", "selected_exit_tranche_id", "peak_reached_at",
             "partial_exit_tiers", "tranches", "active_batch_id", "initial_risk",
             "adverse_signal_confirmations", "regime_was_active", "signal_active",
         ):

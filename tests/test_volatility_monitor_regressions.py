@@ -12,6 +12,36 @@ from futu_quant.volatility_optimizer import decide_volatility_action
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import run_service  # noqa: E402
 import run_volatility_strategy as runner  # noqa: E402
+from run_gamma_strategy import _campaign_naked_short_rows  # noqa: E402
+
+
+def test_protected_backspread_is_not_misclassified_as_naked_short():
+    campaign = {
+        "legs": [
+            {"code": "US.GLD261009P380000", "side": "SELL", "ratio": 1},
+            {"code": "US.GLD261009P375000", "side": "BUY", "ratio": 2},
+        ],
+    }
+    positions = pd.DataFrame([
+        {"code": "US.GLD261009P380000", "qty": -1},
+        {"code": "US.GLD261009P375000", "qty": 2},
+    ])
+    assert _campaign_naked_short_rows(campaign, positions).empty
+
+
+def test_unprotected_short_remains_naked_short():
+    campaign = {
+        "legs": [
+            {"code": "US.GLD261009P380000", "side": "SELL", "ratio": 1},
+            {"code": "US.GLD261009P375000", "side": "BUY", "ratio": 2},
+        ],
+    }
+    positions = pd.DataFrame([
+        {"code": "US.GLD261009P380000", "qty": -1},
+        {"code": "US.GLD261009P375000", "qty": 0},
+    ])
+    rows = _campaign_naked_short_rows(campaign, positions)
+    assert rows["code"].tolist() == ["US.GLD261009P380000"]
 
 
 def test_single_contract_runner_evaluates_tier_lock_before_hold():
