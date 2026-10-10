@@ -84,11 +84,12 @@ def start() -> RadarStatus:
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
+    flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if sys.platform == "win32" else 0
     process = subprocess.Popen(
         [sys.executable, str(ROOT / "scripts" / "run_radar_service.py")],
         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
-        env=env,
+        env=env, creationflags=flags,
     )
     time.sleep(.5)
     current = status()

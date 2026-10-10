@@ -51,6 +51,7 @@ def status() -> ServiceStatus:
     try:
         pid = int(PID_FILE.read_text().strip())
         if not _pid_alive(pid):
+            PID_FILE.unlink(missing_ok=True)
             return ServiceStatus(False, message="服务未运行")
         uptime = max(0, datetime.now(timezone.utc).timestamp() - PID_FILE.stat().st_mtime)
         if RESTART_FILE.exists():
@@ -75,6 +76,7 @@ def start() -> ServiceStatus:
         return current
     STOP_FILE.unlink(missing_ok=True)
     RESTART_FILE.unlink(missing_ok=True)
+    PID_FILE.unlink(missing_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin" and _launchd_registered():
         subprocess.run(  # noqa: S603
@@ -90,10 +92,11 @@ def start() -> ServiceStatus:
     # service log locked across UI/service control operations.
     env = os.environ.copy()
     env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
+    flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if sys.platform == "win32" else 0
     process = subprocess.Popen(  # noqa: S603
         [sys.executable, str(ROOT / "scripts" / "run_service.py")], cwd=ROOT,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-        env=env,
+        env=env, creationflags=flags,
     )
     # run_service writes its PID only after acquiring the singleton lock. Writing it
     # here could overwrite the real owner's PID when a second start is rejected.
