@@ -30,13 +30,13 @@ class TaskBoardTimer:
 
 
 DAILY_STRATEGY_REVIEW_TASK = TaskBoardTimer(
-    "daily_strategy_review", "策略复盘与执行质量", time(4, 15), CHINA,
+    "daily_strategy_review", "策略复盘与执行质量", time(5, 15), CHINA,
 )
 DAILY_UNIVERSE_RANKING_TASK = TaskBoardTimer(
-    "daily_universe_ranking", "标的池 ML 精排与轮换", time(4, 20), CHINA,
+    "daily_universe_ranking", "标的池 ML 精排与轮换", time(5, 30), CHINA,
 )
 SHUTDOWN_TASK = TaskBoardTimer(
-    "computer_shutdown", "电脑关机", time(4, 30), CHINA,
+    "computer_shutdown", "电脑关机", time(6, 0), CHINA,
 )
 WEEKLY_UNIVERSE_RECALL_TASK = TaskBoardTimer(
     "weekly_universe_recall", "周度全市场 Top 50 召回", time(21, 10), CHINA,
