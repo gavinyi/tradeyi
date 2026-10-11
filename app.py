@@ -73,48 +73,6 @@ navigation = {
         st.Page("pages/16_options_combo_execution.py", title="期权组合执行", icon=":material/schema:"),
         st.Page("pages/13_options_data_backtest.py", title="期权数据回测", icon=":material/analytics:"),
     ],
-    "币量化": [
-        st.Page(
-            "pages/31_crypto_quant_overview.py",
-            title="币量化总览",
-            icon=":material/currency_bitcoin:",
-        ),
-        st.Page(
-            "pages/34_okx_account_overview.py",
-            title="欧易账户总览",
-            icon=":material/account_balance_wallet:",
-        ),
-        st.Page(
-            "pages/33_crypto_strategy_review.py",
-            title="策略复盘与执行质量",
-            icon=":material/summarize:",
-        ),
-        st.Page(
-            "pages/32_crypto_strategy_config_backtest.py",
-            title="币策略配置与回测",
-            icon=":material/candlestick_chart:",
-        ),
-        st.Page(
-            "pages/38_futures_quant_overview.py",
-            title="合约量化总览",
-            icon=":material/radar:",
-        ),
-        st.Page(
-            "pages/35_futures_account_overview.py",
-            title="合约账户总览",
-            icon=":material/account_balance:",
-        ),
-        st.Page(
-            "pages/36_perpetual_futures_strategy.py",
-            title="永续合约策略",
-            icon=":material/swap_vert:",
-        ),
-        st.Page(
-            "pages/37_futures_strategy_review.py",
-            title="合约策略复盘",
-            icon=":material/assessment:",
-        ),
-    ],
     "风控与审批": [
         st.Page("pages/7_risk_center.py", title="风控中心", icon=":material/shield:"),
         st.Page("pages/27_live_trading_control.py", title="实盘交易控制", icon=":material/lock_open:"),
@@ -132,6 +90,17 @@ navigation = {
         st.Page("pages/18_infrastructure_disaster_recovery.py", title="基础设施与灾备", icon=":material/dns:"),
     ],
 }
+if os.getenv("ENABLE_CRYPTO_MODULE", "false").lower() == "true":
+    navigation["币量化"] = [
+        st.Page("pages/31_crypto_quant_overview.py", title="币量化总览", icon=":material/currency_bitcoin:"),
+        st.Page("pages/34_okx_account_overview.py", title="欧易账户总览", icon=":material/account_balance_wallet:"),
+        st.Page("pages/33_crypto_strategy_review.py", title="策略复盘与执行质量", icon=":material/summarize:"),
+        st.Page("pages/32_crypto_strategy_config_backtest.py", title="币策略配置与回测", icon=":material/candlestick_chart:"),
+        st.Page("pages/38_futures_quant_overview.py", title="合约量化总览", icon=":material/radar:"),
+        st.Page("pages/35_futures_account_overview.py", title="合约账户总览", icon=":material/account_balance:"),
+        st.Page("pages/36_perpetual_futures_strategy.py", title="永续合约策略", icon=":material/swap_vert:"),
+        st.Page("pages/37_futures_strategy_review.py", title="合约策略复盘", icon=":material/assessment:"),
+    ]
 current_page = st.navigation(navigation, position="sidebar")
 current_page.run()
 if current_page not in (dashboard_page, account_page):
