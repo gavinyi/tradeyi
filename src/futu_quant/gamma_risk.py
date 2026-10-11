@@ -21,8 +21,14 @@ def normalize_iv(value: float) -> float:
 
 
 def realized_volatility(candles: pd.DataFrame, window: int = 60) -> float:
+    if candles.empty or "close" not in candles.columns:
+        return 0.0
     returns = candles["close"].astype(float).pct_change().dropna().tail(window)
-    return float(returns.std() * sqrt(252)) if len(returns) >= 10 else 0.0
+    if len(returns) >= 5:
+        std = returns.std()
+        if pd.notna(std) and std > 0:
+            return float(std * sqrt(252))
+    return 0.0
 
 
 def contract_analysis(
@@ -100,15 +106,22 @@ def iv_entry_allowed(analysis: dict, trigger_mode: str = "EARNINGS") -> tuple[bo
     volatility = str(trigger_mode).upper() == "VOLATILITY"
     max_ratio = float(os.getenv(
         "GAMMA_VOLATILITY_MAX_IV_RV" if volatility else "GAMMA_MAX_IV_RV",
-        "1.5" if volatility else "2.5",
+        "2.5" if volatility else "2.5",
     ))
     max_percentile = float(os.getenv(
         "GAMMA_VOLATILITY_MAX_IV_PERCENTILE" if volatility else "GAMMA_MAX_IV_PERCENTILE",
-        "0.75" if volatility else "0.95",
+        "0.85" if volatility else "0.95",
     ))
-    if analysis["IV/RV"] > max_ratio:
+    max_absolute_iv = float(os.getenv(
+        "GAMMA_VOLATILITY_MAX_ABSOLUTE_IV" if volatility else "GAMMA_MAX_ABSOLUTE_IV",
+        "0.85" if volatility else "1.50",
+    ))
+    iv = float(analysis.get("隐含波动率") or 0.0)
+    if iv > max_absolute_iv:
+        return False, f"隐含波动率 {iv:.1%} 超过绝对上限 {max_absolute_iv:.1%}，期权溢价过高易遭剧烈磨损"
+    if analysis.get("IV/RV", 0) > max_ratio:
         return False, f"IV/RV {analysis['IV/RV']:.2f} 超过 {max_ratio:.2f}，IV Crush 风险过高"
-    if analysis["IV历史百分位"] > max_percentile:
+    if analysis.get("IV历史百分位", 0) > max_percentile:
         return False, f"IV 百分位 {analysis['IV历史百分位']:.1%} 过高"
     return True, f"{'波动行情' if volatility else '财报事件'} IV 风控通过"
 

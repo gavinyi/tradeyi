@@ -235,11 +235,19 @@ def save_volatility_symbols(symbols: tuple[str, ...]) -> None:
     _mirror_env("VOLATILITY_SYMBOLS", value)
 
 
+DEFAULT_VOLATILITY_SYMBOLS: tuple[str, ...] = (
+    "US.COIN", "US.AMD", "US.NVDA", "US.AVGO", "US.AAPL",
+    "US.META", "US.AMZN", "US.GOOG", "US.MSFT", "US.TSM",
+    "US.QQQ", "US.SPY", "US.GLD",
+)
+
+
 def load_volatility_symbols() -> tuple[str, ...]:
-    value = _load_runtime_value("VOLATILITY_SYMBOLS", [])
+    value = _load_runtime_value("VOLATILITY_SYMBOLS", DEFAULT_VOLATILITY_SYMBOLS)
     if isinstance(value, str):
         value = value.split(",")
-    return tuple(str(symbol).strip().upper() for symbol in value if str(symbol).strip())
+    symbols = tuple(str(symbol).strip().upper() for symbol in value if str(symbol).strip())
+    return symbols or DEFAULT_VOLATILITY_SYMBOLS
 
 
 def load_volatility_radar_budgets() -> dict:
