@@ -95,7 +95,7 @@
   并把结论与 HTML 登记为“待 DSH IM 投递”记录（`DAILY_STRATEGY_REVIEW_IM_PENDING`，默认启用）。
   DSH 侧的定时 agent 到点读取该记录，用 agent 能力把复盘总结 + HTML 投递到用户已接好的
   微信 chat（dsh IM 插件通道），投递成功后回写 delivered，避免重发。
-- **电脑关机**：每天 04:30（中国时间）执行系统关机（默认关闭，需手动开启；
+- **电脑关机**：每天 06:00（中国时间）执行系统关机（默认关闭，需手动开启；
   建议先用 `AUTO_SHUTDOWN_DRY_RUN=true` 演练模式验证，演练只写审计记录不真正关机）。
 
 两个定时器均按“每日一次”幂等：当天已触发过则不再重复，服务停机错过触发点会在
@@ -103,10 +103,10 @@
 （`AUTO_DAILY_STRATEGY_REVIEW_ENABLED` / `AUTO_COMPUTER_SHUTDOWN_ENABLED`），
 触发时间记录在 `last_board_timer:*` 键中。
 
-### DSH 定时 agent 投递（04:15 复盘 → 微信）
+### DSH 定时 agent 投递（05:15 复盘 → 微信）
 
-**分工**：Python `run_service.py` 是**精确**触发器（04:15 生成 HTML + 登记待投递、
-04:30 关机）；DSH 侧只挂**一条"轮询待投递"提醒**，让 agent 把已登记的复盘投到微信。
+**分工**：Python `run_service.py` 是**精确**触发器（05:15 生成 HTML + 登记待投递、
+05:30 ML 标的精排轮换、06:00 关机）；DSH 侧只挂**一条"轮询待投递"提醒**，让 agent 把已登记的复盘投到微信。
 两者解耦：精确定时由 Python 保证，微信投递走 agent 能力（提示词与 `schedule_create`
 命令见 `docs/dsh_schedule_prompts.md`）：
 
