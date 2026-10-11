@@ -246,8 +246,21 @@ def load_volatility_symbols() -> tuple[str, ...]:
     value = _load_runtime_value("VOLATILITY_SYMBOLS", DEFAULT_VOLATILITY_SYMBOLS)
     if isinstance(value, str):
         value = value.split(",")
-    symbols = tuple(str(symbol).strip().upper() for symbol in value if str(symbol).strip())
-    return symbols or DEFAULT_VOLATILITY_SYMBOLS
+    base_symbols = tuple(str(symbol).strip().upper() for symbol in value if str(symbol).strip())
+    symbols = list(base_symbols or DEFAULT_VOLATILITY_SYMBOLS)
+
+    # 动态并集扩展: 核心底仓 (13只) ∪ 当前有效晋级外援 (promoted_universe)
+    try:
+        if ENV_FILE == DEFAULT_ENV_FILE:
+            from .store import TradingStore
+            store = TradingStore()
+            promoted_rows = store.active_promoted_symbols()
+            if promoted_rows:
+                symbols.extend(r["symbol"] for r in promoted_rows if r.get("symbol"))
+    except Exception:
+        pass
+
+    return tuple(dict.fromkeys(symbols))
 
 
 def load_volatility_radar_budgets() -> dict:

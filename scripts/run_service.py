@@ -66,8 +66,8 @@ from run_volatility_strategy import run_once as run_volatility_once
 from run_strategies import run_once as run_strategy_once
 from futu_quant.filelock import FileLockError, lock_exclusive
 from futu_quant.scheduled_tasks import (
-    DAILY_STRATEGY_REVIEW_TASK, SHUTDOWN_TASK,
-    run_daily_strategy_review, shutdown_computer,
+    DAILY_STRATEGY_REVIEW_TASK, SHUTDOWN_TASK, DAILY_UNIVERSE_RANKING_TASK,
+    run_daily_strategy_review, shutdown_computer, run_daily_universe_ranking,
     timer_default_enabled, timer_enabled_setting_key, _timer_due,
 )
 
@@ -579,6 +579,14 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
                 dry_run=os.getenv("AUTO_SHUTDOWN_DRY_RUN", "false").lower() == "true",
                 now=china_now,
             ),
+        )
+    if store.get_setting(
+        timer_enabled_setting_key(DAILY_UNIVERSE_RANKING_TASK),
+        str(timer_default_enabled(DAILY_UNIVERSE_RANKING_TASK)).lower(),
+    ) == "true" and _timer_due(store, DAILY_UNIVERSE_RANKING_TASK, china_now):
+        run_task(
+            store, alerts, DAILY_UNIVERSE_RANKING_TASK.task_id,
+            lambda: run_daily_universe_ranking(store, now=china_now),
         )
     if not futu_sdk_preflight(store, alerts, settings):
         store.set_setting("connectivity_degraded", "true")

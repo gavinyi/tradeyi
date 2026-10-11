@@ -65,6 +65,64 @@ class TradingStore:
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_intents'"
             ).fetchone()
             if existing is not None:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS candidate_universe (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        week_start TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        underlying_name TEXT NOT NULL DEFAULT '',
+                        industry TEXT NOT NULL DEFAULT 'OTHER',
+                        option_daily_volume REAL NOT NULL,
+                        open_interest REAL NOT NULL,
+                        stock_turnover_usd REAL NOT NULL,
+                        median_spread_pct REAL NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'ACTIVE',
+                        created_at TEXT NOT NULL,
+                        UNIQUE(week_start, symbol)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_candidate_lookup ON candidate_universe(week_start, status);
+                    CREATE TABLE IF NOT EXISTS shadow_incubator (
+                        symbol TEXT PRIMARY KEY,
+                        first_observed_at TEXT NOT NULL,
+                        observation_days INTEGER NOT NULL DEFAULT 0,
+                        signal_triggers INTEGER NOT NULL DEFAULT 0,
+                        simulated_wins INTEGER NOT NULL DEFAULT 0,
+                        simulated_losses INTEGER NOT NULL DEFAULT 0,
+                        simulated_pnl_usd REAL NOT NULL DEFAULT 0.0,
+                        simulated_max_dd REAL NOT NULL DEFAULT 0.0,
+                        avg_slippage_pct REAL NOT NULL DEFAULT 0.0,
+                        volume_retention_ratio REAL NOT NULL DEFAULT 0.0,
+                        latest_ml_score REAL NOT NULL DEFAULT 0.0,
+                        promotion_eligible INTEGER NOT NULL DEFAULT 0,
+                        last_evaluated_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_incubator_score ON shadow_incubator(promotion_eligible, latest_ml_score DESC);
+                    CREATE TABLE IF NOT EXISTS promoted_universe (
+                        symbol TEXT PRIMARY KEY,
+                        promoted_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        promotion_score REAL NOT NULL,
+                        industry TEXT NOT NULL DEFAULT 'OTHER',
+                        live_trades_count INTEGER NOT NULL DEFAULT 0,
+                        live_realized_pnl REAL NOT NULL DEFAULT 0.0,
+                        consecutive_hard_stops INTEGER NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT 'ACTIVE',
+                        eviction_reason TEXT DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_promoted_active ON promoted_universe(status);
+                    CREATE TABLE IF NOT EXISTS universe_lifecycle_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_type TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        details_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    );
+                    """
+                )
                 return
             connection.executescript(
                 """
@@ -487,6 +545,60 @@ class TradingStore:
                     incident_key TEXT PRIMARY KEY,severity TEXT NOT NULL,status TEXT NOT NULL,
                     message TEXT NOT NULL,count INTEGER NOT NULL DEFAULT 1,
                     first_seen TEXT NOT NULL,last_seen TEXT NOT NULL,recovered_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS candidate_universe (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    week_start TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    underlying_name TEXT NOT NULL DEFAULT '',
+                    industry TEXT NOT NULL DEFAULT 'OTHER',
+                    option_daily_volume REAL NOT NULL,
+                    open_interest REAL NOT NULL,
+                    stock_turnover_usd REAL NOT NULL,
+                    median_spread_pct REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'ACTIVE',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(week_start, symbol)
+                );
+                CREATE INDEX IF NOT EXISTS idx_candidate_lookup ON candidate_universe(week_start, status);
+                CREATE TABLE IF NOT EXISTS shadow_incubator (
+                    symbol TEXT PRIMARY KEY,
+                    first_observed_at TEXT NOT NULL,
+                    observation_days INTEGER NOT NULL DEFAULT 0,
+                    signal_triggers INTEGER NOT NULL DEFAULT 0,
+                    simulated_wins INTEGER NOT NULL DEFAULT 0,
+                    simulated_losses INTEGER NOT NULL DEFAULT 0,
+                    simulated_pnl_usd REAL NOT NULL DEFAULT 0.0,
+                    simulated_max_dd REAL NOT NULL DEFAULT 0.0,
+                    avg_slippage_pct REAL NOT NULL DEFAULT 0.0,
+                    volume_retention_ratio REAL NOT NULL DEFAULT 0.0,
+                    latest_ml_score REAL NOT NULL DEFAULT 0.0,
+                    promotion_eligible INTEGER NOT NULL DEFAULT 0,
+                    last_evaluated_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_incubator_score ON shadow_incubator(promotion_eligible, latest_ml_score DESC);
+                CREATE TABLE IF NOT EXISTS promoted_universe (
+                    symbol TEXT PRIMARY KEY,
+                    promoted_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    promotion_score REAL NOT NULL,
+                    industry TEXT NOT NULL DEFAULT 'OTHER',
+                    live_trades_count INTEGER NOT NULL DEFAULT 0,
+                    live_realized_pnl REAL NOT NULL DEFAULT 0.0,
+                    consecutive_hard_stops INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'ACTIVE',
+                    eviction_reason TEXT DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_promoted_active ON promoted_universe(status);
+                CREATE TABLE IF NOT EXISTS universe_lifecycle_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
                 );
                 """
             )
@@ -2386,3 +2498,140 @@ class TradingStore:
             return [dict(row) for row in connection.execute(
                 "SELECT * FROM validation_runs ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()]
+
+    def save_candidate_symbols(self, week_start: str, candidates: list[dict]) -> None:
+        """保存全市场周度召回标的候选。"""
+        with self.connection() as connection:
+            for c in candidates:
+                connection.execute(
+                    """INSERT INTO candidate_universe
+                    (week_start, symbol, underlying_name, industry, option_daily_volume,
+                     open_interest, stock_turnover_usd, median_spread_pct, status, created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(week_start, symbol) DO UPDATE SET
+                    option_daily_volume=excluded.option_daily_volume,
+                    open_interest=excluded.open_interest,
+                    stock_turnover_usd=excluded.stock_turnover_usd,
+                    median_spread_pct=excluded.median_spread_pct,
+                    status=excluded.status""",
+                    (week_start, c["symbol"], c.get("underlying_name", ""),
+                     c.get("industry", "OTHER"), float(c.get("option_daily_volume", 0)),
+                     float(c.get("open_interest", 0)), float(c.get("stock_turnover_usd", 0)),
+                     float(c.get("median_spread_pct", 0)), c.get("status", "ACTIVE"), self.now()),
+                )
+
+    def candidate_symbols(self, week_start: str | None = None, status: str = "ACTIVE") -> list[dict]:
+        with self.connection() as connection:
+            if week_start:
+                rows = connection.execute(
+                    "SELECT * FROM candidate_universe WHERE week_start=? AND status=? ORDER BY option_daily_volume DESC",
+                    (week_start, status),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM candidate_universe WHERE status=? ORDER BY id DESC",
+                    (status,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_incubator_metrics(self, symbol: str, metrics: dict) -> None:
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT INTO shadow_incubator
+                (symbol, first_observed_at, observation_days, signal_triggers,
+                 simulated_wins, simulated_losses, simulated_pnl_usd, simulated_max_dd,
+                 avg_slippage_pct, volume_retention_ratio, latest_ml_score, promotion_eligible,
+                 last_evaluated_at, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                observation_days=excluded.observation_days,
+                signal_triggers=excluded.signal_triggers,
+                simulated_wins=excluded.simulated_wins,
+                simulated_losses=excluded.simulated_losses,
+                simulated_pnl_usd=excluded.simulated_pnl_usd,
+                simulated_max_dd=excluded.simulated_max_dd,
+                avg_slippage_pct=excluded.avg_slippage_pct,
+                volume_retention_ratio=excluded.volume_retention_ratio,
+                latest_ml_score=excluded.latest_ml_score,
+                promotion_eligible=excluded.promotion_eligible,
+                last_evaluated_at=excluded.last_evaluated_at,
+                updated_at=excluded.updated_at""",
+                (symbol, metrics.get("first_observed_at", now),
+                 int(metrics.get("observation_days", 0)), int(metrics.get("signal_triggers", 0)),
+                 int(metrics.get("simulated_wins", 0)), int(metrics.get("simulated_losses", 0)),
+                 float(metrics.get("simulated_pnl_usd", 0)), float(metrics.get("simulated_max_dd", 0)),
+                 float(metrics.get("avg_slippage_pct", 0)), float(metrics.get("volume_retention_ratio", 0)),
+                 float(metrics.get("latest_ml_score", 0)), int(bool(metrics.get("promotion_eligible", 0))),
+                 now, now),
+            )
+
+    def incubator_symbol(self, symbol: str) -> dict | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM shadow_incubator WHERE symbol=?", (symbol,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def all_incubator_symbols(self, eligible_only: bool = False) -> list[dict]:
+        with self.connection() as connection:
+            if eligible_only:
+                rows = connection.execute(
+                    "SELECT * FROM shadow_incubator WHERE promotion_eligible=1 ORDER BY latest_ml_score DESC"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM shadow_incubator ORDER BY latest_ml_score DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def promote_universe_symbol(
+        self, symbol: str, promotion_score: float, expires_at: str, industry: str = "OTHER",
+    ) -> None:
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT INTO promoted_universe
+                (symbol, promoted_at, expires_at, promotion_score, industry, status, created_at, updated_at)
+                VALUES(?,?,?,?,?,'ACTIVE',?,?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                promoted_at=excluded.promoted_at,
+                expires_at=excluded.expires_at,
+                promotion_score=excluded.promotion_score,
+                industry=excluded.industry,
+                status='ACTIVE',
+                eviction_reason='',
+                updated_at=excluded.updated_at""",
+                (symbol, now, expires_at, float(promotion_score), industry, now, now),
+            )
+
+    def active_promoted_symbols(self) -> list[dict]:
+        now = self.now()
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM promoted_universe WHERE status='ACTIVE' AND expires_at >= ? ORDER BY promotion_score DESC",
+                (now,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def evict_promoted_symbol(self, symbol: str, reason: str) -> None:
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE promoted_universe SET status='EVICTED', eviction_reason=?, updated_at=? WHERE symbol=?",
+                (reason, now, symbol),
+            )
+
+    def record_universe_lifecycle_event(self, event_type: str, symbol: str, details: dict) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO universe_lifecycle_events(event_type, symbol, details_json, created_at) VALUES(?,?,?,?)",
+                (event_type, symbol, json.dumps(details, ensure_ascii=False), self.now()),
+            )
+
+    def universe_lifecycle_events(self, limit: int = 100) -> list[dict]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM universe_lifecycle_events ORDER BY id DESC LIMIT ?", (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
