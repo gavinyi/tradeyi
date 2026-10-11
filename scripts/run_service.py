@@ -574,11 +574,14 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         timer_enabled_setting_key(SHUTDOWN_TASK),
         str(timer_default_enabled(SHUTDOWN_TASK)).lower(),
     ) == "true" and _timer_due(store, SHUTDOWN_TASK, china_now):
+        dry_run_flag = (
+            store.get_setting("AUTO_SHUTDOWN_DRY_RUN", "") or os.getenv("AUTO_SHUTDOWN_DRY_RUN", "false")
+        ).strip().lower() == "true"
         run_task(
             store, alerts, SHUTDOWN_TASK.task_id,
             lambda: shutdown_computer(
                 store,
-                dry_run=os.getenv("AUTO_SHUTDOWN_DRY_RUN", "false").lower() == "true",
+                dry_run=dry_run_flag,
                 now=china_now,
             ),
         )

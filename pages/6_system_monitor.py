@@ -124,7 +124,7 @@ elif view == "调度任务":
                     label_visibility="collapsed",
                     on_change=lambda _checked, code=row["task_id"]: set_timer_enabled(store, dict((t.task_id, t) for t in BOARD_TIMERS)[code], _checked),
                 )
-        st.caption("策略复盘定时器每天 04:15 生成 HTML 并登记 DSH IM 待投递；DSH agent 负责通过已连接的微信 chat 投递。电脑关机定时器每天 04:30，默认关闭，建议先用演练模式验证。")
+        st.caption("策略复盘定时器每天 05:15 生成 HTML 并登记待投递；标的池 ML 精排轮换每天 05:30 自动执行；电脑真实关机定时器每天 06:00 准时执行。")
 
     task_runs = pd.DataFrame(store.task_runs(limit=300))
     if task_runs.empty:

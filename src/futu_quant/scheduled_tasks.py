@@ -246,15 +246,12 @@ def shutdown_computer(
     dry_run: bool | None = None,
     now: datetime | None = None,
 ) -> str:
-    """每日 04:30（中国时间）关机任务；演练模式只写审计记录。
-
-    When invoked from a DSH scheduled agent, dry-run must be explicitly
-    chosen by the operator: DSH does not have a dry-run flag, so the
-    default is *real* shutdown unless ``dry_run=True`` is passed or
-    ``AUTO_SHUTDOWN_DRY_RUN=true`` is set in the environment.
-    """
+    """每日 06:00（中国时间）关机任务；演练模式只写审计记录。"""
     if dry_run is None:
-        dry_run = os.getenv("AUTO_SHUTDOWN_DRY_RUN", "false").lower() == "true"
+        dry_run_val = (
+            store.get_setting("AUTO_SHUTDOWN_DRY_RUN", "") if store else ""
+        ) or os.getenv("AUTO_SHUTDOWN_DRY_RUN", "false")
+        dry_run = dry_run_val.strip().lower() == "true"
     now = (now or datetime.now(CHINA)).astimezone(CHINA)
     if dry_run:
         message = "关机任务处于演练模式，未执行系统关机。"
