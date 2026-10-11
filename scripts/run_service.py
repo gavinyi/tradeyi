@@ -67,7 +67,9 @@ from run_strategies import run_once as run_strategy_once
 from futu_quant.filelock import FileLockError, lock_exclusive
 from futu_quant.scheduled_tasks import (
     DAILY_STRATEGY_REVIEW_TASK, SHUTDOWN_TASK, DAILY_UNIVERSE_RANKING_TASK,
+    WEEKLY_UNIVERSE_RECALL_TASK,
     run_daily_strategy_review, shutdown_computer, run_daily_universe_ranking,
+    run_weekly_universe_recall,
     timer_default_enabled, timer_enabled_setting_key, _timer_due,
 )
 
@@ -587,6 +589,14 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         run_task(
             store, alerts, DAILY_UNIVERSE_RANKING_TASK.task_id,
             lambda: run_daily_universe_ranking(store, now=china_now),
+        )
+    if store.get_setting(
+        timer_enabled_setting_key(WEEKLY_UNIVERSE_RECALL_TASK),
+        str(timer_default_enabled(WEEKLY_UNIVERSE_RECALL_TASK)).lower(),
+    ) == "true" and _timer_due(store, WEEKLY_UNIVERSE_RECALL_TASK, china_now):
+        run_task(
+            store, alerts, WEEKLY_UNIVERSE_RECALL_TASK.task_id,
+            lambda: run_weekly_universe_recall(store, now=china_now),
         )
     if not futu_sdk_preflight(store, alerts, settings):
         store.set_setting("connectivity_degraded", "true")

@@ -32,13 +32,21 @@ class TaskBoardTimer:
 DAILY_STRATEGY_REVIEW_TASK = TaskBoardTimer(
     "daily_strategy_review", "策略复盘与执行质量", time(4, 15), CHINA,
 )
+DAILY_UNIVERSE_RANKING_TASK = TaskBoardTimer(
+    "daily_universe_ranking", "标的池 ML 精排与轮换", time(4, 20), CHINA,
+)
 SHUTDOWN_TASK = TaskBoardTimer(
     "computer_shutdown", "电脑关机", time(4, 30), CHINA,
 )
-DAILY_UNIVERSE_RANKING_TASK = TaskBoardTimer(
-    "daily_universe_ranking", "标的池 ML 精排与轮换", time(5, 0), CHINA,
+WEEKLY_UNIVERSE_RECALL_TASK = TaskBoardTimer(
+    "weekly_universe_recall", "周度全市场 Top 50 召回", time(21, 10), CHINA,
 )
-BOARD_TIMERS = (DAILY_STRATEGY_REVIEW_TASK, SHUTDOWN_TASK, DAILY_UNIVERSE_RANKING_TASK)
+BOARD_TIMERS = (
+    DAILY_STRATEGY_REVIEW_TASK,
+    DAILY_UNIVERSE_RANKING_TASK,
+    SHUTDOWN_TASK,
+    WEEKLY_UNIVERSE_RECALL_TASK,
+)
 
 
 def _task_timer_key(timer: TaskBoardTimer) -> str:
@@ -56,6 +64,8 @@ def _timer_due(
     """
     now = (now or datetime.now(CHINA)).astimezone(timer.timezone)
     review_day = session_date or now.date()
+    if timer.task_id == "weekly_universe_recall" and now.weekday() != 0:
+        return False
     if now.time() < timer.time:
         return False
     raw = store.get_setting(_task_timer_key(timer), "")
@@ -381,4 +391,21 @@ def run_daily_universe_ranking(
         store.set_setting(_task_timer_key(DAILY_UNIVERSE_RANKING_TASK), now.isoformat())
 
     return f"ML 标的精排与轮换完成，当前生效池共 {len(active_pool)} 只，其中外援 {len(promoted)} 只。"
+
+
+def run_weekly_universe_recall(
+    store: TradingStore | None = None, now: datetime | None = None,
+) -> str:
+    """每周一美股开盘前自动执行全市场期权流动性 Top 50 召回。"""
+    from futu_quant.universe.recall_scanner import RecallScanner
+
+    store = store or TradingStore()
+    scanner = RecallScanner(store=store)
+    week_start = (now.date() if now else datetime.now(CHINA).date()).isoformat()
+    candidates = scanner.run_weekly_recall(week_start)
+
+    if now is not None:
+        store.set_setting(_task_timer_key(WEEKLY_UNIVERSE_RECALL_TASK), now.isoformat())
+
+    return f"周度全市场 Top 50 期权流动性召回完成，入选 {len(candidates)} 只候选标的。"
 
