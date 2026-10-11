@@ -795,6 +795,7 @@ def _render_quick_links(account_page=None) -> None:
             if account_page is not None:
                 st.page_link(account_page, label="账户总览", icon=":material/account_balance_wallet:")
             st.page_link("pages/28_options_pnl_ledger.py", label="期权盈亏台账", icon=":material/price_check:")
+            st.page_link("pages/39_universe_incubator_center.py", label="标的赛马中心", icon=":material/rocket_launch:")
             st.page_link("pages/29_strategy_review_execution_quality.py", label="每日复盘", icon=":material/summarize:")
             st.page_link("pages/26_trade_diagnostics_center.py", label="交易诊断", icon=":material/troubleshoot:")
             st.page_link("pages/7_risk_center.py", label="风控中心", icon=":material/shield:")

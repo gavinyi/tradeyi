@@ -65,6 +65,7 @@ navigation = {
     ],
     "期权中心": [
         st.Page("pages/30_volatility_strategy_overview.py", title="波动率策略总览", icon=":material/dashboard:"),
+        st.Page("pages/39_universe_incubator_center.py", title="标的孵化与赛马中心", icon=":material/rocket_launch:"),
         st.Page("pages/2_options_config.py", title="期权配置", icon=":material/settings_suggest:"),
         st.Page("pages/5_earnings_gamma_strategy.py", title="财报 Gamma 策略", icon=":material/bolt:"),
         st.Page("pages/10_volatility_options_strategy.py", title="波动率策略高级配置", icon=":material/waves:"),
