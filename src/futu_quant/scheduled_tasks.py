@@ -57,7 +57,7 @@ def _timer_due(
     store: TradingStore, timer: TaskBoardTimer,
     now: datetime | None = None, session_date: date | None = None,
 ) -> bool:
-    """04:15/04:30 China time is after the prior US session close (04:00 China).
+    """05:15 China time is after the prior US session close (04:00 China).
 
     Each timer is idempotent per review day: after it has fired for today's
     review day, the next firing is the following day.
@@ -77,7 +77,7 @@ def _timer_due(
             return False
     if session_date is None:
         # Self-correcting: the service may have been down on the timer day, so
-        # a missed 04:15/04:30 window can fire on the next service cycle.
+        # a missed 05:15 window can fire on the next service cycle.
         return now.time() >= timer.time
     return True
 
@@ -302,7 +302,11 @@ def timer_enabled_setting_key(timer: TaskBoardTimer) -> str:
 
 
 def timer_default_enabled(timer: TaskBoardTimer) -> bool:
-    return timer.task_id == DAILY_STRATEGY_REVIEW_TASK.task_id
+    return timer.task_id in {
+        DAILY_STRATEGY_REVIEW_TASK.task_id,
+        DAILY_UNIVERSE_RANKING_TASK.task_id,
+        WEEKLY_UNIVERSE_RECALL_TASK.task_id,
+    }
 
 
 def set_timer_enabled(store: TradingStore, timer: TaskBoardTimer, enabled: bool) -> None:
