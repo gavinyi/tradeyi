@@ -43,13 +43,13 @@ def _json_dumps(value) -> str:
 
 class TradingStore:
     def __init__(self, path: Path | str = DEFAULT_DB):
-        self.path = Path(path)
+        self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
+        connection = sqlite3.connect(str(self.path), timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         try:

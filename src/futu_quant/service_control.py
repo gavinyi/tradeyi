@@ -13,6 +13,7 @@ from .process_utils import pid_alive, request_stop
 
 ROOT = Path(__file__).resolve().parents[2]
 PID_FILE = ROOT / "data" / "trading-service.pid"
+LOCK_FILE = ROOT / "data" / "trading-service.lock"
 LOG_FILE = ROOT / "data" / "service.log"
 STOP_FILE = ROOT / "data" / "trading-service.stop"
 RESTART_FILE = ROOT / "data" / "trading-service.restart"
@@ -45,14 +46,61 @@ def _launchd_registered() -> bool:
     return result.returncode == 0
 
 
-def status() -> ServiceStatus:
-    if not PID_FILE.exists():
-        return ServiceStatus(False, message="服务未启动")
+def _lock_owner_pid() -> int | None:
+    """Recover a running service whose pid file was removed or desynchronized."""
     try:
-        pid = int(PID_FILE.read_text().strip())
-        if not _pid_alive(pid):
+        from .store import TradingStore
+        store = TradingStore()
+        for h in store.heartbeats():
+            if h.get("strategy_id") == "trading_service":
+                cand_pid = h.get("pid")
+                if cand_pid and _pid_alive(int(cand_pid)):
+                    return int(cand_pid)
+    except Exception:
+        pass
+
+    if LOCK_FILE.exists():
+        try:
+            lines = LOCK_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if line.isdigit() and _pid_alive(int(line)):
+                    return int(line)
+        except Exception:
+            pass
+
+    if sys.platform == "darwin" and LOCK_FILE.exists():
+        try:
+            result = subprocess.run(
+                ["lsof", "-t", str(LOCK_FILE)], capture_output=True, text=True,
+                timeout=2, check=False,
+            )
+            for value in result.stdout.splitlines():
+                pid = int(value.strip())
+                if _pid_alive(pid):
+                    return pid
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+    return None
+
+
+def status() -> ServiceStatus:
+    pid = None
+    try:
+        if PID_FILE.exists():
+            pid = int(PID_FILE.read_text().strip())
+    except ValueError:
+        pid = None
+    if pid is None or not _pid_alive(pid):
+        pid = _lock_owner_pid()
+        if pid is not None:
+            PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+            PID_FILE.write_text(str(pid))
+        elif PID_FILE.exists():
             PID_FILE.unlink(missing_ok=True)
-            return ServiceStatus(False, message="服务未运行")
+    if pid is None:
+        return ServiceStatus(False, message="服务未运行")
+    try:
         uptime = max(0, datetime.now(timezone.utc).timestamp() - PID_FILE.stat().st_mtime)
         if RESTART_FILE.exists():
             message = "服务正在重启；旧进程退出后会自动接棒"
@@ -93,15 +141,16 @@ def start() -> ServiceStatus:
     env = os.environ.copy()
     env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
     flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if sys.platform == "win32" else 0
+    service_out = open(LOG_FILE, "a", encoding="utf-8")
     process = subprocess.Popen(  # noqa: S603
         [sys.executable, str(ROOT / "scripts" / "run_service.py")], cwd=ROOT,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        stdout=service_out, stderr=service_out,
         env=env, creationflags=flags,
     )
     # run_service writes its PID only after acquiring the singleton lock. Writing it
     # here could overwrite the real owner's PID when a second start is rejected.
-    for _ in range(20):
-        time.sleep(0.1)
+    for _ in range(40):
+        time.sleep(0.15)
         current = status()
         if current.running or process.poll() is not None:
             break

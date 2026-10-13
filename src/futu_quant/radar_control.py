@@ -32,25 +32,40 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _lock_owner_pid() -> int | None:
-    """Recover a running radar whose pid file was removed during a long scan.
-
-    Recovery uses ``lsof`` which only exists on macOS/Linux.  On Windows the
-    advisory lock is released as soon as the owning process exits, so a stale
-    lock file can never block a restart and no recovery is needed.
-    """
-    if sys.platform != "darwin" or not LOCK_FILE.exists():
-        return None
+    """Recover a running radar whose pid file was removed or desynchronized."""
     try:
-        result = subprocess.run(
-            ["lsof", "-t", str(LOCK_FILE)], capture_output=True, text=True,
-            timeout=2, check=False,
-        )
-        for value in result.stdout.splitlines():
-            pid = int(value.strip())
-            if _pid_alive(pid):
-                return pid
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
+        from .store import TradingStore
+        store = TradingStore()
+        for h in store.heartbeats():
+            if h.get("strategy_id") == "volatility_scanner":
+                cand_pid = h.get("pid")
+                if cand_pid and _pid_alive(int(cand_pid)):
+                    return int(cand_pid)
+    except Exception:
+        pass
+
+    if LOCK_FILE.exists():
+        try:
+            lines = LOCK_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if line.isdigit() and _pid_alive(int(line)):
+                    return int(line)
+        except Exception:
+            pass
+
+    if sys.platform == "darwin" and LOCK_FILE.exists():
+        try:
+            result = subprocess.run(
+                ["lsof", "-t", str(LOCK_FILE)], capture_output=True, text=True,
+                timeout=2, check=False,
+            )
+            for value in result.stdout.splitlines():
+                pid = int(value.strip())
+                if _pid_alive(pid):
+                    return pid
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
     return None
 
 
@@ -85,14 +100,17 @@ def start() -> RadarStatus:
     env = os.environ.copy()
     env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
     flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if sys.platform == "win32" else 0
+    radar_out = open(LOG_FILE, "a", encoding="utf-8")
     process = subprocess.Popen(
         [sys.executable, str(ROOT / "scripts" / "run_radar_service.py")],
-        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        cwd=ROOT, stdout=radar_out, stderr=radar_out,
         env=env, creationflags=flags,
     )
-    time.sleep(.5)
-    current = status()
+    for _ in range(35):
+        time.sleep(0.15)
+        current = status()
+        if current.running or process.poll() is not None:
+            break
     return current if current.running else RadarStatus(True, process.pid, "雷达正在启动", 0)
 
 

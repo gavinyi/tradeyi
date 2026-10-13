@@ -36,17 +36,26 @@ def _parameters(plugin, store) -> dict:
 
 
 def current_data_version(store) -> str:
-    coverage = store.option_history_coverage()
-    samples = sum(int(row["sample_count"]) for row in coverage)
-    good = sum(int(row["good_samples"]) for row in coverage)
-    equity = store.equity_history(limit=1)
-    equity_time = equity[-1]["created_at"] if equity else "none"
-    market_catalog = CanonicalMarketDataStore().catalog()
-    if market_catalog.empty:
+    try:
+        coverage = store.option_history_coverage()
+    except Exception:
+        coverage = []
+    samples = sum(int(row.get("sample_count", 0)) for row in coverage)
+    good = sum(int(row.get("good_samples", 0)) for row in coverage)
+    try:
+        equity = store.equity_history(limit=1)
+        equity_time = equity[-1]["created_at"] if equity else "none"
+    except Exception:
+        equity_time = "none"
+    try:
+        market_catalog = CanonicalMarketDataStore().catalog()
+        if market_catalog.empty:
+            market_version = "none"
+        else:
+            versions = sorted(market_catalog["dataset_version"].astype(str).unique())
+            market_version = f"{int(market_catalog['row_count'].sum())}:{'|'.join(versions)}"
+    except Exception:
         market_version = "none"
-    else:
-        versions = sorted(market_catalog["dataset_version"].astype(str).unique())
-        market_version = f"{int(market_catalog['row_count'].sum())}:{'|'.join(versions)}"
     return (
         f"option-snapshots:{samples}:good:{good}:equity:{equity_time}:"
         f"market:{market_version}"
