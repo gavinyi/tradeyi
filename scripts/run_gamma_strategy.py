@@ -522,6 +522,9 @@ def run_campaign(
         print(f"{code}: HOLD pending order {pending.iloc[0]['order_id']}")
         return
 
+    if pending.empty and quantity > 0 and campaign_state.get("pending_exit_episode"):
+        campaign_state["pending_exit_episode"] = False
+
     market_session = MARKET_CALENDAR.session(now)
     if not market_session.regular_open(now):
         reason = (
