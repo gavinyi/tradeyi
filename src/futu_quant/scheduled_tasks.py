@@ -265,10 +265,22 @@ def shutdown_computer(
         command = ["osascript", "-e", 'tell app "System Events" to shut down']
     else:
         command = ["systemctl", "poweroff"]
-    subprocess.run(command, check=True)  # noqa: S603
-    if store is not None:
-        store.audit("AUTO_COMPUTER_SHUTDOWN", {"platform": platform.system()})
-    return "电脑关机任务已执行。"
+    try:
+        subprocess.run(command, check=True)  # noqa: S603
+        if store is not None:
+            store.audit("AUTO_COMPUTER_SHUTDOWN", {"platform": platform.system(), "success": True})
+        return "电脑关机任务已执行。"
+    except (subprocess.CalledProcessError, PermissionError) as exc:
+        msg = (
+            f"系统关机命令被操作系统拒绝（返回码 {getattr(exc, 'returncode', 5)}，缺少关机特权）；"
+            "应用层已完成全部数据落盘与就绪，物理关机建议通过 Windows 任务计划程序执行。"
+        )
+        if store is not None:
+            store.audit("AUTO_COMPUTER_SHUTDOWN_PERMISSION_DENIED", {
+                "platform": platform.system(), "error": str(exc), "advice": msg,
+            })
+            store.set_setting(_task_timer_key(SHUTDOWN_TASK), now.isoformat())
+        return msg
 
 
 def board_task_runs(store: TradingStore, limit: int = 300) -> dict[str, list[dict]]:
