@@ -1023,6 +1023,15 @@ def run_campaign(
                     safe_datetime(campaign_state.get("peak_reached_at"), now)
                     if campaign_state.get("peak_reached_at") else None
                 ),
+                weekend_protection_enabled=bool(
+                    campaign.get("weekend_protection_enabled", True)
+                ),
+                weekend_protection_min_profit=float(
+                    campaign.get("weekend_protection_min_profit", 0.20)
+                ),
+                weekend_protection_minutes=float(
+                    campaign.get("weekend_protection_minutes", 30.0)
+                ),
             )
     else:
         partial_exit_quantity = 0

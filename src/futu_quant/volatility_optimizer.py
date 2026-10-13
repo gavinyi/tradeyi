@@ -503,6 +503,45 @@ def volatility_time_decay_stop(
     return threshold, held_minutes, None
 
 
+def volatility_weekend_carry_exit_reason(
+    *,
+    now: datetime,
+    pnl_ratio: float,
+    opened_at: datetime,
+    min_profit_cushion: float = 0.20,
+    pre_close_minutes: float = 30.0,
+    enabled: bool = True,
+) -> str | None:
+    """Exit long option positions before Friday close unless a large profit cushion exists.
+
+    Options carried over weekends suffer 48 hours of pure Theta decay with zero
+    trading flexibility, and are exposed to unpredictable Monday gap opens.
+    If the position has not built a solid safety cushion (default 20%),
+    exit before Friday regular close to protect capital.
+    """
+    if not enabled:
+        return None
+    ny_tz = ZoneInfo("America/New_York")
+    ny_now = now.astimezone(ny_tz) if now.tzinfo else now.replace(tzinfo=ny_tz)
+
+    # 星期五是 weekday == 4
+    if ny_now.weekday() != 4:
+        return None
+
+    close_time = ny_now.replace(hour=16, minute=0, second=0, microsecond=0)
+    minutes_to_close = (close_time - ny_now).total_seconds() / 60.0
+
+    if 0.0 <= minutes_to_close <= max(5.0, float(pre_close_minutes or 30.0)):
+        current_pnl = float(pnl_ratio or 0.0)
+        cushion = max(0.0, float(min_profit_cushion or 0.20))
+        if current_pnl < cushion:
+            return (
+                f"周五收盘前避险退出：当前盈利{current_pnl:.1%}未达周末安全垫{cushion:.1%}，"
+                f"距收盘{minutes_to_close:.0f}分钟主动清仓以防周末时间衰减与周一跳空风险"
+            )
+    return None
+
+
 def volatility_min_expected_return(
     *, signal_active: bool = False, strong_signal: bool = False, store=None,
 ) -> float:
@@ -1092,6 +1131,9 @@ def decide_volatility_action(
     rapid_giveback_threshold: float = .25,
     rapid_giveback_window_minutes: float = 15,
     peak_reached_at: datetime | None = None,
+    weekend_protection_enabled: bool = True,
+    weekend_protection_min_profit: float = 0.20,
+    weekend_protection_minutes: float = 30.0,
 ) -> tuple[str, str]:
     """Decide one volatility campaign action without earnings-event semantics."""
     if quantity <= 0:
@@ -1190,6 +1232,17 @@ def decide_volatility_action(
             f"最低锁定盈利触发：峰值盈利{peak_pnl_ratio:.1%}，"
             f"当前盈利{pnl_ratio:.1%} ≤ 锁定线{minimum_locked_profit:.1%}",
         )
+    if weekend_protection_enabled:
+        weekend_reason = volatility_weekend_carry_exit_reason(
+            now=now,
+            pnl_ratio=pnl_ratio,
+            opened_at=opened_at,
+            min_profit_cushion=weekend_protection_min_profit,
+            pre_close_minutes=weekend_protection_minutes,
+            enabled=True,
+        )
+        if weekend_reason:
+            return "SELL", weekend_reason
     if held >= timedelta(hours=max_hold_hours):
         return "SELL", f"波动率仓位已持有{max_hold_hours:g}小时，触发最长持有退出"
     if decay_reason and held >= timedelta(minutes=minimum_hold_minutes):

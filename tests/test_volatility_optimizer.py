@@ -992,3 +992,53 @@ def test_tiered_profit_lock_floor_scales_with_mfe():
 def test_profit_capture_ratio_measures_mfe_retention():
     assert volatility_profit_capture_ratio(.10, .20) == .5
     assert volatility_profit_capture_ratio(.10, 0) is None
+
+
+def test_weekend_carry_exit_triggers_on_friday_near_close():
+    from zoneinfo import ZoneInfo
+    ny_tz = ZoneInfo("America/New_York")
+    # 2026-10-16 是星期五，美东 15:45 (收盘前 15 分钟)
+    friday_preclose = datetime(2026, 10, 16, 15, 45, tzinfo=ny_tz)
+
+    # 1. 浮盈只有 +5% (< 20% 安全垫)，周五收盘前应果断避险平仓
+    action, reason = decide_volatility_action(
+        now=friday_preclose,
+        opened_at=friday_preclose - timedelta(hours=3),
+        quantity=1,
+        stages_filled=1,
+        max_stages=1,
+        pnl_ratio=0.05,
+        peak_pnl_ratio=0.08,
+        drawdown_from_peak=0.03,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=0.50,
+        stop_loss=0.35,
+        trailing_stop=0.25,
+        max_hold_hours=24,
+        weekend_protection_enabled=True,
+        weekend_protection_min_profit=0.20,
+    )
+    assert action == "SELL"
+    assert "周五收盘前避险退出" in reason
+
+    # 2. 浮盈有 +25% (>= 20% 安全垫)，具有足够缓冲，不触发周五避险退出
+    action2, _ = decide_volatility_action(
+        now=friday_preclose,
+        opened_at=friday_preclose - timedelta(hours=3),
+        quantity=1,
+        stages_filled=1,
+        max_stages=1,
+        pnl_ratio=0.25,
+        peak_pnl_ratio=0.25,
+        drawdown_from_peak=0.0,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=0.50,
+        stop_loss=0.35,
+        trailing_stop=0.25,
+        max_hold_hours=24,
+        weekend_protection_enabled=True,
+        weekend_protection_min_profit=0.20,
+    )
+    assert action2 == "HOLD"

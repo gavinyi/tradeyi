@@ -158,3 +158,36 @@ def test_direct_modify_cancel_guard_environment():
         broker.modify_limit_order("order-1", 1, 100, expected_env="SIMULATE")
     with pytest.raises(BrokerError, match="环境"):
         broker.cancel_order("order-1", expected_env="SIMULATE")
+
+
+def test_urgent_sell_reprice_chases_bid_and_cancels_faster():
+    from pathlib import Path
+    db_path = Path("data/test_urgent_reprice.db")
+    try:
+        db_path.unlink(missing_ok=True)
+        store = TradingStore(str(db_path))
+        intent, _ = store.create_intent(
+            "volatility_long_gamma", "urgent-exit-1:PAPER", "US.META", "SELL", 1, 20.0,
+            {"urgent": True, "reference_price": 20.0},
+        )
+        store.update_intent(intent["id"], "SUBMITTED", broker_order_id="broker-meta-1")
+
+        modified = []
+        broker = FakeBroker("SIMULATE")
+        broker.snapshots = lambda symbols: pd.DataFrame([{"code": "US.META", "bid_price": 19.00, "ask_price": 19.50}])
+        broker.modify_limit_order = lambda oid, qty, price: modified.append((oid, qty, price))
+        broker.cancel_order = lambda oid: None
+
+        with store.connection() as conn:
+            conn.execute("UPDATE order_intents SET created_at='2020-01-01T00:00:00+00:00' WHERE id=?", (intent["id"],))
+
+        manager = ExecutionManager(broker, store)
+        assert manager.reprice_open_orders() == 1
+        assert len(modified) == 1
+        assert modified[0][2] == 18.81  # 19.00 * 0.99
+
+        assert manager.cancel_stale_orders() == 1
+        updated = [i for i in store.intents() if i["id"] == intent["id"]][0]
+        assert updated["status"] == "CANCEL_REQUESTED"
+    finally:
+        db_path.unlink(missing_ok=True)

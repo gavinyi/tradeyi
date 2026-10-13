@@ -328,8 +328,10 @@ class ExecutionManager:
         return True
 
     def reprice_open_orders(self) -> int:
-        interval = max(15, int(os.getenv("EXEC_REPRICE_INTERVAL_SECONDS", "60")))
-        max_attempts = max(0, int(os.getenv("EXEC_MAX_REPRICE_ATTEMPTS", "3")))
+        normal_interval = max(15, int(os.getenv("EXEC_REPRICE_INTERVAL_SECONDS", "60")))
+        urgent_interval = max(10, int(os.getenv("EXEC_URGENT_REPRICE_INTERVAL_SECONDS", "15")))
+        normal_max_attempts = max(0, int(os.getenv("EXEC_MAX_REPRICE_ATTEMPTS", "3")))
+        urgent_max_attempts = max(5, int(os.getenv("EXEC_URGENT_MAX_REPRICE_ATTEMPTS", "12")))
         step = max(0.0001, float(os.getenv("EXEC_REPRICE_STEP_PCT", "0.0025")))
         now = datetime.now(timezone.utc)
         repriced = 0
@@ -341,6 +343,9 @@ class ExecutionManager:
                 # Package-level repricing owns combo legs so an independent leg
                 # cannot silently violate the package net-price boundary.
                 continue
+            is_urgent = bool(metadata.get("urgent"))
+            max_attempts = urgent_max_attempts if is_urgent else normal_max_attempts
+            interval = urgent_interval if is_urgent else normal_interval
             if int(intent.get("reprice_count", 0)) >= max_attempts:
                 continue
             anchor = intent.get("last_reprice_at") or intent["created_at"]
@@ -355,40 +360,59 @@ class ExecutionManager:
                 if bid <= 0 or ask <= 0:
                     continue
                 current = float(intent["limit_price"])
-                target = min(ask, current * (1 + step)) if intent["side"] == "BUY" else max(bid, current * (1 - step))
                 reference = float(metadata.get("reference_price", current))
                 slip = float(os.getenv(
                     "EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT"
-                    if metadata.get("urgent") else
+                    if is_urgent else
                     "EXEC_MAX_SLIPPAGE_PCT",
-                    "0.12" if metadata.get("urgent") else "0.01",
+                    "0.12" if is_urgent else "0.01",
                 ))
-                if intent["side"] == "BUY":
-                    target = min(target, reference * (1 + slip))
+
+                if is_urgent and intent["side"] == "SELL":
+                    # 紧急平仓/锁利卖出: 积极主动吃单，紧贴买一价下方 1% 确保对手方撮合成交
+                    target = round(min(current, bid * 0.99), 2)
+                    target = max(target, round(reference * (1 - slip), 2))
+                elif is_urgent and intent["side"] == "BUY":
+                    # 紧急买回平仓: 紧贴卖一价上方 1% 主动吃单
+                    target = round(max(current, ask * 1.01), 2)
+                    target = min(target, round(reference * (1 + slip), 2))
                 else:
-                    target = max(target, reference * (1 - slip))
+                    target = min(ask, current * (1 + step)) if intent["side"] == "BUY" else max(bid, current * (1 - step))
+                    if intent["side"] == "BUY":
+                        target = min(target, reference * (1 + slip))
+                    else:
+                        target = max(target, reference * (1 - slip))
+
+                target = round(max(0.01, target), 2)
+                if abs(target - current) < 1e-4:
+                    continue
+
                 self.broker.modify_limit_order(intent["broker_order_id"], int(intent["quantity"]), target)
-                self.store.record_reprice(intent["id"], round(target, 2))
-                self.store.audit("ORDER_REPRICED", {"intent_id": intent["id"], "price": target})
+                self.store.record_reprice(intent["id"], target)
+                self.store.audit("ORDER_REPRICED", {"intent_id": intent["id"], "price": target, "urgent": is_urgent})
                 repriced += 1
             except Exception as exc:
                 self.alerts.send("WARNING", "REPRICE_FAILED", f"订单 {intent['broker_order_id']} 追价失败: {exc}")
         return repriced
 
     def cancel_stale_orders(self) -> int:
-        timeout = max(60, int(os.getenv("ORDER_TIMEOUT_SECONDS", "900")))
+        normal_timeout = max(60, int(os.getenv("ORDER_TIMEOUT_SECONDS", "900")))
+        urgent_timeout = max(30, int(os.getenv("EXEC_URGENT_ORDER_TIMEOUT_SECONDS", "60")))
         cancelled = 0
         now = datetime.now(timezone.utc)
         for intent in self.store.intents(limit=1000):
             if intent["status"] not in {"WAITING_SUBMIT", "SUBMITTING", "SUBMITTED", "FILLED_PART"}:
                 continue
+            metadata = json.loads(intent["metadata_json"])
+            is_urgent = bool(metadata.get("urgent"))
+            timeout = urgent_timeout if is_urgent else normal_timeout
             age = (now - datetime.fromisoformat(intent["created_at"])).total_seconds()
             if age < timeout or not intent.get("broker_order_id") or not self._order_environment_ok(intent):
                 continue
             try:
                 self.broker.cancel_order(intent["broker_order_id"])
                 self.store.update_intent(intent["id"], "CANCEL_REQUESTED")
-                self.store.audit("STALE_ORDER_CANCELLED", {"intent_id": intent["id"], "age": age})
+                self.store.audit("STALE_ORDER_CANCELLED", {"intent_id": intent["id"], "age": age, "urgent": is_urgent})
                 cancelled += 1
             except Exception as exc:
                 self.alerts.send("ERROR", "CANCEL_FAILED", f"订单 {intent['broker_order_id']} 超时撤单失败: {exc}")

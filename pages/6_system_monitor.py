@@ -114,7 +114,7 @@ elif view == "调度任务":
         timer_view = pd.DataFrame(timer_rows)
         timer_view["next_run"] = timer_view["next_run"].map(lambda value: value.astimezone(CHINA_TZ).strftime("%Y-%m-%d %H:%M"))
         timer_display = timer_view[["title", "task_id", "schedule", "next_run", "enabled"]]
-        st.dataframe(timer_display.rename(columns={"task_id": "任务代码", "title": "任务", "schedule": "定时器", "next_run": "下次预计执行", "enabled": "已启用"}), hide_index=True, column_config={"已启用": st.column_config.CheckColumn("已启用")})
+        st.dataframe(timer_display.rename(columns={"task_id": "任务代码", "title": "任务", "schedule": "定时器", "next_run": "下次预计执行", "enabled": "已启用"}), hide_index=True)
         with st.expander("启用/关闭定时器"):
             for row in timer_rows:
                 key = f"timer_{row['task_id']}_enabled"
