@@ -1,6 +1,91 @@
 # Changelog
 
-## 2026-09-23：成熟期权 1-15 项风险审计修复
+## 2026-10-13：期权出场主动吃单防死锁闭环与周五跨周末避险保护
+
+针对 2026-10-12 盘中 META 期权浮盈达到 +16.8% 后因挂单过于保守死挂 1 小时撤单导致利润回吐、以及 COIN 跨周末跳空低开遭遇硬止损的痛点，实施以下核心升级：
+
+1. **止盈与紧急平仓主动吃单 (Marketable Limit Repricing)**：
+   - 紧急平仓卖单（`is_urgent=True`，涵盖自适应止盈、阶梯锁盈、回撤保护与硬止损）在改单追价时，目标价直接对准最新买一价下方 1%（`min(current, bid * 0.99)`），主动穿透买盘对手方，确保在做市商买盘中瞬间撮合成交，死死锁住利润；
+   - 紧急买回平仓单同样对准卖一价上方 1%（`max(current, ask * 1.01)`）主动吃单；
+   - 全程受紧急滑点上限（`EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT`，默认 12%）兜底保护，绝不失控贱卖。
+2. **紧急平仓 15 秒高频紧咬与 60 秒超时强行释放**：
+   - 紧急平仓改单追价间隔从 60 秒缩短至 15 秒，最大尝试次数放宽至 12 次；
+   - 紧急退出单超时撤单时间从 3600 秒（1小时）彻底压缩至 60 秒；若盘口极端断档 60 秒内仍未成交，系统立即强制撤单，彻底物理消除“死单挂起 1 小时卡死策略状态”的严重缺陷。
+3. **撤单后批次自动自愈递增 (`pending_exit_episode` 重置)**：
+   - 一旦上一笔平仓挂单超时撤销，系统自动将 `campaign_state["pending_exit_episode"]` 重置为 `False`；
+   - 下一个 30 秒轮询周期自动将退出批次递增（如从 `episode1` 变为 `episode2`），以全新的幂等 key 结合当前最新鲜的盘口重新发起平仓，形成完整的自愈闭环。
+4. **周五收盘前跨周末期权避险退出 (`volatility_weekend_carry_exit_reason`)**：
+   - 美东时间周五收盘前 30 分钟（15:30 ~ 16:00 ET），系统自动扫描当前持有的期权多头仓位；
+   - 若浮盈未达到 20% 安全垫（`pnl_ratio < 0.20`），系统在收盘前主动清仓保本离场，坚决防范周末 48 小时纯 Theta 时间价值损耗与周一开盘不可控跳空暴跌风险；
+   - 若浮盈达到 20% 以上，证明已有足够利润气囊，允许继续跟踪。
+5. **UI 修复与测试**：
+   - 修复系统监控页（`pages/6_system_monitor.py`）调用未定义 `CheckColumn` 导致的页面崩溃异常；
+   - 增加 `test_urgent_sell_reprice_chases_bid_and_cancels_faster` 与 `test_weekend_carry_exit_triggers_on_friday_near_close` 单元测试，全部验证通过。
+
+
+## 2026-10-12：动态标的池扩充与分级沙盒孵化系统上线 (Dynamic Universe Expansion)
+
+构建工业级“全市场召回 $\to$ 10日沙盒孵化 $\to$ ML精排 $\to$ 多样性打散 $\to$ 动态晋级实盘”子系统：
+
+1. **核心底仓与外援解耦 (Core-Satellite Universe)**：
+   - 核心底仓（Core 13 只）作为压舱石，永久常驻、绝对不参与全市场淘汰机制；
+   - 动态扩展池（Satellite 3~5 只）面向美股全市场淘金，只有在沙盒跑出正期望值的黑马才被追加进实盘池；
+   - 实际交易标的池公式：`VOLATILITY_SYMBOLS = Core(13只) ∪ Promoted_Active(3~5只)`。
+2. **五大核心引擎落地 (`src/futu_quant/universe/`)**：
+   - `recall_scanner.py`：全市场期权流动性 Top 50 粗排召回（平值价差 $\le 3\%$、日均期权量 $> 50k$、正股成交额 $> \$5\text{亿}$，强制排除 TSLA 等负面黑名单）；
+   - `incubator_engine.py`：滚动 10 日隔离沙盒影子演练，统计微观滑点、5分钟量能留存率、虚拟胜率与最大回撤（$MDD \ge 25\%$ 一票否决）；
+   - `ranking_pipeline.py`：构建多维动量与期权定价特征，集成 `MLSymbolScorer` 预测打分；
+   - `diversity_filter.py`：MMR 贪心打散算法（$\lambda = 0.65$），强制细分行业上限 1 席且两两相关系数 $\le 0.70$；
+   - `lifecycle_manager.py`：迟滞防抖仲裁（新候选需超出现任 $10\%$ 且保持 2 天）、授权到期清退与应急秒踢（连触2次硬止损或价差恶化 $> 10\%$）。
+3. **数据层四表建立**：
+   - SQLite 新增 `candidate_universe`, `shadow_incubator`, `promoted_universe`, `universe_lifecycle_events` 四张表及辅助操作 API。
+4. **可视化监控看板上线**：
+   - 新增《🚀 标的孵化与赛马中心》（`pages/39_universe_incubator_center.py`）页面，提供实盘池透视、沙盒赛马榜、Top 50 召回池、生命周期审计及一键运维抽屉；
+   - 首页驾驶舱底部新增直达快捷入口。
+5. **测试与离线入口**：
+   - 编写 `test_universe_*.py` 5 大测试套件全量通过；
+   - 新增 `run_universe_recall.py`, `run_universe_ranking.py`, `run_universe_sync.py` 脚本。
+
+
+## 2026-10-11：全年统一固定时钟表与真实关机开启
+
+1. **统一固定时间表 (Universal Fixed Schedule)**：
+   - 每天 05:15：`daily_strategy_review` 策略复盘与 HTML 报告生成；
+   - 每天 05:30：`daily_universe_ranking` 标的池 ML 精排、沙盒自评与外援轮换；
+   - 每天 06:00：`computer_shutdown` 电脑安全关机；
+   - 每周一 21:10：`weekly_universe_recall` 开盘前全市场 Top 50 召回；
+   - 全年两季通用：以冬令时收盘（05:00）作为时间锚点，彻底消除冬令时 04:30 提前关机掐断交易的重大隐患。
+2. **真实关机模式全面生效**：
+   - 启用 `AUTO_COMPUTER_SHUTDOWN_ENABLED=true` 与 `REAL_SHUTDOWN_ENABLED=true`；
+   - 关闭演练模式（`AUTO_SHUTDOWN_DRY_RUN=false`），到点直接调用系统 `shutdown /s /t 0` 安全关机。
+
+
+## 2026-10-11：标的池分级清洗与极端高 IV 泡沫防磨损拦截
+
+1. **标的池负面清洗与核心聚焦**：
+   - 移出历史最大失血标的 `US.TSLA`（累亏 -$1,331）与低流动性磨损标的 `US.SPCX`（累亏 -$343）；
+   - 移出缺乏 Gamma 爆发力的防守型股票 `US.KO`, `US.JNJ`, `US.BRK.B`；
+   - 全面聚焦 13 只高胜率黄金标的：`US.COIN` (+$1,496), `US.AMD` (+$814), `US.QQQ` (+$604), `US.NVDA`, `US.AVGO`, `US.AAPL`, `US.META`, `US.AMZN`, `US.GOOG`, `US.MSFT`, `US.TSM`, `US.SPY`, `US.GLD`。
+2. **高 IV 期权泡沫防磨损硬闸门 (`gamma_risk.py`)**：
+   - 引入绝对隐含波动率上限 `max_absolute_iv = 0.85`；年化 IV 超过 85% 的期权直接阻断开多头，防止买在做市商高额溢价泡沫顶部遭遇 Vega 坍塌；
+   - 优化 `realized_volatility()` 在短 K 线（$\ge 5$ 根）下的年化实现波动率计算，防止因样本少返回 0 导致 IV/RV 风控被意外绕过。
+
+
+## 2026-10-10：自适应止盈、GLD 备兑裸空误判修复与账户快照防误判急停
+
+1. **自适应动态止盈升级 (`volatility_optimizer.py`)**：
+   - 针对 AMD 等标的冲高 +9.86% 未触及固定 10% 导致利润回吐的痛点，引入自适应止盈：8% 软启动、3% 动态保底锁利、35% 软回吐保护、以及 15 分钟内快速回撤 25% 的突变保护；
+   - 在 flat 平仓转换时自动重置 `peak_reached_at`。
+2. **GLD Backspread 保护性组合识别修复 (`run_gamma_strategy.py`)**：
+   - 修复 GLD Put Backspread（如 `-1 x 380 Put + 2 x 375 Put`）空头腿因 `qty < 0` 被误判为裸空的缺陷；重构为 `_campaign_naked_short_rows` 根据到期日、行权价和结构类型执行真实的备兑关系校验。
+3. **账户权益快照一致性防误判急停 (`run_service.py`)**：
+   - 增加 `total_assets ≈ cash + market_value` 的一致性容差校验（容差 `max($100, 1% 资产)`）；
+   - 拦截 OpenD 偶尔返回的异常快照，避免系统误报 56 万美元资产蒸发并锁死 `kill_switch`，异常时标记 `DEGRADED` 并等待有效快照。
+4. **首页驾驶舱显式展示系统急停横幅 (`home_dashboard.py`)**：
+   - 增加显眼的系统急停状态卡片（正常/开启、最近事件时间、亏损金额及处置指引）。
+5. **开仓前阻断 15 分钟去重降噪 (`store.py`, `run_gamma_strategy.py`)**：
+   - 引入内存决策缓存 `_DECISION_CACHE`；未开仓时，相同标的因相同原因（如价差大）被阻断时，15 分钟内仅记录 1 条决策和审计，消除上千次高频轮询造成的假性高阻断噪音；
+   - 自动识别并移出 5 只已过期且 0 持仓的废弃活动（NVDA, GLD, AAPL, GOOG, SPCX）。
 
 本次修复遵循用户要求：不暂停波动率自动开仓、不改变运行模式，继续让策略运行并通过风险接管、审计和测试暴露问题。
 
