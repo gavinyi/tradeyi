@@ -418,4 +418,54 @@ def scan_volatility_watchlist(
         except Exception as exc:
             results.append({"symbol": symbol, "active": False, "reason": f"扫描异常：{exc}"})
             store.decision("volatility_scanner", symbol, "BLOCKED", f"扫描异常：{exc}")
+
+    # 盘中顺带对沙盒孵化池标的进行轻量影子监听，累积突破信号与微观特征
+    _monitor_sandbox_incubator_candidates(broker, store)
     return results
+
+
+def _monitor_sandbox_incubator_candidates(broker, store) -> None:
+    try:
+        from futu_quant.universe.incubator_engine import IncubatorEngine
+        engine = IncubatorEngine(store=store)
+        candidates = store.candidate_symbols(status="ACTIVE")
+        if not candidates:
+            return
+
+        live_symbols = set(load_volatility_symbols())
+        sandbox_symbols = [
+            c["symbol"] for c in candidates 
+            if c["symbol"] not in live_symbols
+        ][:15]
+
+        if not sandbox_symbols:
+            return
+
+        frame = _timed_call(lambda: broker.snapshots_tolerant(list(sandbox_symbols)), timeout_seconds=10)
+        if frame is None or frame.empty or "code" not in frame.columns:
+            return
+
+        for _, row in frame.iterrows():
+            sym = str(row.get("code", "")).upper()
+            last = float(row.get("last_price", 0) or 0)
+            prev = float(row.get("prev_close_price", 0) or 0)
+            intraday = abs(last / prev - 1) if prev > 0 else 0.0
+
+            bid = float(row.get("bid_price", 0) or 0)
+            ask = float(row.get("ask_price", 0) or 0)
+            spread_pct = (ask - bid) / ((ask + bid) / 2) if (ask + bid) > 0 else 0.025
+
+            if intraday >= 0.015:
+                engine.record_simulated_signal(sym, z_score=round(intraday * 100, 2), volume_ratio=1.2, spread_pct=spread_pct)
+                store.record_universe_lifecycle_event(
+                    event_type="SANDBOX_SIGNAL_CAPTURED",
+                    symbol=sym,
+                    details={
+                        "intraday_move": f"{intraday:.2%}",
+                        "spread_pct": f"{spread_pct:.2%}",
+                        "last_price": last,
+                        "source": "incubator_shadow_scan",
+                    },
+                )
+    except Exception:
+        pass

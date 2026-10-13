@@ -150,6 +150,15 @@ class RecallScanner:
         records = [asdict(c) for c in filtered]
         self.store.save_candidate_symbols(week_start, records)
 
+        # 自动在 shadow_incubator 沙盒赛马榜建档，确保前端赛马榜即时可见
+        from .incubator_engine import IncubatorEngine
+        incubator = IncubatorEngine(store=self.store)
+        for c in filtered:
+            if not self.store.incubator_symbol(c.symbol):
+                incubator.record_simulated_signal(
+                    c.symbol, z_score=0.0, volume_ratio=1.0, spread_pct=c.median_spread_pct
+                )
+
         self.store.record_universe_lifecycle_event(
             event_type="RECALL_COMPLETED",
             symbol="ALL",
