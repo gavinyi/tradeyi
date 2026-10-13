@@ -229,7 +229,8 @@ def scan_volatility_watchlist(
                         "underlying": symbol, "code": symbol, "event_date": datetime.now(NY).date().isoformat(),
                         "event_session": "行情触发", "trigger_mode": "VOLATILITY",
                         "minimum_underlying_move": move_target, "entry_zscore": z_target,
-                        "contracts_per_stage": 1, "max_stages": 3,
+                        "contracts_per_stage": int(store.get_setting("volatility_default_contracts_per_stage", "2")),
+                        "max_stages": 3,
                         "max_premium_per_stage": premium_budget, "entry_hours": 6,
                         "entry_confirmation_minutes": _setting_float(
                             store, "volatility_default_entry_confirmation_minutes", 5,
@@ -243,7 +244,7 @@ def scan_volatility_watchlist(
                         "entry_confirmation_require_active": _setting_bool(
                             store, "volatility_default_entry_confirmation_require_active", True,
                         ),
-                        "profit_target": .5,
+                        "profit_target": 2.0,
                         "stop_loss": _setting_float(
                             store, "volatility_default_stop_loss", .35,
                         ),
@@ -285,13 +286,13 @@ def scan_volatility_watchlist(
                             "volatility_default_exit_allocation_policy", "FIFO"
                         ) or "FIFO").upper(),
                         "partial_profit_tier1": _setting_float(
-                            store, "volatility_default_partial_profit_tier1", .18,
+                            store, "volatility_default_partial_profit_tier1", .35,
                         ),
                         "partial_profit_tier1_fraction": _setting_float(
                             store, "volatility_default_partial_profit_tier1_fraction", .50,
                         ),
                         "partial_profit_tier2": _setting_float(
-                            store, "volatility_default_partial_profit_tier2", .35,
+                            store, "volatility_default_partial_profit_tier2", .70,
                         ),
                         "partial_profit_tier2_fraction": _setting_float(
                             store, "volatility_default_partial_profit_tier2_fraction", .25,

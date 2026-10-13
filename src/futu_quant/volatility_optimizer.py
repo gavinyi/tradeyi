@@ -53,6 +53,8 @@ def volatility_profit_lock_floor(peak_pnl_ratio: float) -> tuple[float, str]:
     """Return a professional tiered profit floor based on max favorable excursion."""
     peak = float(peak_pnl_ratio or 0.0)
     tiers = [
+        (1.50, 1.10, "超级主升档"),
+        (1.00, 0.70, "翻倍主升档"),
         (.80, .50, "爆发档"),
         (.50, .30, "大盈利档"),
         (.30, .18, "强盈利档"),
@@ -1154,7 +1156,7 @@ def decide_volatility_action(
     )
     if dynamic_stop_reason:
         return "SELL", dynamic_stop_reason
-    if full_profit_target_enabled and pnl_ratio >= profit_target:
+    if full_profit_target_enabled and not tiered_profit_lock_enabled and pnl_ratio >= profit_target:
         return "SELL", "达到波动率策略止盈目标"
     protection_drawdown = (
         trailing_stop if profit_protection_drawdown is None else profit_protection_drawdown

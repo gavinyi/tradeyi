@@ -987,6 +987,8 @@ def test_tiered_profit_lock_floor_scales_with_mfe():
     assert volatility_profit_lock_floor(.11) == (.06, "轻盈利档")
     assert volatility_profit_lock_floor(.31) == (.18, "强盈利档")
     assert volatility_profit_lock_floor(.81) == (.50, "爆发档")
+    assert volatility_profit_lock_floor(1.05) == (.70, "翻倍主升档")
+    assert volatility_profit_lock_floor(1.55) == (1.10, "超级主升档")
 
 
 def test_profit_capture_ratio_measures_mfe_retention():
