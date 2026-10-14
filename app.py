@@ -288,20 +288,33 @@ try:
             "损益按富途模拟账户持仓明细汇总；当日持仓盈亏不等于含已平仓交易的完整账户日收益，"
             "且不包含 SHADOW 虚拟成交。"
         )
+        # 过滤数量 > 0 的有效持仓，避免券商返回的已平仓归零记录误导统计
+        active_opt_mask = (pd.to_numeric(option_positions.get("qty", 0), errors="coerce").fillna(0) > 0) if not option_positions.empty else pd.Series(dtype=bool)
+        active_option_positions = option_positions[active_opt_mask].copy() if not option_positions.empty else pd.DataFrame()
+
+        active_stock_mask = (pd.to_numeric(stock_positions.get("qty", 0), errors="coerce").fillna(0) > 0) if not stock_positions.empty else pd.Series(dtype=bool)
+        active_stock_positions = stock_positions[active_stock_mask].copy() if not stock_positions.empty else pd.DataFrame()
+
+        opt_mv = position_amount(active_option_positions)
+        opt_pnl = float(pd.to_numeric(active_option_positions.get("pl_val", 0), errors="coerce").sum()) if not active_option_positions.empty else 0.0
+
+        stock_mv = position_amount(active_stock_positions)
+        stock_pnl = float(pd.to_numeric(active_stock_positions.get("pl_val", 0), errors="coerce").sum()) if not active_stock_positions.empty else 0.0
+
         with st.container(border=True):
             st.subheader("当前持仓总览")
             st.caption("富途模拟盘真实持仓和 Shadow 虚拟持仓分开展示；Shadow 不会出现在富途账户里。")
             with st.container(horizontal=True):
                 st.metric(
                     "股票/ETF 持仓",
-                    f"{len(stock_positions)} 个",
-                    f"${position_amount(stock_positions):,.2f}",
+                    f"{len(active_stock_positions)} 个",
+                    f"市值 ${stock_mv:,.2f} · 浮盈 ${stock_pnl:+,.2f}",
                     border=True,
                 )
                 st.metric(
                     "期权持仓",
-                    f"{len(option_positions)} 个",
-                    f"${position_amount(option_positions):,.2f}",
+                    f"{len(active_option_positions)} 个",
+                    f"市值 ${opt_mv:,.2f} · 浮盈 ${opt_pnl:+,.2f}",
                     border=True,
                 )
                 st.metric(
@@ -364,7 +377,12 @@ try:
             if option_positions.empty:
                 st.info("当前富途模拟账户没有期权持仓。")
             else:
-                st.dataframe(option_position_display(option_positions), hide_index=True)
+                show_all = st.checkbox("包含今日已平仓清零合约", value=False, key="show_all_zero_qty_options")
+                display_df = option_positions if show_all else active_option_positions
+                if display_df.empty:
+                    st.info("当前无有效期权持仓（今日持仓已全部平仓锁定）。")
+                else:
+                    st.dataframe(option_position_display(display_df), hide_index=True)
                 st.page_link(
                     "pages/28_options_pnl_ledger.py",
                     label="查看期权逐笔盈亏和已平仓历史",
