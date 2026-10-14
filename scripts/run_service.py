@@ -155,17 +155,20 @@ def futu_sdk_preflight(
             env=env,
         )
     except subprocess.TimeoutExpired:
-        message = f"OpenD SDK 预检超时超过 {timeout:.0f} 秒"
+        message = f"富途 OpenD 预检超时超过 {timeout:.0f} 秒，网关通信受阻"
         store.heartbeat("trading_service", "DEGRADED", message, os.getpid())
         record_broker_failure(store, alerts, "trading_service", message)
+        alerts.send("CRITICAL", "OPEND_DISCONNECTED", message, incident_key="OPEND_DISCONNECTED")
         return False
     if result.returncode != 0:
-        message = f"OpenD SDK 预检失败，退出码 {result.returncode}"
+        message = f"富途 OpenD 网关掉线或未启动 (预检退出码 {result.returncode})，系统已自动暂停新开仓并保持持仓保护状态"
         store.heartbeat("trading_service", "DEGRADED", message, os.getpid())
         record_broker_failure(store, alerts, "trading_service", message)
+        alerts.send("CRITICAL", "OPEND_DISCONNECTED", message, incident_key="OPEND_DISCONNECTED")
         return False
     store.set_setting("opend_last_preflight_success_at", now.isoformat())
     store.set_setting("opend_consecutive_failures", "0")
+    alerts.recover("OPEND_DISCONNECTED", "富途 OpenD 网关连接已恢复正常，交易与行情调度链路恢复就绪", incident_key="OPEND_DISCONNECTED")
     if store.get_setting("strategy_interrupted", "false").lower() == "true":
         store.set_setting("strategy_interrupted", "false")
         store.set_setting("strategy_recovered_at", now.isoformat())

@@ -45,12 +45,32 @@ class AlertManager:
                     delivered = 200 <= response.status < 300
             except Exception:
                 delivered = False
-        self.store.add_alert(severity, event_type, message, delivered)
+
+        # 飞书群即时卡片广播 (支持群 Chat ID 与自定义 Webhook)
+        feishu_delivered = False
+        try:
+            from .feishu_reporter import FeishuReporter
+            reporter = FeishuReporter(self.store)
+            feishu_delivered = reporter.send_alert_card(severity, event_type, message, is_recovered=False)
+        except Exception:
+            pass
+
+        self.store.add_alert(severity, event_type, message, delivered or feishu_delivered)
 
     def recover(
         self, event_type: str, message: str = "故障已恢复", incident_key: str | None = None,
     ) -> bool:
         if not self.store.recover_incident(incident_key or event_type):
             return False
-        self.store.add_alert("INFO", f"{event_type}_RECOVERED", message, False)
+
+        # 飞书群故障恢复卡片广播
+        feishu_recovered = False
+        try:
+            from .feishu_reporter import FeishuReporter
+            reporter = FeishuReporter(self.store)
+            feishu_recovered = reporter.send_alert_card("INFO", event_type, message, is_recovered=True)
+        except Exception:
+            pass
+
+        self.store.add_alert("INFO", f"{event_type}_RECOVERED", message, feishu_recovered)
         return True

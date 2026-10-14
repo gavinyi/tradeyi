@@ -150,6 +150,101 @@ class FeishuReporter:
             logger.warning("通过飞书群 Webhook 发送战报失败: %s", exc)
             return False
 
+    def send_alert_card(
+        self,
+        severity: str,
+        event_type: str,
+        message: str,
+        is_recovered: bool = False,
+    ) -> bool:
+        """向飞书群聊或 Webhook 发送紧急告警或故障恢复卡片。"""
+        from datetime import datetime
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        sev_upper = severity.upper()
+        if is_recovered:
+            header_color = "green"
+            icon = "🟢"
+            status_title = f"{icon} 【故障恢复】{event_type} 已恢复正常"
+        elif sev_upper == "CRITICAL":
+            header_color = "red"
+            icon = "🚨"
+            status_title = f"{icon} 【紧急告警】{event_type}"
+        elif sev_upper == "ERROR":
+            header_color = "orange"
+            icon = "⚠️"
+            status_title = f"{icon} 【系统错误】{event_type}"
+        else:
+            header_color = "blue"
+            icon = "ℹ️"
+            status_title = f"{icon} 【系统通知】{event_type}"
+
+        lines = [
+            f"**级别**: <font color='{'green' if is_recovered else 'red'}'>{sev_upper if not is_recovered else 'NORMAL'}</font>",
+            f"**时间**: {now_str}",
+            f"**事件类型**: `{event_type}`",
+            f"**详细情况**:\n{message}",
+        ]
+        if not is_recovered and sev_upper in {"CRITICAL", "ERROR"}:
+            lines.append("🛡️ **系统保护动作**: 已自动暂停新风险开仓，并持续保持在岗对账与退出监控。")
+
+        success = False
+
+        # 1. 优先渠道 A: 飞书群自定义机器人 Webhook (若配置)
+        if self.webhook_url:
+            try:
+                import time
+                ts = int(time.time())
+                elements = [{"tag": "div", "text": {"tag": "lark_md", "content": line}} for line in lines]
+                card_payload = {
+                    "msg_type": "interactive",
+                    "card": {
+                        "config": {"wide_screen_mode": True},
+                        "header": {
+                            "title": {"tag": "plain_text", "content": status_title},
+                            "template": header_color,
+                        },
+                        "elements": elements,
+                    },
+                }
+                if self.webhook_secret:
+                    card_payload["timestamp"] = str(ts)
+                    card_payload["sign"] = self._generate_signature(self.webhook_secret, ts)
+
+                payload_bytes = json.dumps(card_payload, ensure_ascii=False).encode("utf-8")
+                req = Request(self.webhook_url, data=payload_bytes, headers={"Content-Type": "application/json"})
+                with urlopen(req, timeout=8) as resp:  # noqa: S310
+                    res = json.loads(resp.read().decode("utf-8"))
+                    success = (res.get("code") == 0 or res.get("StatusCode") == 0)
+            except Exception as exc:
+                logger.warning("通过飞书群 Webhook 发送告警失败: %s", exc)
+
+        # 2. 渠道 B: 飞书群聊会话直发 (如用户的 oc_8808...)
+        if self.group_chat_id:
+            msg_md = f"{status_title}\n━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines)
+            cmd = [
+                "lark-cli", "im", "+messages-send",
+                "--chat-id", self.group_chat_id,
+                "--as", "bot",
+                "--markdown", msg_md,
+            ]
+            res = _run_lark_json(cmd)
+            success = success or res.get("ok", False)
+
+        # 3. 渠道 C: 个人 147 会话兜底 (若群未配)
+        if not success and not self.webhook_url and not self.group_chat_id and self.chat_id:
+            msg_md = f"{status_title}\n━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines)
+            cmd = [
+                "lark-cli", "im", "+messages-send",
+                "--chat-id", self.chat_id,
+                "--as", "bot",
+                "--markdown", msg_md,
+            ]
+            res = _run_lark_json(cmd)
+            success = res.get("ok", False)
+
+        return success
+
     def send_test_message(self) -> dict:
         """发送一条多通道测试消息，智能适配群 Chat ID、群 Webhook 或个人会话。"""
         from datetime import datetime
