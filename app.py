@@ -8,7 +8,6 @@ import streamlit as st
 os.environ.setdefault("FUTU_LOG_ROLE", "streamlit")
 
 from futu_quant.broker import BrokerError, FutuPaperBroker
-from futu_quant.account_metrics import account_pnl_metrics
 from futu_quant.config import Settings
 from futu_quant.core_satellite import STRATEGY_NAME, build_rebalance_plan
 from futu_quant.home_dashboard import render_home_dashboard
@@ -270,51 +269,65 @@ try:
     )
     if not info.empty:
         row = info.iloc[0]
-        pnl = account_pnl_metrics(positions)
-        with st.container(horizontal=True):
-            st.metric("总权益", f"${float(row.get('total_assets', 0)):,.2f}", border=True)
-            st.metric("现金", f"${float(row.get('cash', 0)):,.2f}", border=True)
-            st.metric("证券市值", f"${float(row.get('market_val', 0)):,.2f}", border=True)
-            st.metric("可用购买力", f"${float(row.get('power', 0)):,.2f}", border=True)
-            st.metric(
-                "当日持仓盈亏", f"${pnl['today_position_pnl']:,.2f}",
-                delta_color="normal", border=True,
-            )
-            st.metric(
-                "总持仓浮动盈亏", f"${pnl['total_position_pnl']:,.2f}",
-                delta_color="normal", border=True,
-            )
-        st.caption(
-            "损益按富途模拟账户持仓明细汇总；当日持仓盈亏不等于含已平仓交易的完整账户日收益，"
-            "且不包含 SHADOW 虚拟成交。"
-        )
-        # 过滤数量 > 0 的有效持仓，避免券商返回的已平仓归零记录误导统计
+
+        # 过滤数量 > 0 的有效在仓，已平仓清零记录不计入当前持仓数
         active_opt_mask = (pd.to_numeric(option_positions.get("qty", 0), errors="coerce").fillna(0) > 0) if not option_positions.empty else pd.Series(dtype=bool)
         active_option_positions = option_positions[active_opt_mask].copy() if not option_positions.empty else pd.DataFrame()
 
         active_stock_mask = (pd.to_numeric(stock_positions.get("qty", 0), errors="coerce").fillna(0) > 0) if not stock_positions.empty else pd.Series(dtype=bool)
         active_stock_positions = stock_positions[active_stock_mask].copy() if not stock_positions.empty else pd.DataFrame()
 
-        opt_mv = position_amount(active_option_positions)
-        opt_pnl = float(pd.to_numeric(active_option_positions.get("pl_val", 0), errors="coerce").sum()) if not active_option_positions.empty else 0.0
-
+        # 拆分股票与期权的当日盈亏、累计浮盈与市值
+        stock_today_pnl = numeric_sum(stock_positions, "today_pl_val")
+        stock_total_pnl = numeric_sum(stock_positions, "pl_val")
         stock_mv = position_amount(active_stock_positions)
-        stock_pnl = float(pd.to_numeric(active_stock_positions.get("pl_val", 0), errors="coerce").sum()) if not active_stock_positions.empty else 0.0
+
+        opt_today_pnl = numeric_sum(option_positions, "today_pl_val")
+        opt_total_pnl = numeric_sum(option_positions, "pl_val")
+        opt_mv = position_amount(active_option_positions)
+
+        total_today_pnl = stock_today_pnl + opt_today_pnl
+        total_pos_pnl = stock_total_pnl + opt_total_pnl
+
+        with st.container(horizontal=True):
+            st.metric("总权益", f"${float(row.get('total_assets', 0)):,.2f}", border=True)
+            st.metric("现金", f"${float(row.get('cash', 0)):,.2f}", border=True)
+            st.metric("证券市值", f"${float(row.get('market_val', 0)):,.2f}", border=True)
+            st.metric("可用购买力", f"${float(row.get('power', 0)):,.2f}", border=True)
+            st.metric(
+                "股票当日浮盈", f"${stock_today_pnl:+,.2f}",
+                f"累计 ${stock_total_pnl:+,.2f}",
+                delta_color="normal", border=True,
+            )
+            st.metric(
+                "期权当日浮盈", f"${opt_today_pnl:+,.2f}",
+                f"累计 ${opt_total_pnl:+,.2f}",
+                delta_color="normal", border=True,
+            )
+            st.metric(
+                "当日总浮动盈亏", f"${total_today_pnl:+,.2f}",
+                f"累计 ${total_pos_pnl:+,.2f}",
+                delta_color="normal", border=True,
+            )
+        st.caption(
+            "损益按富途模拟账户持仓明细汇总拆分；当日浮动盈亏不包含已平仓兑现收益，"
+            "且不包含 SHADOW 虚拟成交。"
+        )
 
         with st.container(border=True):
             st.subheader("当前持仓总览")
-            st.caption("富途模拟盘真实持仓和 Shadow 虚拟持仓分开展示；Shadow 不会出现在富途账户里。")
+            st.caption("富途模拟盘真实持仓和 Shadow 虚拟持仓分开展示；已平仓清零合约不计入持仓数。")
             with st.container(horizontal=True):
                 st.metric(
                     "股票/ETF 持仓",
                     f"{len(active_stock_positions)} 个",
-                    f"市值 ${stock_mv:,.2f} · 浮盈 ${stock_pnl:+,.2f}",
+                    f"当日 ${stock_today_pnl:+,.2f} · 市值 ${stock_mv:,.2f}",
                     border=True,
                 )
                 st.metric(
                     "期权持仓",
                     f"{len(active_option_positions)} 个",
-                    f"市值 ${opt_mv:,.2f} · 浮盈 ${opt_pnl:+,.2f}",
+                    f"当日 ${opt_today_pnl:+,.2f} · 市值 ${opt_mv:,.2f}",
                     border=True,
                 )
                 st.metric(
