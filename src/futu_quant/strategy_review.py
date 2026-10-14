@@ -617,6 +617,113 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
     )
 
 
+def _review_issue_advice(review: StrategyReview) -> tuple[list[str], list[str]]:
+    """Derive compact daily issues and actionable advice for IM delivery."""
+    issues: list[str] = []
+    advice: list[str] = []
+
+    metrics = review.metrics
+    orders_empty = review.orders.empty
+    decisions_count = int(metrics.get("策略决策") or 0)
+    orders_count = int(metrics.get("订单数") or 0)
+    filled_orders = int(metrics.get("成交订单") or 0)
+    blocked_count = int(metrics.get("阻断次数") or 0)
+    trading_blockers = int(metrics.get("交易阻塞类型数") or 0)
+    cleanup_items = int(metrics.get("到期/失效清理项") or 0)
+    realized_pnl = float(metrics.get("期权已实现盈亏") or 0.0)
+
+    if review.blockers.empty:
+        if orders_count == 0 and filled_orders == 0:
+            if decisions_count == 0:
+                issues.append("本窗口没有策略决策与订单记录，需要确认策略服务是否持续运行。")
+                advice.append("先检查 OpenD / 统一交易服务心跳、行情快照与调度任务是否正常。")
+            else:
+                issues.append("策略有决策但没有形成订单，主要卡在信号后的下单前置链路。")
+                advice.append("优先查看动作项里的首个高优先级阻塞，确认是行情质量、冷却还是合约过期。")
+    else:
+        blocker_rows = review.blockers.copy()
+        if "未下单原因" in blocker_rows.columns:
+            top_reasons = []
+            for _, row in blocker_rows.head(3).iterrows():
+                reason = str(row.get("未下单原因") or "").strip()
+                count = str(row.get("次数") or "").strip()
+                if reason:
+                    top_reasons.append(f"{reason}（{count} 次）" if count else reason)
+            if top_reasons:
+                issues.append("主要阻塞：" + "；".join(top_reasons[:3]) + "。")
+        if cleanup_items > 0:
+            issues.append(f"存在 {cleanup_items} 条到期/失效清理项，说明仍有旧合约残留。")
+        if trading_blockers > 0:
+            advice.append("先按动作项处理交易阻塞，再判断是否放宽盘口价差/新鲜度阈值。")
+        if "合约已于" in str(blocker_rows.get("未下单原因", pd.Series(dtype="string")).astype(str).to_dict()):
+            advice.append("收缩扫描池，优先剔除已过期/即将到期期权，避免反复空扫。")
+
+    if orders_count and not filled_orders:
+        issues.append("订单已生成，但本窗口没有实际成交。")
+        advice.append("检查限价设置、追价次数、订单超时与取消原因。")
+    elif orders_count and filled_orders:
+        fill_rate = filled_orders / orders_count
+        if fill_rate < 0.5:
+            issues.append(f"成交率偏低：{filled_orders}/{orders_count}。")
+            advice.append("检查成交结构是否依赖追价，以及盘口深度是否足够支撑当前手数。")
+
+    if realized_pnl < 0:
+        issues.append(f"期权已实现盈亏为 {realized_pnl:.2f} 美元，当日整体亏损。")
+        advice.append("检查亏损来源是否集中在某类合约，确认止损/止盈是否过晚。")
+    elif realized_pnl > 0:
+        issues.append(f"期权已实现盈亏为 {realized_pnl:.2f} 美元，当日有正贡献。")
+
+    if review.runtime_health.empty:
+        issues.append("运行健康表没有记录，说明本窗口没有足够的心跳/任务证据。")
+        advice.append("先恢复运行层稳定性，再谈策略参数调整。")
+    else:
+        health = review.runtime_health.copy()
+        if "异常次数" in health.columns:
+            bad_rows = health[pd.to_numeric(health["异常次数"], errors="coerce").fillna(0) > 0]
+            if not bad_rows.empty:
+                issues.append(f"运行层有 {len(bad_rows)} 项异常或退化，需要优先处理。")
+
+    if review.action_items.empty:
+        advice.append("当前没有生成明确动作项，建议先补充一次人工复盘。")
+    else:
+        top_actions = review.action_items.copy()
+        top_actions["优先级排序"] = top_actions["优先级"].map({"高": 0, "中": 1, "低": 2}).fillna(3)
+        top_actions = top_actions.sort_values(["优先级排序", "对象"]).head(3)
+        action_lines = [
+            f"{row.get('对象', '')}：{row.get('建议动作', row.get('问题', ''))}".strip()
+            for _, row in top_actions.iterrows()
+        ]
+        advice.extend([line for line in action_lines if line])
+
+    if not issues:
+        issues.append("当日没有发现显著问题，可保持当前策略配置。")
+        advice.append("继续观察成交质量与盘口表现，暂不需要参数调整。")
+
+    dedup_issues = []
+    for item in issues:
+        if item and item not in dedup_issues:
+            dedup_issues.append(item)
+    dedup_advice = []
+    for item in advice:
+        if item and item not in dedup_advice:
+            dedup_advice.append(item)
+    return dedup_issues[:5], dedup_advice[:5]
+
+
+def review_advice_markdown(review: StrategyReview) -> str:
+    issues, advice = _review_issue_advice(review)
+    lines = [
+        "## 当日问题与建议",
+        "",
+        "### 问题",
+    ]
+    lines.extend([f"- {item}" for item in issues] or ["- 本窗口没有发现显著问题。"])
+    lines.append("")
+    lines.append("### 建议")
+    lines.extend([f"- {item}" for item in advice] or ["- 维持当前配置，继续观察。"])
+    return "\n".join(lines)
+
+
 def review_markdown(review: StrategyReview) -> str:
     def table(frame: pd.DataFrame) -> str:
         if frame.empty:
@@ -690,5 +797,7 @@ def review_markdown(review: StrategyReview) -> str:
         "## 阻塞原因",
         "",
         table(review.blockers),
+        "",
+        review_advice_markdown(review),
     ]
     return "\n".join(lines)
