@@ -201,22 +201,11 @@ class FeishuReporter:
             "lark-cli", "drive", "+import",
             "--file", relative_md,
             "--type", "docx",
-            "--folder-token", self.folder_token,
             "--name", title,
-            "--as", "user",
+            "--as", "bot",
         ]
         import_res = _run_lark_json(import_cmd)
         doc_url = import_res.get("data", {}).get("url", "")
-        if not doc_url and self.folder_token:
-            # 降级尝试不带 folder-token
-            fallback_res = _run_lark_json([
-                "lark-cli", "drive", "+import",
-                "--file", relative_md,
-                "--type", "docx",
-                "--name", title,
-                "--as", "user",
-            ])
-            doc_url = fallback_res.get("data", {}).get("url", "")
 
         # 2. 发送消息到 147 会话
         msg_body = (
@@ -270,25 +259,19 @@ class FeishuReporter:
         # 1. 优先尝试将报告导入为飞书在线文档，获取在线阅读链接
         if markdown_path and Path(markdown_path).exists():
             try:
-                relative_md = Path(markdown_path).relative_to(REPO_ROOT).as_posix()
+                md_resolved = Path(markdown_path).resolve()
+                try:
+                    relative_md = md_resolved.relative_to(REPO_ROOT.resolve()).as_posix()
+                except ValueError:
+                    relative_md = str(md_resolved)
                 import_res = _run_lark_json([
                     "lark-cli", "drive", "+import",
                     "--file", relative_md,
                     "--type", "docx",
-                    "--folder-token", self.folder_token,
                     "--name", title,
-                    "--as", "user",
+                    "--as", "bot",
                 ])
                 doc_url = import_res.get("data", {}).get("url", "")
-                if not doc_url and self.folder_token:
-                    fallback_res = _run_lark_json([
-                        "lark-cli", "drive", "+import",
-                        "--file", relative_md,
-                        "--type", "docx",
-                        "--name", title,
-                        "--as", "user",
-                    ])
-                    doc_url = fallback_res.get("data", {}).get("url", "")
             except Exception as exc:
                 logger.warning("导入飞书文档遇到异常: %s", exc)
 
