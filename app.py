@@ -270,126 +270,172 @@ try:
     if not info.empty:
         row = info.iloc[0]
 
-        # 仅将 qty > 0 的记录视为当前在仓；券商当天已平仓的零数量记录不计入持仓数
-        active_opt_mask = (
-            pd.to_numeric(option_positions.get("qty", 0), errors="coerce").fillna(0) > 0
-            if not option_positions.empty else pd.Series(dtype=bool)
-        )
-        active_option_positions = (
-            option_positions[active_opt_mask].copy()
-            if not option_positions.empty else pd.DataFrame()
-        )
-        active_stock_mask = (
-            pd.to_numeric(stock_positions.get("qty", 0), errors="coerce").fillna(0) > 0
-            if not stock_positions.empty else pd.Series(dtype=bool)
-        )
-        active_stock_positions = (
-            stock_positions[active_stock_mask].copy()
-            if not stock_positions.empty else pd.DataFrame()
-        )
+        # 过滤数量 > 0 的有效在仓，已平仓清零记录不计入当前持仓数
+        active_opt_mask = (pd.to_numeric(option_positions.get("qty", 0), errors="coerce").fillna(0) > 0) if not option_positions.empty else pd.Series(dtype=bool)
+        active_option_positions = option_positions[active_opt_mask].copy() if not option_positions.empty else pd.DataFrame()
 
+        active_stock_mask = (pd.to_numeric(stock_positions.get("qty", 0), errors="coerce").fillna(0) > 0) if not stock_positions.empty else pd.Series(dtype=bool)
+        active_stock_positions = stock_positions[active_stock_mask].copy() if not stock_positions.empty else pd.DataFrame()
+
+        # 拆分股票与期权的当日盈亏、累计浮盈与市值
         stock_today_pnl = numeric_sum(stock_positions, "today_pl_val")
         stock_total_pnl = numeric_sum(stock_positions, "pl_val")
         stock_mv = position_amount(active_stock_positions)
+
         opt_today_pnl = numeric_sum(option_positions, "today_pl_val")
         opt_total_pnl = numeric_sum(option_positions, "pl_val")
         opt_mv = position_amount(active_option_positions)
+
         total_today_pnl = stock_today_pnl + opt_today_pnl
         total_pos_pnl = stock_total_pnl + opt_total_pnl
 
-        # 账户总览：只放真正的账户级指标
+        with st.container(horizontal=True):
+            st.metric("总权益", f"${float(row.get('total_assets', 0)):,.2f}", border=True)
+            st.metric("现金", f"${float(row.get('cash', 0)):,.2f}", border=True)
+            st.metric("证券市值", f"${float(row.get('market_val', 0)):,.2f}", border=True)
+            st.metric("可用购买力", f"${float(row.get('power', 0)):,.2f}", border=True)
+            st.metric(
+                "股票当日浮盈", f"${stock_today_pnl:+,.2f}",
+                f"累计 ${stock_total_pnl:+,.2f}",
+                delta_color="normal", border=True,
+            )
+            st.metric(
+                "期权当日浮盈", f"${opt_today_pnl:+,.2f}",
+                f"累计 ${opt_total_pnl:+,.2f}",
+                delta_color="normal", border=True,
+            )
+            st.metric(
+                "当日总浮动盈亏", f"${total_today_pnl:+,.2f}",
+                f"累计 ${total_pos_pnl:+,.2f}",
+                delta_color="normal", border=True,
+            )
+        st.caption(
+            "损益按富途模拟账户持仓明细汇总拆分；当日浮动盈亏不包含已平仓兑现收益，"
+            "且不包含 SHADOW 虚拟成交。"
+        )
+
         with st.container(border=True):
-            st.markdown("### 量化系统驾驶舱")
-            st.caption("账户资产、股票底仓与期权战区分开展示；所有数值均来自富途模拟账户快照。")
-            with st.container(horizontal=True):
-                st.metric("总资产权益", f"${float(row.get('total_assets', 0)):,.2f}", border=True)
-                st.metric("现金余额", f"${float(row.get('cash', 0)):,.2f}", border=True)
-                st.metric("证券总市值", f"${float(row.get('market_val', 0)):,.2f}", border=True)
-                st.metric("可用购买力", f"${float(row.get('power', 0)):,.2f}", border=True)
+            st.subheader("当前持仓总览")
+            st.caption("富途模拟盘真实持仓和 Shadow 虚拟持仓分开展示；已平仓清零合约不计入持仓数。")
             with st.container(horizontal=True):
                 st.metric(
-                    "账户当日浮动盈亏", f"${total_today_pnl:+,.2f}",
-                    f"当前持仓累计 ${total_pos_pnl:+,.2f}",
-                    delta_color="normal", border=True,
-                )
-                st.metric(
-                    "股票 + 期权市值", f"${stock_mv + opt_mv:,.2f}",
-                    f"股票 ${stock_mv:,.2f} · 期权 ${opt_mv:,.2f}",
+                    "股票/ETF 持仓",
+                    f"{len(active_stock_positions)} 个",
+                    f"当日 ${stock_today_pnl:+,.2f} · 市值 ${stock_mv:,.2f}",
                     border=True,
                 )
-            st.caption("当日浮动盈亏按当前持仓明细汇总，不包含已平仓兑现收益，也不包含 Shadow 虚拟成交。")
-
-        # 两个独立战区：相同结构、相同层级，避免数字混排
-        stock_zone, option_zone = st.columns(2)
-        with stock_zone:
-            with st.container(border=True):
-                st.markdown("#### 股票 / ETF 战区")
-                st.caption("Core Satellite 现货底仓")
-                with st.container(horizontal=True):
-                    st.metric("在仓标的", f"{len(active_stock_positions)} 只", border=True)
-                    st.metric("总市值", f"${stock_mv:,.2f}", border=True)
-                st.metric("当日浮动盈亏", f"${stock_today_pnl:+,.2f}", border=True)
-                st.metric("当前持仓累计浮盈", f"${stock_total_pnl:+,.2f}", border=True)
-                st.page_link(
-                    "pages/4_core_satellite_strategy.py",
-                    label="查看股票调仓与策略状态",
-                    icon=":material/pie_chart:",
+                st.metric(
+                    "期权持仓",
+                    f"{len(active_option_positions)} 个",
+                    f"当日 ${opt_today_pnl:+,.2f} · 市值 ${opt_mv:,.2f}",
+                    border=True,
                 )
-        with option_zone:
-            with st.container(border=True):
-                st.markdown("#### 期权战区")
-                st.caption("波动率策略与主动风控")
-                with st.container(horizontal=True):
-                    st.metric("在仓合约", f"{len(active_option_positions)} 张", border=True)
-                    st.metric("权利金市值", f"${opt_mv:,.2f}", border=True)
-                st.metric("当日浮动盈亏", f"${opt_today_pnl:+,.2f}", border=True)
-                st.metric("当前持仓累计浮盈", f"${opt_total_pnl:+,.2f}", border=True)
-                st.page_link(
-                    "pages/28_options_pnl_ledger.py",
-                    label="查看期权逐笔台账与平仓历史",
-                    icon=":material/receipt_long:",
+                st.metric(
+                    "Shadow 股票/ETF",
+                    f"{len(shadow_stocks)} 个",
+                    f"${numeric_sum(shadow_stocks, 'notional'):,.2f}",
+                    border=True,
                 )
-
-    # 详细数据按用途分组，避免重复嵌套 tabs
-    tabs = st.tabs([
-        f"股票/ETF 持仓 ({len(active_stock_positions)})",
-        f"期权持仓 ({len(active_option_positions)})",
-        "待成交订单",
-        "今日订单",
-        "历史订单",
-        "策略盈亏归因",
-        "策略信号",
-        "执行审计",
-        "账户原始数据",
-    ])
-
-    with tabs[0]:
-        if stock_positions.empty:
-            st.info("当前富途模拟账户没有股票/ETF 持仓。")
-        else:
-            st.dataframe(chinese_columns(stock_positions), hide_index=True)
-
-    with tabs[1]:
-        if option_positions.empty:
-            st.info("当前富途模拟账户没有期权持仓。")
-        else:
-            show_all = st.checkbox("包含今日已平仓清零合约", value=False, key="show_all_zero_qty_options")
-            display_df = option_positions if show_all else active_option_positions
-            if display_df.empty:
-                st.info("当前无有效期权持仓（今日持仓已全部平仓锁定）。")
-            else:
-                st.dataframe(option_position_display(display_df), hide_index=True)
+                st.metric(
+                    "Shadow 期权",
+                    f"{len(shadow_options)} 个",
+                    f"${numeric_sum(shadow_options, 'notional'):,.2f}",
+                    border=True,
+                )
             st.page_link(
                 "pages/28_options_pnl_ledger.py",
-                label="查看期权逐笔盈亏台账与平仓收益",
+                label="打开期权盈亏台账查看逐笔期权盈亏",
                 icon=":material/price_check:",
             )
-
+        try:
+            strategy_summary, strategy_detail, _ = load_strategy_pnl()
+            if not strategy_summary.empty:
+                with st.container(horizontal=True):
+                    st.metric(
+                        "策略已实现盈亏", f"${float(strategy_summary['已实现盈亏'].sum()):,.2f}",
+                        border=True,
+                    )
+                    st.metric(
+                        "策略未实现盈亏", f"${float(strategy_summary['未实现盈亏'].sum()):,.2f}",
+                        border=True,
+                    )
+                    st.metric(
+                        "策略总盈亏", f"${float(strategy_summary['总盈亏'].sum()):,.2f}",
+                        border=True,
+                    )
+                with st.expander("查看策略盈亏明细", expanded=False):
+                    st.dataframe(chinese_columns(strategy_summary), hide_index=True)
+                    st.caption(
+                        "这里按统一成交账本和策略虚拟持仓归因，包含 Shadow 成交；"
+                        "它和富途账户盈亏不是同一个口径。"
+                    )
+                    if not strategy_detail.empty:
+                        st.dataframe(chinese_columns(strategy_detail), hide_index=True)
+        except BrokerError as exc:
+            st.warning(f"策略盈亏暂不可用：{exc}")
+    tabs = st.tabs(
+        ["当前持仓", "待成交订单", "今日订单", "历史订单", "执行审计", "策略信号", "账户原始数据"]
+    )
+    with tabs[0]:
+        st.caption("这里是当前持仓主入口：股票/ETF、期权、Shadow 虚拟持仓都在这里看。")
+        stock_tab, option_tab, shadow_tab, all_position_tab = st.tabs(
+            ["股票/ETF 持仓", "期权持仓", "Shadow 虚拟持仓", "全部富途持仓"]
+        )
+        with stock_tab:
+            if stock_positions.empty:
+                st.info("当前富途模拟账户没有股票/ETF 持仓。")
+            else:
+                st.dataframe(chinese_columns(stock_positions), hide_index=True)
+        with option_tab:
+            if option_positions.empty:
+                st.info("当前富途模拟账户没有期权持仓。")
+            else:
+                show_all = st.checkbox("包含今日已平仓清零合约", value=False, key="show_all_zero_qty_options")
+                display_df = option_positions if show_all else active_option_positions
+                if display_df.empty:
+                    st.info("当前无有效期权持仓（今日持仓已全部平仓锁定）。")
+                else:
+                    st.dataframe(option_position_display(display_df), hide_index=True)
+                st.page_link(
+                    "pages/28_options_pnl_ledger.py",
+                    label="查看期权逐笔盈亏和已平仓历史",
+                    icon=":material/price_check:",
+                )
+        with shadow_tab:
+            if shadow_positions.empty:
+                st.info("当前没有 Shadow 虚拟持仓。")
+            else:
+                shadow_stock_tab, shadow_option_tab, shadow_all_tab = st.tabs([
+                    "Shadow 股票/ETF", "Shadow 期权", "全部 Shadow 持仓",
+                ])
+                for tab, frame, empty_message in (
+                    (shadow_stock_tab, shadow_stocks, "当前没有 Shadow 股票/ETF 持仓。"),
+                    (shadow_option_tab, shadow_options, "当前没有 Shadow 期权持仓。"),
+                    (shadow_all_tab, shadow_positions, "当前没有 Shadow 虚拟持仓。"),
+                ):
+                    with tab:
+                        if frame.empty:
+                            st.info(empty_message)
+                        else:
+                            view = frame.rename(columns={
+                                "strategy_id": "策略",
+                                "symbol": "代码",
+                                "quantity": "数量",
+                                "average_cost": "平均成本",
+                                "asset_class": "资产类型",
+                                "notional": "估算名义金额",
+                            })
+                            st.dataframe(view, hide_index=True)
+                st.caption(
+                    "Shadow 是本地虚拟撮合账本，用来验证策略；不是富途模拟账户真实持仓。"
+                )
+        with all_position_tab:
+            st.dataframe(chinese_columns(positions), hide_index=True)
     pending_orders = (
         orders[orders["order_status"].map(broker.is_cancellable_status)].copy()
         if not orders.empty else orders
     )
-    with tabs[2]:
+    with tabs[1]:
         st.dataframe(chinese_columns(pending_orders), hide_index=True)
         cancel_result = st.session_state.pop("main_cancel_result", None)
         if cancel_result is not None:
@@ -401,7 +447,8 @@ try:
             st.info("当前没有待成交或可撤销订单。")
         else:
             selected_order = st.selectbox(
-                "选择待撤订单", pending_orders.index.tolist(),
+                "选择待撤订单",
+                pending_orders.index.tolist(),
                 format_func=lambda index: (
                     f"{pending_orders.loc[index, 'order_id']} · "
                     f"{pending_orders.loc[index, 'code']} · "
@@ -410,7 +457,9 @@ try:
             )
             cancel_one, cancel_all = st.columns(2)
             if cancel_one.button("撤销选中订单", type="primary", disabled=not admin):
-                st.session_state.main_cancel_result = broker.cancel_orders(pending_orders.loc[[selected_order]])
+                st.session_state.main_cancel_result = broker.cancel_orders(
+                    pending_orders.loc[[selected_order]]
+                )
                 st.cache_data.clear()
                 st.rerun()
             with cancel_all.form("main_cancel_all_pending"):
@@ -423,11 +472,8 @@ try:
                         st.session_state.main_cancel_result = broker.cancel_orders(pending_orders)
                         st.cache_data.clear()
                         st.rerun()
-
+    tabs[2].dataframe(chinese_columns(orders), hide_index=True)
     with tabs[3]:
-        st.dataframe(chinese_columns(orders), hide_index=True)
-
-    with tabs[4]:
         st.caption("历史订单查询可能较慢，仅在明确点击后访问 OpenD。")
         if st.button("加载历史订单", key="load_main_history"):
             _, _, _, _, history = load_account(True)
@@ -437,25 +483,23 @@ try:
             st.info("尚未加载历史订单。")
         else:
             st.dataframe(chinese_columns(history), hide_index=True)
-
-    with tabs[5]:
-        try:
-            strategy_summary, strategy_detail, _ = load_strategy_pnl()
-            if strategy_summary.empty:
-                st.info("当前暂无策略归因明细数据。")
-            else:
-                with st.container(horizontal=True):
-                    st.metric("已实现盈亏", f"${float(strategy_summary['已实现盈亏'].sum()):,.2f}", border=True)
-                    st.metric("未实现盈亏", f"${float(strategy_summary['未实现盈亏'].sum()):,.2f}", border=True)
-                    st.metric("策略总盈亏", f"${float(strategy_summary['总盈亏'].sum()):,.2f}", border=True)
-                st.dataframe(chinese_columns(strategy_summary), hide_index=True)
-                if not strategy_detail.empty:
-                    st.dataframe(chinese_columns(strategy_detail), hide_index=True)
-                st.caption("这里按统一成交账本和策略虚拟持仓归因，包含 Shadow 成交；与富途账户盈亏不是同一口径。")
-        except BrokerError as exc:
-            st.warning(f"策略盈亏暂不可用：{exc}")
-
+    with tabs[4]:
+        intent_rows = store.intents()
+        if not intent_rows:
+            st.info("暂无由统一执行层发出的订单。")
+        else:
+            intent_table = chinese_columns(pd.DataFrame(intent_rows)).rename(columns={
+                "strategy_id": "策略", "intent_key": "交易意图键", "symbol": "代码",
+                "side": "方向", "quantity": "数量", "limit_price": "限价",
+                "status": "执行状态", "broker_order_id": "券商订单号", "error": "错误信息",
+                "created_at": "创建时间", "updated_at": "更新时间", "metadata_json": "附加信息",
+            })
+            st.dataframe(intent_table.drop(columns=["id"], errors="ignore"), hide_index=True)
+            st.caption("同一策略与交易意图键只能提交一次；REJECTED 表示被本地风控拦截。")
     with tabs[6]:
+        st.dataframe(chinese_columns(info), hide_index=True)
+        st.caption("账户快照由统一交易服务周期采集；页面优先显示服务最新结果。")
+    with tabs[5]:
         symbol = st.selectbox("标的", settings.watchlist)
         strategy_name = st.selectbox("策略", [*STRATEGIES, STRATEGY_NAME])
         if st.button("计算最新信号"):
@@ -472,12 +516,17 @@ try:
                     settings.core_satellite_weight_tolerance,
                 )
                 st.metric("市场状态", "RISK-ON" if risk_on else "RISK-OFF")
-                st.dataframe([
-                    {"代码": order.symbol, "方向": order.side, "股数": order.quantity,
-                     "参考价": order.price, "当前仓位": order.current_weight,
-                     "目标仓位": order.target_weight, "原因": order.reason}
-                    for order in plan
-                ], hide_index=True)
+                st.dataframe(
+                    [
+                        {
+                            "代码": order.symbol, "方向": order.side, "股数": order.quantity,
+                            "参考价": order.price, "当前仓位": order.current_weight,
+                            "目标仓位": order.target_weight, "原因": order.reason,
+                        }
+                        for order in plan
+                    ],
+                    hide_index=True,
+                )
                 if not plan:
                     st.info("当前没有达到最小交易金额的调仓指令。")
             else:
@@ -487,25 +536,10 @@ try:
                 st.caption(result.reason)
                 china_candles = china_time_columns(candles)
                 st.line_chart(china_candles.set_index("time_key")["close"])
-                st.info(f"{symbol} 自动执行数量：{settings.quantity_for(symbol)} 股；实际下单由策略进程负责。")
-
-    with tabs[7]:
-        intent_rows = store.intents()
-        if not intent_rows:
-            st.info("暂无由统一执行层发出的订单。")
-        else:
-            intent_table = chinese_columns(pd.DataFrame(intent_rows)).rename(columns={
-                "strategy_id": "策略", "intent_key": "交易意图键", "symbol": "代码",
-                "side": "方向", "quantity": "数量", "limit_price": "限价",
-                "status": "执行状态", "broker_order_id": "券商订单号", "error": "错误信息",
-                "created_at": "创建时间", "updated_at": "更新时间", "metadata_json": "附加信息",
-            })
-            st.dataframe(intent_table.drop(columns=["id"], errors="ignore"), hide_index=True)
-            st.caption("同一策略与交易意图键只能提交一次；REJECTED 表示被本地风控拦截。")
-
-    with tabs[8]:
-        st.dataframe(chinese_columns(info), hide_index=True)
-        st.caption("账户快照由统一交易服务周期采集；页面优先显示服务最新结果。")
+                st.info(
+                    f"{symbol} 自动执行数量：{settings.quantity_for(symbol)} 股；"
+                    "实际下单由策略进程负责。"
+                )
 except BrokerError as exc:
     st.error(f"连接失败：{exc}")
     st.info("请启动并登录 Futu OpenD，确认端口与 .env 一致，然后刷新页面。")
