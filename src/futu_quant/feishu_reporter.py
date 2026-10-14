@@ -22,6 +22,46 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FEISHU_DELIVERY_CHAT_ID = "oc_47d5da371ac34e16cdc7b20bcdd7f27a"
 FEISHU_REVIEW_FOLDER_TOKEN = "IKiVf2vtTlvnswdhke5ctLhtntd"
+LARK_RUN_JS = r"C:\Users\Administrator\AppData\Roaming\npm\node_modules\@larksuite\cli\scripts\run.js"
+
+
+def _lark_node_exe() -> str | None:
+    for cand in [r"C:\Program Files\nodejs\node.exe", r"C:\Users\Administrator\AppData\Roaming\npm\node.exe"]:
+        if os.path.exists(cand):
+            return cand
+    import shutil
+    return shutil.which("node")
+
+
+def _run_lark_json(cmd: list[str]) -> dict:
+    """在 Windows 沙箱下使用文件重定向执行 lark-cli 命令，避免 CreatePipe 限制。"""
+    argv = list(cmd)
+    if argv and argv[0] == "lark-cli" and os.path.exists(LARK_RUN_JS):
+        node = _lark_node_exe()
+        if node:
+            argv = [node, LARK_RUN_JS, *argv[1:]]
+
+    out_file = REPO_ROOT / "data" / "_lark_out.json"
+    err_file = REPO_ROOT / "data" / "_lark_err.log"
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        with open(out_file, "wb") as f_out, open(err_file, "wb") as f_err:
+            proc = subprocess.run(argv, stdout=f_out, stderr=f_err, cwd=str(REPO_ROOT), env=env, check=False)
+        output = out_file.read_text(encoding="utf-8", errors="ignore").lstrip("\ufeff").strip()
+        stderr_text = err_file.read_text(encoding="utf-8", errors="ignore")
+        if not output:
+            return {"ok": False, "error": f"lark-cli exited {proc.returncode} with no output; stderr={stderr_text[:300]}"}
+        inner_start = output.find("{")
+        inner_end = output.rfind("}")
+        if inner_start != -1 and inner_end > inner_start:
+            return json.loads(output[inner_start:inner_end + 1])
+        return {"ok": False, "error": output}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        out_file.unlink(missing_ok=True)
+        err_file.unlink(missing_ok=True)
 
 
 class FeishuReporter:
@@ -69,14 +109,18 @@ class FeishuReporter:
             "--name", title,
             "--as", "user",
         ]
-        doc_url = ""
-        try:
-            res = subprocess.run(import_cmd, capture_output=True, text=True, check=False, cwd=str(REPO_ROOT))
-            if res.returncode == 0:
-                data = json.loads(res.stdout or "{}")
-                doc_url = data.get("data", {}).get("url", "")
-        except Exception as exc:
-            logger.warning("导入飞书文档遇到异常: %s", exc)
+        import_res = _run_lark_json(import_cmd)
+        doc_url = import_res.get("data", {}).get("url", "")
+        if not doc_url and self.folder_token:
+            # 降级尝试不带 folder-token
+            fallback_res = _run_lark_json([
+                "lark-cli", "drive", "+import",
+                "--file", relative_md,
+                "--type", "docx",
+                "--name", title,
+                "--as", "user",
+            ])
+            doc_url = fallback_res.get("data", {}).get("url", "")
 
         # 2. 发送消息到 147 会话
         msg_body = (
@@ -92,13 +136,8 @@ class FeishuReporter:
             "--as", "bot",
             "--markdown", msg_body,
         ]
-        try:
-            res = subprocess.run(send_cmd, capture_output=True, text=True, check=False, cwd=str(REPO_ROOT))
-            if res.returncode == 0:
-                return {"ok": True, "doc_url": doc_url}
-        except Exception as exc:
-            logger.warning("通过 lark-cli 发送消息失败: %s", exc)
-        return {"ok": False, "doc_url": doc_url}
+        send_res = _run_lark_json(send_cmd)
+        return {"ok": send_res.get("ok", False), "doc_url": doc_url, "send_res": send_res}
 
     def dispatch_pending_review(self) -> bool:
         """主入口：读取待投递复盘记录，自动发送至飞书并标记已投递。"""
