@@ -68,8 +68,22 @@ def _mirror_env(key: str, value: str) -> None:
     """Keep .env as a compatibility mirror; SQLite is the runtime authority."""
     ENV_FILE.touch(exist_ok=True)
     lock_path = ENV_FILE.with_suffix(".env.lock")
-    with exclusive_lock(lock_path, blocking=True):
-        set_key(str(ENV_FILE), key, value, quote_mode="never")
+    try:
+        import time
+        with exclusive_lock(lock_path, blocking=True):
+            for attempt in range(3):
+                try:
+                    set_key(str(ENV_FILE), key, value, quote_mode="never")
+                    break
+                except (PermissionError, OSError):
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.1)
+    except Exception as exc:
+        import logging
+        logging.getLogger("futu_quant.config").warning(
+            "镜像写入 .env 失败（SQLite 权威配置已生效，不影响运行）：%s", exc
+        )
     _set_env(key, value)
 
 

@@ -208,10 +208,10 @@ def _missing_order_breakpoint(trade_signals: list[dict], blocked: list[dict]) ->
 
 def _reason_category(reason: str) -> str:
     text = str(reason)
-    if "合约已于" in text or "全部合约已过期" in text or "已过期" in text:
-        return "到期/失效清理项"
-    if "新鲜度" in text or "行情已过期" in text or "盘口不可用" in text:
+    if "行情已过期" in text or "新鲜度" in text or "盘口不可用" in text or "盘口价差" in text:
         return "行情过期或盘口不可用"
+    if "合约已于" in text or "全部合约已过期" in text or "合约已过期" in text:
+        return "到期/失效清理项"
     if "预期收益" in text:
         return "模型预期收益未通过"
     if "IV/RV" in text or "IV成本" in text or "隐含波动" in text:

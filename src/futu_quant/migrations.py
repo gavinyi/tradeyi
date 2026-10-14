@@ -66,6 +66,9 @@ MIGRATIONS = (
         ALTER TABLE option_combo_legs ADD COLUMN last_broker_update TEXT;
         CREATE INDEX IF NOT EXISTS idx_combo_legs_symbol_status ON option_combo_legs(symbol,status);
     """),
+    Migration(5, "shadow_incubator_track_mode", """
+        ALTER TABLE shadow_incubator ADD COLUMN track_mode TEXT NOT NULL DEFAULT 'STANDARD';
+    """),
 )
 
 
@@ -82,7 +85,13 @@ def apply_migrations(connection: sqlite3.Connection) -> list[int]:
             if migration.version != 1 and applied[migration.version] != migration.checksum:
                 raise RuntimeError(f"迁移 {migration.version} 校验和不一致，拒绝继续")
             continue
-        connection.executescript(migration.sql)
+        try:
+            connection.executescript(migration.sql)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" in str(exc).lower():
+                pass
+            else:
+                raise
         connection.execute(
             "INSERT INTO schema_migrations VALUES(?,?,?,datetime('now'))",
             (migration.version, migration.name, migration.checksum),
