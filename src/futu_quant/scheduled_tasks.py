@@ -237,6 +237,14 @@ def run_daily_strategy_review(
     conclusion = "\n".join(review.narrative[:8]) or "本窗口没有额外结论。"
     queue_review_for_im_delivery(store, session_date, str(path), conclusion, str(md_path))
     store.set_setting(_task_timer_key(DAILY_STRATEGY_REVIEW_TASK), now.isoformat())
+
+    # 应用内自动触发飞书战报与复盘推送，直达用户机器人会话
+    try:
+        from futu_quant.feishu_reporter import FeishuReporter
+        FeishuReporter(store).dispatch_pending_review()
+    except Exception:
+        pass
+
     return str(path)
 
 

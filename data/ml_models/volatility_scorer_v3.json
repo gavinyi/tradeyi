@@ -1,26 +1,107 @@
 {
-  "auc": 0.7648902821316614,
-  "test_size": 62,
-  "train_size": 207,
-  "n_features": 16,
-  "feature_cols": [
-    "days_to_expiry",
-    "is_call",
-    "strike_price",
-    "expiry_bucket",
-    "symbol_avg_pnl",
-    "symbol_std_pnl",
-    "symbol_max_pnl",
-    "symbol_min_pnl",
-    "symbol_win_rate",
-    "symbol_3d_avg_pnl",
-    "symbol_7d_avg_pnl",
-    "symbol_trade_count",
-    "symbol_pnl_trend",
-    "day_of_week",
-    "hour_of_day",
-    "is_market_close"
-  ],
-  "model_type": "auto",
-  "positive_rate": 0.5326797385620915
+  "version": "v3.1_retrained_20261014_011944",
+  "trained_at": "2026-10-14T01:19:44.659130+00:00",
+  "sample_trades_count": 308,
+  "incubator_symbols_count": 8,
+  "underlying_weights": {
+    "US.AAPL": {
+      "trades": 9,
+      "win_rate": 0.5556,
+      "total_pnl": 240.0
+    },
+    "US.AMD": {
+      "trades": 35,
+      "win_rate": 0.5143,
+      "total_pnl": 712.0
+    },
+    "US.AVGO": {
+      "trades": 7,
+      "win_rate": 0.7143,
+      "total_pnl": 227.0
+    },
+    "US.BRK.B": {
+      "trades": 3,
+      "win_rate": 0.3333,
+      "total_pnl": -114.0
+    },
+    "US.COIN": {
+      "trades": 35,
+      "win_rate": 0.4857,
+      "total_pnl": 1389.0
+    },
+    "US.GLD": {
+      "trades": 6,
+      "win_rate": 0.5,
+      "total_pnl": -20.6
+    },
+    "US.GOOG": {
+      "trades": 15,
+      "win_rate": 0.4667,
+      "total_pnl": -65.0
+    },
+    "US.INTC": {
+      "trades": 6,
+      "win_rate": 0.3333,
+      "total_pnl": -88.0
+    },
+    "US.JNJ": {
+      "trades": 1,
+      "win_rate": 0.0,
+      "total_pnl": -258.0
+    },
+    "US.KO": {
+      "trades": 3,
+      "win_rate": 0.0,
+      "total_pnl": -43.0
+    },
+    "US.META": {
+      "trades": 14,
+      "win_rate": 0.5714,
+      "total_pnl": 2120.0
+    },
+    "US.MSFT": {
+      "trades": 5,
+      "win_rate": 0.6,
+      "total_pnl": -122.0
+    },
+    "US.NVDA": {
+      "trades": 44,
+      "win_rate": 0.4773,
+      "total_pnl": 143.7
+    },
+    "US.QQQ": {
+      "trades": 6,
+      "win_rate": 0.6667,
+      "total_pnl": 604.0
+    },
+    "US.SKHY": {
+      "trades": 37,
+      "win_rate": 0.4054,
+      "total_pnl": 282.0
+    },
+    "US.SPCX": {
+      "trades": 52,
+      "win_rate": 0.4423,
+      "total_pnl": -343.0
+    },
+    "US.TSLA": {
+      "trades": 26,
+      "win_rate": 0.5385,
+      "total_pnl": -1331.0
+    },
+    "US.TSM": {
+      "trades": 4,
+      "win_rate": 0.5,
+      "total_pnl": -111.0
+    }
+  },
+  "features": [
+    "f_atr_ratio_20d",
+    "f_zscore_20d",
+    "f_beta_to_spy",
+    "f_iv_rv_ratio",
+    "f_iv_percentile",
+    "f_sandbox_win_rate",
+    "f_avg_slippage"
+  ]
 }

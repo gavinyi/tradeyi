@@ -861,10 +861,33 @@ def run_campaign(
     size_reason = ""
     effective_max_stages = int(campaign["max_stages"])
     if trigger_mode == "VOLATILITY":
-        size_factor, size_reason = volatility_direction_size_factor(regime)
+        # 外援灰度试水仓位控制: 新晋外援在首秀阶段 (实盘交易为0笔或尚未盈利) 强制使用 1 张探路仓
+        underlying_sym = str(campaign.get("underlying", "")).upper()
+        promoted_record = None
+        try:
+            with executor.store.connection() as conn:
+                row = conn.execute(
+                    "SELECT live_trades_count, live_realized_pnl FROM promoted_universe WHERE symbol=? AND status='ACTIVE'",
+                    (underlying_sym,),
+                ).fetchone()
+                if row:
+                    promoted_record = dict(row)
+        except Exception:
+            pass
+
+        if promoted_record is not None:
+            trades = int(promoted_record.get("live_trades_count", 0))
+            pnl = float(promoted_record.get("live_realized_pnl", 0.0))
+            if trades == 0 or pnl <= 0:
+                per_stage = 1
+                effective_max_stages = 1
+                size_reason = f"新晋外援标的 {underlying_sym} 处于灰度试水期（实盘{trades}笔，盈利${pnl:.2f}），限制 1 张探路仓"
+
+        size_factor, size_reason_factor = volatility_direction_size_factor(regime)
         if size_factor < 1:
             per_stage = max(1, int(per_stage * size_factor))
             effective_max_stages = min(effective_max_stages, 1)
+            size_reason = size_reason or size_reason_factor
         # Mid-quality expressions may enter only as a single-contract probe;
         # high-quality expressions retain the configured staged sizing.
         quality_score = market_number(campaign.get("volatility_quality_score"), 0.0)

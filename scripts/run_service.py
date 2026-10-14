@@ -559,8 +559,8 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     session = MARKET_CALENDAR.session(now)
     alerts = AlertManager(store)
     # Board timers are operational tasks, not trading tasks: run them before
-    # broker preflight so a disconnected OpenD cannot suppress the 04:15
-    # review or the 04:30 shutdown.
+    # broker preflight so a disconnected OpenD cannot suppress the 05:15
+    # review or the 06:00 shutdown.
     china_now = now.astimezone(ZoneInfo("Asia/Shanghai"))
     if store.get_setting(
         timer_enabled_setting_key(DAILY_STRATEGY_REVIEW_TASK),
@@ -837,6 +837,12 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
 
     core_due, core_reason = core_rebalance_window(store, session, now)
     if "Core Satellite" in configured and core_due:
+        # 在底仓调仓前执行期权超额利润锁箱沉淀 (Profit Sweeper)
+        try:
+            from futu_quant.profit_sweeper import ProfitSweeper
+            ProfitSweeper(store).sweep_profit_to_spy(min_threshold_usd=1000.0)
+        except Exception:
+            pass
         key = "last_run:core_satellite"
         succeeded = run_task(
             store, alerts, "core_satellite",
