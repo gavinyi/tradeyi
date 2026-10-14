@@ -65,37 +65,89 @@ def _run_lark_json(cmd: list[str]) -> dict:
 
 
 class FeishuReporter:
-    """飞书战报与复盘自动投递器"""
+    """飞书战报与复盘自动投递器（支持群机器人 Webhook、群聊会话与个人会话多目标广播）"""
 
     def __init__(self, store: TradingStore | None = None):
         self.store = store or TradingStore()
-        self.webhook_url = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
-        self.chat_id = os.getenv("FEISHU_CHAT_ID", FEISHU_DELIVERY_CHAT_ID).strip()
+        # 优先从数据库 runtime_config 读取，支持 UI 动态配置，其次读环境变量
+        self.webhook_url = (
+            self.store.get_setting("FEISHU_WEBHOOK_URL", "") or os.getenv("FEISHU_WEBHOOK_URL", "")
+        ).strip()
+        self.webhook_secret = (
+            self.store.get_setting("FEISHU_WEBHOOK_SECRET", "") or os.getenv("FEISHU_WEBHOOK_SECRET", "")
+        ).strip()
+        self.group_chat_id = (
+            self.store.get_setting("FEISHU_GROUP_CHAT_ID", "") or os.getenv("FEISHU_GROUP_CHAT_ID", "")
+        ).strip()
+        self.chat_id = (
+            self.store.get_setting("FEISHU_CHAT_ID", "") or os.getenv("FEISHU_CHAT_ID", FEISHU_DELIVERY_CHAT_ID)
+        ).strip()
         self.folder_token = os.getenv("FEISHU_FOLDER_TOKEN", FEISHU_REVIEW_FOLDER_TOKEN).strip()
 
-    def send_via_webhook(self, title: str, content_lines: list[str]) -> bool:
-        """通过标准飞书群自定义机器人 Webhook 发送富文本消息。"""
-        if not self.webhook_url:
+    @staticmethod
+    def _generate_signature(secret: str, timestamp: int) -> str:
+        """计算飞书群机器人安全签名 (HMAC-SHA256)。"""
+        import base64
+        import hashlib
+        import hmac
+        string_to_sign = f"{timestamp}\n{secret}"
+        hmac_code = hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+        return base64.b64encode(hmac_code).decode("utf-8")
+
+    def send_via_webhook(
+        self,
+        title: str,
+        content_lines: list[str],
+        doc_url: str = "",
+        webhook_url: str | None = None,
+    ) -> bool:
+        """通过标准飞书群自定义机器人 Webhook 发送高颜值卡片消息 (多账号全员可见)。"""
+        target_url = webhook_url or self.webhook_url
+        if not target_url:
             return False
         try:
-            elements = [{"tag": "text", "text": f"{line}\n"} for line in content_lines]
-            payload = json.dumps({
-                "msg_type": "post",
-                "content": {
-                    "post": {
-                        "zh_cn": {
-                            "title": title,
-                            "content": [elements],
-                        }
-                    }
+            import time
+            ts = int(time.time())
+            elements = []
+            for line in content_lines:
+                elements.append({
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": line},
+                })
+
+            if doc_url:
+                elements.append({
+                    "tag": "action",
+                    "actions": [{
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "📖 在线阅读完整策略复盘文档"},
+                        "type": "primary",
+                        "url": doc_url,
+                    }]
+                })
+
+            card_payload = {
+                "msg_type": "interactive",
+                "card": {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "title": {"tag": "plain_text", "content": f"📊 {title}"},
+                        "template": "blue",
+                    },
+                    "elements": elements,
                 }
-            }).encode("utf-8")
-            req = Request(self.webhook_url, data=payload, headers={"Content-Type": "application/json"})
+            }
+            if self.webhook_secret:
+                card_payload["timestamp"] = str(ts)
+                card_payload["sign"] = self._generate_signature(self.webhook_secret, ts)
+
+            payload_bytes = json.dumps(card_payload, ensure_ascii=False).encode("utf-8")
+            req = Request(target_url, data=payload_bytes, headers={"Content-Type": "application/json"})
             with urlopen(req, timeout=8) as resp:  # noqa: S310
                 res = json.loads(resp.read().decode("utf-8"))
                 return res.get("code") == 0 or res.get("StatusCode") == 0
         except Exception as exc:
-            logger.warning("通过飞书 Webhook 发送战报失败: %s", exc)
+            logger.warning("通过飞书群 Webhook 发送战报失败: %s", exc)
             return False
 
     def send_via_lark_cli(self, relative_md: str, title: str, session_date: str, conclusion: str, advice_text: str = "") -> dict:
@@ -169,29 +221,86 @@ class FeishuReporter:
             pass
 
         success = False
+        doc_url = ""
 
-        # 优先方式 1: 飞书标准群 Webhook (若配置)
+        # 1. 优先尝试将报告导入为飞书在线文档，获取在线阅读链接
+        if markdown_path and Path(markdown_path).exists():
+            try:
+                relative_md = Path(markdown_path).relative_to(REPO_ROOT).as_posix()
+                import_res = _run_lark_json([
+                    "lark-cli", "drive", "+import",
+                    "--file", relative_md,
+                    "--type", "docx",
+                    "--folder-token", self.folder_token,
+                    "--name", title,
+                    "--as", "user",
+                ])
+                doc_url = import_res.get("data", {}).get("url", "")
+                if not doc_url and self.folder_token:
+                    fallback_res = _run_lark_json([
+                        "lark-cli", "drive", "+import",
+                        "--file", relative_md,
+                        "--type", "docx",
+                        "--name", title,
+                        "--as", "user",
+                    ])
+                    doc_url = fallback_res.get("data", {}).get("url", "")
+            except Exception as exc:
+                logger.warning("导入飞书文档遇到异常: %s", exc)
+
+        # 2. 渠道 A: 飞书群自定义机器人 Webhook (支持多成员/多账号全员共享卡片)
         if self.webhook_url:
             lines = [
-                f"美东交易日：{session_date}",
-                f"核心结论：{conclusion}",
+                f"📅 **美东交易日**: {session_date}",
+                f"📝 **结论摘要**:\n{conclusion}",
             ]
             if advice_text:
-                lines.append(advice_text)
-            success = self.send_via_webhook(title, lines)
+                lines.append(f"💡 **当日建议**:\n{advice_text}")
+            if doc_url:
+                lines.append(f"🔗 **在线文档**: {doc_url}")
+            wh_ok = self.send_via_webhook(title, lines, doc_url=doc_url)
+            success = success or wh_ok
 
-        # 降级/默认方式 2: lark-cli 机器人直发 147 会话
-        if not success and markdown_path and Path(markdown_path).exists():
-            relative_md = Path(markdown_path).relative_to(REPO_ROOT).as_posix()
-            res = self.send_via_lark_cli(relative_md, title, session_date, conclusion, advice_text)
-            success = res.get("ok", False)
+        # 3. 渠道 B: 飞书群聊会话直发 (若配置了群 chat_id)
+        if self.group_chat_id:
+            msg_body = (
+                f"量化系统 · 每日策略复盘报告 {session_date}\n"
+                f"文档链接：{doc_url or '可在本地 data/reports/ 查阅'}\n"
+                f"结论摘要：\n"
+                f"- {conclusion}"
+                + (f"\n{advice_text}" if advice_text else "")
+            )
+            group_res = _run_lark_json([
+                "lark-cli", "im", "+messages-send",
+                "--chat-id", self.group_chat_id,
+                "--as", "bot",
+                "--markdown", msg_body,
+            ])
+            success = success or group_res.get("ok", False)
+
+        # 4. 渠道 C: 兜底/直发个人 147 会话
+        if not success or (not self.webhook_url and not self.group_chat_id):
+            msg_body = (
+                f"量化系统 · 每日策略复盘报告 {session_date}\n"
+                f"文档链接：{doc_url or '可在本地 data/reports/ 查阅'}\n"
+                f"结论摘要：\n"
+                f"- {conclusion}"
+                + (f"\n{advice_text}" if advice_text else "")
+            )
+            cli_res = _run_lark_json([
+                "lark-cli", "im", "+messages-send",
+                "--chat-id", self.chat_id,
+                "--as", "bot",
+                "--markdown", msg_body,
+            ])
+            success = success or cli_res.get("ok", False)
 
         if success:
             mark_im_delivery_done(self.store, date.fromisoformat(session_date))
             self.store.record_universe_lifecycle_event(
                 event_type="FEISHU_REVIEW_DELIVERED",
                 symbol="ALL",
-                details={"session_date": session_date, "success": True},
+                details={"session_date": session_date, "success": True, "doc_url": doc_url},
             )
             logger.info("每日复盘战报已成功送达飞书: %s", session_date)
         return success

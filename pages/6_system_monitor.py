@@ -261,6 +261,39 @@ elif view == "告警中心":
         )
         st.dataframe(alert_display, hide_index=True)
 
+        with st.expander("🤖 飞书群机器人战报推送配置 (多账号共享)"):
+            st.caption("配置飞书群自定义机器人的 Webhook 地址，收盘战报将以交互卡片形式推送到群聊，群内所有成员均可实时查看。")
+            current_wh = store.get_setting("FEISHU_WEBHOOK_URL", "")
+            current_sec = store.get_setting("FEISHU_WEBHOOK_SECRET", "")
+            current_group_chat = store.get_setting("FEISHU_GROUP_CHAT_ID", "")
+
+            with st.form("feishu_config_form"):
+                new_wh = st.text_input("飞书群机器人 Webhook 地址", value=current_wh, placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/...")
+                new_sec = st.text_input("安全密钥 Secret (可选)", value=current_sec, type="password", placeholder="若机器人在飞书后台开启了签名校验请填入")
+                new_group = st.text_input("飞书群 Chat ID (可选)", value=current_group_chat, placeholder="oc_xxxxxxxxxxxx (若将 147 机器人拉入群聊)")
+                saved = st.form_submit_button("保存飞书推送配置", type="primary")
+                if saved:
+                    store.set_setting("FEISHU_WEBHOOK_URL", new_wh.strip())
+                    store.set_setting("FEISHU_WEBHOOK_SECRET", new_sec.strip())
+                    store.set_setting("FEISHU_GROUP_CHAT_ID", new_group.strip())
+                    st.success("飞书群推送配置已保存！")
+                    st.rerun()
+
+            if st.button("向飞书群机器人发送测试卡片", icon=":material/send:"):
+                from futu_quant.feishu_reporter import FeishuReporter
+                reporter = FeishuReporter(store=store)
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                lines = [
+                    f"**时间**: {now_str}",
+                    "**状态**: 飞书群多账号推送通道联调成功！",
+                    "**说明**: 此卡片由量化系统应用层直发，每日清晨 05:15 将自动推送完整复盘与收益卡片。",
+                ]
+                ok = reporter.send_via_webhook("飞书群机器人战报联调测试", lines)
+                if ok:
+                    st.success("✅ 飞书群测试卡片已成功发送！请在群聊中查收。")
+                else:
+                    st.error("❌ 发送失败，请检查 Webhook 地址或网络连接。若未配置 Webhook，可直接将 147 机器人拉入群聊。")
+
 elif view == "恢复与日报":
     events = pd.DataFrame(store.operational_events())
     if events.empty:
