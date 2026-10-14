@@ -20,7 +20,8 @@ from futu_quant.store import TradingStore
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-FEISHU_DELIVERY_CHAT_ID = "oc_47d5da371ac34e16cdc7b20bcdd7f27a"
+FEISHU_GROUP_CHAT_ID = "oc_880837ba7546cdf0b75834ef88eff5b4"  # Tradeyi 群聊
+FEISHU_DELIVERY_CHAT_ID = "oc_880837ba7546cdf0b75834ef88eff5b4"  # 默认统一发至该群，绝不外溢
 FEISHU_REVIEW_FOLDER_TOKEN = "IKiVf2vtTlvnswdhke5ctLhtntd"
 LARK_RUN_JS = r"C:\Users\Administrator\AppData\Roaming\npm\node_modules\@larksuite\cli\scripts\run.js"
 
