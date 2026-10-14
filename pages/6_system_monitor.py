@@ -282,17 +282,11 @@ elif view == "告警中心":
             if st.button("向飞书群机器人发送测试卡片", icon=":material/send:"):
                 from futu_quant.feishu_reporter import FeishuReporter
                 reporter = FeishuReporter(store=store)
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                lines = [
-                    f"**时间**: {now_str}",
-                    "**状态**: 飞书群多账号推送通道联调成功！",
-                    "**说明**: 此卡片由量化系统应用层直发，每日清晨 05:15 将自动推送完整复盘与收益卡片。",
-                ]
-                ok = reporter.send_via_webhook("飞书群机器人战报联调测试", lines)
-                if ok:
-                    st.success("✅ 飞书群测试卡片已成功发送！请在群聊中查收。")
+                res = reporter.send_test_message()
+                if res.get("ok"):
+                    st.success(f"✅ 飞书测试消息已成功发送至【{res.get('channel')}】！请在群聊中查收。")
                 else:
-                    st.error("❌ 发送失败，请检查 Webhook 地址或网络连接。若未配置 Webhook，可直接将 147 机器人拉入群聊。")
+                    st.error(f"❌ 发送失败：{res.get('error', '未知异常')}。请确保已填入有效的群 Chat ID 或 Webhook 地址。")
 
 elif view == "恢复与日报":
     events = pd.DataFrame(store.operational_events())

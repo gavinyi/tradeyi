@@ -150,6 +150,50 @@ class FeishuReporter:
             logger.warning("通过飞书群 Webhook 发送战报失败: %s", exc)
             return False
 
+    def send_test_message(self) -> dict:
+        """发送一条多通道测试消息，智能适配群 Chat ID、群 Webhook 或个人会话。"""
+        from datetime import datetime
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # 1. 如果配置了群 Chat ID (如 oc_8808...)，优先走群直发
+        if self.group_chat_id:
+            msg_body = (
+                f"🔔 量化系统 · 飞书群聊推送联调测试\n"
+                f"时间：{now_str}\n"
+                f"状态：已成功连通飞书群聊！\n"
+                f"目标群：{self.group_chat_id}\n"
+                f"说明：本群内所有成员现在均可实时接收每日策略复盘与关键战报卡片。"
+            )
+            cmd = [
+                "lark-cli", "im", "+messages-send",
+                "--chat-id", self.group_chat_id,
+                "--as", "bot",
+                "--markdown", msg_body,
+            ]
+            res = _run_lark_json(cmd)
+            if res.get("ok"):
+                return {"ok": True, "channel": "群聊会话 (Group Chat)", "target": self.group_chat_id}
+
+        # 2. 如果配置了 Webhook，走 Webhook 卡片
+        if self.webhook_url:
+            lines = [
+                f"**时间**: {now_str}",
+                "**状态**: 飞书群多账号推送通道联调成功！",
+                "**说明**: 此卡片由量化系统应用层直发，每日清晨 05:15 将自动推送完整复盘与收益卡片。",
+            ]
+            ok = self.send_via_webhook("飞书群机器人战报联调测试", lines)
+            if ok:
+                return {"ok": True, "channel": "群机器人 Webhook", "target": self.webhook_url}
+
+        # 3. 个人会话兜底
+        msg_body = f"🔔 量化系统 · 飞书个人推送联调测试\n时间：{now_str}\n状态：已连通个人会话！"
+        cmd = ["lark-cli", "im", "+messages-send", "--chat-id", self.chat_id, "--as", "bot", "--markdown", msg_body]
+        res = _run_lark_json(cmd)
+        if res.get("ok"):
+            return {"ok": True, "channel": "个人会话 (Personal Chat)", "target": self.chat_id}
+
+        return {"ok": False, "error": "未配置有效的飞书群 Chat ID 或 Webhook 地址"}
+
     def send_via_lark_cli(self, relative_md: str, title: str, session_date: str, conclusion: str, advice_text: str = "") -> dict:
         """通过 lark-cli 将 Markdown 导入为在线文档并发送至 147 机器人会话。"""
         # 1. 导入在线文档
