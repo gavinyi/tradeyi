@@ -52,6 +52,10 @@ class TradingStore:
         connection = sqlite3.connect(str(self.path), timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA cache_size=-64000")  # 64MB 高速页面缓存
+        connection.execute("PRAGMA temp_store=MEMORY")  # 临时表与排序运算全部内存化
+        connection.execute("PRAGMA mmap_size=268435456")  # 256MB 内存映射 I/O
+        connection.execute("PRAGMA busy_timeout=30000")
         try:
             yield connection
             if connection.in_transaction:
@@ -616,7 +620,17 @@ class TradingStore:
                 if name not in columns:
                     connection.execute(f"ALTER TABLE order_intents ADD COLUMN {name} {definition}")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_logs_id_desc ON decision_logs(id DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_strategy_id ON decision_logs(strategy_id, id DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_symbol_id ON decision_logs(symbol, id DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_created ON decision_logs(created_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_intents_status ON order_intents(status, created_at)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_intents_strategy ON order_intents(strategy_id, created_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_fill_ledger_symbol ON fill_ledger(symbol, filled_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_option_history_code_time ON option_history(code, time_key)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_option_history_underlying ON option_history(underlying, time_key)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_operational_events_id_desc ON operational_events(id DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_operational_events_component ON operational_events(component, id DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_alerts_id_desc ON alerts(id DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_equity_snapshots_id_desc ON equity_snapshots(id DESC)")
             connection.execute(

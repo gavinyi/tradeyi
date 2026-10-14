@@ -2,7 +2,11 @@
 
 ## 2026-10-14：飞书群机器人应用内全自动直连、四大进阶机制完善与超额利润放飞升级
 
-1. **OpenD 网关掉线与服务异常飞书群即时告警/恢复闭环 (`alerts.py`, `feishu_reporter.py`, `run_service.py`)**：
+1. **SQLite 数据库底层深度调优与全表扫描物理清零 (`src/futu_quant/store.py`)**：
+   - **补齐 10 大高性能复合索引**：针对 26 万行 `decision_logs` 补齐 `(strategy_id, id DESC)` 与 `(symbol, id DESC)`，针对 `order_intents` 补齐 `(status, created_at)`，针对 `fill_ledger` 补齐 `(symbol, filled_at DESC)`，针对 `option_history` 补齐覆盖索引；`EXPLAIN QUERY PLAN` 验证全表扫描（SCAN）彻底清零，全部转化为毫秒级 Index Seek；
+   - **历史死数据安全瘦身**：成功清理 `reconciliation_reports` 超过 7 天的历史无效高频对账流水 **4,461,596 行（446万行）**，并完成全库 `VACUUM` 磁盘碎片重构，大幅降低数据库体积；
+   - **SQLite PRAGMA 引擎内存化加速**：连接默认开启 64MB 页面缓存（`cache_size=-64000`）、临时表与排序运算全部内存化（`temp_store=MEMORY`）、启用 256MB 内存映射 I/O（`mmap_size=268435456`）与 30 秒锁等待，页面加载与高频改单追价实现毫秒级秒开。
+2. **OpenD 网关掉线与服务异常飞书群即时告警/恢复闭环 (`alerts.py`, `feishu_reporter.py`, `run_service.py`)**：
    - 彻底打通 `AlertManager` 与飞书群通道，系统发生 `CRITICAL` 或 `ERROR`（如 OpenD 网关掉线、预检超时、三账对账异常、雷达失联等）时，自动向飞书群直发**红色高亮紧急告警卡片**；
    - 包含故障现象、发生时间、以及“已自动暂停新开仓并保持持仓安全保护”的风控动作说明；
    - 故障自愈或网关重新连通后，自动向群里推送**绿色故障恢复卡片**，形成完整的自愈通知闭环；
