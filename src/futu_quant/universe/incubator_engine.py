@@ -139,13 +139,29 @@ class IncubatorEngine:
         retention = float(current.get("volume_retention_ratio", 0.0))
         ml_score = float(current.get("latest_ml_score", 0.0))
 
-        # 晋级准入四大硬门槛:
-        # 1. 观察天数满 10 个交易日 (滑动2周) 且至少有 3 次突破信号
-        # 2. 虚拟已实现净收益为正
-        # 3. 虚拟最大回撤严格控制在 25% 以内
-        # 4. 平均盘口滑点 <= 4.0%，量能留存率 >= 60%，最新 ML 评分 >= 0.75
-        eligible = (
-            obs_days >= 10
+        # -------------------------------------------------------------
+        # 双轨准入评估体系 (Dual-Track Promotion System):
+        # -------------------------------------------------------------
+        # A. 暴风快轨 (Fast-Track / 3日极速转正): 专为阶段性大黑马主升浪设计
+        #    • 观察天数仅需 >= 3 个交易日 (绝不死等 10 天导致错失黄金期)
+        #    • 突破信号 >= 2 次，平值期权价差极度紧密 <= 2.5%
+        #    • 虚拟净收益为正且最大回撤严格 < 15%
+        #    • 最新 ML 得分达到极高爆发分 (>= 0.82)
+        fast_track_eligible = (
+            obs_days >= 3
+            and signals >= 2
+            and pnl > 0.0
+            and max_dd < 0.15
+            and slippage <= 0.025
+            and retention >= 0.65
+            and ml_score >= 0.82
+        )
+
+        # B. 常规慢轨 (Standard Track / 7~10日稳健考察): 专为中长线稳健白马设计
+        #    • 观察天数满 7 个交易日 (滑动 1.5 ~ 2 周) 且信号 >= 3 次
+        #    • 虚拟净收益 > 0，最大回撤 < 25%，滑点 <= 4.0%，ML 得分 >= 0.75
+        standard_eligible = (
+            obs_days >= 7
             and signals >= 3
             and pnl > 0.0
             and max_dd < 0.25
@@ -154,7 +170,11 @@ class IncubatorEngine:
             and ml_score >= 0.75
         )
 
+        eligible = fast_track_eligible or standard_eligible
+        track_label = "FAST_TRACK" if fast_track_eligible else "STANDARD" if standard_eligible else "INCUBATING"
+
         current["observation_days"] = obs_days
         current["promotion_eligible"] = 1 if eligible else 0
+        current["track_mode"] = track_label
         self.store.upsert_incubator_metrics(symbol, current)
         return eligible

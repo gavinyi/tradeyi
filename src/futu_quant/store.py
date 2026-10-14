@@ -95,6 +95,7 @@ class TradingStore:
                         volume_retention_ratio REAL NOT NULL DEFAULT 0.0,
                         latest_ml_score REAL NOT NULL DEFAULT 0.0,
                         promotion_eligible INTEGER NOT NULL DEFAULT 0,
+                        track_mode TEXT NOT NULL DEFAULT 'STANDARD',
                         last_evaluated_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     );
@@ -574,6 +575,7 @@ class TradingStore:
                     volume_retention_ratio REAL NOT NULL DEFAULT 0.0,
                     latest_ml_score REAL NOT NULL DEFAULT 0.0,
                     promotion_eligible INTEGER NOT NULL DEFAULT 0,
+                    track_mode TEXT NOT NULL DEFAULT 'STANDARD',
                     last_evaluated_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -687,6 +689,9 @@ class TradingStore:
             }.items():
                 if combo_columns and name not in combo_columns:
                     connection.execute(f"ALTER TABLE option_combos ADD COLUMN {name} {definition}")
+            incubator_cols = {row["name"] for row in connection.execute("PRAGMA table_info(shadow_incubator)")}
+            if incubator_cols and "track_mode" not in incubator_cols:
+                connection.execute("ALTER TABLE shadow_incubator ADD COLUMN track_mode TEXT NOT NULL DEFAULT 'STANDARD'")
             connection.execute(
                 "INSERT OR IGNORE INTO system_settings(key,value,updated_at) VALUES(?,?,?)",
                 ("kill_switch", "false", self.now()),
@@ -2542,8 +2547,8 @@ class TradingStore:
                 (symbol, first_observed_at, observation_days, signal_triggers,
                  simulated_wins, simulated_losses, simulated_pnl_usd, simulated_max_dd,
                  avg_slippage_pct, volume_retention_ratio, latest_ml_score, promotion_eligible,
-                 last_evaluated_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 track_mode, last_evaluated_at, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(symbol) DO UPDATE SET
                 observation_days=excluded.observation_days,
                 signal_triggers=excluded.signal_triggers,
@@ -2555,6 +2560,7 @@ class TradingStore:
                 volume_retention_ratio=excluded.volume_retention_ratio,
                 latest_ml_score=excluded.latest_ml_score,
                 promotion_eligible=excluded.promotion_eligible,
+                track_mode=excluded.track_mode,
                 last_evaluated_at=excluded.last_evaluated_at,
                 updated_at=excluded.updated_at""",
                 (symbol, metrics.get("first_observed_at", now),
@@ -2563,7 +2569,7 @@ class TradingStore:
                  float(metrics.get("simulated_pnl_usd", 0)), float(metrics.get("simulated_max_dd", 0)),
                  float(metrics.get("avg_slippage_pct", 0)), float(metrics.get("volume_retention_ratio", 0)),
                  float(metrics.get("latest_ml_score", 0)), int(bool(metrics.get("promotion_eligible", 0))),
-                 now, now),
+                 str(metrics.get("track_mode", "STANDARD")), now, now),
             )
 
     def incubator_symbol(self, symbol: str) -> dict | None:

@@ -24,14 +24,18 @@ class LifecycleManager:
         diverse_top_candidates: list[str],
         candidate_scores: dict[str, float] | None = None,
         duration_days: int = 21,
+        max_capacity: int = 10,
+        over_extended_symbols: set[str] | None = None,
     ) -> list[str]:
         """
-        实施准入硬门槛与迟滞防抖 (Hysteresis Buffer):
-        1. 当前外援不足 3 只时，直接吸收满足门槛的高分候选 (score >= 0.75);
-        2. 池满时，新候选得分必须超出最低现任至少 10%，避免临界点频繁横跳;
-        3. 现任未跌出安全区且未触碰红线，保持在岗。
+        实施准入硬门槛、自适应容量扩充 (5~10只)、动量耗竭防接盘与迟滞防抖:
+        1. 检查动量耗竭 (Over-extended): 短期涨幅过大一票否决，绝不高位接盘;
+        2. 快轨/慢轨双轨达标，或者得分 >= 0.75;
+        3. 自适应容量: 优质标的充沛时外援池弹性扩充至最多 10 只;
+        4. 池满时启用迟滞防抖 (超出最低现任至少 10%)。
         """
         scores = candidate_scores or {}
+        exhausted = over_extended_symbols or set()
         now = datetime.now(timezone.utc)
         expires = (now + timedelta(days=duration_days)).isoformat()
 
@@ -43,7 +47,17 @@ class LifecycleManager:
             if candidate in promoted:
                 continue
 
-            # 检查沙盒准入硬门槛
+            # 1. 动量耗竭防接盘门禁 (一票否决)
+            if candidate in exhausted:
+                logger.warning("标的 %s 近期涨幅过大进入动量耗竭期，一票否决禁止高位接盘", candidate)
+                self.store.record_universe_lifecycle_event(
+                    event_type="PROMOTION_REJECTED_OVER_EXTENDED",
+                    symbol=candidate,
+                    details={"reason": "近期涨幅过大进入耗竭期，防追尾一票否决"},
+                )
+                continue
+
+            # 2. 检查沙盒准入硬门槛
             incubator_profile = self.store.incubator_symbol(candidate)
             eligible = bool(incubator_profile and incubator_profile.get("promotion_eligible", 0))
             score = float(scores.get(candidate, (incubator_profile or {}).get("latest_ml_score", 0.50)))
@@ -52,8 +66,10 @@ class LifecycleManager:
                 logger.debug("标的 %s 未满足沙盒或打分准入门槛 (score=%.2f, eligible=%s)", candidate, score, eligible)
                 continue
 
-            # 外援池未满 (允许最多 5 只)
-            if len(promoted) < 5:
+            track = (incubator_profile or {}).get("track_mode", "STANDARD")
+
+            # 3. 自适应外援容量: 允许动态扩充至最多 10 只
+            if len(promoted) < max_capacity:
                 industry = INDUSTRY_MAPPING.get(candidate, "OTHER")
                 self.store.promote_universe_symbol(candidate, score, expires, industry)
                 self.store.record_universe_lifecycle_event(
@@ -63,13 +79,14 @@ class LifecycleManager:
                         "score": score,
                         "expires_at": expires,
                         "industry": industry,
-                        "reason": "通过沙盒孵化与多样性打散晋级",
+                        "track_mode": track,
+                        "reason": f"通过沙盒孵化({track})与多样性打散晋级",
                     },
                 )
                 promoted.append(candidate)
-                logger.info("标的 %s 成功晋级外援实盘池 (Score=%.2f, 到期=%s)", candidate, score, expires)
+                logger.info("标的 %s 成功晋级外援实盘池 [模式=%s, Score=%.2f, 到期=%s]", candidate, track, score, expires)
             else:
-                # 迟滞防抖: 需高出现任最低分 10%
+                # 4. 迟滞防抖: 需高出现任最低分 10%
                 active_scores = {r["symbol"]: float(r.get("promotion_score", 0.0)) for r in current_active_rows}
                 lowest_current = min(active_scores.values()) if active_scores else 0.0
                 if score >= lowest_current * 1.10 and score >= 0.80:
@@ -87,6 +104,7 @@ class LifecycleManager:
                         details={
                             "score": score,
                             "replaced_symbol": lowest_sym,
+                            "track_mode": track,
                             "reason": "超出最低现任标的10%完成迟滞晋级替换",
                         },
                     )

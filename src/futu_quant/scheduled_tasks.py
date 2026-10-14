@@ -390,10 +390,16 @@ def run_daily_universe_ranking(
         incubator.evaluate_daily_metrics(s)
 
     ranked_df = ranking.rank_candidates(symbols)
-    diverse_top = diversity.select_diverse_portfolio(ranked_df)
+    # 自适应弹性容量: 优质标的充沛时自动扩容至最多 10 只
+    diverse_top = diversity.select_diverse_portfolio(ranked_df, adaptive_capacity=True)
+    effective_cap = diversity.resolve_capacity(ranked_df)
     candidate_scores = dict(zip(ranked_df["symbol"], ranked_df["ml_score"]))
 
-    promoted = lifecycle.evaluate_promotions(diverse_top, candidate_scores=candidate_scores)
+    promoted = lifecycle.evaluate_promotions(
+        diverse_top,
+        candidate_scores=candidate_scores,
+        max_capacity=effective_cap,
+    )
     lifecycle.evaluate_evictions()
     active_pool = lifecycle.sync_to_runtime_universe()
 

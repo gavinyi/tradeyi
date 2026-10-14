@@ -33,10 +33,10 @@ core_symbols = list(DEFAULT_VOLATILITY_SYMBOLS)
 
 with st.container(horizontal=True):
     st.metric("核心底仓 (永久常驻)", f"{len(core_symbols)} 只", help="底仓 13 只标的坚如磐石，永不淘汰")
-    st.metric("生效外援 (动态晋级)", f"{len(promoted_rows)} / 5 只", help="通过沙盒实测与 ML 精排授予实盘资格的外援标的")
+    st.metric("生效外援 (动态晋级)", f"{len(promoted_rows)} / 5~10 只", help="通过沙盒实测与 ML 精排授予实盘资格的外援标的（行情火爆时自适应扩容至最多10只）")
     st.metric("沙盒影子孵化中", f"{len(incubator_rows)} 只", help="在后台静默记录微观滑点与突破胜率的候选标的")
     eligible_count = sum(1 for r in incubator_rows if r.get("promotion_eligible", 0) == 1)
-    st.metric("满足晋级硬门槛", f"{eligible_count} 只", help="满 10 日观察、虚拟盈利、回撤 < 25%、得分 >= 0.75")
+    st.metric("满足晋级硬门槛", f"{eligible_count} 只", help="双轨准入：⚡ 暴风快轨 (3日极速转正) 或 🐢 常规慢轨 (7~10日稳健考察)")
     st.metric("全市场召回池", f"{len(candidates)} 只", help="最新一周美股期权成交量前 50 名优质流动性标的")
 
 # 四大视图 Tab
@@ -123,7 +123,8 @@ with tab_incubator:
 
             inc_data.append({
                 "标的代码": r["symbol"],
-                "观察天数": f"{r.get('observation_days', 0)} / 10 天",
+                "观察天数": f"{r.get('observation_days', 0)} 天",
+                "赛马轨道": "⚡ 暴风快轨 (3日)" if r.get("track_mode") == "FAST_TRACK" else "🐢 常规慢轨 (7~10日)" if r.get("track_mode") == "STANDARD" else "⏳ 孵化中",
                 "突破信号数": r.get("signal_triggers", 0),
                 "虚拟胜率": win_rate_str,
                 "虚拟净收益": f"{pnl:+.2f} 美元",
@@ -131,7 +132,7 @@ with tab_incubator:
                 "平均滑点": f"{float(r.get('avg_slippage_pct', 0)):.2%}",
                 "量能留存率": f"{float(r.get('volume_retention_ratio', 0)):.1%}",
                 "最新 ML 得分": f"{float(r.get('latest_ml_score', 0)):.4f}",
-                "晋级硬门槛": "✅ 已达标" if eligible else "⏳ 孵化中",
+                "晋级硬门槛": "⚡ 快轨达标" if r.get("track_mode") == "FAST_TRACK" else "✅ 慢轨达标" if eligible else "⏳ 孵化中",
             })
 
         inc_df = pd.DataFrame(inc_data).sort_values("最新 ML 得分", ascending=False)

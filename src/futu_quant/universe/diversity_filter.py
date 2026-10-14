@@ -24,17 +24,30 @@ class DiversityFilter:
         self.correlation_threshold = correlation_threshold
         self.lambda_tradeoff = lambda_tradeoff
 
+    def resolve_capacity(self, candidates: pd.DataFrame) -> int:
+        """根据当前市场优质黑马的充沛程度自适应决定外援池容量 (5 ~ 10只)。"""
+        if candidates.empty or "ml_score" not in candidates.columns:
+            return self.max_satellites
+        high_score_count = int((candidates["ml_score"] >= 0.75).sum())
+        if high_score_count >= 8:
+            return 10
+        if high_score_count >= 5:
+            return 8
+        return max(5, self.max_satellites)
+
     def select_diverse_portfolio(
         self,
         ranked_df: pd.DataFrame,
         corr_matrix: pd.DataFrame | None = None,
         industry_map: dict[str, str] | None = None,
+        adaptive_capacity: bool = True,
     ) -> list[str]:
         """
         实施 MMR 打散算法与行业配额约束:
-        1. 同一细分行业最多 1 个外援席位 (INDEX_ETF 除外);
-        2. 两两 60 日收益率相关系数严格 <= 0.70;
-        3. 输出最终 3 ~ 5 只攻守兼备的外援名单。
+        1. 优质标的爆发时自适应动态扩容至 5 ~ 10 只;
+        2. 同一细分行业最多 1 个外援席位 (INDEX_ETF 除外);
+        3. 两两 60 日收益率相关系数严格 <= 0.70;
+        4. 输出最终攻守兼备的外援名单。
         """
         if ranked_df.empty or "symbol" not in ranked_df.columns:
             return []
@@ -47,9 +60,11 @@ class DiversityFilter:
         if "ml_score" not in candidates.columns:
             candidates["ml_score"] = 0.50
 
+        effective_capacity = self.resolve_capacity(candidates) if adaptive_capacity else self.max_satellites
+
         # 遍历候选标的
         for _, row in candidates.iterrows():
-            if len(selected) >= self.max_satellites:
+            if len(selected) >= effective_capacity:
                 break
 
             symbol = str(row["symbol"]).strip().upper()
