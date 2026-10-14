@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-10-14：飞书群机器人应用内全自动直连、四大进阶机制完善与超额利润放飞升级
+
+1. **飞书战报群机器人多通道全员直连 (`src/futu_quant/feishu_reporter.py`)**：
+   - 彻底摆脱外部轮询依赖，将飞书推送深度内嵌为量化系统原生模块 `FeishuReporter`；
+   - 支持飞书群 Chat ID 直发（如 `oc_880837ba7546cdf0b75834ef88eff5b4`）、标准群自定义机器人 Webhook 卡片（含 HMAC-SHA256 签名）及个人 147 会话多通道广播，群内所有账号成员同时可见；
+   - 修复在线云文档导入链路：优化路径绝对解析，改为 `--as bot` 自动导入，秒级生成包含可点击阅读的正式飞书云文档链接（如 `https://my.feishu.cn/docx/...`）；
+   - 在系统监控页（`pages/6_system_monitor.py`）增加飞书群配置表单抽屉与一键测试按钮；
+   - 每天清晨 05:15 策略复盘生成后，自动在进程内完成云文档导入并推送到飞书群。
+2. **新晋外援标的 1 张探路灰度仓位机制 (`scripts/run_gamma_strategy.py`)**：
+   - 全市场沙盒晋级的新外援标的（`promoted_universe`），在首秀阶段（实盘交易为 0 笔或上一笔未盈利）强制限制为 1 张探路仓（`per_stage = 1`）；
+   - 实战完成至少 1 笔盈利平仓后，自动解锁转正为 2 张标准分批仓位，兼顾全市场淘金与防翻车灰度隔离。
+3. **期权超额利润自动沉淀到 SPY 底仓机制 (`src/futu_quant/profit_sweeper.py`)**：
+   - 建立 Profit Sweeper 利润锁箱系统，实时统计期权已实现净收益；
+   - 当新增未沉淀利润 $\ge \$1,000$ 美元时，收盘前调仓窗口自动将 50% 利润划拨沉淀为 Core Satellite 核心底仓额外购买力，追加购买 `US.SPY` 现货；
+   - 产生 `PROFIT_SWEEPER_SETTLED` 审计日志，实现“期权冲锋掠夺暴利，底仓沉淀永久固化”。
+4. **机器学习模型月度自学习闭环 (`scripts/run_monthly_ml_retrain.py`)**：
+   - 实现月度自动离线重训练流水线，提取近 90 天所有 308 笔真实平仓样本与 8 只沙盒标的微观滑点特征；
+   - 重新校准各标的胜率与盈亏权重，自动备份旧权重并刷新 `volatility_scorer_v3.json`，记录 `ML_MODEL_RETRAINED` 事件。
+5. **超额利润放飞与 2 张分批止盈正式激活 (`volatility_optimizer.py`, `volatility_scanner.py`)**：
+   - 在 `volatility_profit_lock_floor` 中追加“翻倍主升档”（峰值 $\ge 100\% \to$ 锁死底线 $+70\%$）与“超级主升档”（峰值 $\ge 150\% \to$ 锁死底线 $+110\%$）；
+   - 启用阶梯锁盈时解除低位 50% 机械一刀切卖出，允许超额利润继续放飞狂奔；
+   - 新活动与现存 6 个活跃活动（TSM, AVGO, COIN, MSFT, META, AMD）全部升级为 2 张分批止盈配置（+35% 卖 50% 撤回全部本金，余下 1 张零成本放飞）。
+6. **物理关机交由操作系统接管 (`scheduled_tasks.py`, `run_service.py`)**：
+   - 注释掉 Python 内部直接调用系统关机的物理命令，彻底消除 Windows 权限拒绝（exit status 5）报错；
+   - 设置 `AUTO_COMPUTER_SHUTDOWN_ENABLED=false`，Python 侧仅负责在 06:00 前完成数据落盘与就绪标记，物理硬件断电关机交由 Windows 原生计划任务接管。
+
+
 ## 2026-10-13：期权出场主动吃单防死锁闭环与周五跨周末避险保护
 
 针对 2026-10-12 盘中 META 期权浮盈达到 +16.8% 后因挂单过于保守死挂 1 小时撤单导致利润回吐、以及 COIN 跨周末跳空低开遭遇硬止损的痛点，实施以下核心升级：
