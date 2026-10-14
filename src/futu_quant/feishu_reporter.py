@@ -36,6 +36,10 @@ def _lark_node_exe() -> str | None:
 
 def _run_lark_json(cmd: list[str]) -> dict:
     """在 Windows 沙箱下使用文件重定向执行 lark-cli 命令，避免 CreatePipe 限制。"""
+    if "PYTEST_CURRENT_TEST" in os.environ and not os.getenv("FEISHU_ALLOW_TEST_NETWORK"):
+        # 单元测试环境下严禁穿透发送飞书外部网络请求，杜绝测试消息污染生产群
+        return {"ok": True, "message": "pytest_mocked"}
+
     argv = list(cmd)
     if argv and argv[0] == "lark-cli" and os.path.exists(LARK_RUN_JS):
         node = _lark_node_exe()
