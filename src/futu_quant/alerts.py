@@ -8,6 +8,16 @@ from urllib.request import Request, urlopen
 
 from .store import TradingStore
 
+# 严格限制推送飞书群的致命事件白名单 (少而精，杜绝告警疲劳)
+FEISHU_GROUP_ALERT_WHITELIST = {
+    "OPEND_DISCONNECTED",                         # OpenD 网关掉线/通信中断
+    "KILL_SWITCH_ENGAGED",                        # 账户风控急停熔断触发
+    "LEDGER_MISMATCH",                            # 三账对账不一致/疑似残腿或丢单
+    "STRATEGY_INTERRUPTED_WITH_OPEN_OPTIONS",     # 持仓期权时网络连续失败进入紧急保护
+    "PROTECTIVE_RADAR_RESTART_FAILED",            # 雷达自动重启失败
+    "OPEND_AUTO_RESTART_FAILED",                  # OpenD 自动重启失败
+}
+
 
 class AlertManager:
     """Persists every alert and optionally mirrors it to a generic JSON webhook."""
@@ -46,14 +56,18 @@ class AlertManager:
             except Exception:
                 delivered = False
 
-        # 飞书群即时卡片广播 (支持群 Chat ID 与自定义 Webhook)
+        # 飞书群即时卡片广播 (仅对白名单内的致命事故推群，防止告警疲劳)
         feishu_delivered = False
-        try:
-            from .feishu_reporter import FeishuReporter
-            reporter = FeishuReporter(self.store)
-            feishu_delivered = reporter.send_alert_card(severity, event_type, message, is_recovered=False)
-        except Exception:
-            pass
+        is_critical_or_whitelisted = (
+            event_type in FEISHU_GROUP_ALERT_WHITELIST or severity.upper() == "CRITICAL"
+        )
+        if is_critical_or_whitelisted:
+            try:
+                from .feishu_reporter import FeishuReporter
+                reporter = FeishuReporter(self.store)
+                feishu_delivered = reporter.send_alert_card(severity, event_type, message, is_recovered=False)
+            except Exception:
+                pass
 
         self.store.add_alert(severity, event_type, message, delivered or feishu_delivered)
 
@@ -63,14 +77,15 @@ class AlertManager:
         if not self.store.recover_incident(incident_key or event_type):
             return False
 
-        # 飞书群故障恢复卡片广播
+        # 飞书群故障恢复卡片广播 (仅对白名单内的事件发送恢复卡片)
         feishu_recovered = False
-        try:
-            from .feishu_reporter import FeishuReporter
-            reporter = FeishuReporter(self.store)
-            feishu_recovered = reporter.send_alert_card("INFO", event_type, message, is_recovered=True)
-        except Exception:
-            pass
+        if event_type in FEISHU_GROUP_ALERT_WHITELIST:
+            try:
+                from .feishu_reporter import FeishuReporter
+                reporter = FeishuReporter(self.store)
+                feishu_recovered = reporter.send_alert_card("INFO", event_type, message, is_recovered=True)
+            except Exception:
+                pass
 
         self.store.add_alert("INFO", f"{event_type}_RECOVERED", message, feishu_recovered)
         return True

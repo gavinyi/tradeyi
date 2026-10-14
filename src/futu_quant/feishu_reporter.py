@@ -166,27 +166,31 @@ class FeishuReporter:
             header_color = "green"
             icon = "🟢"
             status_title = f"{icon} 【故障恢复】{event_type} 已恢复正常"
+            level_text = "🟢 **级别**: **NORMAL (已恢复正常)**"
         elif sev_upper == "CRITICAL":
             header_color = "red"
             icon = "🚨"
             status_title = f"{icon} 【紧急告警】{event_type}"
+            level_text = "🔴 **级别**: **CRITICAL (致命严重)**"
         elif sev_upper == "ERROR":
             header_color = "orange"
             icon = "⚠️"
             status_title = f"{icon} 【系统错误】{event_type}"
+            level_text = "🟠 **级别**: **ERROR (系统错误)**"
         else:
             header_color = "blue"
             icon = "ℹ️"
             status_title = f"{icon} 【系统通知】{event_type}"
+            level_text = "🔵 **级别**: **INFO (系统提醒)**"
 
         lines = [
-            f"**级别**: <font color='{'green' if is_recovered else 'red'}'>{sev_upper if not is_recovered else 'NORMAL'}</font>",
-            f"**时间**: {now_str}",
-            f"**事件类型**: `{event_type}`",
-            f"**详细情况**:\n{message}",
+            level_text,
+            f"🕒 **时间**: {now_str}",
+            f"📌 **事件类型**: `{event_type}`",
+            f"📝 **详细情况**:\n{message}",
         ]
         if not is_recovered and sev_upper in {"CRITICAL", "ERROR"}:
-            lines.append("🛡️ **系统保护动作**: 已自动暂停新风险开仓，并持续保持在岗对账与退出监控。")
+            lines.append("🛡️ **系统保护动作**: 已自动暂停新风险开仓，持续保持在岗对账与退出监控。")
 
         success = False
 
@@ -221,7 +225,7 @@ class FeishuReporter:
 
         # 2. 渠道 B: 飞书群聊会话直发 (如用户的 oc_8808...)
         if self.group_chat_id:
-            msg_md = f"{status_title}\n━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines)
+            msg_md = f"### {status_title}\n──────────────────────\n" + "\n\n".join(lines)
             cmd = [
                 "lark-cli", "im", "+messages-send",
                 "--chat-id", self.group_chat_id,
@@ -233,7 +237,7 @@ class FeishuReporter:
 
         # 3. 渠道 C: 个人 147 会话兜底 (若群未配)
         if not success and not self.webhook_url and not self.group_chat_id and self.chat_id:
-            msg_md = f"{status_title}\n━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines)
+            msg_md = f"### {status_title}\n──────────────────────\n" + "\n\n".join(lines)
             cmd = [
                 "lark-cli", "im", "+messages-send",
                 "--chat-id", self.chat_id,
