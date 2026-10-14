@@ -192,9 +192,20 @@ class FeishuReporter:
         if not is_recovered and sev_upper in {"CRITICAL", "ERROR"}:
             lines.append("🛡️ **系统保护动作**: 已自动暂停新风险开仓，持续保持在岗对账与退出监控。")
 
-        success = False
+        # 严格单目标发送逻辑：配了群就只发群，未配群才发个人，绝不双发重复打扰
+        # 1. 优先渠道 A: 飞书群聊会话 (若配置了 group_chat_id)
+        if self.group_chat_id:
+            msg_md = f"### {status_title}\n──────────────────────\n" + "\n\n".join(lines)
+            cmd = [
+                "lark-cli", "im", "+messages-send",
+                "--chat-id", self.group_chat_id,
+                "--as", "bot",
+                "--markdown", msg_md,
+            ]
+            res = _run_lark_json(cmd)
+            return bool(res.get("ok", False))
 
-        # 1. 优先渠道 A: 飞书群自定义机器人 Webhook (若配置)
+        # 2. 渠道 B: 飞书群自定义机器人 Webhook (若配置)
         if self.webhook_url:
             try:
                 import time
@@ -219,24 +230,13 @@ class FeishuReporter:
                 req = Request(self.webhook_url, data=payload_bytes, headers={"Content-Type": "application/json"})
                 with urlopen(req, timeout=8) as resp:  # noqa: S310
                     res = json.loads(resp.read().decode("utf-8"))
-                    success = (res.get("code") == 0 or res.get("StatusCode") == 0)
+                    return bool(res.get("code") == 0 or res.get("StatusCode") == 0)
             except Exception as exc:
                 logger.warning("通过飞书群 Webhook 发送告警失败: %s", exc)
+                return False
 
-        # 2. 渠道 B: 飞书群聊会话直发 (如用户的 oc_8808...)
-        if self.group_chat_id:
-            msg_md = f"### {status_title}\n──────────────────────\n" + "\n\n".join(lines)
-            cmd = [
-                "lark-cli", "im", "+messages-send",
-                "--chat-id", self.group_chat_id,
-                "--as", "bot",
-                "--markdown", msg_md,
-            ]
-            res = _run_lark_json(cmd)
-            success = success or res.get("ok", False)
-
-        # 3. 渠道 C: 个人 147 会话兜底 (若群未配)
-        if not success and not self.webhook_url and not self.group_chat_id and self.chat_id:
+        # 3. 渠道 C: 只有在群完全未配置时，才发个人 147 会话
+        if self.chat_id:
             msg_md = f"### {status_title}\n──────────────────────\n" + "\n\n".join(lines)
             cmd = [
                 "lark-cli", "im", "+messages-send",
@@ -245,9 +245,9 @@ class FeishuReporter:
                 "--markdown", msg_md,
             ]
             res = _run_lark_json(cmd)
-            success = res.get("ok", False)
+            return bool(res.get("ok", False))
 
-        return success
+        return False
 
     def send_test_message(self) -> dict:
         """发送一条多通道测试消息，智能适配群 Chat ID、群 Webhook 或个人会话。"""
@@ -374,8 +374,26 @@ class FeishuReporter:
             except Exception as exc:
                 logger.warning("导入飞书文档遇到异常: %s", exc)
 
-        # 2. 渠道 A: 飞书群自定义机器人 Webhook (支持多成员/多账号全员共享卡片)
-        if self.webhook_url:
+        # 严格单目标发送逻辑：配了群就只发群，绝不给个人会话双发重复消息
+        # 2. 渠道 A: 飞书群聊会话直发 (优先，若配置了 group_chat_id)
+        if self.group_chat_id:
+            msg_body = (
+                f"📊 **量化策略每日复盘战报 ({session_date})**\n"
+                f"──────────────────────\n"
+                f"🔗 **在线文档**: {doc_url or '可在本地 data/reports/ 查阅'}\n"
+                f"🎯 **结论摘要**:\n{conclusion}"
+                + (f"\n\n💡 **当日建议**:\n{advice_text}" if advice_text else "")
+            )
+            group_res = _run_lark_json([
+                "lark-cli", "im", "+messages-send",
+                "--chat-id", self.group_chat_id,
+                "--as", "bot",
+                "--markdown", msg_body,
+            ])
+            success = bool(group_res.get("ok", False))
+
+        # 3. 渠道 B: 飞书群自定义机器人 Webhook (若配置)
+        elif self.webhook_url:
             lines = [
                 f"📅 **美东交易日**: {session_date}",
                 f"📝 **结论摘要**:\n{conclusion}",
@@ -384,34 +402,16 @@ class FeishuReporter:
                 lines.append(f"💡 **当日建议**:\n{advice_text}")
             if doc_url:
                 lines.append(f"🔗 **在线文档**: {doc_url}")
-            wh_ok = self.send_via_webhook(title, lines, doc_url=doc_url)
-            success = success or wh_ok
+            success = bool(self.send_via_webhook(title, lines, doc_url=doc_url))
 
-        # 3. 渠道 B: 飞书群聊会话直发 (若配置了群 chat_id)
-        if self.group_chat_id:
+        # 4. 渠道 C: 只有当群均未配置时，才发个人 147 会话兜底
+        elif self.chat_id:
             msg_body = (
-                f"量化系统 · 每日策略复盘报告 {session_date}\n"
-                f"文档链接：{doc_url or '可在本地 data/reports/ 查阅'}\n"
-                f"结论摘要：\n"
-                f"- {conclusion}"
-                + (f"\n{advice_text}" if advice_text else "")
-            )
-            group_res = _run_lark_json([
-                "lark-cli", "im", "+messages-send",
-                "--chat-id", self.group_chat_id,
-                "--as", "bot",
-                "--markdown", msg_body,
-            ])
-            success = success or group_res.get("ok", False)
-
-        # 4. 渠道 C: 兜底/直发个人 147 会话
-        if not success or (not self.webhook_url and not self.group_chat_id):
-            msg_body = (
-                f"量化系统 · 每日策略复盘报告 {session_date}\n"
-                f"文档链接：{doc_url or '可在本地 data/reports/ 查阅'}\n"
-                f"结论摘要：\n"
-                f"- {conclusion}"
-                + (f"\n{advice_text}" if advice_text else "")
+                f"📊 **量化策略每日复盘战报 ({session_date})**\n"
+                f"──────────────────────\n"
+                f"🔗 **在线文档**: {doc_url or '可在本地 data/reports/ 查阅'}\n"
+                f"🎯 **结论摘要**:\n{conclusion}"
+                + (f"\n\n💡 **当日建议**:\n{advice_text}" if advice_text else "")
             )
             cli_res = _run_lark_json([
                 "lark-cli", "im", "+messages-send",
@@ -419,7 +419,7 @@ class FeishuReporter:
                 "--as", "bot",
                 "--markdown", msg_body,
             ])
-            success = success or cli_res.get("ok", False)
+            success = bool(cli_res.get("ok", False))
 
         if success:
             mark_im_delivery_done(self.store, date.fromisoformat(session_date))
