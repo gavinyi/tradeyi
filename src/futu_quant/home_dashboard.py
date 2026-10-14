@@ -416,11 +416,23 @@ def _render_loss_attention(positions: pd.DataFrame, account_page=None) -> None:
     if losses.empty:
         return
     total_loss = float(losses["累计亏损"].sum())
+    stock_losses = losses[losses["资产类型"] == "股票/ETF"]
+    opt_losses = losses[losses["资产类型"] == "期权"]
+    stock_loss_sum = float(stock_losses["累计亏损"].sum()) if not stock_losses.empty else 0.0
+    opt_loss_sum = float(opt_losses["累计亏损"].sum()) if not opt_losses.empty else 0.0
+
     with st.container(border=True):
         st.subheader("持仓亏损分布")
+        breakdown_msg = []
+        if not stock_losses.empty:
+            breakdown_msg.append(f"股票/ETF {len(stock_losses)} 只（合计 {_money(stock_loss_sum)}）")
+        if not opt_losses.empty:
+            breakdown_msg.append(f"期权 {len(opt_losses)} 张（合计 {_money(opt_loss_sum)}）")
+        else:
+            breakdown_msg.append("期权无大额亏损合约")
+
         st.error(
-            f"发现 {len(losses)} 个需要关注的大额亏损持仓，合计 {_money(total_loss)}。"
-            "这里只统计当前仍有数量的持仓。",
+            f"大额亏损持仓共 {len(losses)} 个，合计 {_money(total_loss)}。其中：" + "；".join(breakdown_msg) + "。",
             icon=":material/trending_down:",
         )
         loss_chart_frame = losses.copy()
@@ -428,12 +440,18 @@ def _render_loss_attention(positions: pd.DataFrame, account_page=None) -> None:
         loss_chart_frame["代码显示"] = loss_chart_frame["code"].astype(str)
         loss_chart = alt.Chart(loss_chart_frame).mark_bar(
             cornerRadiusEnd=5,
-            color=NEGATIVE,
         ).encode(
             x=alt.X("亏损金额:Q", title="亏损金额（美元）", axis=alt.Axis(format="$,.0f")),
             y=alt.Y("代码显示:N", title=None, sort="-x"),
+            color=alt.Color(
+                "资产类型:N",
+                title="资产类型",
+                scale=alt.Scale(domain=["股票/ETF", "期权"], range=["#38bdf8", "#f472b6"]),
+                legend=alt.Legend(orient="top"),
+            ),
             tooltip=[
                 alt.Tooltip("代码显示:N", title="代码"),
+                alt.Tooltip("资产类型:N", title="资产类型"),
                 alt.Tooltip("累计亏损:Q", title="累计亏损", format="$,.2f"),
                 alt.Tooltip("盈亏比例:Q", title="盈亏比例", format=".1f"),
                 alt.Tooltip("数量:Q", title="持仓数量", format=".2f"),
@@ -478,12 +496,34 @@ def _render_account_kpis(account: dict[str, Any], snapshot: dict[str, pd.DataFra
     total_assets = _number(row.get("total_assets"))
     cash = _number(row.get("cash"))
     cash_ratio = cash / total_assets if total_assets > 0 else 0.0
-    option_count = 0
+
     stock_count = 0
+    option_count = 0
+    stock_today_pnl = 0.0
+    stock_total_pnl = 0.0
+    stock_mv = 0.0
+    opt_today_pnl = 0.0
+    opt_total_pnl = 0.0
+    opt_mv = 0.0
+
     if not positions.empty and "code" in positions.columns:
         option_mask = positions["code"].map(_is_option_symbol)
-        option_count = int(option_mask.sum())
-        stock_count = int((~option_mask).sum())
+        stock_df = positions[~option_mask]
+        opt_df = positions[option_mask]
+
+        # 仅统计当前数量 > 0 的有效持仓，排除券商当天已平仓归零记录
+        stock_qty = pd.to_numeric(stock_df.get("qty", 0), errors="coerce").fillna(0)
+        opt_qty = pd.to_numeric(opt_df.get("qty", 0), errors="coerce").fillna(0)
+        stock_count = int((stock_qty > 0).sum())
+        option_count = int((opt_qty > 0).sum())
+
+        stock_today_pnl = float(pd.to_numeric(stock_df.get("today_pl_val", 0), errors="coerce").fillna(0).sum())
+        stock_total_pnl = float(pd.to_numeric(stock_df.get("pl_val", 0), errors="coerce").fillna(0).sum())
+        stock_mv = _position_amount(stock_df[stock_qty > 0])
+
+        opt_today_pnl = float(pd.to_numeric(opt_df.get("today_pl_val", 0), errors="coerce").fillna(0).sum())
+        opt_total_pnl = float(pd.to_numeric(opt_df.get("pl_val", 0), errors="coerce").fillna(0).sum())
+        opt_mv = _position_amount(opt_df[opt_qty > 0])
 
     with st.container(horizontal=True):
         st.metric(
@@ -492,15 +532,51 @@ def _render_account_kpis(account: dict[str, Any], snapshot: dict[str, pd.DataFra
         )
         st.metric(
             "当日浮动盈亏", _money(pnl["today_position_pnl"]), border=True,
-            delta=f"{pnl['today_position_pnl']:+,.2f}",
+            delta=f"股票 {stock_today_pnl:+,.0f} · 期权 {opt_today_pnl:+,.0f}",
             delta_color="normal",
         )
         st.metric(
             "总持仓浮动盈亏", _money(pnl["total_position_pnl"]), border=True,
+            delta=f"股票 {stock_total_pnl:+,.0f} · 期权 {opt_total_pnl:+,.0f}",
             chart_data=pnl_sparkline or None, chart_type="line",
         )
         st.metric("现金缓冲", f"{cash_ratio:.1%}", _money(cash), border=True)
-        st.metric("当前持仓", f"{stock_count + option_count} 个", f"股票 {stock_count} · 期权 {option_count}", border=True)
+        st.metric(
+            "当前在仓标的", f"{stock_count + option_count} 个",
+            f"股票 {stock_count} 只 · 期权 {option_count} 张",
+            border=True,
+        )
+
+    # 股票与期权盈亏及亏损独立分拆栏
+    col_stock, col_option = st.columns(2)
+    with col_stock:
+        with st.container(border=True):
+            st.markdown("##### 📈 股票/ETF 现货底仓盈亏")
+            with st.container(horizontal=True):
+                st.metric("在仓标的", f"{stock_count} 只", border=True)
+                st.metric("现货总市值", _money(stock_mv), border=True)
+                st.metric(
+                    "当日盈亏", _money(stock_today_pnl),
+                    f"{stock_today_pnl:+,.2f}", delta_color="normal", border=True,
+                )
+                st.metric(
+                    "累计持仓盈亏", _money(stock_total_pnl),
+                    f"{stock_total_pnl:+,.2f}", delta_color="normal", border=True,
+                )
+    with col_option:
+        with st.container(border=True):
+            st.markdown("##### ⚡ 波动率期权战区盈亏")
+            with st.container(horizontal=True):
+                st.metric("在仓合约", f"{option_count} 张", border=True)
+                st.metric("权利金市值", _money(opt_mv), border=True)
+                st.metric(
+                    "当日盈亏", _money(opt_today_pnl),
+                    f"{opt_today_pnl:+,.2f}", delta_color="normal", border=True,
+                )
+                st.metric(
+                    "累计持仓盈亏", _money(opt_total_pnl),
+                    f"{opt_total_pnl:+,.2f}", delta_color="normal", border=True,
+                )
 
 
 def _pnl_chart(frame: pd.DataFrame) -> alt.Chart:
