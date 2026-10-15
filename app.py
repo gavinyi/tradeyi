@@ -18,7 +18,10 @@ from futu_quant.store import TradingStore
 from futu_quant.trade_diagnostics import (
     build_diagnostic_report, diagnostic_window, latest_us_session_date,
 )
-from futu_quant.ui import china_time_columns, chinese_columns, render_admin_login, render_sidebar
+from futu_quant.ui import (
+    china_time_columns, chinese_columns, render_admin_login, render_sidebar,
+    render_pnl_metric,
+)
 
 
 st.set_page_config(
@@ -289,26 +292,27 @@ try:
         total_today_pnl = stock_today_pnl + opt_today_pnl
         total_pos_pnl = stock_total_pnl + opt_total_pnl
 
-        with st.container(horizontal=True):
+        # 1. 资产与购买力核心横栏 (4 列等分平铺)
+        col_acc1, col_acc2, col_acc3, col_acc4 = st.columns(4)
+        with col_acc1:
             st.metric("总权益", f"${float(row.get('total_assets', 0)):,.2f}", border=True)
+        with col_acc2:
             st.metric("现金", f"${float(row.get('cash', 0)):,.2f}", border=True)
+        with col_acc3:
             st.metric("证券市值", f"${float(row.get('market_val', 0)):,.2f}", border=True)
+        with col_acc4:
             st.metric("可用购买力", f"${float(row.get('power', 0)):,.2f}", border=True)
-            st.metric(
-                "股票当日浮盈", f"${stock_today_pnl:+,.2f}",
-                f"累计 ${stock_total_pnl:+,.2f}",
-                delta_color="normal", border=True,
-            )
-            st.metric(
-                "期权当日浮盈", f"${opt_today_pnl:+,.2f}",
-                f"累计 ${opt_total_pnl:+,.2f}",
-                delta_color="normal", border=True,
-            )
-            st.metric(
-                "当日总浮动盈亏", f"${total_today_pnl:+,.2f}",
-                f"累计 ${total_pos_pnl:+,.2f}",
-                delta_color="normal", border=True,
-            )
+
+        st.space("small")
+
+        # 2. 盈亏分拆横栏 (3 列等分平铺，金融惯例：正绿负红，无错误向上箭头)
+        col_pnl1, col_pnl2, col_pnl3 = st.columns(3)
+        with col_pnl1:
+            render_pnl_metric("股票当日浮盈", stock_today_pnl, stock_total_pnl)
+        with col_pnl2:
+            render_pnl_metric("期权当日浮盈", opt_today_pnl, opt_total_pnl)
+        with col_pnl3:
+            render_pnl_metric("当日总浮动盈亏", total_today_pnl, total_pos_pnl)
         st.caption(
             "损益按富途模拟账户持仓明细汇总拆分；当日浮动盈亏不包含已平仓兑现收益，"
             "且不包含 SHADOW 虚拟成交。"

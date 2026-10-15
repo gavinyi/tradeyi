@@ -765,3 +765,43 @@ def translate_common_values(frame: pd.DataFrame) -> pd.DataFrame:
         if column in result:
             result[column] = result[column].map(lambda value: EVENT_LABELS.get(str(value), value))
     return result
+
+
+def render_pnl_metric(
+    label: str,
+    today_val: float,
+    total_val: float | None = None,
+    subtitle: str | None = None,
+) -> None:
+    """金融惯例卡片：正数绿、负数红、零中性。主数值与副标题均具备正确红绿指向。"""
+    c_red = "#ef4444"
+    c_green = "#22c55e"
+    c_neutral = "#64748b"
+
+    val_color = c_red if today_val < 0 else (c_green if today_val > 0 else c_neutral)
+    val_sign = "-" if today_val < 0 else ("+" if today_val > 0 else "")
+    formatted_val = f"{val_sign}${abs(today_val):,.2f}"
+
+    sub_html = ""
+    if total_val is not None:
+        sub_color = c_red if total_val < 0 else (c_green if total_val > 0 else c_neutral)
+        sub_sign = "-" if total_val < 0 else ("+" if total_val > 0 else "")
+        sub_arrow = "↓" if total_val < 0 else ("↑" if total_val > 0 else "")
+        sub_html = (
+            f"<div style='font-size: 13px; font-weight: 600; color: {sub_color}; margin-top: 6px; display: flex; align-items: center; gap: 3px;'>"
+            f"<span>{sub_arrow}</span> <span>累计 {sub_sign}${abs(total_val):,.2f}</span>"
+            f"</div>"
+        )
+    elif subtitle:
+        sub_html = f"<div style='font-size: 12px; color: {c_neutral}; margin-top: 6px;'>{subtitle}</div>"
+
+    card_html = f"""
+    <div style="border: 1px solid rgba(128,128,128,0.22); border-radius: 8px; padding: 12px 16px; background: rgba(128,128,128,0.02); height: 100%;">
+        <div style="font-size: 13px; color: {c_neutral}; margin-bottom: 4px; font-weight: 500;">{label}</div>
+        <div style="font-size: 26px; font-weight: 700; color: {val_color}; line-height: 1.25; letter-spacing: -0.5px;">
+            {formatted_val}
+        </div>
+        {sub_html}
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
