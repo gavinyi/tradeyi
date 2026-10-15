@@ -285,7 +285,9 @@ try:
             positions = pd.DataFrame(cached_positions["payload"])
         if info.empty or positions.empty:
             st.warning("OpenD 当前不可用，暂无账户快照；请稍后重试。")
-    st.success(f"已连接富途 OpenD；发现 {len(accounts)} 个美股模拟账户")
+    is_real_env = getattr(settings, "trading_env", "SIMULATE") == "REAL"
+    env_label = "实盘" if is_real_env else "模拟"
+    st.success(f"已连接富途 OpenD；发现 {len(accounts)} 个美股{env_label}账户")
     if not positions.empty and "code" in positions.columns:
         option_mask = positions["code"].map(is_option_symbol)
         option_positions = positions[option_mask].copy()
@@ -344,13 +346,13 @@ try:
         with col_pnl3:
             render_pnl_card("当日总浮动盈亏", total_today_pnl, total_pos_pnl)
         st.caption(
-            "损益按富途模拟账户持仓明细汇总拆分；当日浮动盈亏不包含已平仓兑现收益，"
+            f"损益按富途{env_label}账户持仓明细汇总拆分；当日浮动盈亏不包含已平仓兑现收益，"
             "且不包含 SHADOW 虚拟成交。"
         )
 
         with st.container(border=True):
             st.subheader("当前持仓总览")
-            st.caption("富途模拟盘真实持仓和 Shadow 虚拟持仓分开展示；已平仓清零合约不计入持仓数。")
+            st.caption(f"富途{env_label}盘真实持仓和 Shadow 虚拟持仓分开展示；已平仓清零合约不计入持仓数。")
             with st.container(horizontal=True):
                 st.metric(
                     "股票/ETF 持仓",
@@ -417,12 +419,12 @@ try:
         )
         with stock_tab:
             if stock_positions.empty:
-                st.info("当前富途模拟账户没有股票/ETF 持仓。")
+                st.info(f"当前富途{env_label}账户没有股票/ETF 持仓。")
             else:
                 st.dataframe(chinese_columns(stock_positions), hide_index=True)
         with option_tab:
             if option_positions.empty:
-                st.info("当前富途模拟账户没有期权持仓。")
+                st.info(f"当前富途{env_label}账户没有期权持仓。")
             else:
                 show_all = st.checkbox("包含今日已平仓清零合约", value=False, key="show_all_zero_qty_options")
                 display_df = option_positions if show_all else active_option_positions

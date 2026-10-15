@@ -901,16 +901,24 @@ def _render_kill_switch_banner(store: TradingStore) -> None:
 
 
 def render_home_dashboard(settings, broker, store, account_page=None) -> None:
-    # 顶部专业轻量 Header (一行整合：标题 + 状态胶囊 + 刷新工具)
+    # 顶部专业轻量 Header (动态环境胶囊：实盘显示鲜红高亮，模拟盘显示浅蓝)
+    is_real = getattr(settings, "trading_env", "SIMULATE") == "REAL"
+    env_badge = (
+        "<span style='font-size:12px;padding:3px 10px;border-radius:12px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700;margin-left:8px;vertical-align:middle'>🔴 实盘 REAL</span>"
+        if is_real else
+        "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟盘</span>"
+    )
     col_title, col_status = st.columns([1.6, 1], vertical_alignment="center")
     with col_title:
         st.markdown(
-            "### 📈 量化系统驾驶舱 "
-            "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟盘</span>"
+            f"### 📈 量化系统驾驶舱 {env_badge}"
             "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#dcfce7;color:#15803d;font-weight:600;margin-left:6px;vertical-align:middle'>风控正常 · 急停未触发</span>",
             unsafe_allow_html=True,
         )
-        st.caption("全局资产监控、策略运行状态与实时风险雷达看板。")
+        if is_real:
+            st.caption("🔴 实盘运行中 · 绑定义务账户受控交易 · 仅放行白名单策略")
+        else:
+            st.caption("全局资产监控、策略运行状态与实时风险雷达看板。")
 
     with col_status:
         c_time, c_btn = st.columns([1, 0.42], vertical_alignment="center")
