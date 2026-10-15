@@ -179,9 +179,17 @@ class FutuPaperBroker:
     the explicit live-trading safety gates.
     """
 
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        trading_env_override: str | None = None,
+        account_id_override: int | str | None = None,
+    ):
         self.settings = settings
-        self.trd_env = TrdEnv.REAL if settings.trading_env == "REAL" else TrdEnv.SIMULATE
+        effective_env = (trading_env_override or settings.trading_env).upper()
+        self.trading_env = effective_env
+        self.account_id = int(account_id_override) if account_id_override else None
+        self.trd_env = TrdEnv.REAL if effective_env == "REAL" else TrdEnv.SIMULATE
         self.market = TrdMarket.US
         try:
             self.security_firm = getattr(SecurityFirm, settings.security_firm)
@@ -195,10 +203,13 @@ class FutuPaperBroker:
     # ---- persistent pooled connections ------------------------------------
 
     def _pool_key(self) -> tuple:
-        account = self.settings.real_account_id if self.settings.trading_env == "REAL" else getattr(self.settings, "acc_id", "")
+        target_account = (
+            self.account_id
+            or (self.settings.real_account_id if self.trading_env == "REAL" else getattr(self.settings, "acc_id", ""))
+        )
         return (
             self.settings.host, self.settings.port, self.security_firm,
-            self.trd_env, account,
+            self.trd_env, target_account,
         )
 
     def _pool(self) -> _BrokerConnectionPool:
@@ -269,7 +280,7 @@ class FutuPaperBroker:
             pool.drop("trade")
             self._ensure_opend_available()
             ctx = OpenSecTradeContext(
-                filter_trdmarket=self.market,
+                filter_trdmarket=TrdMarket.US if self.trading_env == "REAL" else TrdMarket.HK,
                 host=self.settings.host,
                 port=self.settings.port,
                 security_firm=self.security_firm,
@@ -384,24 +395,32 @@ class FutuPaperBroker:
             data = self._ok(ctx.get_acc_list(), "get accounts")
         if "trd_env" not in data.columns:
             raise BrokerError("Safety lock: account response has no trading environment")
-        selected = data[data["trd_env"].astype(str).str.upper() == self.settings.trading_env].copy()
+        selected = data[data["trd_env"].astype(str).str.upper() == self.trading_env].copy()
         if selected.empty:
-            raise BrokerError(f"No US {self.settings.trading_env} account was returned by OpenD")
-        if self.settings.trading_env == "REAL" and self.settings.real_account_id:
-            account_id = str(self.settings.real_account_id)
+            raise BrokerError(f"No US {self.trading_env} account was returned by OpenD")
+        target_account = (
+            self.account_id
+            or (self.settings.real_account_id if self.trading_env == "REAL" else getattr(self.settings, "acc_id", None))
+        )
+        if target_account:
+            account_id = str(target_account)
             account_column = "acc_id" if "acc_id" in selected.columns else "acc_id_str"
             if account_column in selected.columns:
                 selected = selected[selected[account_column].astype(str) == account_id].copy()
             if selected.empty:
-                raise BrokerError("OpenD 未返回配置的实盘账户，请检查 REAL_ACCOUNT_ID")
+                raise BrokerError(f"OpenD 未返回配置的账户 {target_account} ({self.trading_env})")
         return selected
 
     def _account_kwargs(self) -> dict:
-        if self.settings.trading_env == "REAL":
-            if not self.settings.real_account_id:
+        target_account = (
+            self.account_id
+            or (self.settings.real_account_id if self.trading_env == "REAL" else getattr(self.settings, "acc_id", None))
+        )
+        if self.trading_env == "REAL":
+            if not target_account:
                 raise BrokerError("实盘环境必须配置 REAL_ACCOUNT_ID")
-            return {"acc_id": self.settings.real_account_id}
-        return {"acc_id": self.settings.acc_id} if self.settings.acc_id else {}
+            return {"acc_id": int(target_account)}
+        return {"acc_id": int(target_account)} if target_account else {}
 
     @_read_with_reconnect("trade")
     def account_info(self, refresh: bool = False) -> pd.DataFrame:

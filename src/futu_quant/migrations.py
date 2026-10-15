@@ -69,6 +69,10 @@ MIGRATIONS = (
     Migration(5, "shadow_incubator_track_mode", """
         ALTER TABLE shadow_incubator ADD COLUMN track_mode TEXT NOT NULL DEFAULT 'STANDARD';
     """),
+    Migration(6, "equity_snapshots_env_isolation", """
+        ALTER TABLE equity_snapshots ADD COLUMN env TEXT NOT NULL DEFAULT 'SIMULATE';
+        CREATE INDEX IF NOT EXISTS idx_equity_snapshots_env_time ON equity_snapshots(env, created_at);
+    """),
 )
 
 

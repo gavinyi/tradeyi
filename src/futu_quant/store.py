@@ -1943,32 +1943,44 @@ class TradingStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def record_equity(self, total_assets: float, cash: float, market_value: float) -> None:
+    def record_equity(self, total_assets: float, cash: float, market_value: float, env: str = "SIMULATE") -> None:
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO equity_snapshots(total_assets,cash,market_value,created_at) VALUES(?,?,?,?)",
-                (total_assets, cash, market_value, self.now()),
+                "INSERT INTO equity_snapshots(total_assets,cash,market_value,created_at,env) VALUES(?,?,?,?,?)",
+                (total_assets, cash, market_value, self.now(), env.upper()),
             )
 
-    def equity_since(self, iso_timestamp: str) -> list[dict]:
+    def equity_since(self, iso_timestamp: str, env: str | None = None) -> list[dict]:
         with self.connection() as connection:
-            return [dict(row) for row in connection.execute(
-                "SELECT * FROM equity_snapshots WHERE created_at>=? ORDER BY id", (iso_timestamp,)
-            ).fetchall()]
+            query = "SELECT * FROM equity_snapshots WHERE created_at>=?"
+            params = [iso_timestamp]
+            if env:
+                query += " AND env=?"
+                params.append(env.upper())
+            query += " ORDER BY id"
+            return [dict(row) for row in connection.execute(query, params).fetchall()]
 
-    def latest_equity_before(self, before_iso: str) -> dict | None:
+    def latest_equity_before(self, before_iso: str, env: str | None = None) -> dict | None:
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM equity_snapshots WHERE created_at < ? ORDER BY id DESC LIMIT 1",
-                (before_iso,),
-            ).fetchone()
+            query = "SELECT * FROM equity_snapshots WHERE created_at < ?"
+            params = [before_iso]
+            if env:
+                query += " AND env=?"
+                params.append(env.upper())
+            query += " ORDER BY id DESC LIMIT 1"
+            row = connection.execute(query, params).fetchone()
         return dict(row) if row else None
 
-    def equity_history(self, limit: int = 10_000) -> list[dict]:
+    def equity_history(self, limit: int = 10_000, env: str | None = None) -> list[dict]:
         with self.connection() as connection:
-            return [dict(row) for row in connection.execute(
-                "SELECT * FROM equity_snapshots ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()][::-1]
+            query = "SELECT * FROM equity_snapshots"
+            params = []
+            if env:
+                query += " WHERE env=?"
+                params.append(env.upper())
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+            return [dict(row) for row in connection.execute(query, params).fetchall()][::-1]
 
     def record_metric(self, symbol: str, metric: str, value: float) -> None:
         with self.connection() as connection:

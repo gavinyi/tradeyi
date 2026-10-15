@@ -145,21 +145,31 @@ def _load_store_snapshot() -> dict[str, pd.DataFrame]:
     }
 
 
-@st.cache_data(ttl=30, max_entries=2, show_spinner=False)
-def _account_snapshot(_broker) -> dict[str, Any]:
+@st.cache_data(ttl=15, max_entries=4, show_spinner=False)
+def _account_snapshot(_broker, view_env: str = "DEFAULT") -> dict[str, Any]:
     store = TradingStore()
-    snapshots = {key: store.broker_snapshot(key) for key in ("account_info", "positions")}
-    info = pd.DataFrame((snapshots["account_info"] or {}).get("payload", []))
-    positions = pd.DataFrame((snapshots["positions"] or {}).get("payload", []))
-    captured = [item["captured_at"] for item in snapshots.values() if item]
+    if view_env == "SIMULATE":
+        info_snap = store.broker_snapshot("account_info_sim") or store.broker_snapshot("account_info")
+        pos_snap = store.broker_snapshot("positions_sim") or store.broker_snapshot("positions")
+        tag = "模拟盘"
+    elif view_env == "REAL":
+        info_snap = store.broker_snapshot("account_info_real") or store.broker_snapshot("account_info")
+        pos_snap = store.broker_snapshot("positions_real") or store.broker_snapshot("positions")
+        tag = "实盘"
+    else:
+        info_snap = store.broker_snapshot("account_info")
+        pos_snap = store.broker_snapshot("positions")
+        tag = "当前环境"
+
+    info = pd.DataFrame((info_snap or {}).get("payload", []))
+    positions = pd.DataFrame((pos_snap or {}).get("payload", []))
+    captured = [item["captured_at"] for item in [info_snap, pos_snap] if item]
     captured_at = max(captured) if captured else "无"
-    # The scheduler refreshes these snapshots independently. Do not issue a
-    # synchronous OpenD positions query during every Streamlit fragment rerun.
     if info.empty and positions.empty:
-        return {"ok": False, "error": "暂无券商快照；等待交易服务刷新", "info": info, "positions": positions}
+        return {"ok": False, "error": f"暂无{tag}券商快照；等待交易服务刷新", "info": info, "positions": positions}
     return {
         "ok": True,
-        "error": f"使用交易服务快照（{captured_at}）",
+        "error": f"使用{tag}交易快照（{captured_at}）",
         "info": info,
         "positions": positions,
     }
@@ -832,19 +842,37 @@ def _render_risk_pulse(snapshot: dict[str, pd.DataFrame]) -> None:
 
 @st.fragment(run_every="30s")
 def _render_live_dashboard(_broker, _account_page=None) -> None:
-    # Keep the homepage responsive when OpenD is slow: the account snapshot is
-    # cached and may fall back to the last broker snapshot instead of blocking
-    # every Streamlit fragment rerun on a fresh position query.
     snapshot = _load_store_snapshot()
-    account = _account_snapshot(_broker)
+
+    # 双轨战区一键切换选择器
+    is_real = getattr(_broker.settings, "trading_env", "SIMULATE") == "REAL"
+    if is_real:
+        col_view1, col_view2 = st.columns([1.2, 1], vertical_alignment="center")
+        with col_view1:
+            view_channel = st.radio(
+                "双轨战区切换",
+                ["🔴 实盘真钱战区", "🟢 100万模拟实验战区"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="home_dual_track_view",
+            )
+        with col_view2:
+            st.caption("双轨并发运行中：实盘真金受控打猎，模拟盘大资金长线孵化，两边数据独立呈现。")
+        selected_env = "REAL" if "实盘" in view_channel else "SIMULATE"
+    else:
+        selected_env = "SIMULATE"
+
+    account = _account_snapshot(_broker, view_env=selected_env)
 
     if not account["ok"]:
         st.warning(f"账户快照暂不可用，系统与策略图仍可查看：{account['error']}")
 
     _render_attention_center(snapshot, account, _account_page)
     _render_status_strip(snapshot)
-    st.subheader("账户与持仓总览")
-    st.caption("先看账户状态，再看权益变化和当前持仓风险；所有数据每 10 秒更新。")
+    
+    header_title = "账户与持仓总览 · 🔴 实盘真金白银战区" if selected_env == "REAL" else "账户与持仓总览 · 🟢 100万模拟实验战区"
+    st.subheader(header_title)
+    st.caption("全景双轨资产核算 · 股票与期权盈亏独立区分；所有数据每 10 秒自动刷新。")
     _render_account_kpis(account, snapshot)
 
     left, right = st.columns([1.45, 1])

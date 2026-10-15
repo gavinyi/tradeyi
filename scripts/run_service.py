@@ -625,16 +625,45 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
             store.save_broker_snapshot("account_info", account)
             store.save_broker_snapshot("positions", positions)
             store.save_broker_snapshot("orders", broker.orders())
+            current_env = getattr(broker, "trading_env", "SIMULATE").upper()
+            if current_env == "REAL":
+                store.save_broker_snapshot("account_info_real", account)
+                store.save_broker_snapshot("positions_real", positions)
+                # 双轨并发采集：同时采集模拟盘快照，供全景双轨看板展示
+                try:
+                    if not hasattr(broker, "_broker_sim_companion"):
+                        broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=settings.acc_id)
+                    sim_b = broker._broker_sim_companion
+                    sim_acc = sim_b.account_info()
+                    sim_pos = sim_b.positions()
+                    store.save_broker_snapshot("account_info_sim", sim_acc)
+                    store.save_broker_snapshot("positions_sim", sim_pos)
+                    store.save_broker_snapshot("orders_sim", sim_b.orders())
+                    if not sim_acc.empty:
+                        s_row = sim_acc.iloc[0]
+                        store.record_equity(
+                            float(s_row.get("total_assets", 0) or 0),
+                            float(s_row.get("cash", 0) or 0),
+                            float(s_row.get("market_val", 0) or 0),
+                            env="SIMULATE",
+                        )
+                except Exception:
+                    pass
+            else:
+                store.save_broker_snapshot("account_info_sim", account)
+                store.save_broker_snapshot("positions_sim", positions)
+
             if not account.empty:
                 row = account.iloc[0]
                 store.record_equity(
                     float(row.get("total_assets", 0) or 0), float(row.get("cash", 0) or 0),
                     float(row.get("market_val", row.get("securities_assets", 0)) or 0),
+                    env=current_env,
                 )
                 position_loss = -float(account_pnl_metrics(positions)["today_position_pnl"])
                 day_start = ny_trading_day_start_utc(now).isoformat()
-                before = store.latest_equity_before(day_start)
-                today_rows = store.equity_since(day_start)
+                before = store.latest_equity_before(day_start, env=current_env)
+                today_rows = store.equity_since(day_start, env=current_env)
                 baseline_assets = float(
                     before["total_assets"] if before else
                     today_rows[0]["total_assets"] if today_rows else row.get("total_assets", 0)
@@ -854,9 +883,17 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         except Exception:
             pass
         key = "last_run:core_satellite"
+        core_broker = broker
+        core_executor = executor
+        if getattr(broker, "trading_env", "SIMULATE") == "REAL" and "core_satellite" not in settings.real_allowed_strategies:
+            # 双轨调度：Core Satellite 未入实盘白名单时，自动由模拟盘通道接管，保持 100 万现货底仓模拟运转！
+            if not hasattr(broker, "_broker_sim_companion"):
+                broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=settings.acc_id)
+            core_broker = broker._broker_sim_companion
+            core_executor = ExecutionManager(core_broker, store)
         succeeded = run_task(
             store, alerts, "core_satellite",
-            lambda: run_strategy_once(broker, "Core Satellite", executor),
+            lambda: run_strategy_once(core_broker, "Core Satellite", core_executor),
         )
         if succeeded:
             mark_run(store, key, now)

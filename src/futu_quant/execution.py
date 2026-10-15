@@ -43,9 +43,13 @@ class ExecutionManager:
         metadata = metadata or {}
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
         override_mode = self.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
-        mode = (execution_mode_override or override_mode or global_mode).upper()
         broker_settings = getattr(self.broker, "settings", None)
         broker_env = str(getattr(broker_settings, "trading_env", "SIMULATE")).upper()
+        # 智能匹配实盘白名单授权：实盘环境下白名单策略自动放行 REAL 执行模式
+        if broker_env == "REAL" and strategy_id in getattr(broker_settings, "real_allowed_strategies", ()):
+            if not execution_mode_override and not override_mode:
+                override_mode = "REAL"
+        mode = (execution_mode_override or override_mode or global_mode).upper()
         actual_env = getattr(self.broker, "trd_env", None)
         if mode not in {"SHADOW", "PAPER", "REAL"}:
             raise ValueError(f"无效执行模式：{mode}")
