@@ -81,7 +81,10 @@ def run_once(
             core_capital_ratio if core_budget else settings.core_satellite_max_stock_weight,
         )
         symbols = tuple(dict.fromkeys(settings.core_satellite_symbols))
-        required = tuple(dict.fromkeys(("US.SPY", *symbols)))
+        required_list = list(dict.fromkeys(("US.SPY", *symbols)))
+        if settings.core_satellite_cash_yield_enabled:
+            required_list.append(settings.core_satellite_cash_yield_symbol)
+        required = tuple(dict.fromkeys(required_list))
         frames = {symbol: broker.candles(symbol, count=260) for symbol in required}
         managed_positions = (
             positions[positions["code"].isin(symbols) & (positions["qty"] != 0)]
@@ -170,6 +173,8 @@ def run_once(
             settings.core_satellite_satellite_min_score,
             satellite_only,
             settings.core_satellite_max_target_change,
+            settings.core_satellite_cash_yield_enabled,
+            settings.core_satellite_cash_yield_symbol,
         )
         signal_date = str(frames["US.SPY"].iloc[-1]["time_key"])[:10]
         validation_payload = {

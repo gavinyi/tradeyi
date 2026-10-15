@@ -520,6 +520,8 @@ class Settings:
     core_satellite_satellite_daily_scan: bool
     core_satellite_satellite_min_score: float
     core_satellite_max_target_change: float
+    core_satellite_cash_yield_enabled: bool
+    core_satellite_cash_yield_symbol: str
     core_satellite_symbols: tuple[str, ...]
     gamma_symbols: tuple[str, ...]
     volatility_symbols: tuple[str, ...]
@@ -657,6 +659,8 @@ class Settings:
         ml_weight = float(os.getenv("ML_WEIGHT", "0.6"))
         if not 0 <= ml_weight <= 1.0:
             raise RuntimeError("ML_WEIGHT must be between 0 and 1")
+        cash_yield_enabled = _load_runtime_value("core_satellite_cash_yield_enabled", False)
+        cash_yield_symbol = normalize_us_symbol(str(_load_runtime_value("core_satellite_cash_yield_symbol", "US.SGOV")))
         return cls(
             host=os.getenv("FUTU_HOST", "127.0.0.1"),
             port=int(os.getenv("FUTU_PORT", "11111")),
@@ -690,6 +694,8 @@ class Settings:
             core_satellite_satellite_daily_scan=satellite_daily_scan,
             core_satellite_satellite_min_score=satellite_min_score,
             core_satellite_max_target_change=max_target_change,
+            core_satellite_cash_yield_enabled=bool(cash_yield_enabled),
+            core_satellite_cash_yield_symbol=cash_yield_symbol,
             core_satellite_symbols=core_symbols,
             gamma_symbols=gamma_symbols,
             volatility_symbols=volatility_symbols,

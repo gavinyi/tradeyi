@@ -149,15 +149,26 @@ class ExecutionManager:
         # in TradingStore when no order id exists; neither transport errors nor local write
         # failures after this boundary prove that the broker rejected the order.
         self.store.update_intent(intent["id"], "SUBMITTING")
-        try:
-            kwargs = {"real_trade_context": (self.store, strategy_id, metadata, intent["id"])} if mode == "REAL" else {}
-            response = self.broker.place_limit_order(symbol, side, int(quantity), float(price), **kwargs)
-        except Exception as exc:
-            if mode == "REAL" and "实盘下单门禁拒绝" in str(exc):
-                self.store.update_intent(intent["id"], "REJECTED", error=str(exc))
-                return ExecutionResult(intent["id"], "REJECTED", str(exc))
-            self._mark_unknown(intent, f"券商下单结果不确定：{exc}", "ORDER_SUBMISSION_UNKNOWN")
-            raise
+        is_urgent_exit = bool(metadata.get("urgent") or metadata.get("reduce_only") or side == "SELL")
+        max_attempts = 3 if is_urgent_exit else 1
+        response = None
+        for attempt in range(max_attempts):
+            try:
+                kwargs = {"real_trade_context": (self.store, strategy_id, metadata, intent["id"])} if mode == "REAL" else {}
+                response = self.broker.place_limit_order(symbol, side, int(quantity), float(price), **kwargs)
+                break
+            except Exception as exc:
+                if mode == "REAL" and "实盘下单门禁拒绝" in str(exc):
+                    self.store.update_intent(intent["id"], "REJECTED", error=str(exc))
+                    return ExecutionResult(intent["id"], "REJECTED", str(exc))
+                is_net_err = any(k in str(exc).lower() for k in ["网络", "timeout", "connect", "broken pipe", "connection", "disconnected"])
+                # 针对紧急平仓止盈单，若遭遇瞬时网络断开/超时，进行最多 3 次退避重试，确保保单送达
+                if is_urgent_exit and is_net_err and attempt < max_attempts - 1:
+                    import time
+                    time.sleep(1.0)
+                    continue
+                self._mark_unknown(intent, f"券商下单结果不确定：{exc}", "ORDER_SUBMISSION_UNKNOWN")
+                raise
         try:
             order_id = str(response.iloc[0]["order_id"]) if not response.empty and "order_id" in response else None
         except Exception:

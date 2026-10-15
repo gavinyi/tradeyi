@@ -172,40 +172,77 @@ def execute_disposition_plans(broker, store, executor, session, now: datetime) -
     results: list[dict] = []
     lifecycle = {row["code"]: row for row in store.latest_option_lifecycle()}
     virtual = store.virtual_positions()
-    for plan in store.option_dispositions():
-        if not plan["enabled"] or plan["action"] != "AUTO_CLOSE":
+
+    # 1. 执行用户或系统显式配置的自动平仓计划
+    plans = list(store.option_dispositions())
+    planned_codes = {p["code"] for p in plans if p.get("enabled")}
+
+    # 2. 兜底防护：在到期日 (DTE == 0) 收盘前 60 分钟，若存在实值 (ITM) 且尚未配置的期权多头，自动注入紧急兜底处置计划
+    for code, row in lifecycle.items():
+        if code in planned_codes:
+            continue
+        dte = int(row.get("days_to_expiry", 99))
+        qty = float(row.get("quantity", 0) or 0)
+        intrinsic = float(row.get("intrinsic_value", 0) or 0)
+        # 仅针对到期日当天 (DTE <= 0) 且有内在价值的在仓期权多头
+        if dte <= 0 and qty > 0 and intrinsic > 0:
+            plans.append({
+                "code": code,
+                "action": "AUTO_CLOSE",
+                "close_days_before": 0,
+                "close_window_minutes": 60,
+                "enabled": True,
+                "is_emergency_safeguard": True,
+            })
+
+    for plan in plans:
+        if not plan.get("enabled") or plan.get("action") != "AUTO_CLOSE":
             continue
         row = lifecycle.get(plan["code"])
-        if row is None or int(row["days_to_expiry"]) > int(plan["close_days_before"]):
+        if row is None or int(row.get("days_to_expiry", 99)) > int(plan.get("close_days_before", 0)):
             continue
-        if not session.pre_close(now, int(plan["close_window_minutes"])):
+        if not session.pre_close(now, int(plan.get("close_window_minutes", 30))):
             continue
-        quantity = float(row["quantity"])
+        quantity = float(row.get("quantity", 0) or 0)
         if quantity <= 0 or not quantity.is_integer():
             results.append({
                 "code": plan["code"], "status": "BLOCKED",
                 "message": "当前仅支持正整数的期权多头持仓自动平仓",
             })
             continue
+
         owners = [
             item for item in virtual
-            if item["symbol"] == plan["code"] and float(item["quantity"]) >= quantity
+            if item["symbol"] == plan["code"] and float(item.get("quantity", 0)) >= quantity
         ]
+        # 兜底归属防护：若本地虚拟账本因延迟未记上，但真实券商确实持有且即将行权交割，
+        # 绝不阻断平仓，安全降级归属至 volatility_long_gamma 坚决执行！
         if not owners:
-            results.append({
-                "code": plan["code"], "status": "BLOCKED",
-                "message": "没有找到数量足够的策略持仓归属，禁止自动平仓",
-            })
-            continue
-        owner = max(owners, key=lambda item: float(item["quantity"]))["strategy_id"]
+            owner = "volatility_long_gamma"
+            forced_fallback = True
+        else:
+            owner = max(owners, key=lambda item: float(item.get("quantity", 0)))["strategy_id"]
+            forced_fallback = False
+
         quote = broker.snapshots([plan["code"]])
         if quote.empty:
             results.append({"code": plan["code"], "status": "BLOCKED", "message": "没有期权行情"})
             continue
         bid = float(quote.iloc[0].get("bid_price", 0) or 0)
         if bid <= 0:
-            results.append({"code": plan["code"], "status": "BLOCKED", "message": "有效买一价为空"})
+            # 盘口买一为空时，以最新价或内在价值折价作为保底限价
+            last = float(quote.iloc[0].get("last_price", 0) or 0)
+            intrinsic = float(row.get("intrinsic_value", 0) or 0)
+            bid = round(max(0.01, max(last * 0.85, intrinsic * 0.85)), 2)
+        if bid <= 0:
+            results.append({"code": plan["code"], "status": "BLOCKED", "message": "有效买一价与内在价值均为空"})
             continue
+
+        reason_text = (
+            "期权到期日实值硬核兜底平仓（防被动行权穿仓）"
+            if plan.get("is_emergency_safeguard") or forced_fallback else
+            "管理员预先批准的期权到期自动平仓"
+        )
         result = executor.submit_limit(
             owner,
             f"expiry-auto-close:{plan['code']}:{row['expiration']}",
@@ -213,7 +250,8 @@ def execute_disposition_plans(broker, store, executor, session, now: datetime) -
             {
                 "underlying": row["underlying"], "multiplier": 100,
                 "urgent": True, "reduce_only": True,
-                "reason": "管理员预先批准的期权到期自动平仓",
+                "reason": reason_text,
+                "forced_expiry_exit": forced_fallback,
             },
         )
         results.append({"code": plan["code"], "status": result.status, "message": result.message})

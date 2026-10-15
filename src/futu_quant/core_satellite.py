@@ -386,6 +386,8 @@ def build_rebalance_plan(
     satellite_min_score: float = 2.5,
     satellite_only: bool = False,
     max_target_change: float = 0.05,
+    cash_yield_enabled: bool = False,
+    cash_yield_symbol: str = "US.SGOV",
 ) -> tuple[list[RebalanceOrder], bool]:
     if account_value <= 0:
         raise ValueError("account value must be positive")
@@ -497,4 +499,63 @@ def build_rebalance_plan(
                 throttle_reason=throttle_reason,
             )
         )
+
+    # 现金理财池 (SGOV 超短国债 ETF 增益机制)：若启用且有行情，在闲置现金充裕时自动配置国债理财吃 4.8% 利息
+    if cash_yield_enabled and cash_yield_symbol in frames:
+        yield_stats = indicators(frames[cash_yield_symbol])
+        yield_held = position_map.get(cash_yield_symbol, {"qty": 0.0, "can_sell_qty": 0.0})
+        yield_mv = yield_held["qty"] * yield_stats["price"]
+        # 计算所有股票指令执行后的净现金变动
+        net_buy_outflow = sum(
+            o.quantity * o.price for o in orders if o.side == "BUY"
+        ) - sum(
+            o.quantity * o.price for o in orders if o.side == "SELL"
+        )
+        # 预估调仓后的可用现金
+        current_cash = max(0.0, account_value - total_market_value)
+        post_cash = current_cash - net_buy_outflow
+        target_cash_buffer = account_value * cash_buffer
+
+        if post_cash < target_cash_buffer and yield_held["can_sell_qty"] > 0:
+            # 战时抽调：现金不足以维持预留缓冲时，优先卖出 SGOV 赎回现金
+            shortage = target_cash_buffer - post_cash
+            redeem_qty = min(
+                int(yield_held["can_sell_qty"]),
+                max(1, int(shortage // yield_stats["price"] + 1)),
+            )
+            if redeem_qty > 0 and redeem_qty * yield_stats["price"] >= min_trade_usd:
+                orders.append(
+                    RebalanceOrder(
+                        symbol=cash_yield_symbol,
+                        side="SELL",
+                        quantity=redeem_qty,
+                        price=yield_stats["price"],
+                        current_weight=yield_mv / account_value,
+                        target_weight=max(0.0, (yield_mv - redeem_qty * yield_stats["price"]) / account_value),
+                        reason="现金理财池赎回：释放国债 ETF 资金保障主力调仓与期权流动性",
+                        desired_quantity=redeem_qty,
+                        desired_notional=redeem_qty * yield_stats["price"],
+                        order_notional=redeem_qty * yield_stats["price"],
+                    )
+                )
+        elif post_cash > target_cash_buffer + min_trade_usd:
+            # 闲时生息：现金超出缓冲额度且超过起投金额时，自动将闲置现金买入 SGOV
+            surplus = post_cash - target_cash_buffer
+            invest_qty = int(surplus // yield_stats["price"])
+            if invest_qty > 0 and invest_qty * yield_stats["price"] >= min_trade_usd:
+                orders.append(
+                    RebalanceOrder(
+                        symbol=cash_yield_symbol,
+                        side="BUY",
+                        quantity=invest_qty,
+                        price=yield_stats["price"],
+                        current_weight=yield_mv / account_value,
+                        target_weight=(yield_mv + invest_qty * yield_stats["price"]) / account_value,
+                        reason="闲置资金自动理财：超额闲置现金配置超短国债 ETF 获取稳健无风险收益",
+                        desired_quantity=invest_qty,
+                        desired_notional=invest_qty * yield_stats["price"],
+                        order_notional=invest_qty * yield_stats["price"],
+                    )
+                )
+
     return orders, risk_on
