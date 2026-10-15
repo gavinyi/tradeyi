@@ -952,6 +952,15 @@ class TradingStore:
             )
         return True
 
+    def recover_all_incidents(self) -> int:
+        now = self.now()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE incidents SET status='RECOVERED',recovered_at=?,last_seen=? WHERE status='OPEN'",
+                (now, now),
+            )
+            return cursor.rowcount
+
     def incidents(self, status: str | None = None, limit: int = 500) -> list[dict]:
         query = "SELECT * FROM incidents"
         params: list = []

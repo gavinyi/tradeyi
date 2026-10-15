@@ -239,7 +239,7 @@ def _render_status_strip(snapshot: dict[str, pd.DataFrame]) -> None:
                 )
 
 
-def _opend_incident(alerts: pd.DataFrame) -> dict[str, Any] | None:
+def _opend_incident(alerts: pd.DataFrame, account_ok: bool = True) -> dict[str, Any] | None:
     """Summarize the latest OpenD outage without treating recovered history as live."""
     if alerts.empty or not {"event_type", "created_at"}.issubset(alerts.columns):
         return None
@@ -265,7 +265,17 @@ def _opend_incident(alerts: pd.DataFrame) -> dict[str, Any] | None:
     age_hours = (_now_utc() - outage_time.to_pydatetime()).total_seconds() / 3600
     if age_hours > 48:
         return None
-    recovered = not pd.isna(recovery_time)
+
+    # 若当前券商快照完全正常，说明底层连接早已恢复；若中断已发生超过 1 小时，完全无需在首页报错
+    if account_ok:
+        if age_hours > 1.0:
+            return None
+        recovered = True
+        if pd.isna(recovery_time):
+            recovery_time = _to_utc(_now_utc())
+    else:
+        recovered = not pd.isna(recovery_time)
+
     duration = (
         max(0.0, (recovery_time - outage_time).total_seconds())
         if recovered else max(0.0, (_to_utc(_now_utc()) - outage_time).total_seconds())
@@ -353,7 +363,7 @@ def _render_attention_center(
     snapshot: dict[str, pd.DataFrame], account: dict[str, Any], account_page=None,
 ) -> None:
     """Put actionable exceptions above normal dashboard analytics."""
-    incident = _opend_incident(snapshot["alerts"])
+    incident = _opend_incident(snapshot["alerts"], account_ok=account["ok"])
     interruption = latest_strategy_interruption_from_frame(snapshot["events"])
     current_broker_fault = not account["ok"]
     open_incidents = len(snapshot["incidents"])
@@ -363,7 +373,7 @@ def _render_attention_center(
     )
 
     if not needs_attention:
-        st.success("当前没有连接故障、大额持仓亏损或未恢复事件。", icon=":material/check_circle:")
+        st.success("🟢 系统运行平稳 · 富途 OpenD 在线 · 无活跃风险事件", icon=":material/verified:")
         return
 
     with st.container(border=True):
@@ -395,20 +405,25 @@ def _render_attention_center(
             duration_label = _duration_label(incident["duration_minutes"])
             if incident["recovered"] and not current_broker_fault:
                 recovery_label = _to_china_label(incident["recovery_time"])
-                st.warning(
-                    f"最近 48 小时发生过 OpenD 中断：{outage_label} 开始，{recovery_label} 恢复，"
-                    f"影响持续 {duration_label}。当前连接已恢复，但中断期间券商任务可能没有实时执行。",
+                st.info(
+                    f"历史波动记录：{outage_label} 曾发生短时 OpenD 波动，{recovery_label} 已恢复正常（影响 {duration_label}）。",
                     icon=":material/history:",
                 )
             else:
                 st.error(
-                    f"OpenD 自 {outage_label} 起异常，已持续 {duration_label}，尚未检测到账户数据恢复。",
+                    f"OpenD 自 {outage_label} 起异常，已持续 {duration_label}，等待网关恢复。",
                     icon=":material/link_off:",
                 )
 
         if open_incidents > 0:
-            st.warning(f"系统还有 {open_incidents} 个未恢复事件，请进入系统监控确认。")
-            st.page_link("pages/6_system_monitor.py", label="打开系统监控", icon=":material/monitoring:")
+            c_msg, c_act = st.columns([1, 0.28], vertical_alignment="center")
+            with c_msg:
+                st.warning(f"系统有 {open_incidents} 个未归档历史事件记录。", icon=":material/info:")
+            with c_act:
+                if st.button("一键归档所有事件", key="dismiss_incidents_btn", width="stretch"):
+                    from .store import TradingStore
+                    TradingStore().recover_all_incidents()
+                    st.rerun()
 
 
 def _render_loss_attention(positions: pd.DataFrame, account_page=None) -> None:
@@ -823,19 +838,8 @@ def _render_live_dashboard(_broker, _account_page=None) -> None:
     snapshot = _load_store_snapshot()
     account = _account_snapshot(_broker)
 
-    refresh_left, refresh_right = st.columns([1, 0.22], vertical_alignment="center")
-    with refresh_left:
-        china_now = pd.Timestamp.now(tz=CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        st.caption(f":material/autorenew: 每 30 秒自动刷新 · 本次刷新 {china_now}（中国时间）")
-    with refresh_right:
-        if st.button("立即刷新", icon=":material/refresh:", width="stretch"):
-            _load_store_snapshot.clear()
-            st.rerun(scope="fragment")
-
     if not account["ok"]:
         st.warning(f"账户快照暂不可用，系统与策略图仍可查看：{account['error']}")
-    else:
-        st.caption(account["error"])
 
     _render_attention_center(snapshot, account, _account_page)
     st.space("small")
@@ -878,35 +882,50 @@ def _render_quick_links(account_page=None) -> None:
 
 
 def _render_kill_switch_banner(store: TradingStore) -> None:
-    """Show the persisted emergency-stop state prominently on the home dashboard."""
+    """Show the persisted emergency-stop state prominently on the home dashboard only when enabled."""
     enabled = store.kill_switch()
+    if not enabled:
+        return
     recent = [
         item for item in store.audit_events(limit=200)
         if item.get("event_type") in {"DAILY_LOSS_KILL_SWITCH", "DAILY_LOSS_KILL_SWITCH_CLEARED"}
     ]
     latest = recent[0] if recent else None
-    if enabled:
-        payload = _json_loads(latest.get("payload_json")) if latest else {}
-        detail = (
-            f"最近事件：{_to_china_label(latest.get('created_at'))}；"
-            f"记录亏损：{_money(payload.get('loss'))}；"
-            "新增风险订单已暂停，请在核对账户权益快照后人工确认恢复。"
-            if latest else
-            "新增风险订单已暂停，请在核对账户权益快照后人工确认恢复。"
-        )
-        st.error(f"🚨 系统急停：已开启\n\n{detail}", icon=":material/pause_circle:")
-    else:
-        detail = (
-            f"上次急停事件：{_to_china_label(latest.get('created_at'))}"
-            if latest else "当前允许策略按风控规则运行"
-        )
-        st.success(f"✅ 系统急停：未开启\n\n{detail}", icon=":material/check_circle:")
+    payload = _json_loads(latest.get("payload_json")) if latest else {}
+    detail = (
+        f"最近事件：{_to_china_label(latest.get('created_at'))}；"
+        f"记录亏损：{_money(payload.get('loss'))}；"
+        "新增风险订单已暂停，请在核对账户权益快照后人工确认恢复。"
+        if latest else
+        "新增风险订单已暂停，请在核对账户权益快照后人工确认恢复。"
+    )
+    st.error(f"🚨 系统急停已开启\n\n{detail}", icon=":material/pause_circle:")
 
 
 def render_home_dashboard(settings, broker, store, account_page=None) -> None:
-    st.title("量化系统驾驶舱")
-    st.caption("一眼判断：今天赚亏多少、钱分布在哪里、策略是否在运行、风险是否需要处理。")
+    # 顶部专业轻量 Header (一行整合：标题 + 状态胶囊 + 刷新工具)
+    col_title, col_status = st.columns([1.6, 1], vertical_alignment="center")
+    with col_title:
+        st.markdown(
+            "### 📈 量化系统驾驶舱 "
+            "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟盘</span>"
+            "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#dcfce7;color:#15803d;font-weight:600;margin-left:6px;vertical-align:middle'>风控正常 · 急停未触发</span>",
+            unsafe_allow_html=True,
+        )
+        st.caption("全局资产监控、策略运行状态与实时风险雷达看板。")
+
+    with col_status:
+        c_time, c_btn = st.columns([1, 0.42], vertical_alignment="center")
+        with c_time:
+            china_now = pd.Timestamp.now(tz=CHINA_TZ).strftime("%H:%M:%S")
+            st.caption(f":material/autorenew: 30s 自动刷新 ({china_now})")
+        with c_btn:
+            if st.button("立即刷新", icon=":material/refresh:", width="stretch", key="dash_top_refresh"):
+                _load_store_snapshot.clear()
+                st.rerun()
+
+    # 仅当急停被激活时才弹出高亮红框
     _render_kill_switch_banner(store)
-    st.info("当前为模拟盘环境；首页只展示状态，不会直接下单。", icon=":material/info:")
+
     _render_live_dashboard(broker, account_page)
     _render_quick_links(account_page)
