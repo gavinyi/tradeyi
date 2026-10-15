@@ -180,6 +180,7 @@ def allocation_factor(
     stats: dict[str, float], kind: str, risk_on: bool, base_factor: float = 0.60,
     benchmark_stats: dict[str, float] | None = None,
     satellite_min_score: float = 2.5,
+    currently_held: bool = False,
 ) -> tuple[float, str]:
     above_long = stats["price"] >= stats["sma200"]
     above_short = stats["price"] >= stats["sma20"]
@@ -195,8 +196,12 @@ def allocation_factor(
         quality_score, reasons = satellite_quality_score(stats, benchmark_stats)
 
         if relative20 <= 0 and relative60 <= 0:
+            if currently_held and above_long:
+                return 0.35, f"在仓底仓防洗盘维稳（评分 {quality_score:.1f}，均线上方暂维持观察）"
             return 0.0, f"Satellite 评分 {quality_score:.1f}/6.5，但相对 SPY 强度不足，等待更强入场信号"
         if quality_score <= satellite_min_score:
+            if currently_held and above_long:
+                return 0.40, f"在仓底仓防震荡保护（评分 {quality_score:.1f}，200日均线上方维持现有底仓，拒绝追涨杀跌）"
             return 0.0, (
                 f"Satellite 评分 {quality_score:.1f}/6.5 低于每日机会门槛 "
                 f"{satellite_min_score:.1f}，等待更强入场信号"
@@ -280,6 +285,7 @@ def ranked_target_weights(
     core_budget: float | None,
     satellite_budget: float | None,
     satellite_min_score: float = 2.5,
+    held_symbols: set[str] | None = None,
 ) -> tuple[dict[str, float], dict[str, str]]:
     parameters = PROFILES[profile]
     configured_core_budget = (
@@ -317,9 +323,11 @@ def ranked_target_weights(
 
     satellite_scores: dict[str, float] = {}
     for symbol in satellite_symbols:
+        is_held = bool(held_symbols and symbol in held_symbols)
         factor, factor_reason = allocation_factor(
             stats_by_symbol[symbol], "satellite", risk_on,
             parameters["base_factor"], spy_stats, satellite_min_score,
+            currently_held=is_held,
         )
         if factor <= 0:
             reasons[symbol] = factor_reason
@@ -403,9 +411,11 @@ def build_rebalance_plan(
             }
 
     stats_by_symbol = {symbol: indicators(frames[symbol]) for symbol in symbols}
+    held_symbols = {k for k, v in position_map.items() if v.get("qty", 0) > 0}
     target_weights, allocation_reasons = ranked_target_weights(
         symbols, stats_by_symbol, spy, risk_on, max_stock_weight, profile,
         core_budget, satellite_budget, satellite_min_score,
+        held_symbols=held_symbols,
     )
     # Avoid flipping a symbol from zero to a full target in one rebalance.
     # This is a portfolio-level hysteresis guard; the existing participation
@@ -421,6 +431,17 @@ def build_rebalance_plan(
         held = position_map.get(symbol, {"qty": 0.0, "can_sell_qty": 0.0})
         current_value = held["qty"] * stats["price"]
         current_weight = current_value / account_value
+
+        # 核心防洗盘保护：如果当前只是每日机会扫描 (satellite_only)，
+        # 除非标的发生实质性破位（跌破200日均线或深度回撤），否则非正式调仓日只抓机会、严禁小幅减仓倒手！
+        if satellite_only and target_weight < current_weight:
+            is_breakdown = (stats["price"] < stats["sma200"]) or (
+                stats["price"] < stats["sma20"] and stats["drawdown60"] <= -0.12
+            )
+            if not is_breakdown:
+                target_weight = current_weight
+                reason = "Satellite 每日扫描：趋势正常维持底仓，非正式调仓日不执行减仓磨损"
+
         original_target_weight = target_weight
         target_weight = min(
             max(current_weight - max_target_change, target_weight),
