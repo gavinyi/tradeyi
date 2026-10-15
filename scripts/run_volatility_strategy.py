@@ -218,6 +218,9 @@ def run_once(reconcile: bool = True) -> None:
         code = str(campaign.get("code", ""))
         broker_rows = positions[positions["code"] == code] if not positions.empty else positions
         broker_qty = int(broker_rows.iloc[0]["qty"]) if not broker_rows.empty else 0
+        if getattr(broker.settings, "trading_env", "SIMULATE") == "REAL":
+            # 实盘模式下持仓判定严格且仅以真实券商返回为准，绝对不受模拟盘/Shadow 虚拟残留干扰
+            return broker_qty
         shadow_qty, _ = executor.store.shadow_position("volatility_long_gamma", code)
         legs = {
             str(leg.get("code", "")).upper()
