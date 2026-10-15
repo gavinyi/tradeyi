@@ -642,6 +642,13 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
                 cash_value = float(row.get("cash", 0) or 0)
                 market_value = float(row.get("market_val", row.get("securities_assets", 0)) or 0)
                 total_assets = float(row.get("total_assets", 0) or 0)
+                # 跨环境与换账户隔离保护：
+                # 如果 baseline_assets 与当前实际 total_assets 相差过大（例如模拟盘100万切到实盘数万），
+                # 说明存在不同环境或账户切换，必须以当前账户本身的资产为基准，绝不能跨环境算日内亏损！
+                if baseline_assets > 0 and total_assets > 0:
+                    ratio = baseline_assets / total_assets
+                    if ratio > 2.5 or ratio < 0.3:
+                        baseline_assets = total_assets
                 snapshot_gap = abs(total_assets - (cash_value + market_value))
                 snapshot_tolerance = max(100.0, abs(total_assets) * 0.01)
                 snapshot_valid = snapshot_gap <= snapshot_tolerance

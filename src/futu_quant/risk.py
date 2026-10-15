@@ -219,7 +219,12 @@ class RiskEngine:
                             return RiskDecision(False, "Shadow 期权权利金总敞口超过上限", notional)
                 day_start = ny_trading_day_start_utc()
                 snapshots = self.store.equity_since(day_start.isoformat())
-                peak = max([float(row["total_assets"]) for row in snapshots] + [assets])
+                # 跨环境与换账户隔离：避免将模拟盘100万美元旧快照与实盘数万美元混淆计算日内回撤
+                valid_snapshots = [
+                    float(row["total_assets"]) for row in snapshots
+                    if 0.3 <= float(row["total_assets"]) / max(1.0, assets) <= 2.5
+                ]
+                peak = max(valid_snapshots + [assets])
                 drawdown = 1 - assets / peak if peak > 0 else 0
                 if peak - assets >= self.limits.max_daily_loss:
                     self.store.set_setting("kill_switch", "true")
