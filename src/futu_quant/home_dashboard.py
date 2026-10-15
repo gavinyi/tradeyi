@@ -842,9 +842,7 @@ def _render_live_dashboard(_broker, _account_page=None) -> None:
         st.warning(f"账户快照暂不可用，系统与策略图仍可查看：{account['error']}")
 
     _render_attention_center(snapshot, account, _account_page)
-    st.space("small")
     _render_status_strip(snapshot)
-    st.space("small")
     st.subheader("账户与持仓总览")
     st.caption("先看账户状态，再看权益变化和当前持仓风险；所有数据每 10 秒更新。")
     _render_account_kpis(account, snapshot)

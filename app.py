@@ -18,10 +18,7 @@ from futu_quant.store import TradingStore
 from futu_quant.trade_diagnostics import (
     build_diagnostic_report, diagnostic_window, latest_us_session_date,
 )
-from futu_quant.ui import (
-    china_time_columns, chinese_columns, render_admin_login, render_sidebar,
-    render_pnl_metric,
-)
+from futu_quant.ui import china_time_columns, chinese_columns, render_admin_login, render_sidebar
 
 
 st.set_page_config(
@@ -235,6 +232,41 @@ def shadow_positions_frame(store: TradingStore) -> pd.DataFrame:
     return frame
 
 
+def render_pnl_card(label: str, today_val: float, total_val: float | None = None) -> None:
+    """金融惯例卡片：正绿负红，箭头方向与正负严密对应。"""
+    c_red = "#ef4444"
+    c_green = "#22c55e"
+    c_neutral = "#64748b"
+
+    val_num = float(today_val or 0.0)
+    val_color = c_red if val_num < 0 else (c_green if val_num > 0 else c_neutral)
+    val_sign = "-" if val_num < 0 else ("+" if val_num > 0 else "")
+    formatted_val = f"{val_sign}${abs(val_num):,.2f}"
+
+    sub_html = ""
+    if total_val is not None:
+        tot_num = float(total_val or 0.0)
+        sub_color = c_red if tot_num < 0 else (c_green if tot_num > 0 else c_neutral)
+        sub_sign = "-" if tot_num < 0 else ("+" if tot_num > 0 else "")
+        sub_arrow = "↓" if tot_num < 0 else ("↑" if tot_num > 0 else "")
+        sub_html = (
+            f"<div style='font-size: 13px; font-weight: 600; color: {sub_color}; margin-top: 6px; display: flex; align-items: center; gap: 3px;'>"
+            f"<span>{sub_arrow}</span> <span>累计 {sub_sign}${abs(tot_num):,.2f}</span>"
+            f"</div>"
+        )
+
+    card_html = f"""
+    <div style="border: 1px solid rgba(128,128,128,0.22); border-radius: 8px; padding: 12px 16px; background: rgba(128,128,128,0.02); height: 100%;">
+        <div style="font-size: 13px; color: {c_neutral}; margin-bottom: 4px; font-weight: 500;">{label}</div>
+        <div style="font-size: 26px; font-weight: 700; color: {val_color}; line-height: 1.25; letter-spacing: -0.5px;">
+            {formatted_val}
+        </div>
+        {sub_html}
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
 try:
     accounts, info, positions, orders, history = load_account(False)
     if info.empty or positions.empty:
@@ -303,16 +335,14 @@ try:
         with col_acc4:
             st.metric("可用购买力", f"${float(row.get('power', 0)):,.2f}", border=True)
 
-        st.space("small")
-
         # 2. 盈亏分拆横栏 (3 列等分平铺，金融惯例：正绿负红，无错误向上箭头)
         col_pnl1, col_pnl2, col_pnl3 = st.columns(3)
         with col_pnl1:
-            render_pnl_metric("股票当日浮盈", stock_today_pnl, stock_total_pnl)
+            render_pnl_card("股票当日浮盈", stock_today_pnl, stock_total_pnl)
         with col_pnl2:
-            render_pnl_metric("期权当日浮盈", opt_today_pnl, opt_total_pnl)
+            render_pnl_card("期权当日浮盈", opt_today_pnl, opt_total_pnl)
         with col_pnl3:
-            render_pnl_metric("当日总浮动盈亏", total_today_pnl, total_pos_pnl)
+            render_pnl_card("当日总浮动盈亏", total_today_pnl, total_pos_pnl)
         st.caption(
             "损益按富途模拟账户持仓明细汇总拆分；当日浮动盈亏不包含已平仓兑现收益，"
             "且不包含 SHADOW 虚拟成交。"
