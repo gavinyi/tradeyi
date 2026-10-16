@@ -73,12 +73,16 @@ def close_stale_expired_combos(store, positions: pd.DataFrame, today: date) -> i
     return cleaned
 
 
-def run_once(reconcile: bool = True) -> None:
+def run_once(
+    reconcile: bool = True,
+    broker: FutuPaperBroker | None = None,
+    executor: ExecutionManager | None = None,
+) -> None:
     settings = Settings.load()
     if not settings.enable_paper_orders:
         raise RuntimeError("ENABLE_PAPER_ORDERS=false; automatic paper execution is disabled")
-    broker = FutuPaperBroker(settings)
-    executor = ExecutionManager(broker)
+    broker = broker or FutuPaperBroker(settings)
+    executor = executor or ExecutionManager(broker)
     if reconcile:
         executor.reconcile()
     positions = broker.positions()

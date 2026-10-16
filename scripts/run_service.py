@@ -844,10 +844,24 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "30")))
         if due(store, "last_run:volatility_long_gamma", interval, now):
             started = time.monotonic()
+            # 1. 实盘受控通道：在真实美股账户中执行受控期权打猎
             succeeded = run_task(
                 store, alerts, "volatility_long_gamma",
-                lambda: run_volatility_once(reconcile=False),
+                lambda: run_volatility_once(reconcile=False, broker=broker, executor=executor),
             )
+            # 2. 模拟沙盒伴生通道：当处于实盘模式时，美股模拟盘 (20170229 · 100万) 也同步运行期权推演
+            if getattr(broker, "trading_env", "SIMULATE") == "REAL":
+                try:
+                    if not hasattr(broker, "_broker_sim_companion"):
+                        broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
+                    sim_b = broker._broker_sim_companion
+                    sim_exec = ExecutionManager(sim_b, store)
+                    run_task(
+                        store, alerts, "volatility_long_gamma_sim",
+                        lambda: run_volatility_once(reconcile=False, broker=sim_b, executor=sim_exec),
+                    )
+                except Exception as exc:
+                    store.operational_event("volatility_long_gamma_sim", "EXECUTION_SKIPPED", "DEGRADED", {"error": str(exc)})
             elapsed = time.monotonic() - started
             store.operational_event(
                 "volatility_long_gamma", "MONITOR_CYCLE_DURATION",
