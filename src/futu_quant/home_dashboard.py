@@ -15,7 +15,7 @@ from .option_lifecycle import parse_option_code
 from .radar_control import status as radar_status
 from .service_control import status as service_status
 from .store import TradingStore
-from .ui import get_current_tenant, get_registered_tenants
+from .ui import get_current_tenant
 
 CHINA_TZ = "Asia/Shanghai"
 UTC = timezone.utc
@@ -913,8 +913,7 @@ def _render_kill_switch_banner(store: TradingStore) -> None:
 
 
 def render_home_dashboard(settings, broker, store, account_page=None) -> None:
-    # 顶部专业轻量 Header (动态环境胶囊 + 右上角全套租户账号切换器)
-    tenants = get_registered_tenants(settings)
+    # 顶部专业轻量 Header (动态环境胶囊)
     current_tenant = get_current_tenant(settings)
     is_real = current_tenant["is_real"]
 
@@ -923,7 +922,7 @@ def render_home_dashboard(settings, broker, store, account_page=None) -> None:
         if is_real else
         "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟盘 SIM</span>"
     )
-    col_title, col_status = st.columns([1.35, 1], vertical_alignment="center")
+    col_title, col_status = st.columns([1.6, 1], vertical_alignment="center")
     with col_title:
         st.markdown(
             f"### 📈 量化系统驾驶舱 {env_badge}"
@@ -933,28 +932,14 @@ def render_home_dashboard(settings, broker, store, account_page=None) -> None:
         st.caption(f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}")
 
     with col_status:
-        c_sel, c_btn = st.columns([1, 0.35], vertical_alignment="center")
-        with c_sel:
-            tenant_ids = list(tenants.keys())
-            current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
-            selected_id = st.selectbox(
-                "切换账号",
-                tenant_ids,
-                index=current_idx,
-                format_func=lambda tid: tenants[tid]["label"],
-                key="home_dashboard_tenant_select",
-                label_visibility="collapsed",
-            )
+        c_time, c_btn = st.columns([1, 0.42], vertical_alignment="center")
+        with c_time:
+            china_now = pd.Timestamp.now(tz=CHINA_TZ).strftime("%H:%M:%S")
+            st.caption(f":material/autorenew: 30s 自动刷新 ({china_now})")
         with c_btn:
             if st.button("刷新", icon=":material/refresh:", width="stretch", key="dash_top_refresh"):
                 st.cache_data.clear()
                 st.rerun()
-
-    if selected_id != current_tenant["id"]:
-        st.session_state.current_tenant_id = selected_id
-        st.session_state.active_battleground = tenants[selected_id]["env"]
-        st.cache_data.clear()
-        st.rerun()
 
     # 仅当急停被激活时才弹出高亮红框
     _render_kill_switch_banner(store)

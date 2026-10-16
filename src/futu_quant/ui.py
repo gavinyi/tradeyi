@@ -257,6 +257,14 @@ def get_current_tenant(settings=None) -> dict:
     return tenant
 
 
+def _on_global_tenant_select() -> None:
+    """当用户在顶栏切换账号时自动触发的回调函数，清除数据缓存并更新租户上下文。"""
+    new_id = st.session_state.get("global_top_tenant_dropdown")
+    if new_id:
+        st.session_state.current_tenant_id = new_id
+        st.cache_data.clear()
+
+
 def render_global_top_tenant_bar(settings=None) -> dict:
     """将租户切换菜单精准吸顶挂载在全屏最右上角三个点 (⋮) 的左侧。全页面通用。"""
     tenants = get_registered_tenants(settings)
@@ -297,27 +305,21 @@ def render_global_top_tenant_bar(settings=None) -> dict:
     """
     st.markdown(top_bar_css, unsafe_allow_html=True)
 
-    # 2. 渲染吸顶全局租户切换下拉菜单
+    # 2. 渲染吸顶全局租户切换下拉菜单（使用原生 on_change 回调，绝对不手动触发 st.rerun 防止死循环）
     with st.container():
         st.markdown('<div class="global-top-tenant-bar">', unsafe_allow_html=True)
         tenant_ids = list(tenants.keys())
         current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
-        selected_id = st.selectbox(
+        st.selectbox(
             "全局切换账号",
             tenant_ids,
             index=current_idx,
             format_func=lambda tid: tenants[tid]["label"],
             key="global_top_tenant_dropdown",
+            on_change=_on_global_tenant_select,
             label_visibility="collapsed",
         )
         st.markdown('</div>', unsafe_allow_html=True)
-
-    # 3. 若选项变化，更新业务 session_state、清理旧账号数据缓存并立即刷新全页面数据
-    if selected_id != current_tenant["id"]:
-        st.session_state.current_tenant_id = selected_id
-        st.session_state.active_battleground = tenants[selected_id]["env"]
-        st.cache_data.clear()
-        st.rerun()
 
     return current_tenant
 
@@ -326,6 +328,19 @@ def get_active_battleground(settings=None) -> str:
     """获取当前用户在界面上选定的操作与查看战区 (REAL vs SIMULATE)。"""
     tenant = get_current_tenant(settings)
     return str(tenant.get("env", "SIMULATE")).upper()
+
+
+def get_tenant_broker(settings=None):
+    """根据当前激活租户 (REAL vs SIMULATE) 自动返回绑定的 Broker 实例。"""
+    from .broker import FutuPaperBroker
+    from .config import Settings
+    tenant = get_current_tenant(settings)
+    s = settings or Settings.load()
+    return FutuPaperBroker(
+        s,
+        trading_env_override=tenant["env"],
+        account_id_override=tenant["acc_id"],
+    )
 
 
 def render_sidebar(settings=None) -> str:

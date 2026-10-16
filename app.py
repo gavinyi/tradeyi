@@ -131,7 +131,6 @@ def load_home_diagnostics():
     )
 
 
-tenants = get_registered_tenants(settings)
 current_tenant = get_current_tenant(settings)
 is_real = current_tenant["is_real"]
 
@@ -141,28 +140,8 @@ env_badge = (
     "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟盘 SIM</span>"
 )
 
-col_title, col_tenant = st.columns([1.35, 1], vertical_alignment="center")
-with col_title:
-    st.markdown(f"## Futu 美股量化系统 {env_badge}", unsafe_allow_html=True)
-    st.caption(f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}")
-
-with col_tenant:
-    tenant_ids = list(tenants.keys())
-    current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
-    selected_id = st.selectbox(
-        "切换账号",
-        tenant_ids,
-        index=current_idx,
-        format_func=lambda tid: tenants[tid]["label"],
-        key="app_account_tenant_select",
-        label_visibility="collapsed",
-    )
-
-if selected_id != current_tenant["id"]:
-    st.session_state.current_tenant_id = selected_id
-    st.session_state.active_battleground = tenants[selected_id]["env"]
-    st.cache_data.clear()
-    st.rerun()
+st.markdown(f"## Futu 美股量化系统 {env_badge}", unsafe_allow_html=True)
+st.caption(f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}")
 
 latest_diagnostics = load_home_diagnostics()
 diagnostic_summary = latest_diagnostics["summary"]
@@ -201,18 +180,33 @@ if st.button("刷新账户", icon=":material/refresh:"):
     st.cache_data.clear()
 
 
-@st.cache_data(ttl=15, max_entries=4, show_spinner=False)
-def load_account(channel_env: str = "DEFAULT", include_history: bool = False):
-    # 根据指定的实盘/模拟战区通道加载对应账户与订单
-    if channel_env == "REAL":
-        target_b = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
-    elif channel_env == "SIMULATE":
-        target_b = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
-    else:
-        target_b = broker
-    current = (target_b.accounts(), target_b.account_info(), target_b.positions(), target_b.orders())
-    history = target_b.orders(True) if include_history else pd.DataFrame()
-    return (*current, history)
+@st.cache_data(ttl=10, max_entries=4, show_spinner=False)
+def load_account_by_tenant(tenant_id: str, include_history: bool = False):
+    tenants = get_registered_tenants(settings)
+    tenant = tenants.get(tenant_id, tenants["real_primary" if getattr(settings, "trading_env", "") == "REAL" else "sim_primary"])
+    target_b = FutuPaperBroker(
+        settings,
+        trading_env_override=tenant["env"],
+        account_id_override=tenant["acc_id"],
+    )
+    try:
+        accs = target_b.accounts()
+        info = target_b.account_info(refresh=True)
+        pos = target_b.positions(refresh=True)
+        orders = target_b.orders()
+        hist = target_b.orders(True) if include_history else pd.DataFrame()
+        return accs, info, pos, orders, hist
+    except Exception:
+        snap_suffix = "_real" if tenant["is_real"] else "_sim"
+        cached_accs = store.broker_snapshot("accounts" + snap_suffix) or store.broker_snapshot("accounts")
+        cached_info = store.broker_snapshot("account_info" + snap_suffix) or store.broker_snapshot("account_info")
+        cached_pos = store.broker_snapshot("positions" + snap_suffix) or store.broker_snapshot("positions")
+        cached_orders = store.broker_snapshot("orders" + snap_suffix) or store.broker_snapshot("orders")
+        accs = pd.DataFrame((cached_accs or {}).get("payload", []))
+        info = pd.DataFrame((cached_info or {}).get("payload", []))
+        pos = pd.DataFrame((cached_pos or {}).get("payload", []))
+        orders = pd.DataFrame((cached_orders or {}).get("payload", []))
+        return accs, info, pos, orders, pd.DataFrame()
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -319,25 +313,9 @@ try:
         account_id_override=active_tenant["acc_id"],
     )
 
-    accounts, info, positions, orders, history = load_account(current_battleground, False)
+    accounts, info, positions, orders, history = load_account_by_tenant(active_tenant["id"], False)
     if info.empty or positions.empty:
-        snap_suffix = "_real" if is_real_env else "_sim"
-        cached_accounts = store.broker_snapshot("accounts" + snap_suffix) or store.broker_snapshot("accounts")
-        cached_orders = store.broker_snapshot("orders" + snap_suffix) or store.broker_snapshot("orders")
-        if accounts.empty and cached_accounts:
-            accounts = pd.DataFrame(cached_accounts["payload"])
-        if orders.empty and cached_orders:
-            orders = pd.DataFrame(cached_orders["payload"])
-    if info.empty or positions.empty:
-        snap_suffix = "_real" if is_real_env else "_sim"
-        cached_info = store.broker_snapshot("account_info" + snap_suffix) or store.broker_snapshot("account_info")
-        cached_positions = store.broker_snapshot("positions" + snap_suffix) or store.broker_snapshot("positions")
-        if info.empty and cached_info:
-            info = pd.DataFrame(cached_info["payload"])
-        if positions.empty and cached_positions:
-            positions = pd.DataFrame(cached_positions["payload"])
-        if info.empty or positions.empty:
-            st.warning(f"OpenD 当前暂无{env_label}账户快照；请稍后重试。")
+        st.warning(f"OpenD 当前暂无{env_label}账户快照；请稍后重试。")
     st.success(f"已连接富途 OpenD · 当前呈现：{env_label}战区；发现 {len(accounts)} 个美股{env_label}账户")
     if not positions.empty and "code" in positions.columns:
         option_mask = positions["code"].map(is_option_symbol)
@@ -564,7 +542,7 @@ try:
     with tabs[3]:
         st.caption("历史订单查询可能较慢，仅在明确点击后访问 OpenD。")
         if st.button("加载历史订单", key="load_main_history"):
-            _, _, _, _, history = load_account(current_battleground, True)
+            _, _, _, _, history = load_account_by_tenant(active_tenant['id'], True)
             st.session_state.main_history = history
         history = st.session_state.get("main_history", pd.DataFrame())
         if history.empty:
