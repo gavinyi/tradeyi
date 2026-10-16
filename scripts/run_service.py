@@ -629,10 +629,10 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
             if current_env == "REAL":
                 store.save_broker_snapshot("account_info_real", account)
                 store.save_broker_snapshot("positions_real", positions)
-                # 双轨并发采集：同时采集模拟盘快照，供全景双轨看板展示
+                # 双轨并发采集：同时采集美股模拟盘 20170229 快照，供全景双轨看板展示
                 try:
                     if not hasattr(broker, "_broker_sim_companion"):
-                        broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=settings.acc_id)
+                        broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
                     sim_b = broker._broker_sim_companion
                     sim_acc = sim_b.account_info()
                     sim_pos = sim_b.positions()
@@ -888,7 +888,7 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         if getattr(broker, "trading_env", "SIMULATE") == "REAL" and "core_satellite" not in settings.real_allowed_strategies:
             # 双轨调度：Core Satellite 未入实盘白名单时，自动由模拟盘通道接管，保持 100 万现货底仓模拟运转！
             if not hasattr(broker, "_broker_sim_companion"):
-                broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=settings.acc_id)
+                broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
             core_broker = broker._broker_sim_companion
             core_executor = ExecutionManager(core_broker, store)
         succeeded = run_task(

@@ -20,7 +20,7 @@ from futu_quant.trade_diagnostics import (
 )
 from futu_quant.ui import (
     china_time_columns, chinese_columns, render_admin_login, render_sidebar,
-    get_current_tenant,
+    get_current_tenant, get_registered_tenants,
 )
 
 
@@ -131,14 +131,38 @@ def load_home_diagnostics():
     )
 
 
+tenants = get_registered_tenants(settings)
 current_tenant = get_current_tenant(settings)
+is_real = current_tenant["is_real"]
+
 env_badge = (
     "<span style='font-size:12px;padding:3px 10px;border-radius:12px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700;margin-left:8px;vertical-align:middle'>🔴 实盘 REAL</span>"
-    if current_tenant["is_real"] else
-    "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟沙盒 SIM</span>"
+    if is_real else
+    "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟盘 SIM</span>"
 )
-st.markdown(f"## Futu 美股量化系统 {env_badge}", unsafe_allow_html=True)
-st.caption(f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}")
+
+col_title, col_tenant = st.columns([1.35, 1], vertical_alignment="center")
+with col_title:
+    st.markdown(f"## Futu 美股量化系统 {env_badge}", unsafe_allow_html=True)
+    st.caption(f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}")
+
+with col_tenant:
+    tenant_ids = list(tenants.keys())
+    current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
+    selected_id = st.selectbox(
+        "切换账号",
+        tenant_ids,
+        index=current_idx,
+        format_func=lambda tid: tenants[tid]["label"],
+        key="app_account_tenant_select",
+        label_visibility="collapsed",
+    )
+
+if selected_id != current_tenant["id"]:
+    st.session_state.current_tenant_id = selected_id
+    st.session_state.active_battleground = tenants[selected_id]["env"]
+    st.cache_data.clear()
+    st.rerun()
 
 latest_diagnostics = load_home_diagnostics()
 diagnostic_summary = latest_diagnostics["summary"]
