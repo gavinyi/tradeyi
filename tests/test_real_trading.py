@@ -20,7 +20,8 @@ def real_settings(monkeypatch) -> Settings:
     monkeypatch.setenv("REAL_ALLOWED_STRATEGIES", "core_satellite,volatility_long_gamma")
     monkeypatch.setenv("REAL_MAX_ORDER_NOTIONAL", "500")
     monkeypatch.setenv("REAL_MAX_DAILY_NOTIONAL", "1000")
-    return Settings.load()
+    monkeypatch.setenv("REAL_REQUIRE_MANUAL_CONFIRM", "true")
+    return Settings.load(refresh=True)
 
 
 def test_real_session_requires_correct_confirmation_code(tmp_path, monkeypatch):
@@ -43,7 +44,11 @@ def test_real_session_requires_correct_confirmation_code(tmp_path, monkeypatch):
 
 
 def test_real_trade_gate_blocks_without_session(tmp_path, monkeypatch):
-    settings = real_settings(monkeypatch)
+    settings = replace(
+        real_settings(monkeypatch),
+        real_require_manual_confirm=True,
+        real_allowed_strategies=("core_satellite", "volatility_long_gamma"),
+    )
     store = TradingStore(tmp_path / "test.db")
 
     decision = check_real_trade(
@@ -55,7 +60,12 @@ def test_real_trade_gate_blocks_without_session(tmp_path, monkeypatch):
 
 
 def test_real_trade_gate_blocks_strategy_and_notional(tmp_path, monkeypatch):
-    settings = real_settings(monkeypatch)
+    settings = replace(
+        real_settings(monkeypatch),
+        real_require_manual_confirm=True,
+        real_allowed_strategies=("core_satellite", "volatility_long_gamma"),
+        real_max_order_notional=500.0,
+    )
     store = TradingStore(tmp_path / "test.db")
     now = datetime(2026, 7, 21, 1, 0, tzinfo=timezone.utc)
     enable_session(store, settings, confirmation_code(settings, now), now=now)
@@ -74,7 +84,12 @@ def test_real_trade_gate_blocks_strategy_and_notional(tmp_path, monkeypatch):
 
 
 def test_real_trade_gate_allows_small_whitelisted_order(tmp_path, monkeypatch):
-    settings = real_settings(monkeypatch)
+    settings = replace(
+        real_settings(monkeypatch),
+        real_require_manual_confirm=True,
+        real_allowed_strategies=("core_satellite", "volatility_long_gamma"),
+        real_max_order_notional=500.0,
+    )
     store = TradingStore(tmp_path / "test.db")
     now = datetime(2026, 7, 21, 1, 0, tzinfo=timezone.utc)
     enable_session(store, settings, confirmation_code(settings, now), now=now)
@@ -88,7 +103,11 @@ def test_real_trade_gate_allows_small_whitelisted_order(tmp_path, monkeypatch):
 
 
 def test_real_trade_gate_respects_manual_confirm_disabled(tmp_path, monkeypatch):
-    settings = replace(real_settings(monkeypatch), real_require_manual_confirm=False)
+    settings = replace(
+        real_settings(monkeypatch),
+        real_require_manual_confirm=False,
+        real_allowed_strategies=("core_satellite", "volatility_long_gamma"),
+    )
     store = TradingStore(tmp_path / "test.db")
 
     decision = check_real_trade(

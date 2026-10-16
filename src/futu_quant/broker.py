@@ -617,7 +617,7 @@ class FutuPaperBroker:
 
     def place_limit_order(self, symbol: str, side: str, quantity: int, price: float,
                           *, real_trade_context=None) -> pd.DataFrame:
-        if self.settings.trading_env == "REAL":
+        if self.trading_env == "REAL":
             if real_trade_context is None:
                 raise BrokerError("实盘下单必须经由执行管理器的实盘门禁")
             from .real_trading import check_real_trade
@@ -632,7 +632,7 @@ class FutuPaperBroker:
         if not symbol.startswith("US.") or side not in {"BUY", "SELL"}:
             raise BrokerError("Safety lock rejected the order")
         trade_side = TrdSide.BUY if side == "BUY" else TrdSide.SELL
-        operation = "place real order" if self.settings.trading_env == "REAL" else "place simulated order"
+        operation = "place real order" if self.trading_env == "REAL" else "place simulated order"
         with self.trade_context() as ctx:
             return self._ok(
                 ctx.place_order(
@@ -644,8 +644,8 @@ class FutuPaperBroker:
             )
 
     def _check_order_environment(self, expected_env: str | None) -> None:
-        if expected_env is not None and expected_env != self.settings.trading_env:
-            raise BrokerError(f"订单执行环境 {expected_env} 与券商环境 {self.settings.trading_env} 不一致")
+        if expected_env is not None and expected_env != self.trading_env:
+            raise BrokerError(f"订单执行环境 {expected_env} 与券商环境 {self.trading_env} 不一致")
 
     def cancel_order(self, order_id: str, *, expected_env: str | None = None) -> pd.DataFrame:
         self._check_order_environment(expected_env)
@@ -657,7 +657,7 @@ class FutuPaperBroker:
                     ModifyOrderOp.CANCEL, str(order_id), 0, 0,
                     trd_env=self.trd_env, **self._account_kwargs(),
                 ),
-                "cancel real order" if self.settings.trading_env == "REAL" else "cancel simulated order",
+                "cancel real order" if self.trading_env == "REAL" else "cancel simulated order",
             )
 
     def modify_limit_order(self, order_id: str, quantity: int, price: float,
@@ -671,7 +671,7 @@ class FutuPaperBroker:
                     ModifyOrderOp.NORMAL, str(order_id), int(quantity), round(float(price), 2),
                     trd_env=self.trd_env, **self._account_kwargs(),
                 ),
-                "modify real limit order" if self.settings.trading_env == "REAL" else "modify simulated limit order",
+                "modify real limit order" if self.trading_env == "REAL" else "modify simulated limit order",
             )
 
     @staticmethod

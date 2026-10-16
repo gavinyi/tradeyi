@@ -2139,33 +2139,39 @@ class TradingStore:
                 (strategy_id, symbol),
             )
 
-    def virtual_positions(self) -> list[dict]:
+    def virtual_positions(self, env: str | None = None) -> list[dict]:
+        env_filter = ""
+        if env:
+            target_env = env.upper()
+            if target_env == "REAL":
+                env_filter = "AND (intent_key LIKE '%:REAL' OR status LIKE 'REAL%')"
+            elif target_env in {"SIMULATE", "PAPER"}:
+                env_filter = "AND intent_key NOT LIKE '%:REAL' AND status NOT LIKE 'REAL%'"
         with self.connection() as connection:
-            rows = connection.execute(
-                """WITH fills AS (
-                    SELECT strategy_id,symbol,
-                    SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE -filled_quantity END) qty
-                    FROM order_intents WHERE status NOT LIKE 'SHADOW%'
-                    GROUP BY strategy_id,symbol
-                ), adjustments AS (
-                    SELECT strategy_id,symbol,quantity FROM reconciliation_adjustments
-                ), keys AS (
-                    SELECT strategy_id,symbol FROM fills UNION
-                    SELECT strategy_id,symbol FROM virtual_allocations UNION
-                    SELECT strategy_id,symbol FROM adjustments
-                )
-                SELECT keys.strategy_id,keys.symbol,
-                COALESCE(a.quantity,0)+COALESCE(f.qty,0)+COALESCE(r.quantity,0) quantity,
-                COALESCE(a.average_cost,0) average_cost
-                FROM keys LEFT JOIN fills f USING(strategy_id,symbol)
-                LEFT JOIN virtual_allocations a USING(strategy_id,symbol)
-                LEFT JOIN adjustments r USING(strategy_id,symbol)
-                ORDER BY keys.strategy_id,keys.symbol"""
-            ).fetchall()
+            query = f"""WITH fills AS (
+                SELECT strategy_id,symbol,
+                SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE -filled_quantity END) qty
+                FROM order_intents WHERE status NOT LIKE 'SHADOW%' {env_filter}
+                GROUP BY strategy_id,symbol
+            ), adjustments AS (
+                SELECT strategy_id,symbol,quantity FROM reconciliation_adjustments
+            ), keys AS (
+                SELECT strategy_id,symbol FROM fills UNION
+                SELECT strategy_id,symbol FROM virtual_allocations UNION
+                SELECT strategy_id,symbol FROM adjustments
+            )
+            SELECT keys.strategy_id,keys.symbol,
+            COALESCE(a.quantity,0)+COALESCE(f.qty,0)+COALESCE(r.quantity,0) quantity,
+            COALESCE(a.average_cost,0) average_cost
+            FROM keys LEFT JOIN fills f USING(strategy_id,symbol)
+            LEFT JOIN virtual_allocations a USING(strategy_id,symbol)
+            LEFT JOIN adjustments r USING(strategy_id,symbol)
+            ORDER BY keys.strategy_id,keys.symbol"""
+            rows = connection.execute(query).fetchall()
             return [dict(row) for row in rows]
 
-    def strategy_position(self, strategy_id: str, symbol: str) -> float:
-        rows = self.virtual_positions()
+    def strategy_position(self, strategy_id: str, symbol: str, env: str | None = None) -> float:
+        rows = self.virtual_positions(env=env)
         return sum(float(row["quantity"]) for row in rows
                    if row["strategy_id"] == strategy_id and row["symbol"] == symbol)
 
