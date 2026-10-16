@@ -269,34 +269,59 @@ def _on_sidebar_tenant_change() -> None:
 
 
 def render_sidebar_tenant_switcher(settings=None) -> dict:
-    """在侧边栏最左上角（导航菜单上方）渲染专属的租户/账号切换器。"""
+    """在侧边栏最左上角（通过 CSS Flex order 强制排在导航菜单正上方）渲染专属租户切换器。"""
     tenants = get_registered_tenants(settings)
     current_tenant = get_current_tenant(settings)
 
-    st.sidebar.markdown(
-        "<div style='margin-bottom:6px;font-size:12px;font-weight:700;color:#64748b;letter-spacing:0.5px;'>🏛️ 操作租户 / 账户切换</div>",
-        unsafe_allow_html=True,
-    )
-    tenant_ids = list(tenants.keys())
-    current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
-    st.sidebar.selectbox(
-        "选择操作租户",
-        tenant_ids,
-        index=current_idx,
-        format_func=lambda tid: tenants[tid]["label"],
-        key="sidebar_active_tenant_id",
-        on_change=_on_sidebar_tenant_change,
-        label_visibility="collapsed",
-    )
-    status_bg = "#fef2f2" if current_tenant["is_real"] else "#f0fdf4"
-    status_color = "#dc2626" if current_tenant["is_real"] else "#16a34a"
-    status_text = "🔴 实盘真金战区 · 受控交易" if current_tenant["is_real"] else "🟢 美股模拟沙盒 · 100万底仓"
-    st.sidebar.markdown(
-        f"<div style='font-size:11px;padding:4px 8px;border-radius:6px;background:{status_bg};color:{status_color};font-weight:600;margin-top:4px;border:1px solid rgba(0,0,0,0.06);'>"
-        f"{status_text}</div>",
-        unsafe_allow_html=True,
-    )
-    st.sidebar.divider()
+    # 注入强制置顶 CSS：让侧边栏成为 flex 列，将租户选择器 order 设为 1，导航菜单设为 2，实现绝对置顶！
+    top_sidebar_css = """
+    <style>
+    /* 强力锁定租户选择器排在侧边栏最顶端第一位 (导航菜单正上方) */
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
+    section[data-testid="stSidebar"] div.stSidebarUserContent {
+        display: flex !important;
+        flex-direction: column !important;
+    }
+    div.sidebar-top-tenant-box {
+        order: -999999 !important;
+        margin-bottom: 14px !important;
+        padding-bottom: 10px !important;
+        border-bottom: 1px solid rgba(128,128,128,0.2) !important;
+    }
+    div[data-testid="stSidebarNav"] {
+        order: 100 !important;
+    }
+    </style>
+    """
+    st.sidebar.markdown(top_sidebar_css, unsafe_allow_html=True)
+
+    with st.sidebar:
+        st.markdown('<div class="sidebar-top-tenant-box">', unsafe_allow_html=True)
+        st.markdown(
+            "<div style='margin-bottom:6px;font-size:12px;font-weight:700;color:#64748b;letter-spacing:0.5px;'>🏛️ 操作租户 / 账户切换</div>",
+            unsafe_allow_html=True,
+        )
+        tenant_ids = list(tenants.keys())
+        current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
+        st.selectbox(
+            "选择操作租户",
+            tenant_ids,
+            index=current_idx,
+            format_func=lambda tid: tenants[tid]["label"],
+            key="sidebar_active_tenant_id",
+            on_change=_on_sidebar_tenant_change,
+            label_visibility="collapsed",
+        )
+        status_bg = "#fef2f2" if current_tenant["is_real"] else "#f0fdf4"
+        status_color = "#dc2626" if current_tenant["is_real"] else "#16a34a"
+        status_text = "🔴 实盘真金战区 · 受控交易" if current_tenant["is_real"] else "🟢 美股模拟沙盒 · 100万底仓"
+        st.markdown(
+            f"<div style='font-size:11px;padding:5px 8px;border-radius:6px;background:{status_bg};color:{status_color};font-weight:600;margin-top:6px;border:1px solid rgba(0,0,0,0.06);'>"
+            f"{status_text}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
     return current_tenant
 
 
@@ -320,9 +345,9 @@ def get_tenant_broker(settings=None):
 
 
 def render_sidebar(settings=None) -> str:
-    """Render shared environment information below the app navigation."""
+    """Render shared environment information and top sidebar tenant switcher."""
     st.markdown(MOBILE_RESPONSIVE_CSS, unsafe_allow_html=True)
-    current_tenant = get_current_tenant(settings)
+    current_tenant = render_sidebar_tenant_switcher(settings)
     active_env = current_tenant["env"]
     if settings is not None:
         st.sidebar.caption(f"OpenD 网关: {settings.host}:{settings.port}")
