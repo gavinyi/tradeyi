@@ -212,18 +212,21 @@ def china_time_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_registered_tenants(settings=None) -> dict[str, dict]:
-    """多租户注册表：实盘美股真实账户 vs 美股模拟账户 (20170229)。"""
-    real_id = getattr(settings, "real_account_id", 281756481476169109) if settings else 281756481476169109
-    sim_id = getattr(settings, "acc_id", 20170229) if settings else 20170229
+    """多租户注册表：实盘美股真实账户 vs 美股模拟账户 (20170229)，坚决杜绝 None。"""
+    real_raw = getattr(settings, "real_account_id", None) if settings else None
+    real_id = int(real_raw) if real_raw else 281756481476169109
+
+    sim_raw = getattr(settings, "acc_id", None) if settings else None
+    sim_id = int(sim_raw) if sim_raw else 20170229
 
     return {
         "real_primary": {
             "id": "real_primary",
-            "label": f"🔴 实盘美股账户 ({real_id or 281756481476169109})",
+            "label": f"🔴 实盘美股账户 ({real_id})",
             "short_name": "实盘美股",
             "badge": "🔴 实盘 REAL",
             "env": "REAL",
-            "acc_id": int(real_id or 281756481476169109),
+            "acc_id": real_id,
             "card_num": "1001259607272607",
             "desc": "美股真金实盘 · 波动率期权战区",
             "is_real": True,
@@ -234,7 +237,7 @@ def get_registered_tenants(settings=None) -> dict[str, dict]:
             "short_name": "美股模拟",
             "badge": "🟢 模拟 SIMULATE",
             "env": "SIMULATE",
-            "acc_id": int(sim_id or 20170229),
+            "acc_id": sim_id,
             "card_num": f"SIM-{sim_id}",
             "desc": "100万美股模拟盘 · 9只底仓股票与历史期权",
             "is_real": False,
@@ -243,9 +246,9 @@ def get_registered_tenants(settings=None) -> dict[str, dict]:
 
 
 def get_current_tenant(settings=None) -> dict:
-    """获取当前激活的操作租户实体，优先响应全局顶栏切换控件的选择。"""
+    """获取当前激活的操作租户实体，以 session_state 租户为全系统唯一真理来源。"""
     tenants = get_registered_tenants(settings)
-    tenant_id = st.session_state.get("global_top_tenant_dropdown") or st.session_state.get("current_tenant_id")
+    tenant_id = st.session_state.get("sidebar_active_tenant_id") or st.session_state.get("current_tenant_id")
     if not tenant_id or tenant_id not in tenants:
         if settings and getattr(settings, "trading_env", "") == "REAL":
             tenant_id = "real_primary"
@@ -257,70 +260,43 @@ def get_current_tenant(settings=None) -> dict:
     return tenant
 
 
-def _on_global_tenant_select() -> None:
-    """当用户在顶栏切换账号时自动触发的回调函数，清除数据缓存并更新租户上下文。"""
-    new_id = st.session_state.get("global_top_tenant_dropdown")
+def _on_sidebar_tenant_change() -> None:
+    """左上角租户切换回调函数：清空全部数据缓存，驱动全系统所有页面瞬间重新加载新租户数据。"""
+    new_id = st.session_state.get("sidebar_active_tenant_id")
     if new_id:
         st.session_state.current_tenant_id = new_id
         st.cache_data.clear()
 
 
-def render_global_top_tenant_bar(settings=None) -> dict:
-    """将租户切换菜单精准吸顶挂载在全屏最右上角三个点 (⋮) 的左侧。全页面通用。"""
+def render_sidebar_tenant_switcher(settings=None) -> dict:
+    """在侧边栏最左上角（导航菜单上方）渲染专属的租户/账号切换器。"""
     tenants = get_registered_tenants(settings)
     current_tenant = get_current_tenant(settings)
 
-    # 1. 注入全屏吸顶 CSS：精准吸附在顶栏右上角三个点按钮 (⋮) 的左侧
-    top_bar_css = """
-    <style>
-    div.global-top-tenant-bar {
-        position: fixed;
-        top: 8px;
-        right: 70px;
-        z-index: 99999999;
-        display: flex;
-        align-items: center;
-        width: 330px;
-    }
-    div.global-top-tenant-bar div[data-testid="stSelectbox"] {
-        margin: 0 !important;
-        padding: 0 !important;
-        width: 100% !important;
-    }
-    div.global-top-tenant-bar div[data-testid="stSelectbox"] > div {
-        border-radius: 8px !important;
-        border: 1px solid rgba(128,128,128,0.3) !important;
-        background-color: rgba(255, 255, 255, 0.98) !important;
-        box-shadow: 0 1px 6px rgba(0,0,0,0.12) !important;
-        height: 38px !important;
-        min-height: 38px !important;
-    }
-    @media (prefers-color-scheme: dark) {
-        div.global-top-tenant-bar div[data-testid="stSelectbox"] > div {
-            background-color: rgba(26, 28, 36, 0.98) !important;
-            border-color: rgba(255, 255, 255, 0.22) !important;
-        }
-    }
-    </style>
-    """
-    st.markdown(top_bar_css, unsafe_allow_html=True)
-
-    # 2. 渲染吸顶全局租户切换下拉菜单（使用原生 on_change 回调，绝对不手动触发 st.rerun 防止死循环）
-    with st.container():
-        st.markdown('<div class="global-top-tenant-bar">', unsafe_allow_html=True)
-        tenant_ids = list(tenants.keys())
-        current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
-        st.selectbox(
-            "全局切换账号",
-            tenant_ids,
-            index=current_idx,
-            format_func=lambda tid: tenants[tid]["label"],
-            key="global_top_tenant_dropdown",
-            on_change=_on_global_tenant_select,
-            label_visibility="collapsed",
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
+    st.sidebar.markdown(
+        "<div style='margin-bottom:6px;font-size:12px;font-weight:700;color:#64748b;letter-spacing:0.5px;'>🏛️ 操作租户 / 账户切换</div>",
+        unsafe_allow_html=True,
+    )
+    tenant_ids = list(tenants.keys())
+    current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
+    st.sidebar.selectbox(
+        "选择操作租户",
+        tenant_ids,
+        index=current_idx,
+        format_func=lambda tid: tenants[tid]["label"],
+        key="sidebar_active_tenant_id",
+        on_change=_on_sidebar_tenant_change,
+        label_visibility="collapsed",
+    )
+    status_bg = "#fef2f2" if current_tenant["is_real"] else "#f0fdf4"
+    status_color = "#dc2626" if current_tenant["is_real"] else "#16a34a"
+    status_text = "🔴 实盘真金战区 · 受控交易" if current_tenant["is_real"] else "🟢 美股模拟沙盒 · 100万底仓"
+    st.sidebar.markdown(
+        f"<div style='font-size:11px;padding:4px 8px;border-radius:6px;background:{status_bg};color:{status_color};font-weight:600;margin-top:4px;border:1px solid rgba(0,0,0,0.06);'>"
+        f"{status_text}</div>",
+        unsafe_allow_html=True,
+    )
+    st.sidebar.divider()
     return current_tenant
 
 
@@ -346,17 +322,9 @@ def get_tenant_broker(settings=None):
 def render_sidebar(settings=None) -> str:
     """Render shared environment information below the app navigation."""
     st.markdown(MOBILE_RESPONSIVE_CSS, unsafe_allow_html=True)
-    current_tenant = render_global_top_tenant_bar(settings)
+    current_tenant = get_current_tenant(settings)
     active_env = current_tenant["env"]
     if settings is not None:
-        st.sidebar.divider()
-        st.sidebar.markdown("**🏛️ 当前操作租户**")
-        st.sidebar.info(f"{current_tenant['label']}\n\n{current_tenant['desc']}")
-        if current_tenant["is_real"]:
-            st.sidebar.error("🔴 实盘真金战区受控运行")
-        else:
-            st.sidebar.success("🟢 美股模拟盘实验运行中")
-
         st.sidebar.caption(f"OpenD 网关: {settings.host}:{settings.port}")
         st.sidebar.caption(
             "自动交易链路已就绪" if settings.enable_paper_orders else "自动交易关闭（仅观察）"

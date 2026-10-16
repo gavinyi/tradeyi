@@ -20,7 +20,8 @@ from futu_quant.trade_diagnostics import (
 )
 from futu_quant.ui import (
     china_time_columns, chinese_columns, render_admin_login, render_sidebar,
-    get_current_tenant, get_registered_tenants,
+    get_current_tenant, get_registered_tenants, get_tenant_broker,
+    render_sidebar_tenant_switcher,
 )
 
 
@@ -30,6 +31,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto",
 )
+
+# 需求1：在侧边栏最左上角（导航菜单正上方）渲染专属的租户/账号切换器
+render_sidebar_tenant_switcher()
 
 
 dashboard_page = st.Page(
@@ -110,7 +114,7 @@ if current_page not in (dashboard_page, account_page):
 
 try:
     settings = Settings.load()
-    broker = FutuPaperBroker(settings)
+    broker = get_tenant_broker(settings)
     store = TradingStore()
 except Exception as exc:
     st.error(str(exc))
