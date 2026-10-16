@@ -164,51 +164,91 @@ def get_registered_tenants(settings=None) -> dict[str, dict]:
 
 
 def get_current_tenant(settings=None) -> dict:
-    """获取当前激活的操作租户实体。"""
+    """获取当前激活的操作租户实体，优先响应顶部切换控件的选择。"""
     tenants = get_registered_tenants(settings)
-    tenant_id = st.session_state.get("current_tenant_id")
+    # 优先读取 widget key 带来的即时切换值，解决点击后不更新的时序 Bug
+    tenant_id = st.session_state.get("top_right_tenant_switcher") or st.session_state.get("current_tenant_id")
     if not tenant_id or tenant_id not in tenants:
         if settings and getattr(settings, "trading_env", "") == "REAL":
             tenant_id = "real_primary"
         else:
             tenant_id = "sim_stock"
-        st.session_state.current_tenant_id = tenant_id
+    st.session_state.current_tenant_id = tenant_id
+    st.session_state.top_right_tenant_switcher = tenant_id
     tenant = tenants[tenant_id]
     st.session_state.active_battleground = tenant["env"]
     return tenant
 
 
 def render_tenant_header(title: str, subtitle: str | None = None, settings=None) -> dict:
-    """在页面最顶部渲染标题与右上角租户切换选择器。"""
+    """在页面顶栏右上角（三个点左侧）精准吸顶挂载账号切换器，并展示页面标题。"""
     tenants = get_registered_tenants(settings)
     current_tenant = get_current_tenant(settings)
 
-    col_title, col_tenant = st.columns([1.5, 1], vertical_alignment="center")
-    with col_title:
-        env_badge = (
-            "<span style='font-size:12px;padding:3px 10px;border-radius:12px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700;margin-left:8px;vertical-align:middle'>🔴 实盘 REAL</span>"
-            if current_tenant["is_real"] else
-            "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟沙盒 SIM</span>"
-        )
-        st.markdown(f"## {title} {env_badge}", unsafe_allow_html=True)
-        if subtitle:
-            st.caption(subtitle)
+    # 1. 注入吸顶 CSS：精准定位在顶栏右上角三个点按钮 (⋮) 的左侧
+    top_bar_css = """
+    <style>
+    div.top-tenant-bar-container {
+        position: fixed;
+        top: 8px;
+        right: 75px;
+        z-index: 9999999;
+        display: flex;
+        align-items: center;
+        width: 320px;
+    }
+    div.top-tenant-bar-container div[data-testid="stSelectbox"] {
+        margin: 0 !important;
+        padding: 0 !important;
+        width: 100% !important;
+    }
+    div.top-tenant-bar-container div[data-testid="stSelectbox"] > div {
+        border-radius: 8px !important;
+        border: 1px solid rgba(128,128,128,0.3) !important;
+        background-color: rgba(255, 255, 255, 0.98) !important;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.12) !important;
+    }
+    @media (prefers-color-scheme: dark) {
+        div.top-tenant-bar-container div[data-testid="stSelectbox"] > div {
+            background-color: rgba(30, 30, 30, 0.98) !important;
+            border-color: rgba(255, 255, 255, 0.25) !important;
+        }
+    }
+    </style>
+    """
+    st.markdown(top_bar_css, unsafe_allow_html=True)
 
-    with col_tenant:
+    # 2. 渲染吸顶右上角租户切换选择器
+    with st.container():
+        st.markdown('<div class="top-tenant-bar-container">', unsafe_allow_html=True)
         tenant_ids = list(tenants.keys())
         current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
         selected_id = st.selectbox(
-            "当前操作租户 / 账户",
+            "当前操作租户",
             tenant_ids,
             index=current_idx,
             format_func=lambda tid: tenants[tid]["label"],
             key="top_right_tenant_switcher",
-            label_visibility="visible",
+            label_visibility="collapsed",
         )
-        if selected_id != current_tenant["id"]:
-            st.session_state.current_tenant_id = selected_id
-            st.session_state.active_battleground = tenants[selected_id]["env"]
-            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # 3. 若选项变化，更新 session_state 并立即刷新页面全量数据
+    if selected_id != current_tenant["id"]:
+        st.session_state.current_tenant_id = selected_id
+        st.session_state.top_right_tenant_switcher = selected_id
+        st.session_state.active_battleground = tenants[selected_id]["env"]
+        st.rerun()
+
+    # 4. 渲染页面大标题与当前租户信息
+    env_badge = (
+        "<span style='font-size:12px;padding:3px 10px;border-radius:12px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700;margin-left:8px;vertical-align:middle'>🔴 实盘 REAL</span>"
+        if current_tenant["is_real"] else
+        "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟沙盒 SIM</span>"
+    )
+    st.markdown(f"## {title} {env_badge}", unsafe_allow_html=True)
+    if subtitle:
+        st.caption(subtitle)
 
     return current_tenant
 
