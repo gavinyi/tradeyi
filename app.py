@@ -182,11 +182,12 @@ if st.button("刷新账户", icon=":material/refresh:"):
 @st.cache_data(ttl=10, max_entries=4, show_spinner=False)
 def load_account_by_tenant(tenant_id: str, include_history: bool = False):
     tenants = get_registered_tenants(settings)
-    tenant = tenants.get(tenant_id, tenants["real_primary" if getattr(settings, "trading_env", "") == "REAL" else "sim_primary"])
+    tenant = tenants.get(tenant_id, tenants["moomoo_real" if getattr(settings, "trading_env", "") == "REAL" else "sim_primary"])
     target_b = FutuPaperBroker(
         settings,
         trading_env_override=tenant["env"],
         account_id_override=tenant["acc_id"],
+        security_firm_override=tenant.get("security_firm"),
     )
     try:
         accs = target_b.accounts()

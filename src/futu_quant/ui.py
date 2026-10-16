@@ -212,35 +212,50 @@ def china_time_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_registered_tenants(settings=None) -> dict[str, dict]:
-    """多租户注册表：Moomoo US 实盘核心账户 vs 美股模拟账户 (20170229)。"""
-    real_raw = getattr(settings, "real_account_id", None) if settings else None
-    real_id = int(real_raw) if real_raw else 283445327916889204
-
-    sim_raw = getattr(settings, "acc_id", None) if settings else None
-    sim_id = int(sim_raw) if sim_raw else 20170229
+    """三大官方权威租户体系：Moomoo US 实盘打猎、富途证券香港底仓、美股 100 万模拟沙盒。"""
+    moomoo_id = 283445327916889204
+    futuhk_id = 281756481476169109
+    sim_id = 20170229
 
     return {
-        "real_primary": {
-            "id": "real_primary",
-            "label": f"🔴 Moomoo US 实盘核心 ({real_id})",
+        "moomoo_real": {
+            "id": "moomoo_real",
+            "label": f"🔴 Moomoo US 实盘打猎 ({moomoo_id} · 3万美元现金)",
             "short_name": "Moomoo实盘",
-            "badge": "🔴 实盘 REAL",
+            "badge": "🔴 实盘 Moomoo US",
             "env": "REAL",
-            "acc_id": real_id,
+            "security_firm": "FUTUINC",
+            "acc_id": moomoo_id,
             "card_num": "1007376216226587",
-            "desc": "Moomoo US 美股真金实盘 · 波动率期权打猎 ($3,823)",
+            "desc": "美股真金期权自动打猎战区 · 3万美元纯现金",
             "is_real": True,
+            "auto_trade": True,
+        },
+        "futuhk_real": {
+            "id": "futuhk_real",
+            "label": f"🟡 富途香港 实盘底仓 ({futuhk_id} · 8 NVDA/4.4 GLD)",
+            "short_name": "富途香港底仓",
+            "badge": "🟡 实盘 Futu HK",
+            "env": "REAL",
+            "security_firm": "FUTUSECURITIES",
+            "acc_id": futuhk_id,
+            "card_num": "1001259607272607",
+            "desc": "长线手工投资存量底仓 · 物理锁死绝对保护",
+            "is_real": True,
+            "auto_trade": False,
         },
         "sim_primary": {
             "id": "sim_primary",
-            "label": f"🟢 美股模拟账户 ({sim_id} · 100万)",
-            "short_name": "美股模拟",
+            "label": f"🟢 美股模拟 沙盒大盘 ({sim_id} · 100万美元)",
+            "short_name": "美股模拟沙盒",
             "badge": "🟢 模拟 SIMULATE",
             "env": "SIMULATE",
+            "security_firm": "FUTUSECURITIES",
             "acc_id": sim_id,
             "card_num": f"SIM-{sim_id}",
             "desc": "100万美股模拟沙盒 · 16只底仓股票与历史期权",
             "is_real": False,
+            "auto_trade": True,
         },
     }
 
@@ -251,7 +266,7 @@ def get_current_tenant(settings=None) -> dict:
     tenant_id = st.session_state.get("sidebar_active_tenant_id") or st.session_state.get("current_tenant_id")
     if not tenant_id or tenant_id not in tenants:
         if settings and getattr(settings, "trading_env", "") == "REAL":
-            tenant_id = "real_primary"
+            tenant_id = "moomoo_real"
         else:
             tenant_id = "sim_primary"
     st.session_state.current_tenant_id = tenant_id
@@ -312,9 +327,12 @@ def render_sidebar_tenant_switcher(settings=None) -> dict:
             on_change=_on_sidebar_tenant_change,
             label_visibility="collapsed",
         )
-        status_bg = "#fef2f2" if current_tenant["is_real"] else "#f0fdf4"
-        status_color = "#dc2626" if current_tenant["is_real"] else "#16a34a"
-        status_text = "🔴 实盘真金战区 · 受控交易" if current_tenant["is_real"] else "🟢 美股模拟沙盒 · 100万底仓"
+        if current_tenant["id"] == "moomoo_real":
+            status_bg, status_color, status_text = "#fef2f2", "#dc2626", "🔴 Moomoo 实盘打猎 · 3万美元纯现金"
+        elif current_tenant["id"] == "futuhk_real":
+            status_bg, status_color, status_text = "#fefce8", "#a16207", "🟡 富途香港底仓 · NVDA/GLD 物理锁死保护"
+        else:
+            status_bg, status_color, status_text = "#f0fdf4", "#16a34a", "🟢 美股模拟沙盒 · 100万底仓推演"
         st.markdown(
             f"<div style='font-size:11px;padding:5px 8px;border-radius:6px;background:{status_bg};color:{status_color};font-weight:600;margin-top:6px;border:1px solid rgba(0,0,0,0.06);'>"
             f"{status_text}</div>",
@@ -341,6 +359,7 @@ def get_tenant_broker(settings=None):
         s,
         trading_env_override=tenant["env"],
         account_id_override=tenant["acc_id"],
+        security_firm_override=tenant.get("security_firm"),
     )
 
 

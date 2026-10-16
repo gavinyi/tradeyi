@@ -184,6 +184,7 @@ class FutuPaperBroker:
         settings: Settings,
         trading_env_override: str | None = None,
         account_id_override: int | str | None = None,
+        security_firm_override: str | None = None,
     ):
         self.settings = settings
         effective_env = (trading_env_override or settings.trading_env).upper()
@@ -191,10 +192,11 @@ class FutuPaperBroker:
         self.account_id = int(account_id_override) if account_id_override else None
         self.trd_env = TrdEnv.REAL if effective_env == "REAL" else TrdEnv.SIMULATE
         self.market = TrdMarket.US
+        firm_str = security_firm_override or settings.security_firm
         try:
-            self.security_firm = getattr(SecurityFirm, settings.security_firm)
+            self.security_firm = getattr(SecurityFirm, firm_str)
         except AttributeError as exc:
-            raise BrokerError(f"Unknown FUTU_SECURITY_FIRM: {settings.security_firm}") from exc
+            raise BrokerError(f"Unknown FUTU_SECURITY_FIRM: {firm_str}") from exc
         self._frame_cache: dict[str, tuple[float, pd.DataFrame]] = {}
         role = os.getenv("FUTU_LOG_ROLE", "process")
         if role:
