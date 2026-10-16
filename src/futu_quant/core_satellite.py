@@ -434,6 +434,11 @@ def build_rebalance_plan(
         current_value = held["qty"] * stats["price"]
         current_weight = current_value / account_value
 
+        # 用户原生手工长线底仓 (NVDA / GLD) 绝对保护：只允许加仓或持有，严禁策略生成任何减仓或卖出意图！
+        if symbol in {"US.NVDA", "US.GLD"} and target_weight < current_weight:
+            target_weight = current_weight
+            reason = f"存量长线底仓物理保护：{symbol} 锁定不减仓，维持原仓位持守"
+
         # 核心防洗盘保护：如果当前只是每日机会扫描 (satellite_only)，
         # 除非标的发生实质性破位（跌破200日均线或深度回撤），否则非正式调仓日只抓机会、严禁小幅减仓倒手！
         if satellite_only and target_weight < current_weight:

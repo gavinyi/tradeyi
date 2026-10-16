@@ -63,14 +63,23 @@ class ExecutionManager:
             reason = "REAL 必须连接 REAL 券商环境"
             self.store.audit("EXECUTION_ENV_REJECTED", {"mode": mode, "broker_env": broker_env}, strategy_id)
             return ExecutionResult(0, "REJECTED", reason)
-        # 铁律：实盘环境绝对禁止卖出非期权资产（保护用户长线股票底仓如 NVDA/GLD 绝不被误卖）
+        # 铁律：实盘环境严格保护用户指定长线股票底仓 (NVDA/GLD) 绝不被程序误卖；
+        # 同时若非 core_satellite 策略 (如期权策略)，绝对禁止卖出任何正股！
         if mode == "REAL" and side == "SELL":
             from .option_lifecycle import parse_option_code
-            if parse_option_code(symbol) is None:
-                reason = f"实盘底仓物理保护铁律：禁止向实盘账户提交非期权卖单 ({symbol})"
-                self.store.audit("REAL_STOCK_SELL_FORBIDDEN", {"symbol": symbol, "strategy_id": strategy_id})
-                self.alerts.send("CRITICAL", "REAL_STOCK_SELL_FORBIDDEN", reason)
-                return ExecutionResult(0, "REJECTED", reason)
+            is_opt = parse_option_code(symbol) is not None
+            if not is_opt:
+                protected_symbols = {"US.NVDA", "US.GLD"}
+                if symbol in protected_symbols:
+                    reason = f"实盘底仓物理保护铁律：禁止向实盘账户提交存量保护标的卖单 ({symbol})"
+                    self.store.audit("REAL_PROTECTED_STOCK_SELL_FORBIDDEN", {"symbol": symbol, "strategy_id": strategy_id})
+                    self.alerts.send("CRITICAL", "REAL_PROTECTED_STOCK_SELL_FORBIDDEN", reason)
+                    return ExecutionResult(0, "REJECTED", reason)
+                if strategy_id != "core_satellite":
+                    reason = f"实盘底仓安全铁律：策略 {strategy_id} 无权向实盘提交正股卖单 ({symbol})"
+                    self.store.audit("REAL_STOCK_SELL_UNAUTHORIZED", {"symbol": symbol, "strategy_id": strategy_id})
+                    self.alerts.send("CRITICAL", "REAL_STOCK_SELL_UNAUTHORIZED", reason)
+                    return ExecutionResult(0, "REJECTED", reason)
         fingerprint = runtime_strategy_fingerprint(strategy_id, self.store)
         current_source_fingerprint = strategy_fingerprint(strategy_id, self.store)
         require_approval = approval_enforcement_enabled(self.store)

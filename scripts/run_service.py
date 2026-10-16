@@ -629,15 +629,36 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
             if current_env == "REAL":
                 store.save_broker_snapshot("account_info_real", account)
                 store.save_broker_snapshot("positions_real", positions)
-                # 双轨并发采集：同时采集美股模拟盘 20170229 快照，供全景双轨看板展示
+                store.save_broker_snapshot("account_info_moomoo_real", account)
+                store.save_broker_snapshot("positions_moomoo_real", positions)
+                # 多租户并发采集：同时采集富途香港底仓 (281756481476169109) 与美股模拟盘 (20170229)
+                try:
+                    if not hasattr(broker, "_broker_futuhk_companion"):
+                        broker._broker_futuhk_companion = FutuPaperBroker(
+                            settings, trading_env_override="REAL", account_id_override=281756481476169109,
+                            security_firm_override="FUTUSECURITIES",
+                        )
+                    hk_b = broker._broker_futuhk_companion
+                    hk_acc = hk_b.account_info()
+                    hk_pos = hk_b.positions()
+                    store.save_broker_snapshot("account_info_futuhk_real", hk_acc)
+                    store.save_broker_snapshot("positions_futuhk_real", hk_pos)
+                    store.save_broker_snapshot("orders_futuhk_real", hk_b.orders())
+                except Exception:
+                    pass
                 try:
                     if not hasattr(broker, "_broker_sim_companion"):
-                        broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
+                        broker._broker_sim_companion = FutuPaperBroker(
+                            settings, trading_env_override="SIMULATE", account_id_override=20170229,
+                            security_firm_override="FUTUSECURITIES",
+                        )
                     sim_b = broker._broker_sim_companion
                     sim_acc = sim_b.account_info()
                     sim_pos = sim_b.positions()
                     store.save_broker_snapshot("account_info_sim", sim_acc)
                     store.save_broker_snapshot("positions_sim", sim_pos)
+                    store.save_broker_snapshot("account_info_sim_primary", sim_acc)
+                    store.save_broker_snapshot("positions_sim_primary", sim_pos)
                     store.save_broker_snapshot("orders_sim", sim_b.orders())
                     if not sim_acc.empty:
                         s_row = sim_acc.iloc[0]
@@ -899,16 +920,37 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         key = "last_run:core_satellite"
         core_broker = broker
         core_executor = executor
-        if getattr(broker, "trading_env", "SIMULATE") == "REAL" and "core_satellite" not in settings.real_allowed_strategies:
-            # 双轨调度：Core Satellite 未入实盘白名单时，自动由模拟盘通道接管，保持 100 万现货底仓模拟运转！
-            if not hasattr(broker, "_broker_sim_companion"):
-                broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
-            core_broker = broker._broker_sim_companion
-            core_executor = ExecutionManager(core_broker, store)
+        if getattr(broker, "trading_env", "SIMULATE") == "REAL":
+            # 多通道实盘调度：Core Satellite 策略实盘绑定富途香港账户 (281756481476169109 · FUTUSECURITIES)
+            if not hasattr(broker, "_broker_futuhk_core"):
+                broker._broker_futuhk_core = FutuPaperBroker(
+                    settings,
+                    trading_env_override="REAL",
+                    account_id_override=281756481476169109,
+                    security_firm_override="FUTUSECURITIES",
+                )
+            core_broker = broker._broker_futuhk_core
+            core_executor = ExecutionManager(core_broker, store, alerts)
         succeeded = run_task(
             store, alerts, "core_satellite",
             lambda: run_strategy_once(core_broker, "Core Satellite", core_executor),
         )
+        # 伴生模拟沙盒调度：美股模拟盘 20170229 也同步执行 100 万大资金底仓调仓
+        if getattr(broker, "trading_env", "SIMULATE") == "REAL":
+            try:
+                if not hasattr(broker, "_broker_sim_companion"):
+                    broker._broker_sim_companion = FutuPaperBroker(
+                        settings, trading_env_override="SIMULATE", account_id_override=20170229,
+                        security_firm_override="FUTUSECURITIES",
+                    )
+                sim_b = broker._broker_sim_companion
+                sim_exec = ExecutionManager(sim_b, store, alerts)
+                run_task(
+                    store, alerts, "core_satellite_sim",
+                    lambda: run_strategy_once(sim_b, "Core Satellite", sim_exec),
+                )
+            except Exception as exc:
+                store.operational_event("core_satellite_sim", "EXECUTION_SKIPPED", "DEGRADED", {"error": str(exc)})
         if succeeded:
             mark_run(store, key, now)
             if "补偿调仓" in core_reason:
