@@ -85,17 +85,31 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
         actual = broker_qty.get(symbol, 0.0)
         ledger = ledger_qty.get(symbol, 0.0)
         difference = actual - ledger
+        strategy_owners = owners.get(symbol, set())
+
+        # 用户原生手工存量底仓豁免保护 (例如实盘存量 8 股 NVDA、4.43 股 GLD):
+        # 未被任何量化策略认领的外部长线底仓，属于安全受控资产，绝对不判定为对账丢单差异！
+        if not strategy_owners and abs(ledger) <= tolerance:
+            store.record_reconciliation(symbol, actual, ledger, "MATCHED")
+            store.set_setting(f"symbol_blocked:{symbol}", "false")
+            reports.append({
+                "symbol": symbol, "broker_quantity": actual, "ledger_quantity": ledger,
+                "difference": 0.0, "status": "MATCHED",
+                "affected_strategies": "USER_NATIVE_HOLDING",
+            })
+            continue
+
         status = "MATCHED" if abs(difference) <= tolerance else "MISMATCH"
         store.record_reconciliation(symbol, actual, ledger, status)
         store.set_setting(f"symbol_blocked:{symbol}", str(status == "MISMATCH").lower())
         if status == "MISMATCH":
-            for strategy in owners.get(symbol, set()):
+            for strategy in strategy_owners:
                 mismatched_strategies.add(strategy)
                 _disable_strategy_for_reconciliation(store, strategy)
         reports.append({
             "symbol": symbol, "broker_quantity": actual, "ledger_quantity": ledger,
             "difference": difference, "status": status,
-            "affected_strategies": ",".join(sorted(owners.get(symbol, set()))),
+            "affected_strategies": ",".join(sorted(strategy_owners)),
         })
     for key in store.settings_with_prefix("strategy_reconciliation_disabled:"):
         strategy = key.removeprefix("strategy_reconciliation_disabled:")
