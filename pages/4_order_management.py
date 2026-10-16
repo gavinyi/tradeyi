@@ -11,15 +11,27 @@ from futu_quant.config import Settings
 from futu_quant.store import TradingStore
 from futu_quant.ui import (
     china_time_columns, chinese_columns, render_admin_login, render_sidebar,
-    translate_common_values,
+    translate_common_values, get_active_battleground,
 )
 
 
 st.set_page_config(page_title="订单管理", page_icon="🧾", layout="wide")
-render_sidebar(Settings.load())
-st.title("模拟盘订单管理")
-st.warning("撤单仅作用于美股模拟账户；已成交部分无法撤回。")
-broker = FutuPaperBroker(Settings.load())
+settings = Settings.load()
+render_sidebar(settings)
+battleground = get_active_battleground(settings)
+is_real = (battleground == "REAL")
+env_label = "实盘" if is_real else "模拟盘"
+
+st.title(f"{env_label}订单管理")
+if is_real:
+    st.error("🔴 当前处于实盘真金战区：撤单操作将直接撤销富途美股真实账户中的挂单！请谨慎操作。")
+    broker = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
+    env_suffix = "_real"
+else:
+    st.warning("🟢 当前处于模拟实验战区：撤单仅作用于美股模拟账户；已成交部分无法撤回。")
+    broker = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170224)
+    env_suffix = "_sim"
+
 store = TradingStore()
 admin = render_admin_login()
 
@@ -157,17 +169,17 @@ def shadow_order_sheet() -> None:
         st.dataframe(pending_shadow[columns], width="stretch", hide_index=True)
 
 
-@st.cache_data(ttl=30, max_entries=2, show_spinner=False)
-def load_orders_snapshot() -> pd.DataFrame:
+@st.cache_data(ttl=15, max_entries=4, show_spinner=False)
+def load_orders_snapshot(target_env: str) -> pd.DataFrame:
     try:
         return broker.orders()
     except Exception:
-        cached = store.broker_snapshot("orders")
+        cached = store.broker_snapshot("orders" + env_suffix) or store.broker_snapshot("orders")
         return pd.DataFrame((cached or {}).get("payload", []))
 
 
 try:
-    orders = load_orders_snapshot()
+    orders = load_orders_snapshot(battleground)
     if orders.empty:
         stock_orders = option_orders = orders
     else:

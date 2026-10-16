@@ -18,7 +18,10 @@ from futu_quant.store import TradingStore
 from futu_quant.trade_diagnostics import (
     build_diagnostic_report, diagnostic_window, latest_us_session_date,
 )
-from futu_quant.ui import china_time_columns, chinese_columns, render_admin_login, render_sidebar
+from futu_quant.ui import (
+    china_time_columns, chinese_columns, render_admin_login, render_sidebar,
+    get_active_battleground,
+)
 
 
 st.set_page_config(
@@ -166,11 +169,17 @@ if st.button("刷新账户", icon=":material/refresh:"):
     st.cache_data.clear()
 
 
-@st.cache_data(ttl=30, max_entries=2, show_spinner=False)
-def load_account(include_history: bool = False):
-    # Keep the common account page responsive: historical orders are opt-in.
-    current = (broker.accounts(), broker.account_info(), broker.positions(), broker.orders())
-    history = broker.orders(True) if include_history else pd.DataFrame()
+@st.cache_data(ttl=15, max_entries=4, show_spinner=False)
+def load_account(channel_env: str = "DEFAULT", include_history: bool = False):
+    # 根据指定的实盘/模拟战区通道加载对应账户与订单
+    if channel_env == "REAL":
+        target_b = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
+    elif channel_env == "SIMULATE":
+        target_b = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170224)
+    else:
+        target_b = broker
+    current = (target_b.accounts(), target_b.account_info(), target_b.positions(), target_b.orders())
+    history = target_b.orders(True) if include_history else pd.DataFrame()
     return (*current, history)
 
 
@@ -268,26 +277,34 @@ def render_pnl_card(label: str, today_val: float, total_val: float | None = None
 
 
 try:
-    accounts, info, positions, orders, history = load_account(False)
+    current_battleground = get_active_battleground(settings)
+    is_real_env = (current_battleground == "REAL")
+    env_label = "实盘" if is_real_env else "模拟"
+    if is_real_env:
+        active_broker = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
+    else:
+        active_broker = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170224)
+
+    accounts, info, positions, orders, history = load_account(current_battleground, False)
     if info.empty or positions.empty:
-        cached_accounts = store.broker_snapshot("accounts")
-        cached_orders = store.broker_snapshot("orders")
+        snap_suffix = "_real" if is_real_env else "_sim"
+        cached_accounts = store.broker_snapshot("accounts" + snap_suffix) or store.broker_snapshot("accounts")
+        cached_orders = store.broker_snapshot("orders" + snap_suffix) or store.broker_snapshot("orders")
         if accounts.empty and cached_accounts:
             accounts = pd.DataFrame(cached_accounts["payload"])
         if orders.empty and cached_orders:
             orders = pd.DataFrame(cached_orders["payload"])
     if info.empty or positions.empty:
-        cached_info = store.broker_snapshot("account_info")
-        cached_positions = store.broker_snapshot("positions")
+        snap_suffix = "_real" if is_real_env else "_sim"
+        cached_info = store.broker_snapshot("account_info" + snap_suffix) or store.broker_snapshot("account_info")
+        cached_positions = store.broker_snapshot("positions" + snap_suffix) or store.broker_snapshot("positions")
         if info.empty and cached_info:
             info = pd.DataFrame(cached_info["payload"])
         if positions.empty and cached_positions:
             positions = pd.DataFrame(cached_positions["payload"])
         if info.empty or positions.empty:
-            st.warning("OpenD 当前不可用，暂无账户快照；请稍后重试。")
-    is_real_env = getattr(settings, "trading_env", "SIMULATE") == "REAL"
-    env_label = "实盘" if is_real_env else "模拟"
-    st.success(f"已连接富途 OpenD；发现 {len(accounts)} 个美股{env_label}账户")
+            st.warning(f"OpenD 当前暂无{env_label}账户快照；请稍后重试。")
+    st.success(f"已连接富途 OpenD · 当前呈现：{env_label}战区；发现 {len(accounts)} 个美股{env_label}账户")
     if not positions.empty and "code" in positions.columns:
         option_mask = positions["code"].map(is_option_symbol)
         option_positions = positions[option_mask].copy()
@@ -467,8 +484,9 @@ try:
                 )
         with all_position_tab:
             st.dataframe(chinese_columns(positions), hide_index=True)
+    target_cancellable = active_broker.is_cancellable_status
     pending_orders = (
-        orders[orders["order_status"].map(broker.is_cancellable_status)].copy()
+        orders[orders["order_status"].map(target_cancellable)].copy()
         if not orders.empty else orders
     )
     with tabs[1]:
@@ -505,14 +523,14 @@ try:
                     if not confirmed:
                         st.error("请先勾选确认。")
                     else:
-                        st.session_state.main_cancel_result = broker.cancel_orders(pending_orders)
+                        st.session_state.main_cancel_result = active_broker.cancel_orders(pending_orders)
                         st.cache_data.clear()
                         st.rerun()
     tabs[2].dataframe(chinese_columns(orders), hide_index=True)
     with tabs[3]:
         st.caption("历史订单查询可能较慢，仅在明确点击后访问 OpenD。")
         if st.button("加载历史订单", key="load_main_history"):
-            _, _, _, _, history = load_account(True)
+            _, _, _, _, history = load_account(current_battleground, True)
             st.session_state.main_history = history
         history = st.session_state.get("main_history", pd.DataFrame())
         if history.empty:

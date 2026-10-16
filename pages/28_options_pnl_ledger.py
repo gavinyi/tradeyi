@@ -13,21 +13,35 @@ from futu_quant.ui import (
     chinese_columns,
     render_sidebar,
     translate_common_values,
+    get_active_battleground,
 )
 
 
 st.set_page_config(page_title="期权盈亏台账", page_icon="💹", layout="wide")
 settings = Settings.load()
 render_sidebar(settings)
-st.title("期权盈亏台账")
-st.caption("按每一笔期权开仓批次串联成交、持仓、平仓、费用和收益，方便查看某张合约到底赚了还是亏了。")
+battleground = get_active_battleground(settings)
+is_real = (battleground == "REAL")
+env_title = "实盘期权盈亏台账" if is_real else "模拟盘期权盈亏台账"
+
+st.title(env_title)
+if is_real:
+    st.error("🔴 当前呈现：实盘真金期权成交与已实现盈亏台账")
+else:
+    st.caption("🟢 当前呈现：100万模拟沙盒期权成交与已实现盈亏台账")
 
 
-@st.cache_data(ttl=20, max_entries=2, show_spinner=False)
-def load_option_pnl(refresh_quotes: bool) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+@st.cache_data(ttl=20, max_entries=4, show_spinner=False)
+def load_option_pnl(refresh_quotes: bool, target_env: str) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     store = TradingStore()
-    broker = FutuPaperBroker(Settings.load()) if refresh_quotes else None
-    return build_option_pnl_ledger(store, broker=broker)
+    if refresh_quotes:
+        if target_env == "REAL":
+            broker = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
+        else:
+            broker = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170224)
+    else:
+        broker = None
+    return build_option_pnl_ledger(store, broker=broker, env=target_env)
 
 
 def strategy_label(value: str) -> str:
@@ -55,7 +69,7 @@ def pnl_badge(value) -> str:
 
 
 refresh_quotes = st.toggle("刷新当前期权行情并计算未实现盈亏", value=True)
-ledger, orders, quote_status = load_option_pnl(refresh_quotes)
+ledger, orders, quote_status = load_option_pnl(refresh_quotes, target_env=battleground)
 st.caption(f"行情状态：{quote_status}")
 
 if ledger.empty and orders.empty:

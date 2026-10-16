@@ -168,7 +168,7 @@ def _fill_time(
     return order.get("created_at"), "订单创建时间"
 
 
-def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+def build_option_pnl_ledger(store, broker=None, limit: int = 50_000, env: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     """Build a per-option FIFO PnL ledger from order intents and Shadow fills.
 
     Returns:
@@ -184,6 +184,19 @@ def build_option_pnl_ledger(store, broker=None, limit: int = 50_000) -> tuple[pd
     option_orders = intents[intents["parsed_contract"].notna()].copy()
     if option_orders.empty:
         return pd.DataFrame(), pd.DataFrame(), "没有期权订单"
+
+    # 环境隔离：支持按 REAL 或 SIMULATE 严格过滤期权台账
+    if env:
+        target_env = env.upper()
+        is_real_mask = option_orders["intent_key"].astype(str).str.contains(":REAL", case=False, na=False) | option_orders["status"].astype(str).str.startswith("REAL")
+        if target_env == "REAL":
+            option_orders = option_orders[is_real_mask].copy()
+            if option_orders.empty:
+                return pd.DataFrame(), pd.DataFrame(), "暂无实盘期权订单"
+        elif target_env in {"SIMULATE", "PAPER"}:
+            option_orders = option_orders[~is_real_mask].copy()
+            if option_orders.empty:
+                return pd.DataFrame(), pd.DataFrame(), "暂无模拟盘期权订单"
 
     option_orders["metadata"] = option_orders["metadata_json"].map(_metadata)
     option_orders["成交数量"] = pd.to_numeric(

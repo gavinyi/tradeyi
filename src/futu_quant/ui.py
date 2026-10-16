@@ -211,21 +211,47 @@ def china_time_columns(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def render_sidebar(settings=None) -> None:
+def get_active_battleground(settings=None) -> str:
+    """获取当前用户在界面上选定的操作与查看战区 (REAL vs SIMULATE)。"""
+    if "active_battleground" in st.session_state:
+        return str(st.session_state.active_battleground).upper()
+    if settings is not None and getattr(settings, "trading_env", "") == "REAL":
+        return "REAL"
+    return "SIMULATE"
+
+
+def render_sidebar(settings=None) -> str:
     """Render shared environment information below the app navigation."""
-    # All application pages call this shared entry point. The media-query layer
-    # keeps desktop density while making trading controls usable on narrow screens.
     st.markdown(MOBILE_RESPONSIVE_CSS, unsafe_allow_html=True)
+    active_env = "SIMULATE"
     if settings is not None:
         st.sidebar.divider()
-        if getattr(settings, "trading_env", "SIMULATE") == "REAL":
-            st.sidebar.error("REAL 实盘 · US")
+        is_real_supported = getattr(settings, "real_trading_enabled", False) or getattr(settings, "trading_env", "") == "REAL"
+        if is_real_supported:
+            st.sidebar.markdown("**🏛️ 全局查看与操作战区**")
+            current_choice = st.session_state.get("active_battleground", "REAL")
+            choice = st.sidebar.radio(
+                "战区选择",
+                ["🔴 实盘真钱战区 (REAL)", "🟢 模拟实验战区 (SIM)"],
+                index=0 if current_choice == "REAL" else 1,
+                key="global_battleground_radio",
+                label_visibility="collapsed",
+            )
+            active_env = "REAL" if "REAL" in choice else "SIMULATE"
+            st.session_state.active_battleground = active_env
+            if active_env == "REAL":
+                st.sidebar.error("🔴 当前页面展示：实盘真金战区")
+            else:
+                st.sidebar.success("🟢 当前页面展示：100万模拟战区")
         else:
             st.sidebar.success("SIMULATE 模拟盘 · US")
-        st.sidebar.caption(f"OpenD: {settings.host}:{settings.port}")
-        st.sidebar.warning(
-            "策略下单已启用" if settings.enable_paper_orders else "策略下单关闭（仅观察）"
+            st.session_state.active_battleground = "SIMULATE"
+
+        st.sidebar.caption(f"OpenD 网关: {settings.host}:{settings.port}")
+        st.sidebar.caption(
+            "自动交易链路已就绪" if settings.enable_paper_orders else "自动交易关闭（仅观察）"
         )
+    return active_env
 
 
 def render_admin_login() -> bool:
