@@ -211,41 +211,122 @@ def china_time_columns(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def get_registered_tenants(settings=None) -> dict[str, dict]:
+    """多租户注册表：实盘核心账户、模拟股票底仓、模拟期权沙盒。"""
+    real_id = getattr(settings, "real_account_id", 281756481476169109) if settings else 281756481476169109
+    sim_stock_id = 20170224
+    sim_opt_id = 20170230
+
+    return {
+        "real_primary": {
+            "id": "real_primary",
+            "label": f"🔴 实盘核心账户 ({real_id or 281756481476169109})",
+            "short_name": "实盘核心",
+            "badge": "🔴 实盘 REAL",
+            "env": "REAL",
+            "acc_id": int(real_id or 281756481476169109),
+            "card_num": "1001259607272607",
+            "desc": "美股真金实盘 · 波动率期权打猎",
+            "is_real": True,
+        },
+        "sim_stock": {
+            "id": "sim_stock",
+            "label": f"🟢 模拟股票底仓 ({sim_stock_id} · 100万)",
+            "short_name": "模拟股票",
+            "badge": "🟢 模拟 STOCK",
+            "env": "SIMULATE",
+            "acc_id": int(sim_stock_id),
+            "card_num": f"SIM-{sim_stock_id}",
+            "desc": "美股模拟盘 · Core Satellite 现货底仓",
+            "is_real": False,
+        },
+        "sim_option": {
+            "id": "sim_option",
+            "label": f"⚡ 模拟期权沙盒 ({sim_opt_id} · 100万)",
+            "short_name": "模拟期权",
+            "badge": "⚡ 模拟 OPTION",
+            "env": "SIMULATE",
+            "acc_id": int(sim_opt_id),
+            "card_num": f"SIM-{sim_opt_id}",
+            "desc": "美股模拟盘 · 波动率期权沙盒孵化",
+            "is_real": False,
+        },
+    }
+
+
+def get_current_tenant(settings=None) -> dict:
+    """获取当前激活的操作租户实体。"""
+    tenants = get_registered_tenants(settings)
+    tenant_id = st.session_state.get("current_tenant_id")
+    if not tenant_id or tenant_id not in tenants:
+        if settings and getattr(settings, "trading_env", "") == "REAL":
+            tenant_id = "real_primary"
+        else:
+            tenant_id = "sim_stock"
+        st.session_state.current_tenant_id = tenant_id
+    tenant = tenants[tenant_id]
+    st.session_state.active_battleground = tenant["env"]
+    return tenant
+
+
+def render_tenant_header(title: str, subtitle: str | None = None, settings=None) -> dict:
+    """在页面最顶部渲染标题与右上角租户切换选择器。"""
+    tenants = get_registered_tenants(settings)
+    current_tenant = get_current_tenant(settings)
+
+    col_title, col_tenant = st.columns([1.5, 1], vertical_alignment="center")
+    with col_title:
+        env_badge = (
+            "<span style='font-size:12px;padding:3px 10px;border-radius:12px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700;margin-left:8px;vertical-align:middle'>🔴 实盘 REAL</span>"
+            if current_tenant["is_real"] else
+            "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟沙盒 SIM</span>"
+        )
+        st.markdown(f"## {title} {env_badge}", unsafe_allow_html=True)
+        if subtitle:
+            st.caption(subtitle)
+
+    with col_tenant:
+        tenant_ids = list(tenants.keys())
+        current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
+        selected_id = st.selectbox(
+            "当前操作租户 / 账户",
+            tenant_ids,
+            index=current_idx,
+            format_func=lambda tid: tenants[tid]["label"],
+            key="top_right_tenant_switcher",
+            label_visibility="visible",
+        )
+        if selected_id != current_tenant["id"]:
+            st.session_state.current_tenant_id = selected_id
+            st.session_state.active_battleground = tenants[selected_id]["env"]
+            st.rerun()
+
+    return current_tenant
+
+
 def get_active_battleground(settings=None) -> str:
     """获取当前用户在界面上选定的操作与查看战区 (REAL vs SIMULATE)。"""
-    if "active_battleground" in st.session_state:
-        return str(st.session_state.active_battleground).upper()
-    if settings is not None and getattr(settings, "trading_env", "") == "REAL":
-        return "REAL"
-    return "SIMULATE"
+    tenant = get_current_tenant(settings)
+    return str(tenant.get("env", "SIMULATE")).upper()
 
 
 def render_sidebar(settings=None) -> str:
     """Render shared environment information below the app navigation."""
     st.markdown(MOBILE_RESPONSIVE_CSS, unsafe_allow_html=True)
-    active_env = "SIMULATE"
+    current_tenant = get_current_tenant(settings)
+    active_env = current_tenant["env"]
     if settings is not None:
         st.sidebar.divider()
         is_real_supported = getattr(settings, "real_trading_enabled", False) or getattr(settings, "trading_env", "") == "REAL"
         if is_real_supported:
-            st.sidebar.markdown("**🏛️ 全局查看与操作战区**")
-            current_choice = st.session_state.get("active_battleground", "REAL")
-            choice = st.sidebar.radio(
-                "战区选择",
-                ["🔴 实盘真钱战区 (REAL)", "🟢 模拟实验战区 (SIM)"],
-                index=0 if current_choice == "REAL" else 1,
-                key="global_battleground_radio",
-                label_visibility="collapsed",
-            )
-            active_env = "REAL" if "REAL" in choice else "SIMULATE"
-            st.session_state.active_battleground = active_env
-            if active_env == "REAL":
-                st.sidebar.error("🔴 当前页面展示：实盘真金战区")
+            st.sidebar.markdown("**🏛️ 当前操作租户**")
+            st.sidebar.info(f"{current_tenant['label']}\n\n卡号: `{current_tenant['card_num']}`")
+            if current_tenant["is_real"]:
+                st.sidebar.error("🔴 实盘战区受控运行中")
             else:
-                st.sidebar.success("🟢 当前页面展示：100万模拟战区")
+                st.sidebar.success("🟢 模拟沙盒实验运行中")
         else:
             st.sidebar.success("SIMULATE 模拟盘 · US")
-            st.session_state.active_battleground = "SIMULATE"
 
         st.sidebar.caption(f"OpenD 网关: {settings.host}:{settings.port}")
         st.sidebar.caption(

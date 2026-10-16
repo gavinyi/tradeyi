@@ -20,7 +20,7 @@ from futu_quant.trade_diagnostics import (
 )
 from futu_quant.ui import (
     china_time_columns, chinese_columns, render_admin_login, render_sidebar,
-    get_active_battleground,
+    render_tenant_header, get_current_tenant,
 )
 
 
@@ -131,7 +131,12 @@ def load_home_diagnostics():
     )
 
 
-st.title("Futu 美股模拟量化")
+current_tenant = get_current_tenant(settings)
+render_tenant_header(
+    "Futu 美股量化系统",
+    f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}",
+    settings=settings,
+)
 latest_diagnostics = load_home_diagnostics()
 diagnostic_summary = latest_diagnostics["summary"]
 diagnostic_problems = 0 if diagnostic_summary.empty else int(
@@ -277,13 +282,14 @@ def render_pnl_card(label: str, today_val: float, total_val: float | None = None
 
 
 try:
-    current_battleground = get_active_battleground(settings)
-    is_real_env = (current_battleground == "REAL")
+    active_tenant = get_current_tenant(settings)
+    current_battleground = active_tenant["env"]
+    is_real_env = active_tenant["is_real"]
     env_label = "实盘" if is_real_env else "模拟"
-    if is_real_env:
-        active_broker = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
-    else:
-        active_broker = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170224)
+    active_broker = FutuPaperBroker(
+        settings, trading_env_override=active_tenant["env"],
+        account_id_override=active_tenant["acc_id"],
+    )
 
     accounts, info, positions, orders, history = load_account(current_battleground, False)
     if info.empty or positions.empty:
