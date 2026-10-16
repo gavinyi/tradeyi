@@ -212,9 +212,9 @@ def china_time_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_registered_tenants(settings=None) -> dict[str, dict]:
-    """多租户注册表：实盘美股真实账户 vs 美股模拟账户 (20170229)，坚决杜绝 None。"""
+    """多租户注册表：Moomoo US 实盘核心账户 vs 美股模拟账户 (20170229)。"""
     real_raw = getattr(settings, "real_account_id", None) if settings else None
-    real_id = int(real_raw) if real_raw else 281756481476169109
+    real_id = int(real_raw) if real_raw else 283445327916889204
 
     sim_raw = getattr(settings, "acc_id", None) if settings else None
     sim_id = int(sim_raw) if sim_raw else 20170229
@@ -222,13 +222,13 @@ def get_registered_tenants(settings=None) -> dict[str, dict]:
     return {
         "real_primary": {
             "id": "real_primary",
-            "label": f"🔴 实盘美股账户 ({real_id})",
-            "short_name": "实盘美股",
+            "label": f"🔴 Moomoo US 实盘核心 ({real_id})",
+            "short_name": "Moomoo实盘",
             "badge": "🔴 实盘 REAL",
             "env": "REAL",
             "acc_id": real_id,
-            "card_num": "1001259607272607",
-            "desc": "美股真金实盘 · 波动率期权战区",
+            "card_num": "1007376216226587",
+            "desc": "Moomoo US 美股真金实盘 · 波动率期权打猎 ($3,823)",
             "is_real": True,
         },
         "sim_primary": {
@@ -239,7 +239,7 @@ def get_registered_tenants(settings=None) -> dict[str, dict]:
             "env": "SIMULATE",
             "acc_id": sim_id,
             "card_num": f"SIM-{sim_id}",
-            "desc": "100万美股模拟盘 · 9只底仓股票与历史期权",
+            "desc": "100万美股模拟沙盒 · 16只底仓股票与历史期权",
             "is_real": False,
         },
     }
