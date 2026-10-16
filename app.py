@@ -166,7 +166,7 @@ def get_registered_tenants(settings=None) -> dict[str, dict]:
 def get_current_tenant(settings=None) -> dict:
     """获取当前激活的操作租户实体，优先响应顶部切换控件的选择。"""
     tenants = get_registered_tenants(settings)
-    # 优先读取 widget key 带来的即时切换值，解决点击后不更新的时序 Bug
+    # 优先读取 widget 即时选中值，遵循 Streamlit 单向数据流标准
     tenant_id = st.session_state.get("top_right_tenant_switcher") or st.session_state.get("current_tenant_id")
     if not tenant_id or tenant_id not in tenants:
         if settings and getattr(settings, "trading_env", "") == "REAL":
@@ -174,7 +174,6 @@ def get_current_tenant(settings=None) -> dict:
         else:
             tenant_id = "sim_stock"
     st.session_state.current_tenant_id = tenant_id
-    st.session_state.top_right_tenant_switcher = tenant_id
     tenant = tenants[tenant_id]
     st.session_state.active_battleground = tenant["env"]
     return tenant
@@ -233,10 +232,9 @@ def render_tenant_header(title: str, subtitle: str | None = None, settings=None)
         )
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 3. 若选项变化，更新 session_state 并立即刷新页面全量数据
+    # 3. 若选项变化，更新业务 session_state 并立即重载全量数据
     if selected_id != current_tenant["id"]:
         st.session_state.current_tenant_id = selected_id
-        st.session_state.top_right_tenant_switcher = selected_id
         st.session_state.active_battleground = tenants[selected_id]["env"]
         st.rerun()
 
