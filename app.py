@@ -183,7 +183,7 @@ def load_account(channel_env: str = "DEFAULT", include_history: bool = False):
     if channel_env == "REAL":
         target_b = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
     elif channel_env == "SIMULATE":
-        target_b = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170224)
+        target_b = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
     else:
         target_b = broker
     current = (target_b.accounts(), target_b.account_info(), target_b.positions(), target_b.orders())

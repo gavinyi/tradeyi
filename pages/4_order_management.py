@@ -29,7 +29,7 @@ if is_real:
     env_suffix = "_real"
 else:
     st.warning("🟢 当前处于模拟实验战区：撤单仅作用于美股模拟账户；已成交部分无法撤回。")
-    broker = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170224)
+    broker = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
     env_suffix = "_sim"
 
 store = TradingStore()

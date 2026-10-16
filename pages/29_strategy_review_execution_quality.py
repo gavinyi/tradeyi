@@ -9,14 +9,20 @@ from futu_quant.config import Settings
 from futu_quant.store import TradingStore
 from futu_quant.strategy_review import build_strategy_review, review_markdown
 from futu_quant.trade_diagnostics import diagnostic_window, latest_us_session_date
-from futu_quant.ui import china_time_columns, chinese_columns, render_sidebar
+from futu_quant.ui import china_time_columns, chinese_columns, render_sidebar, get_current_tenant
 
 
 st.set_page_config(page_title="策略复盘与执行质量", page_icon="📋", layout="wide")
 settings = Settings.load()
 render_sidebar(settings)
-st.title("策略复盘与执行质量")
-st.caption("一键复盘昨晚策略运行：整体报告、执行质量、波动率期权保护状态、Core Satellite 调仓质量。")
+current_tenant = get_current_tenant(settings)
+is_real = current_tenant["is_real"]
+
+st.title(f"策略复盘与执行质量 · {'🔴 实盘核心' if is_real else '🟢 美股模拟'}")
+if is_real:
+    st.error(f"🔴 当前复盘口径：实盘真实账户 ({current_tenant['label']}) · 真金白银已实现收益")
+else:
+    st.caption(f"🟢 当前复盘口径：美股模拟账户 ({current_tenant['label']}) · 100万沙盒实验收益")
 
 
 def display_percent_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:

@@ -312,10 +312,11 @@ def render_global_top_tenant_bar(settings=None) -> dict:
         )
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 3. 若选项变化，更新业务 session_state 并立即刷新全页面数据
+    # 3. 若选项变化，更新业务 session_state、清理旧账号数据缓存并立即刷新全页面数据
     if selected_id != current_tenant["id"]:
         st.session_state.current_tenant_id = selected_id
         st.session_state.active_battleground = tenants[selected_id]["env"]
+        st.cache_data.clear()
         st.rerun()
 
     return current_tenant
