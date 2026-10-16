@@ -18,7 +18,10 @@ from futu_quant.store import TradingStore
 from futu_quant.trade_diagnostics import (
     build_diagnostic_report, diagnostic_window, latest_us_session_date,
 )
-from futu_quant.ui import china_time_columns, chinese_columns, render_admin_login, render_sidebar
+from futu_quant.ui import (
+    china_time_columns, chinese_columns, render_admin_login, render_sidebar,
+    get_current_tenant,
+)
 
 
 st.set_page_config(
@@ -120,138 +123,6 @@ if current_page == dashboard_page:
     render_home_dashboard(settings, broker, store, account_page=account_page)
     st.stop()
 
-def get_registered_tenants(settings=None) -> dict[str, dict]:
-    """多租户注册表：实盘核心账户、模拟股票底仓、模拟期权沙盒。"""
-    real_id = getattr(settings, "real_account_id", 281756481476169109) if settings else 281756481476169109
-    sim_stock_id = 20170224
-    sim_opt_id = 20170230
-
-    return {
-        "real_primary": {
-            "id": "real_primary",
-            "label": f"🔴 实盘核心账户 ({real_id or 281756481476169109})",
-            "short_name": "实盘核心",
-            "badge": "🔴 实盘 REAL",
-            "env": "REAL",
-            "acc_id": int(real_id or 281756481476169109),
-            "card_num": "1001259607272607",
-            "desc": "美股真金实盘 · 波动率期权打猎",
-            "is_real": True,
-        },
-        "sim_stock": {
-            "id": "sim_stock",
-            "label": f"🟢 模拟股票底仓 ({sim_stock_id} · 100万)",
-            "short_name": "模拟股票",
-            "badge": "🟢 模拟 STOCK",
-            "env": "SIMULATE",
-            "acc_id": int(sim_stock_id),
-            "card_num": f"SIM-{sim_stock_id}",
-            "desc": "美股模拟盘 · Core Satellite 现货底仓",
-            "is_real": False,
-        },
-        "sim_option": {
-            "id": "sim_option",
-            "label": f"⚡ 模拟期权沙盒 ({sim_opt_id} · 100万)",
-            "short_name": "模拟期权",
-            "badge": "⚡ 模拟 OPTION",
-            "env": "SIMULATE",
-            "acc_id": int(sim_opt_id),
-            "card_num": f"SIM-{sim_opt_id}",
-            "desc": "美股模拟盘 · 波动率期权沙盒孵化",
-            "is_real": False,
-        },
-    }
-
-
-def get_current_tenant(settings=None) -> dict:
-    """获取当前激活的操作租户实体，优先响应顶部切换控件的选择。"""
-    tenants = get_registered_tenants(settings)
-    # 优先读取 widget 即时选中值，遵循 Streamlit 单向数据流标准
-    tenant_id = st.session_state.get("top_right_tenant_switcher") or st.session_state.get("current_tenant_id")
-    if not tenant_id or tenant_id not in tenants:
-        if settings and getattr(settings, "trading_env", "") == "REAL":
-            tenant_id = "real_primary"
-        else:
-            tenant_id = "sim_stock"
-    st.session_state.current_tenant_id = tenant_id
-    tenant = tenants[tenant_id]
-    st.session_state.active_battleground = tenant["env"]
-    return tenant
-
-
-def render_tenant_header(title: str, subtitle: str | None = None, settings=None) -> dict:
-    """在页面顶栏右上角（三个点左侧）精准吸顶挂载账号切换器，并展示页面标题。"""
-    tenants = get_registered_tenants(settings)
-    current_tenant = get_current_tenant(settings)
-
-    # 1. 注入吸顶 CSS：精准定位在顶栏右上角三个点按钮 (⋮) 的左侧
-    top_bar_css = """
-    <style>
-    div.top-tenant-bar-container {
-        position: fixed;
-        top: 8px;
-        right: 75px;
-        z-index: 9999999;
-        display: flex;
-        align-items: center;
-        width: 320px;
-    }
-    div.top-tenant-bar-container div[data-testid="stSelectbox"] {
-        margin: 0 !important;
-        padding: 0 !important;
-        width: 100% !important;
-    }
-    div.top-tenant-bar-container div[data-testid="stSelectbox"] > div {
-        border-radius: 8px !important;
-        border: 1px solid rgba(128,128,128,0.3) !important;
-        background-color: rgba(255, 255, 255, 0.98) !important;
-        box-shadow: 0 1px 6px rgba(0,0,0,0.12) !important;
-    }
-    @media (prefers-color-scheme: dark) {
-        div.top-tenant-bar-container div[data-testid="stSelectbox"] > div {
-            background-color: rgba(30, 30, 30, 0.98) !important;
-            border-color: rgba(255, 255, 255, 0.25) !important;
-        }
-    }
-    </style>
-    """
-    st.markdown(top_bar_css, unsafe_allow_html=True)
-
-    # 2. 渲染吸顶右上角租户切换选择器
-    with st.container():
-        st.markdown('<div class="top-tenant-bar-container">', unsafe_allow_html=True)
-        tenant_ids = list(tenants.keys())
-        current_idx = tenant_ids.index(current_tenant["id"]) if current_tenant["id"] in tenant_ids else 0
-        selected_id = st.selectbox(
-            "当前操作租户",
-            tenant_ids,
-            index=current_idx,
-            format_func=lambda tid: tenants[tid]["label"],
-            key="top_right_tenant_switcher",
-            label_visibility="collapsed",
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # 3. 若选项变化，更新业务 session_state 并立即重载全量数据
-    if selected_id != current_tenant["id"]:
-        st.session_state.current_tenant_id = selected_id
-        st.session_state.active_battleground = tenants[selected_id]["env"]
-        st.rerun()
-
-    # 4. 渲染页面大标题与当前租户信息
-    env_badge = (
-        "<span style='font-size:12px;padding:3px 10px;border-radius:12px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700;margin-left:8px;vertical-align:middle'>🔴 实盘 REAL</span>"
-        if current_tenant["is_real"] else
-        "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟沙盒 SIM</span>"
-    )
-    st.markdown(f"## {title} {env_badge}", unsafe_allow_html=True)
-    if subtitle:
-        st.caption(subtitle)
-
-    return current_tenant
-
-
-
 
 @st.cache_data(ttl=30, max_entries=3, show_spinner=False)
 def load_home_diagnostics():
@@ -261,11 +132,14 @@ def load_home_diagnostics():
 
 
 current_tenant = get_current_tenant(settings)
-render_tenant_header(
-    "Futu 美股量化系统",
-    f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}",
-    settings=settings,
+env_badge = (
+    "<span style='font-size:12px;padding:3px 10px;border-radius:12px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700;margin-left:8px;vertical-align:middle'>🔴 实盘 REAL</span>"
+    if current_tenant["is_real"] else
+    "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟沙盒 SIM</span>"
 )
+st.markdown(f"## Futu 美股量化系统 {env_badge}", unsafe_allow_html=True)
+st.caption(f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}")
+
 latest_diagnostics = load_home_diagnostics()
 diagnostic_summary = latest_diagnostics["summary"]
 diagnostic_problems = 0 if diagnostic_summary.empty else int(

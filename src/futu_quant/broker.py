@@ -280,7 +280,7 @@ class FutuPaperBroker:
             pool.drop("trade")
             self._ensure_opend_available()
             ctx = OpenSecTradeContext(
-                filter_trdmarket=TrdMarket.US if self.trading_env == "REAL" else TrdMarket.HK,
+                filter_trdmarket=TrdMarket.US,
                 host=self.settings.host,
                 port=self.settings.port,
                 security_firm=self.security_firm,

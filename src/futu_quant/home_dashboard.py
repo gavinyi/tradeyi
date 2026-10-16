@@ -15,6 +15,7 @@ from .option_lifecycle import parse_option_code
 from .radar_control import status as radar_status
 from .service_control import status as service_status
 from .store import TradingStore
+from .ui import get_current_tenant
 
 CHINA_TZ = "Asia/Shanghai"
 UTC = timezone.utc
@@ -843,25 +844,8 @@ def _render_risk_pulse(snapshot: dict[str, pd.DataFrame]) -> None:
 @st.fragment(run_every="30s")
 def _render_live_dashboard(_broker, _account_page=None) -> None:
     snapshot = _load_store_snapshot()
-
-    # 双轨战区一键切换选择器
-    is_real = getattr(_broker.settings, "trading_env", "SIMULATE") == "REAL"
-    if is_real:
-        col_view1, col_view2 = st.columns([1.2, 1], vertical_alignment="center")
-        with col_view1:
-            view_channel = st.radio(
-                "双轨战区切换",
-                ["🔴 实盘真钱战区", "🟢 100万模拟实验战区"],
-                horizontal=True,
-                label_visibility="collapsed",
-                key="home_dual_track_view",
-            )
-        with col_view2:
-            st.caption("双轨并发运行中：实盘真金受控打猎，模拟盘大资金长线孵化，两边数据独立呈现。")
-        selected_env = "REAL" if "实盘" in view_channel else "SIMULATE"
-    else:
-        selected_env = "SIMULATE"
-
+    current_tenant = get_current_tenant(_broker.settings)
+    selected_env = current_tenant["env"]
     account = _account_snapshot(_broker, view_env=selected_env)
 
     if not account["ok"]:
