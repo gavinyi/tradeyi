@@ -339,8 +339,9 @@ class FeishuReporter:
         markdown_path = str(record.get("markdown_path", ""))
         title = f"策略复盘与战报 {session_date}"
 
-        # 提取当日建议
+        # 提取当日建议与实盘/模拟双轨收益指标
         advice_text = ""
+        dual_track_summary = ""
         try:
             from futu_quant.strategy_review import build_strategy_review, _review_issue_advice
             from futu_quant.trade_diagnostics import diagnostic_window
@@ -354,6 +355,21 @@ class FeishuReporter:
                 if advice:
                     lines.append("建议：" + "；".join(advice[:3]))
                 advice_text = "\n".join(lines)
+
+            # 严格双轨账户战报数据提取
+            real_pnl = float(rev.metrics.get("实盘已实现盈亏", 0.0))
+            real_fills = int(rev.metrics.get("实盘成交数", 0))
+            sim_pnl = float(rev.metrics.get("模拟已实现盈亏", 0.0))
+            sim_fills = int(rev.metrics.get("模拟成交数", 0))
+            real_acc_id = str(self.store.get_setting("REAL_ACCOUNT_ID", "") or "")
+
+            dual_track_lines = ["\n💼 **双轨账户收益核算**:"]
+            if real_acc_id:
+                dual_track_lines.append(f"- 🔴 **实盘战区 (真金白银)**: 账号 `{real_acc_id}` · 实盘已实现盈亏 `{real_pnl:+,.2f} USD` (真实成交 {real_fills} 笔)")
+            else:
+                dual_track_lines.append("- 🔴 **实盘战区**: 尚未启用实盘交易")
+            dual_track_lines.append(f"- 🟢 **模拟战区 (100万沙盒)**: 模拟已实现盈亏 `{sim_pnl:+,.2f} USD` (模拟成交 {sim_fills} 笔)")
+            dual_track_summary = "\n".join(dual_track_lines)
         except Exception:
             pass
 
@@ -386,7 +402,8 @@ class FeishuReporter:
                 f"📊 **量化策略每日复盘战报 ({session_date})**\n"
                 f"──────────────────────\n"
                 f"🔗 **在线文档**: {doc_url or '可在本地 data/reports/ 查阅'}\n"
-                f"🎯 **结论摘要**:\n{conclusion}"
+                + (f"{dual_track_summary}\n\n" if dual_track_summary else "")
+                + f"🎯 **策略结论**:\n{conclusion}"
                 + (f"\n\n💡 **当日建议**:\n{advice_text}" if advice_text else "")
             )
             group_res = _run_lark_json([
@@ -401,8 +418,10 @@ class FeishuReporter:
         elif self.webhook_url:
             lines = [
                 f"📅 **美东交易日**: {session_date}",
-                f"📝 **结论摘要**:\n{conclusion}",
             ]
+            if dual_track_summary:
+                lines.append(dual_track_summary)
+            lines.append(f"📝 **结论摘要**:\n{conclusion}")
             if advice_text:
                 lines.append(f"💡 **当日建议**:\n{advice_text}")
             if doc_url:

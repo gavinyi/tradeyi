@@ -425,6 +425,20 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         and float(row.get("filled_quantity") or 0) > 0
     ]
 
+    # 双轨环境分离：严格拆分实盘真实成交与模拟实验成交
+    real_fills = [
+        row for row in fills
+        if ":REAL" in str(row.get("intent_key", "")) or str(row.get("status", "")).startswith("REAL")
+    ]
+    sim_fills = [
+        row for row in fills
+        if ":REAL" not in str(row.get("intent_key", "")) and not str(row.get("status", "")).startswith("REAL")
+    ]
+    real_pnl_df = _option_pnl_breakdown(real_fills)
+    sim_pnl_df = _option_pnl_breakdown(sim_fills)
+    realized_real_pnl = float(real_pnl_df["净盈亏"].sum()) if not real_pnl_df.empty else 0.0
+    realized_sim_pnl = float(sim_pnl_df["净盈亏"].sum()) if not sim_pnl_df.empty else 0.0
+
     orders = _orders_frame(intents)
     blockers = diagnostic["blockers"].copy()
     trading_blockers, cleanup_blockers, blockers = _split_blockers(blockers)
@@ -475,6 +489,10 @@ def build_strategy_review(store, window: DiagnosticWindow) -> StrategyReview:
         "交易阻塞类型数": len(trading_blockers),
         "到期/失效清理项": expired_cleanup_count,
         "期权已实现盈亏": realized_option_pnl,
+        "实盘已实现盈亏": realized_real_pnl,
+        "实盘成交数": len(real_fills),
+        "模拟已实现盈亏": realized_sim_pnl,
+        "模拟成交数": len(sim_fills),
         "期权未平持仓": open_option_count,
         "Core调仓订单": len(core_quality),
         "盈利期权合约": (
@@ -623,11 +641,9 @@ def _review_issue_advice(review: StrategyReview) -> tuple[list[str], list[str]]:
     advice: list[str] = []
 
     metrics = review.metrics
-    orders_empty = review.orders.empty
     decisions_count = int(metrics.get("策略决策") or 0)
     orders_count = int(metrics.get("订单数") or 0)
     filled_orders = int(metrics.get("成交订单") or 0)
-    blocked_count = int(metrics.get("阻断次数") or 0)
     trading_blockers = int(metrics.get("交易阻塞类型数") or 0)
     cleanup_items = int(metrics.get("到期/失效清理项") or 0)
     realized_pnl = float(metrics.get("期权已实现盈亏") or 0.0)
