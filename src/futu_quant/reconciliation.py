@@ -55,6 +55,7 @@ def _recover_strategy_from_reconciliation(store, strategy_id: str) -> None:
 
 
 def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
+    broker_env = str(getattr(broker, "trading_env", "SIMULATE")).upper()
     positions = broker.positions()
     if not positions.empty and "code" in positions.columns:
         positions = positions[positions["code"].astype(str).map(futu_reconciliation_symbol)].copy()
@@ -63,7 +64,7 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
         if not positions.empty else {}
     )
     virtual_rows = [
-        row for row in store.virtual_positions()
+        row for row in store.virtual_positions(env=broker_env)
         if futu_reconciliation_symbol(row["symbol"])
     ]
     ledger_qty: dict[str, float] = {}

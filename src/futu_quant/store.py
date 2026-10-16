@@ -2140,13 +2140,26 @@ class TradingStore:
             )
 
     def virtual_positions(self, env: str | None = None) -> list[dict]:
-        env_filter = ""
-        if env:
-            target_env = env.upper()
-            if target_env == "REAL":
-                env_filter = "AND (intent_key LIKE '%:REAL' OR status LIKE 'REAL%')"
-            elif target_env in {"SIMULATE", "PAPER"}:
-                env_filter = "AND intent_key NOT LIKE '%:REAL' AND status NOT LIKE 'REAL%'"
+        target_env = env.upper() if env else None
+        if target_env == "REAL":
+            # 严格实盘模式：持仓严格以真实成交流水为唯一真理，坚决排除任何历史虚拟分配或调整污染
+            with self.connection() as connection:
+                query = """WITH fills AS (
+                    SELECT strategy_id, symbol,
+                    SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE -filled_quantity END) qty,
+                    SUM(filled_quantity * average_fill_price) / MAX(1e-9, SUM(filled_quantity)) as avg_cost
+                    FROM order_intents
+                    WHERE status NOT LIKE 'SHADOW%' AND (intent_key LIKE '%:REAL' OR status LIKE 'REAL%')
+                    GROUP BY strategy_id, symbol
+                )
+                SELECT strategy_id, symbol, qty AS quantity, COALESCE(avg_cost, 0) AS average_cost
+                FROM fills
+                WHERE ABS(qty) > 1e-9
+                ORDER BY strategy_id, symbol"""
+                rows = connection.execute(query).fetchall()
+                return [dict(row) for row in rows]
+
+        env_filter = "AND intent_key NOT LIKE '%:REAL' AND status NOT LIKE 'REAL%'" if target_env in {"SIMULATE", "PAPER"} else ""
         with self.connection() as connection:
             query = f"""WITH fills AS (
                 SELECT strategy_id,symbol,

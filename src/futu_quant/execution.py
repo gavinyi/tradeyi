@@ -63,6 +63,14 @@ class ExecutionManager:
             reason = "REAL 必须连接 REAL 券商环境"
             self.store.audit("EXECUTION_ENV_REJECTED", {"mode": mode, "broker_env": broker_env}, strategy_id)
             return ExecutionResult(0, "REJECTED", reason)
+        # 铁律：实盘环境绝对禁止卖出非期权资产（保护用户长线股票底仓如 NVDA/GLD 绝不被误卖）
+        if mode == "REAL" and side == "SELL":
+            from .option_lifecycle import parse_option_code
+            if parse_option_code(symbol) is None:
+                reason = f"实盘底仓物理保护铁律：禁止向实盘账户提交非期权卖单 ({symbol})"
+                self.store.audit("REAL_STOCK_SELL_FORBIDDEN", {"symbol": symbol, "strategy_id": strategy_id})
+                self.alerts.send("CRITICAL", "REAL_STOCK_SELL_FORBIDDEN", reason)
+                return ExecutionResult(0, "REJECTED", reason)
         fingerprint = runtime_strategy_fingerprint(strategy_id, self.store)
         current_source_fingerprint = strategy_fingerprint(strategy_id, self.store)
         require_approval = approval_enforcement_enabled(self.store)
@@ -332,7 +340,7 @@ class ExecutionManager:
     def _order_environment_ok(self, intent: dict) -> bool:
         mode = str(intent.get("intent_key", "")).rsplit(":", 1)[-1].upper()
         expected = {"PAPER": "SIMULATE", "REAL": "REAL"}.get(mode)
-        actual = str(getattr(getattr(self.broker, "settings", None), "trading_env", "SIMULATE")).upper()
+        actual = str(getattr(self.broker, "trading_env", "SIMULATE")).upper()
         # Legacy intents without mode suffix may only be managed in simulation.
         if expected is None:
             expected = "SIMULATE"

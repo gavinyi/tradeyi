@@ -1228,6 +1228,22 @@ def run_campaign(
             float(campaign.get("structure_net_debit", ask))
             if len(order_legs) > 1 else ask
         )
+        is_live_real = execution_mode == "REAL" or getattr(broker, "trading_env", "SIMULATE") == "REAL"
+        if is_live_real:
+            per_stage = 1
+            max_real_order = float(getattr(broker.settings, "real_max_order_notional", 1500.0) or 1500.0)
+            if entry_unit_price * multiplier > max_real_order:
+                block_reason = (
+                    f"实盘微资本安全保护：单张期权权利金 ${entry_unit_price * multiplier:,.2f} "
+                    f"超过实盘单笔上限 ${max_real_order:,.2f}，拒绝超额高价合约"
+                )
+                record_pretrade_block("LIVE_MAX_ORDER_NOTIONAL", block_reason, {
+                    "contract_price": entry_unit_price,
+                    "contract_notional": entry_unit_price * multiplier,
+                    "max_real_order": max_real_order,
+                })
+                print(f"{code}: BLOCKED ({block_reason})")
+                return
         premium = entry_unit_price * multiplier * per_stage
         budget_limit, budget_reason = loss_adaptive_premium_budget(
             float(campaign["max_premium_per_stage"]), executor.store, campaign["underlying"],
