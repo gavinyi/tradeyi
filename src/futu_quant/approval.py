@@ -11,7 +11,7 @@ from .store import TradingStore
 
 ROOT = Path(__file__).resolve().parents[2]
 GLOBAL_PREFIXES = ("EXEC_", "RISK_", "STRATEGY_")
-DEFAULT_APPROVAL_EXEMPT_STRATEGIES = ("core_satellite",)
+DEFAULT_APPROVAL_EXEMPT_STRATEGIES = ("core_satellite", "drill")
 
 # These values are live strategy state, not a strategy release.  The volatility
 # radar updates them whenever it adds a symbol, creates a campaign, or rolls a

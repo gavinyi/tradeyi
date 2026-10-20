@@ -181,8 +181,15 @@ if st.button("刷新账户", icon=":material/refresh:"):
 
 @st.cache_data(ttl=10, max_entries=4, show_spinner=False)
 def load_account_by_tenant(tenant_id: str, include_history: bool = False):
-    tenants = get_registered_tenants(settings)
-    tenant = tenants.get(tenant_id, tenants["moomoo_real" if getattr(settings, "trading_env", "") == "REAL" else "sim_primary"])
+    tenants = get_registered_tenants(settings, include_disabled=True)
+    if tenant_id in tenants:
+        tenant = tenants[tenant_id]
+    elif "futuhk_real" in tenants and getattr(settings, "trading_env", "") == "REAL":
+        tenant = tenants["futuhk_real"]
+    elif "sim_primary" in tenants:
+        tenant = tenants["sim_primary"]
+    else:
+        tenant = next(iter(tenants.values()))
     target_b = FutuPaperBroker(
         settings,
         trading_env_override=tenant["env"],
@@ -198,10 +205,10 @@ def load_account_by_tenant(tenant_id: str, include_history: bool = False):
         return accs, info, pos, orders, hist
     except Exception:
         snap_suffix = "_real" if tenant["is_real"] else "_sim"
-        cached_accs = store.broker_snapshot("accounts" + snap_suffix) or store.broker_snapshot("accounts")
-        cached_info = store.broker_snapshot("account_info" + snap_suffix) or store.broker_snapshot("account_info")
-        cached_pos = store.broker_snapshot("positions" + snap_suffix) or store.broker_snapshot("positions")
-        cached_orders = store.broker_snapshot("orders" + snap_suffix) or store.broker_snapshot("orders")
+        cached_accs = store.broker_snapshot(f"accounts_{tenant_id}") or store.broker_snapshot("accounts" + snap_suffix) or store.broker_snapshot("accounts")
+        cached_info = store.broker_snapshot(f"account_info_{tenant_id}") or store.broker_snapshot("account_info" + snap_suffix) or store.broker_snapshot("account_info")
+        cached_pos = store.broker_snapshot(f"positions_{tenant_id}") or store.broker_snapshot("positions" + snap_suffix) or store.broker_snapshot("positions")
+        cached_orders = store.broker_snapshot(f"orders_{tenant_id}") or store.broker_snapshot("orders" + snap_suffix) or store.broker_snapshot("orders")
         accs = pd.DataFrame((cached_accs or {}).get("payload", []))
         info = pd.DataFrame((cached_info or {}).get("payload", []))
         pos = pd.DataFrame((cached_pos or {}).get("payload", []))
@@ -308,10 +315,7 @@ try:
     current_battleground = active_tenant["env"]
     is_real_env = active_tenant["is_real"]
     env_label = "实盘" if is_real_env else "模拟"
-    active_broker = FutuPaperBroker(
-        settings, trading_env_override=active_tenant["env"],
-        account_id_override=active_tenant["acc_id"],
-    )
+    active_broker = get_tenant_broker(settings)
 
     accounts, info, positions, orders, history = load_account_by_tenant(active_tenant["id"], False)
     if info.empty or positions.empty:

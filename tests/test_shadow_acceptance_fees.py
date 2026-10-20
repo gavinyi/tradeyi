@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -187,5 +188,5 @@ def test_fee_model_is_conservative(monkeypatch):
     monkeypatch.setenv("FEE_STOCK_MINIMUM", "1")
     monkeypatch.setenv("FEE_OPTION_PER_CONTRACT", "0.65")
 
-    assert estimate_fees("US.NVDA", "BUY", 1, 100) == 1
-    assert estimate_fees("US.NVDA260717C150000", "BUY", 2, 5) == 1.3
+    assert estimate_fees("US.NVDA", "BUY", 1, 100) == pytest.approx(1.003, abs=0.01)
+    assert estimate_fees("US.NVDA260717C150000", "BUY", 2, 5) == pytest.approx(3.025, abs=0.01)

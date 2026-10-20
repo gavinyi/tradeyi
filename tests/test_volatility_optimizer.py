@@ -254,6 +254,7 @@ def test_volatility_profit_exit_is_active_immediately_after_fill():
         stop_loss=.40,
         trailing_stop=.25,
         max_hold_hours=24,
+        tiered_profit_lock_enabled=False,
     )
 
     assert action == "SELL"

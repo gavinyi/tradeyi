@@ -434,10 +434,13 @@ def build_rebalance_plan(
         current_value = held["qty"] * stats["price"]
         current_weight = current_value / account_value
 
-        # 用户原生手工长线底仓 (NVDA / GLD) 绝对保护：只允许加仓或持有，严禁策略生成任何减仓或卖出意图！
-        if symbol in {"US.NVDA", "US.GLD"} and target_weight < current_weight:
-            target_weight = current_weight
-            reason = f"存量长线底仓物理保护：{symbol} 锁定不减仓，维持原仓位持守"
+        # 用户长线底仓物理保护铁律：NVDA 永远保留至少 5 股长线核心仓位，仅超出部分允许参与平衡；GLD 纳入卫星组合由策略自动买卖
+        if symbol == "US.NVDA":
+            min_nvda_qty = 5.0
+            min_nvda_weight = (min_nvda_qty * stats["price"]) / account_value
+            if target_weight < min_nvda_weight:
+                target_weight = max(target_weight, min_nvda_weight)
+                reason = f"存量长线底仓保底保护：NVDA 严格保留至少 {min_nvda_qty:.0f} 股核心仓位"
 
         # 核心防洗盘保护：如果当前只是每日机会扫描 (satellite_only)，
         # 除非标的发生实质性破位（跌破200日均线或深度回撤），否则非正式调仓日只抓机会、严禁小幅减仓倒手！
@@ -458,6 +461,10 @@ def build_rebalance_plan(
             reason = f"组合目标权重变化受限（单次最多{max_target_change:.1%}）；{reason}"
         elif target_weight < current_weight:
             reason = f"组合再平衡减仓；{reason}"
+
+        if symbol == "US.NVDA" and target_weight < min_nvda_weight:
+            target_weight = min_nvda_weight
+
         delta_value = account_value * target_weight - current_value
         candidates.append((symbol, stats, held, current_weight, target_weight, delta_value, reason))
 
@@ -481,6 +488,9 @@ def build_rebalance_plan(
         side = "BUY" if delta_value > 0 else "SELL"
         if side == "SELL":
             quantity = min(quantity, int(held["can_sell_qty"]))
+            if symbol == "US.NVDA":
+                max_sell_nvda = max(0, int(held["qty"] - 5.0))
+                quantity = min(quantity, max_sell_nvda)
         desired_notional = desired_quantity * stats["price"]
         if max_order_notional > 0 and quantity * stats["price"] > max_order_notional:
             quantity = max(1, int(max_order_notional // stats["price"]))

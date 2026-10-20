@@ -13,7 +13,15 @@ from futu_quant.store import TradingStore
 class FakeBroker:
     def __init__(self, env="SIMULATE"):
         self.settings = SimpleNamespace(trading_env=env, real_trading_enabled=False)
+        self.trading_env = env
         self.calls = []
+
+    def orders(self, historical: bool = False) -> pd.DataFrame:
+        return pd.DataFrame(columns=["order_id", "order_status"])
+
+    @staticmethod
+    def is_cancellable_status(status) -> bool:
+        return False
 
     def place_limit_order(self, *args, **kwargs):
         self.calls.append((args, kwargs))
@@ -135,7 +143,7 @@ def test_real_gate_requires_account_even_without_confirmation(tmp_path):
     result = check_real_trade(TradingStore(tmp_path / "orders.db"), settings,
                               "sma", "US.SPY", "BUY", 1, 100)
     assert not result.allowed
-    assert "REAL_ACCOUNT_ID" in result.reason
+    assert "实盘账户 ID" in result.reason
 
 
 def test_direct_real_broker_placement_requires_gate_context():
@@ -144,6 +152,7 @@ def test_direct_real_broker_placement_requires_gate_context():
 
     broker = object.__new__(FutuPaperBroker)
     broker.settings = SimpleNamespace(trading_env="REAL", enable_paper_orders=True)
+    broker.trading_env = "REAL"
     with pytest.raises(BrokerError, match="实盘门禁"):
         broker.place_limit_order("US.SPY", "BUY", 1, 100)
 
@@ -154,6 +163,7 @@ def test_direct_modify_cancel_guard_environment():
 
     broker = object.__new__(FutuPaperBroker)
     broker.settings = SimpleNamespace(trading_env="REAL")
+    broker.trading_env = "REAL"
     with pytest.raises(BrokerError, match="环境"):
         broker.modify_limit_order("order-1", 1, 100, expected_env="SIMULATE")
     with pytest.raises(BrokerError, match="环境"):

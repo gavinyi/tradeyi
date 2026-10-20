@@ -95,9 +95,11 @@ class RiskEngine:
             return RiskDecision(False, "启动恢复发现三账差异，请先完成持仓归属与对账", 0)
         contract_multiplier = multiplier or (100.0 if OPTION_PATTERN.match(symbol) else 1.0)
         notional = float(quantity) * float(price) * contract_multiplier
-        # 急停禁止新增风险，但保留卖出平仓通道。
-        if self.store.kill_switch() and side == "BUY":
-            return RiskDecision(False, "系统急停已开启，禁止新增仓位", notional)
+        # 急停禁止新增风险，但保留卖出平仓通道；严格支持按账户隔离急停。
+        broker_acc = getattr(broker, "account_id", None)
+        if self.store.kill_switch(account_id=broker_acc) and side == "BUY":
+            target_desc = f"账户 {broker_acc}" if broker_acc else "系统"
+            return RiskDecision(False, f"{target_desc} 急停已开启，禁止新增仓位", notional)
         # A regular SELL may still open risk (for example a protected option short),
         # so only verified long-position reductions receive the dedicated allowance.
         if (side != "SELL" or protected_short) and notional > self.limits.max_order_notional:
@@ -138,10 +140,20 @@ class RiskEngine:
             if strategy_id and enforce_virtual:
                 strategy_owned = self.store.strategy_position(strategy_id, symbol)
                 if quantity > strategy_owned:
-                    return RiskDecision(
-                        False, f"{strategy_id} 虚拟持仓只有 {strategy_owned:g}，禁止占用其他策略持仓",
-                        notional,
+                    # 检查是否有其他策略持有该标的；若无其他策略持有，且属于券商真实未认领底仓，
+                    # 允许经授权的长线管理策略 (core_satellite) 参与调仓，避免误拦截用户手工建仓存量
+                    other_strategies_qty = sum(
+                        float(r["quantity"]) for r in self.store.virtual_positions()
+                        if r.get("symbol") == symbol and r.get("strategy_id") != strategy_id
                     )
+                    unclaimed_broker_qty = max(0.0, owned - other_strategies_qty)
+                    if strategy_id == "core_satellite" and quantity <= unclaimed_broker_qty:
+                        pass
+                    else:
+                        return RiskDecision(
+                            False, f"{strategy_id} 虚拟持仓只有 {strategy_owned:g}，禁止占用其他策略持仓",
+                            notional,
+                        )
             risk_reducing_sell = True
             if notional > self.limits.max_reduction_order_notional:
                 return RiskDecision(
@@ -198,8 +210,8 @@ class RiskEngine:
             if buying_power > 0 and notional > buying_power:
                 return RiskDecision(False, "可用购买力不足", notional)
             if daily_pl <= -self.limits.max_daily_loss:
-                self.store.set_setting("kill_switch", "true")
-                return RiskDecision(False, f"账户亏损已达到 ${self.limits.max_daily_loss:,.0f} 急停线", notional)
+                self.store.set_kill_switch(True, account_id=broker_acc)
+                return RiskDecision(False, f"账户 {broker_acc or ''} 亏损已达到 ${self.limits.max_daily_loss:,.0f} 急停线", notional)
             if assets > 0 and positions is not None:
                 shadow_positions = self.store.shadow_open_positions()
                 shadow_total = sum(
@@ -227,11 +239,11 @@ class RiskEngine:
                 peak = max(valid_snapshots + [assets])
                 drawdown = 1 - assets / peak if peak > 0 else 0
                 if peak - assets >= self.limits.max_daily_loss:
-                    self.store.set_setting("kill_switch", "true")
-                    return RiskDecision(False, "账户日内权益损失达到急停线，已自动急停", notional)
+                    self.store.set_kill_switch(True, account_id=broker_acc)
+                    return RiskDecision(False, f"账户 {broker_acc or ''} 日内权益损失达到急停线，已自动急停", notional)
                 if drawdown >= self.limits.max_drawdown_pct:
-                    self.store.set_setting("kill_switch", "true")
-                    return RiskDecision(False, f"账户日内回撤达到 {drawdown:.2%}，已自动急停", notional)
+                    self.store.set_kill_switch(True, account_id=broker_acc)
+                    return RiskDecision(False, f"账户 {broker_acc or ''} 日内回撤达到 {drawdown:.2%}，已自动急停", notional)
                 market_value = float(positions.get("market_val", []).sum()) if "market_val" in positions else 0
                 symbol_rows = positions[positions["code"] == symbol] if not positions.empty else positions
                 symbol_value = float(symbol_rows["market_val"].sum()) if "market_val" in symbol_rows else 0

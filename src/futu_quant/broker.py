@@ -189,7 +189,11 @@ class FutuPaperBroker:
         self.settings = settings
         effective_env = (trading_env_override or settings.trading_env).upper()
         self.trading_env = effective_env
-        self.account_id = int(account_id_override) if account_id_override else None
+        self.account_id = (
+            int(account_id_override)
+            if account_id_override
+            else (int(settings.real_account_id) if effective_env == "REAL" and settings.real_account_id else None)
+        )
         self.trd_env = TrdEnv.REAL if effective_env == "REAL" else TrdEnv.SIMULATE
         self.market = TrdMarket.US
         firm_str = security_firm_override or settings.security_firm
@@ -624,6 +628,12 @@ class FutuPaperBroker:
                 raise BrokerError("实盘下单必须经由执行管理器的实盘门禁")
             from .real_trading import check_real_trade
             store, strategy_id, metadata, intent_id = real_trade_context
+            metadata = dict(metadata or {})
+            if self.account_id:
+                metadata.setdefault("account_id", str(self.account_id))
+            if self.security_firm:
+                firm_str = getattr(self.security_firm, "name", str(self.security_firm)).split(".")[-1].upper()
+                metadata.setdefault("security_firm", firm_str)
             decision = check_real_trade(store, self.settings, strategy_id, symbol, side,
                                         quantity, price, metadata,
                                         exclude_intent_id=intent_id)

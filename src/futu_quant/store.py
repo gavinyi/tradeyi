@@ -972,8 +972,19 @@ class TradingStore:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(query, params).fetchall()]
 
-    def kill_switch(self) -> bool:
-        return self.get_setting("kill_switch", "false").lower() == "true"
+    def kill_switch(self, account_id: str | int | None = None) -> bool:
+        if self.get_setting("kill_switch", "false").lower() == "true":
+            return True
+        if account_id:
+            return self.get_setting(f"kill_switch:{account_id}", "false").lower() == "true"
+        return False
+
+    def set_kill_switch(self, enabled: bool, account_id: str | int | None = None) -> None:
+        val = "true" if enabled else "false"
+        if account_id:
+            self.set_setting(f"kill_switch:{account_id}", val)
+        else:
+            self.set_setting("kill_switch", val)
 
     def audit(self, event_type: str, payload: dict, strategy_id: str | None = None) -> None:
         with self.connection() as connection:
@@ -1335,11 +1346,17 @@ class TradingStore:
                 (key, _json_dumps(value.to_dict(orient="records") if hasattr(value, "to_dict") else value), self.now()),
             )
 
-    def broker_snapshot(self, key: str) -> dict | None:
+    def broker_snapshot(self, key: str, tenant_id: str | None = None) -> dict | None:
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM broker_snapshots WHERE snapshot_key=?", (key,)
-            ).fetchone()
+            row = None
+            if tenant_id:
+                row = connection.execute(
+                    "SELECT * FROM broker_snapshots WHERE snapshot_key=?", (f"{key}_{tenant_id}",)
+                ).fetchone()
+            if not row:
+                row = connection.execute(
+                    "SELECT * FROM broker_snapshots WHERE snapshot_key=?", (key,)
+                ).fetchone()
         if not row:
             return None
         return {"key": row["snapshot_key"], "payload": json.loads(row["payload_json"]), "captured_at": row["captured_at"]}
@@ -2139,24 +2156,31 @@ class TradingStore:
                 (strategy_id, symbol),
             )
 
-    def virtual_positions(self, env: str | None = None) -> list[dict]:
+    def virtual_positions(self, env: str | None = None, account_id: int | str | None = None) -> list[dict]:
         target_env = env.upper() if env else None
+        target_account = str(account_id).strip() if account_id is not None else ""
         if target_env == "REAL":
-            # 严格实盘模式：持仓严格以真实成交流水为唯一真理，坚决排除任何历史虚拟分配或调整污染
+            # 严格实盘模式：持仓严格以真实成交流水为唯一真理，并按账户 ID 隔离
+            account_filter = ""
+            params = []
+            if target_account:
+                account_filter = "AND json_extract(metadata_json, '$.account_id') = ?"
+                params.append(target_account)
             with self.connection() as connection:
-                query = """WITH fills AS (
+                query = f"""WITH fills AS (
                     SELECT strategy_id, symbol,
                     SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE -filled_quantity END) qty,
                     SUM(filled_quantity * average_fill_price) / MAX(1e-9, SUM(filled_quantity)) as avg_cost
                     FROM order_intents
                     WHERE status NOT LIKE 'SHADOW%' AND (intent_key LIKE '%:REAL' OR status LIKE 'REAL%')
+                    {account_filter}
                     GROUP BY strategy_id, symbol
                 )
                 SELECT strategy_id, symbol, qty AS quantity, COALESCE(avg_cost, 0) AS average_cost
                 FROM fills
                 WHERE ABS(qty) > 1e-9
                 ORDER BY strategy_id, symbol"""
-                rows = connection.execute(query).fetchall()
+                rows = connection.execute(query, params).fetchall()
                 return [dict(row) for row in rows]
 
         env_filter = "AND intent_key NOT LIKE '%:REAL' AND status NOT LIKE 'REAL%'" if target_env in {"SIMULATE", "PAPER"} else ""

@@ -82,8 +82,11 @@ def _timer_due(
 
 
 def _html_table(frame) -> str:
-    if frame is None or frame.empty:
+    if frame is None or getattr(frame, "empty", False) or not len(frame):
         return '<p class="empty">无记录。</p>'
+    if not hasattr(frame, "fillna"):
+        import pandas as pd
+        frame = pd.DataFrame(frame)
     view = frame.fillna("").astype(str)
     return view.to_html(index=False, border=0, classes="data-table")
 

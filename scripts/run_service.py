@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
+import json
 import os
 from pathlib import Path
 
@@ -629,23 +630,31 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
             if current_env == "REAL":
                 store.save_broker_snapshot("account_info_real", account)
                 store.save_broker_snapshot("positions_real", positions)
-                store.save_broker_snapshot("account_info_moomoo_real", account)
-                store.save_broker_snapshot("positions_moomoo_real", positions)
-                # 多租户并发采集：同时采集富途香港底仓 (281756481476169109) 与美股模拟盘 (20170229)
-                try:
-                    if not hasattr(broker, "_broker_futuhk_companion"):
-                        broker._broker_futuhk_companion = FutuPaperBroker(
-                            settings, trading_env_override="REAL", account_id_override=281756481476169109,
-                            security_firm_override="FUTUSECURITIES",
-                        )
-                    hk_b = broker._broker_futuhk_companion
-                    hk_acc = hk_b.account_info()
-                    hk_pos = hk_b.positions()
-                    store.save_broker_snapshot("account_info_futuhk_real", hk_acc)
-                    store.save_broker_snapshot("positions_futuhk_real", hk_pos)
-                    store.save_broker_snapshot("orders_futuhk_real", hk_b.orders())
-                except Exception:
-                    pass
+                store.save_broker_snapshot("account_info_futuhk_real", account)
+                store.save_broker_snapshot("positions_futuhk_real", positions)
+                # 检查 Moomoo US 备用账户是否开启统一管理；关闭时完全跳过采集，不占用连接与资源
+                moomoo_cfg_raw = store.get_setting("real_account_config:283445327916889204", "")
+                moomoo_is_en = False
+                if moomoo_cfg_raw:
+                    try:
+                        moomoo_is_en = bool(json.loads(moomoo_cfg_raw).get("enabled", False))
+                    except Exception:
+                        pass
+                if moomoo_is_en:
+                    try:
+                        if not hasattr(broker, "_broker_moomoo_companion"):
+                            broker._broker_moomoo_companion = FutuPaperBroker(
+                                settings, trading_env_override="REAL", account_id_override=283445327916889204,
+                                security_firm_override="FUTUINC",
+                            )
+                        moomoo_b = broker._broker_moomoo_companion
+                        moomoo_acc = moomoo_b.account_info()
+                        moomoo_pos = moomoo_b.positions()
+                        store.save_broker_snapshot("account_info_moomoo_real", moomoo_acc)
+                        store.save_broker_snapshot("positions_moomoo_real", moomoo_pos)
+                        store.save_broker_snapshot("orders_moomoo_real", moomoo_b.orders())
+                    except Exception:
+                        pass
                 try:
                     if not hasattr(broker, "_broker_sim_companion"):
                         broker._broker_sim_companion = FutuPaperBroker(
@@ -676,15 +685,18 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
 
             if not account.empty:
                 row = account.iloc[0]
+                broker_acc_id = str(getattr(broker, "account_id", "") or "").strip()
+                # 针对多实盘账户，按账户 ID 隔离记录权益快照，杜绝跨账户计算日内虚假亏损！
+                equity_env = f"{current_env}_{broker_acc_id}" if broker_acc_id and current_env == "REAL" else current_env
                 store.record_equity(
                     float(row.get("total_assets", 0) or 0), float(row.get("cash", 0) or 0),
                     float(row.get("market_val", row.get("securities_assets", 0)) or 0),
-                    env=current_env,
+                    env=equity_env,
                 )
                 position_loss = -float(account_pnl_metrics(positions)["today_position_pnl"])
                 day_start = ny_trading_day_start_utc(now).isoformat()
-                before = store.latest_equity_before(day_start, env=current_env)
-                today_rows = store.equity_since(day_start, env=current_env)
+                before = store.latest_equity_before(day_start, env=equity_env)
+                today_rows = store.equity_since(day_start, env=equity_env)
                 baseline_assets = float(
                     before["total_assets"] if before else
                     today_rows[0]["total_assets"] if today_rows else row.get("total_assets", 0)
@@ -693,11 +705,11 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
                 market_value = float(row.get("market_val", row.get("securities_assets", 0)) or 0)
                 total_assets = float(row.get("total_assets", 0) or 0)
                 # 跨环境与换账户隔离保护：
-                # 如果 baseline_assets 与当前实际 total_assets 相差过大（例如模拟盘100万切到实盘数万），
+                # 如果 baseline_assets 与当前实际 total_assets 相差过大（例如多账户切换或历史合并基线），
                 # 说明存在不同环境或账户切换，必须以当前账户本身的资产为基准，绝不能跨环境算日内亏损！
                 if baseline_assets > 0 and total_assets > 0:
                     ratio = baseline_assets / total_assets
-                    if ratio > 2.5 or ratio < 0.3:
+                    if ratio > 1.25 or ratio < 0.8:
                         baseline_assets = total_assets
                 snapshot_gap = abs(total_assets - (cash_value + market_value))
                 snapshot_tolerance = max(100.0, abs(total_assets) * 0.01)
@@ -712,16 +724,18 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
                     )
                 loss = max(0.0, position_loss, equity_loss)
                 limit = RiskLimits.load().max_daily_loss
-                if session.regular_open(now) and loss >= limit and not store.kill_switch():
-                    store.set_setting("kill_switch", "true")
+                if session.regular_open(now) and loss >= limit and not store.kill_switch(account_id=broker_acc_id):
+                    store.set_kill_switch(True, account_id=broker_acc_id)
                     store.audit("DAILY_LOSS_KILL_SWITCH", {
                         "loss": loss, "position_loss": position_loss,
                         "equity_loss": equity_loss, "baseline_assets": baseline_assets,
                         "limit": limit, "trading_date_ny": now.date().isoformat(),
+                        "account_id": broker_acc_id,
                     })
+                    target_name = f"账户 {broker_acc_id}" if broker_acc_id else "系统"
                     alerts.send(
                         "ERROR", "DAILY_LOSS_KILL_SWITCH",
-                        f"当日持仓亏损 ${loss:,.2f} 已达到急停线 ${limit:,.2f}，已禁止新增风险",
+                        f"{target_name} 当日持仓亏损 ${loss:,.2f} 已达到急停线 ${limit:,.2f}，该账户已自动急停（其他账户继续运行）",
                     )
             mark_run(store, "last_run:equity_snapshot", now)
             alerts.recover("EQUITY_SNAPSHOT_FAILED", "账户权益快照已恢复")
@@ -920,22 +934,29 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         key = "last_run:core_satellite"
         core_broker = broker
         core_executor = executor
-        if getattr(broker, "trading_env", "SIMULATE") == "REAL":
-            # 多通道实盘调度：Core Satellite 策略实盘绑定富途香港账户 (281756481476169109 · FUTUSECURITIES)
-            if not hasattr(broker, "_broker_futuhk_core"):
-                broker._broker_futuhk_core = FutuPaperBroker(
-                    settings,
-                    trading_env_override="REAL",
-                    account_id_override=281756481476169109,
-                    security_firm_override="FUTUSECURITIES",
-                )
-            core_broker = broker._broker_futuhk_core
-            core_executor = ExecutionManager(core_broker, store, alerts)
-        succeeded = run_task(
-            store, alerts, "core_satellite",
-            lambda: run_strategy_once(core_broker, "Core Satellite", core_executor),
-        )
-        # 伴生模拟沙盒调度：美股模拟盘 20170229 也同步执行 100 万大资金底仓调仓
+        # 1. 富途香港实盘 Core Satellite 现货调仓
+        succeeded = False
+        try:
+            if getattr(broker, "trading_env", "SIMULATE") == "REAL":
+                if not hasattr(broker, "_broker_futuhk_core"):
+                    broker._broker_futuhk_core = FutuPaperBroker(
+                        settings,
+                        trading_env_override="REAL",
+                        account_id_override=281756481476169109,
+                        security_firm_override="FUTUSECURITIES",
+                    )
+                core_broker = broker._broker_futuhk_core
+                core_executor = ExecutionManager(core_broker, store, alerts)
+            succeeded = run_task(
+                store, alerts, "core_satellite",
+                lambda: run_strategy_once(core_broker, "Core Satellite", core_executor),
+            )
+            if succeeded:
+                mark_run(store, key, now)
+        except Exception as exc:
+            store.operational_event("core_satellite", "EXECUTION_ERROR", "ERROR", {"error": str(exc)})
+
+        # 2. 伴生模拟沙盒调度：美股模拟盘 20170229 独立执行 100 万大资金底仓调仓（彻底隔离，互不阻塞）
         if getattr(broker, "trading_env", "SIMULATE") == "REAL":
             try:
                 if not hasattr(broker, "_broker_sim_companion"):

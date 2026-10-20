@@ -699,11 +699,16 @@ def _review_issue_advice(review: StrategyReview) -> tuple[list[str], list[str]]:
             if not bad_rows.empty:
                 issues.append(f"运行层有 {len(bad_rows)} 项异常或退化，需要优先处理。")
 
-    if review.action_items.empty:
+    action_items = getattr(review, "action_items", None)
+    if action_items is None or (action_items.empty if hasattr(action_items, "empty") else not bool(action_items)):
         advice.append("当前没有生成明确动作项，建议先补充一次人工复盘。")
     else:
-        top_actions = review.action_items.copy()
-        top_actions["优先级排序"] = top_actions["优先级"].map({"高": 0, "中": 1, "低": 2}).fillna(3)
+        if not hasattr(action_items, "copy"):
+            action_items = pd.DataFrame(action_items)
+        top_actions = action_items.copy()
+
+
+
         top_actions = top_actions.sort_values(["优先级排序", "对象"]).head(3)
         action_lines = [
             f"{row.get('对象', '')}：{row.get('建议动作', row.get('问题', ''))}".strip()
@@ -742,8 +747,10 @@ def review_advice_markdown(review: StrategyReview) -> str:
 
 def review_markdown(review: StrategyReview) -> str:
     def table(frame: pd.DataFrame) -> str:
-        if frame.empty:
+        if frame is None or getattr(frame, "empty", False) or not len(frame):
             return "无记录。"
+        if not hasattr(frame, "copy"):
+            frame = pd.DataFrame(frame)
         values = frame.copy()
         for column in values.columns:
             if values[column].dtype == "float64":

@@ -29,27 +29,64 @@ class ExecutionResult:
 
 
 class ExecutionManager:
-    def __init__(self, broker, store: TradingStore | None = None):
+    def __init__(self, broker, store: TradingStore | None = None, alerts: AlertManager | None = None):
         self.broker = broker
         self.store = store or TradingStore()
         self.risk = RiskEngine(self.store)
-        self.alerts = AlertManager(self.store)
+        self.alerts = alerts or AlertManager(self.store)
 
     def submit_limit(
         self, strategy_id: str, intent_key: str, symbol: str, side: str,
         quantity: int, price: float, metadata: dict[str, Any] | None = None,
         execution_mode_override: str | None = None,
     ) -> ExecutionResult:
-        metadata = metadata or {}
+        metadata = dict(metadata or {})
+        # Bind every intent to the concrete broker account / firm before any
+        # idempotency, risk, or REAL-gate decision. REAL tenants must never
+        # inherit authorization or daily budget from another REAL account.
+        broker_account_id = getattr(self.broker, "account_id", None)
+        if broker_account_id is not None:
+            metadata.setdefault("account_id", str(broker_account_id))
+        broker_firm = getattr(self.broker, "security_firm", None)
+        broker_firm_name = getattr(broker_firm, "name", str(broker_firm or ""))
+        if broker_firm_name:
+            metadata.setdefault("security_firm", str(broker_firm_name).split(".")[-1].upper())
+        # 铁律：实盘账户开启/关闭生命周期检查：已关闭统一管理的账户，严禁向其提交任何订单！
+        if broker_account_id:
+            raw_acc_cfg = self.store.get_setting(f"real_account_config:{broker_account_id}", "")
+            if raw_acc_cfg:
+                try:
+                    if not json.loads(raw_acc_cfg).get("enabled", True):
+                        reason = f"账户管理安全铁律：实盘账户 {broker_account_id} 已关闭统一管理，禁止向其提交任何订单"
+                        self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id})
+                        return ExecutionResult(0, "REJECTED", reason)
+                except Exception:
+                    pass
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
         override_mode = self.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
         broker_settings = getattr(self.broker, "settings", None)
-        broker_env = str(getattr(broker_settings, "trading_env", "SIMULATE")).upper()
-        # 智能匹配实盘白名单授权：实盘环境下白名单策略自动放行 REAL 执行模式
-        if broker_env == "REAL" and strategy_id in getattr(broker_settings, "real_allowed_strategies", ()):
-            if not execution_mode_override and not override_mode:
-                override_mode = "REAL"
-        mode = (execution_mode_override or override_mode or global_mode).upper()
+        raw_env = getattr(self.broker, "trading_env", None)
+        if raw_env is None or not isinstance(raw_env, (str, bytes)):
+            raw_env = getattr(broker_settings, "trading_env", "SIMULATE")
+        broker_env = str(raw_env).split(".")[-1].upper()
+        if broker_env == "SIMULATE":
+            # 伴生模拟沙盒券商隔离：
+            # 1. 显式 SHADOW 保持 SHADOW（不碰券商）；
+            # 2. 显式 REAL 保持 REAL（禁止静默降级为模拟盘，随后在门禁处安全拒绝）；
+            # 3. 其它情况（默认或伴生沙盒）走 PAPER。
+            resolved = str(execution_mode_override or override_mode or global_mode or "PAPER").upper()
+            if resolved in {"SHADOW", "REAL"}:
+                mode = resolved
+            else:
+                mode = "PAPER"
+        elif broker_env == "REAL":
+            # 智能匹配实盘白名单授权：实盘环境下白名单策略自动放行 REAL 执行模式
+            if strategy_id in getattr(broker_settings, "real_allowed_strategies", ()):
+                if not execution_mode_override and override_mode != "SHADOW":
+                    override_mode = "REAL"
+            mode = (execution_mode_override or override_mode or global_mode).upper()
+        else:
+            mode = (execution_mode_override or override_mode or global_mode).upper()
         actual_env = getattr(self.broker, "trd_env", None)
         if mode not in {"SHADOW", "PAPER", "REAL"}:
             raise ValueError(f"无效执行模式：{mode}")
@@ -63,23 +100,32 @@ class ExecutionManager:
             reason = "REAL 必须连接 REAL 券商环境"
             self.store.audit("EXECUTION_ENV_REJECTED", {"mode": mode, "broker_env": broker_env}, strategy_id)
             return ExecutionResult(0, "REJECTED", reason)
-        # 铁律：实盘环境严格保护用户指定长线股票底仓 (NVDA/GLD) 绝不被程序误卖；
+        # 铁律：实盘环境严格保护 NVDA 至少保留 5 股长线核心底仓；
         # 同时若非 core_satellite 策略 (如期权策略)，绝对禁止卖出任何正股！
         if mode == "REAL" and side == "SELL":
             from .option_lifecycle import parse_option_code
             is_opt = parse_option_code(symbol) is not None
             if not is_opt:
-                protected_symbols = {"US.NVDA", "US.GLD"}
-                if symbol in protected_symbols:
-                    reason = f"实盘底仓物理保护铁律：禁止向实盘账户提交存量保护标的卖单 ({symbol})"
-                    self.store.audit("REAL_PROTECTED_STOCK_SELL_FORBIDDEN", {"symbol": symbol, "strategy_id": strategy_id})
-                    self.alerts.send("CRITICAL", "REAL_PROTECTED_STOCK_SELL_FORBIDDEN", reason)
+                broker_acc = str(getattr(self.broker, "account_id", "") or "").strip()
+                if broker_acc and broker_acc != "281756481476169109":
+                    reason = f"实盘账户隔离铁律：正股卖单仅允许在富途香港底仓专户 (281756481476169109) 执行，账户 {broker_acc} 禁止提交正股卖单 ({symbol})"
+                    self.store.audit("REAL_STOCK_SELL_UNAUTHORIZED", {"symbol": symbol, "account_id": broker_acc, "strategy_id": strategy_id})
+                    self.alerts.send("CRITICAL", "REAL_STOCK_SELL_UNAUTHORIZED", reason)
                     return ExecutionResult(0, "REJECTED", reason)
                 if strategy_id != "core_satellite":
                     reason = f"实盘底仓安全铁律：策略 {strategy_id} 无权向实盘提交正股卖单 ({symbol})"
                     self.store.audit("REAL_STOCK_SELL_UNAUTHORIZED", {"symbol": symbol, "strategy_id": strategy_id})
                     self.alerts.send("CRITICAL", "REAL_STOCK_SELL_UNAUTHORIZED", reason)
                     return ExecutionResult(0, "REJECTED", reason)
+                if symbol == "US.NVDA":
+                    pos_df = self.broker.positions()
+                    nvda_rows = pos_df[pos_df["code"] == "US.NVDA"] if not pos_df.empty else pos_df
+                    current_nvda_qty = float(nvda_rows.iloc[0]["qty"]) if not nvda_rows.empty else 0.0
+                    if current_nvda_qty - float(quantity) < 5.0 - 1e-6:
+                        reason = f"实盘底仓物理保护铁律：NVDA 卖单数量 {quantity} 导致剩余数量低于最低保护底线 5 股 (当前在仓 {current_nvda_qty} 股)"
+                        self.store.audit("REAL_PROTECTED_STOCK_SELL_FORBIDDEN", {"symbol": symbol, "strategy_id": strategy_id, "quantity": quantity, "retained_floor": 5.0})
+                        self.alerts.send("CRITICAL", "REAL_PROTECTED_STOCK_SELL_FORBIDDEN", reason)
+                        return ExecutionResult(0, "REJECTED", reason)
         fingerprint = runtime_strategy_fingerprint(strategy_id, self.store)
         current_source_fingerprint = strategy_fingerprint(strategy_id, self.store)
         require_approval = approval_enforcement_enabled(self.store)
@@ -107,8 +153,9 @@ class ExecutionManager:
             return ExecutionResult(0, "APPROVAL_REQUIRED", reason)
         metadata.setdefault("reference_price", float(price))
         price = self._initial_smart_price(symbol, side, float(price), metadata)
+        acc_tag = f":{broker_account_id}" if broker_account_id and str(broker_account_id) not in intent_key else ""
         intent, created = self.store.create_intent(
-            strategy_id, f"{intent_key}:{mode}", symbol, side, int(quantity), float(price), metadata
+            strategy_id, f"{intent_key}{acc_tag}:{mode}", symbol, side, int(quantity), float(price), metadata
         )
         if not created:
             return ExecutionResult(
@@ -182,12 +229,17 @@ class ExecutionManager:
                 if mode == "REAL" and "实盘下单门禁拒绝" in str(exc):
                     self.store.update_intent(intent["id"], "REJECTED", error=str(exc))
                     return ExecutionResult(intent["id"], "REJECTED", str(exc))
-                is_net_err = any(k in str(exc).lower() for k in ["网络", "timeout", "connect", "broken pipe", "connection", "disconnected"])
+                is_net_err = isinstance(exc, (TimeoutError, ConnectionError)) or any(k in str(exc).lower() for k in ["网络", "timeout", "timed out", "connect", "broken pipe", "connection", "disconnected"])
                 # 针对紧急平仓止盈单，若遭遇瞬时网络断开/超时，进行最多 3 次退避重试，确保保单送达
                 if is_urgent_exit and is_net_err and attempt < max_attempts - 1:
                     import time
                     time.sleep(1.0)
                     continue
+                # 券商业务级明确拒绝（例如中国内地监管限制、不可交易、权限不足等），记录为 REJECTED，绝不标记为 UNKNOWN 虚假占用日额度
+                if not is_net_err:
+                    self.store.update_intent(intent["id"], "REJECTED", error=str(exc))
+                    self.store.audit("ORDER_SUBMISSION_REJECTED", {"intent_id": intent["id"], "error": str(exc)}, strategy_id)
+                    return ExecutionResult(intent["id"], "REJECTED", f"券商明确拒绝订单：{exc}")
                 self._mark_unknown(intent, f"券商下单结果不确定：{exc}", "ORDER_SUBMISSION_UNKNOWN")
                 raise
         try:
@@ -300,10 +352,16 @@ class ExecutionManager:
                 updated += 1
         unknown_after = max(60, int(os.getenv("ORDER_UNKNOWN_AFTER_SECONDS", "300")))
         now = datetime.now(timezone.utc)
+        broker_env = str(getattr(self.broker, "trading_env", "SIMULATE")).upper()
         for intent in self.store.intents(limit=2000):
             if intent["status"] not in {
                 "WAITING_SUBMIT", "SUBMITTING", "SUBMITTED", "FILLED_PART", "CANCEL_REQUESTED",
             }:
+                continue
+            # 严格双轨对账环境过滤：REAL 执行器只对账 REAL 订单，SIMULATE 执行器只对账 PAPER 订单，杜绝串轨误判！
+            intent_mode = str(intent.get("intent_key", "")).rsplit(":", 1)[-1].upper()
+            expected_env = "REAL" if intent_mode == "REAL" else "SIMULATE"
+            if expected_env != broker_env:
                 continue
             broker_order_id = str(intent.get("broker_order_id") or "")
             if not broker_order_id or broker_order_id in seen_order_ids:
@@ -349,13 +407,13 @@ class ExecutionManager:
     def _order_environment_ok(self, intent: dict) -> bool:
         mode = str(intent.get("intent_key", "")).rsplit(":", 1)[-1].upper()
         expected = {"PAPER": "SIMULATE", "REAL": "REAL"}.get(mode)
-        actual = str(getattr(self.broker, "trading_env", "SIMULATE")).upper()
+        broker_settings = getattr(self.broker, "settings", None)
+        actual = str(getattr(self.broker, "trading_env", getattr(broker_settings, "trading_env", "SIMULATE"))).upper()
         # Legacy intents without mode suffix may only be managed in simulation.
         if expected is None:
             expected = "SIMULATE"
         if expected != actual:
-            self.alerts.send("ERROR", "ORDER_ENV_MISMATCH",
-                             f"订单 {intent.get('broker_order_id')} 环境 {mode} 与券商 {actual} 不一致，禁止改单撤单")
+            # 静默过滤跨环境订单：当前执行器（如 REAL）不应干预对方环境（如 SIMULATE）的订单，直接返回 False，不误报警
             return False
         return True
 
@@ -419,7 +477,11 @@ class ExecutionManager:
                 if abs(target - current) < 1e-4:
                     continue
 
-                self.broker.modify_limit_order(intent["broker_order_id"], int(intent["quantity"]), target)
+                expected_env = "REAL" if str(intent.get("intent_key", "")).rsplit(":", 1)[-1].upper() == "REAL" else "SIMULATE"
+                try:
+                    self.broker.modify_limit_order(intent["broker_order_id"], int(intent["quantity"]), target, expected_env=expected_env)
+                except TypeError:
+                    self.broker.modify_limit_order(intent["broker_order_id"], int(intent["quantity"]), target)
                 self.store.record_reprice(intent["id"], target)
                 self.store.audit("ORDER_REPRICED", {"intent_id": intent["id"], "price": target, "urgent": is_urgent})
                 repriced += 1
@@ -442,7 +504,11 @@ class ExecutionManager:
             if age < timeout or not intent.get("broker_order_id") or not self._order_environment_ok(intent):
                 continue
             try:
-                self.broker.cancel_order(intent["broker_order_id"])
+                expected_env = "REAL" if str(intent.get("intent_key", "")).rsplit(":", 1)[-1].upper() == "REAL" else "SIMULATE"
+                try:
+                    self.broker.cancel_order(intent["broker_order_id"], expected_env=expected_env)
+                except TypeError:
+                    self.broker.cancel_order(intent["broker_order_id"])
                 self.store.update_intent(intent["id"], "CANCEL_REQUESTED")
                 self.store.audit("STALE_ORDER_CANCELLED", {"intent_id": intent["id"], "age": age, "urgent": is_urgent})
                 cancelled += 1

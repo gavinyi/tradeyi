@@ -190,9 +190,12 @@ with service_tab:
         st.markdown("**全局运行方式**")
         paused = store.get_setting("strategies_paused", "false") == "true"
         mode = str(execution_mode_setting).upper()
+        is_real_env = getattr(settings, "trading_env", "SIMULATE") == "REAL"
+        mode_options = ["SHADOW", "PAPER", "REAL"] if is_real_env else ["SHADOW", "PAPER"]
+        default_mode = mode if mode in mode_options else ("REAL" if is_real_env else "PAPER")
         selected_mode = st.segmented_control(
-            "全局执行模式", ["SHADOW", "PAPER"], default=mode,
-            help="SHADOW 不向富途提交订单；PAPER 仍然只提交到富途模拟盘。",
+            "全局执行模式", mode_options, default=default_mode,
+            help="SHADOW 不向富途提交订单；PAPER 提交到富途模拟盘；REAL 执行真金实盘交易。",
             disabled=not admin, key="automation_global_execution_mode",
         )
         if selected_mode and selected_mode != mode:

@@ -53,16 +53,22 @@ def load_session(store: TradingStore) -> dict[str, Any]:
 
 
 def session_status(
-    store: TradingStore, settings: Settings, now: datetime | None = None,
+    store: TradingStore,
+    settings: Settings,
+    now: datetime | None = None,
+    account_id: int | str | None = None,
+    require_confirm: bool | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
     session = load_session(store)
     if settings.trading_env != "REAL":
         return False, "当前交易环境不是 REAL", session
     if not settings.real_trading_enabled:
         return False, "REAL_TRADING_ENABLED 未开启", session
-    if not settings.real_account_id:
+    target_account = str(account_id or settings.real_account_id or "").strip()
+    if not target_account:
         return False, "未配置 REAL_ACCOUNT_ID", session
-    if settings.real_require_manual_confirm:
+    needs_confirm = settings.real_require_manual_confirm if require_confirm is None else bool(require_confirm)
+    if needs_confirm:
         expires_at = str(session.get("expires_at") or "")
         try:
             expires = datetime.fromisoformat(expires_at)
@@ -73,8 +79,8 @@ def session_status(
             expires = expires.replace(tzinfo=timezone.utc)
         if current > expires:
             return False, "实盘人工确认会话已过期", session
-        if str(session.get("account_id") or "") != str(settings.real_account_id or ""):
-            return False, "确认会话账户与 REAL_ACCOUNT_ID 不一致", session
+        if str(session.get("account_id") or "") != target_account:
+            return False, f"确认会话账户与目标账户 {target_account} 不一致", session
     return True, "实盘确认会话有效", session
 
 
@@ -113,9 +119,14 @@ def disable_session(store: TradingStore, actor: str = "streamlit_admin") -> None
     store.audit("REAL_TRADING_SESSION_DISABLED", {"actor": actor})
 
 
-def submitted_real_notional_since(store: TradingStore, iso_timestamp: str,
-                                  exclude_intent_id: int | None = None) -> float:
+def submitted_real_notional_since(
+    store: TradingStore,
+    iso_timestamp: str,
+    exclude_intent_id: int | None = None,
+    account_id: int | str | None = None,
+) -> float:
     total = 0.0
+    target_account = str(account_id).strip() if account_id is not None else ""
     for row in store.intents(limit=50_000):
         if exclude_intent_id is not None and row.get("id") == exclude_intent_id:
             continue
@@ -127,9 +138,24 @@ def submitted_real_notional_since(store: TradingStore, iso_timestamp: str,
         metadata = _parse_session(row.get("metadata_json"))
         if metadata.get("execution_mode") != "REAL" and not str(row.get("intent_key", "")).endswith(":REAL"):
             continue
+        if target_account:
+            row_acc = str(metadata.get("account_id") or "").strip()
+            if row_acc and row_acc != target_account:
+                continue
         multiplier = contract_multiplier(str(row.get("symbol", "")), metadata.get("multiplier"))
         total += abs(float(row.get("quantity") or 0) * float(row.get("limit_price") or 0) * multiplier)
     return total
+
+
+PROD_ACCOUNT_STRATEGY_MAP = {
+    "283445327916889204": {"volatility_long_gamma"},
+    "281756481476169109": {"core_satellite", "volatility_long_gamma"},
+}
+
+PROD_ACCOUNT_FIRM_MAP = {
+    "283445327916889204": "FUTUINC",
+    "281756481476169109": "FUTUSECURITIES",
+}
 
 
 def check_real_trade(
@@ -149,25 +175,77 @@ def check_real_trade(
         return RealTradeDecision(False, "券商连接环境不是 REAL", {})
     if not settings.real_trading_enabled:
         return RealTradeDecision(False, "实盘总开关未开启", {})
-    if strategy_id not in settings.real_allowed_strategies:
+
+    target_account = str(metadata.get("account_id") or settings.real_account_id or "").strip()
+    if not target_account:
+        return RealTradeDecision(False, "未配置或未绑定实盘账户 ID", {})
+
+    # 1. 严格多账户实盘隔离校验：两个真实账户各司其职，坚决禁止跨账户执行
+    if target_account in PROD_ACCOUNT_STRATEGY_MAP:
+        allowed_for_target = PROD_ACCOUNT_STRATEGY_MAP[target_account]
+        if strategy_id not in allowed_for_target:
+            return RealTradeDecision(
+                False,
+                f"多账户隔离铁律：策略 {strategy_id} 禁止在实盘账户 {target_account} 执行 (该账户专属于 {','.join(allowed_for_target)})",
+                {"account_id": target_account, "strategy_id": strategy_id},
+            )
+        expected_firm = PROD_ACCOUNT_FIRM_MAP[target_account]
+        actual_firm = str(metadata.get("security_firm") or "").upper()
+        if actual_firm and actual_firm != expected_firm:
+            return RealTradeDecision(
+                False,
+                f"券商实体校验失败：账户 {target_account} 期望实体 {expected_firm}，当前为 {actual_firm}",
+                {"account_id": target_account, "security_firm": actual_firm},
+            )
+
+    # 2. 读取各账户在 runtime_config 中的独立配置
+    raw_acc_cfg = store.get_setting(f"real_account_config:{target_account}", "")
+    if raw_acc_cfg:
+        try:
+            acc_cfg = json.loads(raw_acc_cfg)
+        except Exception:
+            acc_cfg = {}
+        if not acc_cfg.get("enabled", True):
+            return RealTradeDecision(False, f"实盘账户 {target_account} 的独立交易开关已关闭", {})
+        allowed_strategies = set(acc_cfg.get("allowed_strategies") or settings.real_allowed_strategies)
+        max_order = float(acc_cfg.get("max_order_notional") or settings.real_max_order_notional)
+        max_daily = float(acc_cfg.get("max_daily_notional") or settings.real_max_daily_notional)
+        require_confirm = bool(acc_cfg.get("require_manual_confirm", settings.real_require_manual_confirm))
+    else:
+        allowed_strategies = set(settings.real_allowed_strategies)
+        max_order = float(settings.real_max_order_notional)
+        max_daily = float(settings.real_max_daily_notional)
+        require_confirm = bool(settings.real_require_manual_confirm)
+
+    if strategy_id not in allowed_strategies:
         return RealTradeDecision(False, f"策略 {strategy_id} 不在实盘白名单", {})
-    active, reason, session = session_status(store, settings, now)
+
+    active, reason, session = session_status(
+        store, settings, now, account_id=target_account, require_confirm=require_confirm,
+    )
     if not active:
         return RealTradeDecision(False, reason, {"session": session})
+
     multiplier = contract_multiplier(symbol, metadata.get("multiplier"))
     notional = abs(float(quantity) * float(price) * multiplier)
-    if notional > settings.real_max_order_notional:
+    if notional > max_order:
         return RealTradeDecision(
             False,
-            f"实盘单笔名义金额 ${notional:,.2f} 超过上限 ${settings.real_max_order_notional:,.2f}",
-            {"notional": notional},
+            f"实盘单笔名义金额 ${notional:,.2f} 超过上限 ${max_order:,.2f}",
+            {"notional": notional, "account_id": target_account},
         )
+
     day_start = ny_trading_day_start_utc(now)
-    used = submitted_real_notional_since(store, day_start.isoformat(), exclude_intent_id)
-    if used + notional > settings.real_max_daily_notional:
+    used = submitted_real_notional_since(
+        store, day_start.isoformat(), exclude_intent_id, account_id=target_account,
+    )
+    if used + notional > max_daily:
         return RealTradeDecision(
             False,
-            f"实盘当日累计名义金额将超过 ${settings.real_max_daily_notional:,.2f}",
-            {"notional": notional, "used_today": used},
+            f"实盘账户 {target_account} 当日累计名义金额将超过 ${max_daily:,.2f}",
+            {"notional": notional, "used_today": used, "account_id": target_account},
         )
-    return RealTradeDecision(True, "实盘安全闸门通过", {"notional": notional, "used_today": used})
+    return RealTradeDecision(
+        True, "实盘安全闸门通过",
+        {"notional": notional, "used_today": used, "account_id": target_account},
+    )

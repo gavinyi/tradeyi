@@ -211,38 +211,60 @@ def china_time_columns(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def get_registered_tenants(settings=None) -> dict[str, dict]:
-    """三大官方权威租户体系：Moomoo US 实盘打猎、富途证券香港底仓、美股 100 万模拟沙盒。"""
+def get_registered_tenants(settings=None, include_disabled: bool = False) -> dict[str, dict]:
+    """三大官方权威租户体系：富途证券香港综合主实盘、Moomoo US备用专户、美股 100 万模拟沙盒。"""
     moomoo_id = 283445327916889204
     futuhk_id = 281756481476169109
     sim_id = 20170229
 
-    return {
-        "moomoo_real": {
-            "id": "moomoo_real",
-            "label": f"🔴 Moomoo US 实盘打猎 ({moomoo_id} · 3万美元现金)",
-            "short_name": "Moomoo实盘",
-            "badge": "🔴 实盘 Moomoo US",
-            "env": "REAL",
-            "security_firm": "FUTUINC",
-            "acc_id": moomoo_id,
-            "card_num": "1007376216226587",
-            "desc": "美股真金期权自动打猎战区 · 3万美元纯现金",
-            "is_real": True,
-            "auto_trade": True,
-        },
+    from .store import TradingStore
+    store = TradingStore()
+    hk_custom_name = store.get_setting("custom_account_name:281756481476169109", "")
+    moomoo_custom_name = store.get_setting("custom_account_name:283445327916889204", "")
+
+    hk_display_name = hk_custom_name or "富途香港综合主实盘"
+    moomoo_display_name = moomoo_custom_name or "Moomoo US备用专户"
+
+    def is_acc_enabled(acc_id: int | str, default: bool = True) -> bool:
+        raw = store.get_setting(f"real_account_config:{acc_id}", "")
+        if raw:
+            try:
+                return bool(json.loads(raw).get("enabled", default))
+            except Exception:
+                pass
+        return default
+
+    hk_enabled = is_acc_enabled(futuhk_id, True)
+    moomoo_enabled = is_acc_enabled(moomoo_id, False)
+
+    all_tenants = {
         "futuhk_real": {
             "id": "futuhk_real",
-            "label": f"🟡 富途香港 实盘底仓 ({futuhk_id} · 8 NVDA/4.4 GLD)",
-            "short_name": "富途香港底仓",
+            "label": f"🟡 {hk_display_name} ({futuhk_id} · 现货再平衡与期权打猎)",
+            "short_name": hk_display_name,
             "badge": "🟡 实盘 Futu HK",
             "env": "REAL",
             "security_firm": "FUTUSECURITIES",
             "acc_id": futuhk_id,
             "card_num": "1001259607272607",
-            "desc": "长线手工投资存量底仓 · 物理锁死绝对保护",
+            "desc": "实盘综合大一统专户 · 现货再平衡与做多波动率期权共融",
+            "is_real": True,
+            "auto_trade": True,
+            "enabled": hk_enabled,
+        },
+        "moomoo_real": {
+            "id": "moomoo_real",
+            "label": f"🔴 {moomoo_display_name} ({moomoo_id} · 备用专户)",
+            "short_name": moomoo_display_name,
+            "badge": "🔴 实盘 Moomoo US",
+            "env": "REAL",
+            "security_firm": "FUTUINC",
+            "acc_id": moomoo_id,
+            "card_num": "1007376216226587",
+            "desc": "美股真金期权打猎备用战区",
             "is_real": True,
             "auto_trade": False,
+            "enabled": moomoo_enabled,
         },
         "sim_primary": {
             "id": "sim_primary",
@@ -256,19 +278,28 @@ def get_registered_tenants(settings=None) -> dict[str, dict]:
             "desc": "100万美股模拟沙盒 · 16只底仓股票与历史期权",
             "is_real": False,
             "auto_trade": True,
+            "enabled": True,
         },
     }
+
+    if include_disabled:
+        return all_tenants
+    return {k: v for k, v in all_tenants.items() if v.get("enabled", True)}
 
 
 def get_current_tenant(settings=None) -> dict:
     """获取当前激活的操作租户实体，以 session_state 租户为全系统唯一真理来源。"""
-    tenants = get_registered_tenants(settings)
+    tenants = get_registered_tenants(settings, include_disabled=False)
+    if not tenants:
+        tenants = get_registered_tenants(settings, include_disabled=True)
     tenant_id = st.session_state.get("sidebar_active_tenant_id") or st.session_state.get("current_tenant_id")
     if not tenant_id or tenant_id not in tenants:
-        if settings and getattr(settings, "trading_env", "") == "REAL":
-            tenant_id = "moomoo_real"
-        else:
+        if "futuhk_real" in tenants:
+            tenant_id = "futuhk_real"
+        elif "sim_primary" in tenants:
             tenant_id = "sim_primary"
+        else:
+            tenant_id = next(iter(tenants.keys()))
     st.session_state.current_tenant_id = tenant_id
     tenant = tenants[tenant_id]
     st.session_state.active_battleground = tenant["env"]

@@ -56,6 +56,7 @@ def _recover_strategy_from_reconciliation(store, strategy_id: str) -> None:
 
 def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
     broker_env = str(getattr(broker, "trading_env", "SIMULATE")).upper()
+    broker_account_id = getattr(broker, "account_id", None)
     positions = broker.positions()
     if not positions.empty and "code" in positions.columns:
         positions = positions[positions["code"].astype(str).map(futu_reconciliation_symbol)].copy()
@@ -64,7 +65,7 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
         if not positions.empty else {}
     )
     virtual_rows = [
-        row for row in store.virtual_positions(env=broker_env)
+        row for row in store.virtual_positions(env=broker_env, account_id=broker_account_id)
         if futu_reconciliation_symbol(row["symbol"])
     ]
     ledger_qty: dict[str, float] = {}
@@ -76,8 +77,9 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
             owners.setdefault(symbol, set()).add(row["strategy_id"])
     reports = []
     current_symbols = set(broker_qty) | set(ledger_qty)
-    for key in store.settings_with_prefix("symbol_blocked:"):
-        symbol = key.removeprefix("symbol_blocked:")
+    acc_prefix = f"{broker_account_id}:" if broker_account_id else ""
+    for key in store.settings_with_prefix(f"symbol_blocked:{acc_prefix}"):
+        symbol = key.removeprefix(f"symbol_blocked:{acc_prefix}")
         if symbol not in current_symbols or not futu_reconciliation_symbol(symbol):
             store.set_setting(key, "false")
     mismatched_strategies: set[str] = set()
@@ -91,7 +93,7 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
         # 未被任何量化策略认领的外部长线底仓，属于安全受控资产，绝对不判定为对账丢单差异！
         if not strategy_owners and abs(ledger) <= tolerance:
             store.record_reconciliation(symbol, actual, ledger, "MATCHED")
-            store.set_setting(f"symbol_blocked:{symbol}", "false")
+            store.set_setting(f"symbol_blocked:{acc_prefix}{symbol}", "false")
             reports.append({
                 "symbol": symbol, "broker_quantity": actual, "ledger_quantity": ledger,
                 "difference": 0.0, "status": "MATCHED",
@@ -101,7 +103,7 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
 
         status = "MATCHED" if abs(difference) <= tolerance else "MISMATCH"
         store.record_reconciliation(symbol, actual, ledger, status)
-        store.set_setting(f"symbol_blocked:{symbol}", str(status == "MISMATCH").lower())
+        store.set_setting(f"symbol_blocked:{acc_prefix}{symbol}", str(status == "MISMATCH").lower())
         if status == "MISMATCH":
             for strategy in strategy_owners:
                 mismatched_strategies.add(strategy)
@@ -115,7 +117,7 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
         strategy = key.removeprefix("strategy_reconciliation_disabled:")
         if strategy not in mismatched_strategies:
             _recover_strategy_from_reconciliation(store, strategy)
-    store.set_setting("recovery_blocked", str(bool(mismatched_strategies)).lower())
+    store.set_setting(f"recovery_blocked:{broker_account_id}" if broker_account_id else "recovery_blocked", str(bool(mismatched_strategies)).lower())
     if mismatched_strategies:
         store.record_incident(
             "LEDGER_MISMATCH", "ERROR",
@@ -123,4 +125,5 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
         )
     else:
         store.recover_incident("LEDGER_MISMATCH")
-    return pd.DataFrame(reports)
+    cols = ["symbol", "broker_quantity", "ledger_quantity", "difference", "status", "affected_strategies"]
+    return pd.DataFrame(reports, columns=cols)

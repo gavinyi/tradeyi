@@ -122,9 +122,24 @@ def test_auto_close_is_blocked_without_strategy_ownership(tmp_path):
         def pre_close(now, minutes):
             return True
 
+    class MockBroker:
+        def snapshots(self, codes):
+            return pd.DataFrame([{"code": codes[0], "bid_price": 28.0, "ask_price": 30.0}])
+
+    class MockExecutor:
+        def __init__(self):
+            self.calls = []
+        def submit_limit(self, strategy_id, intent_key, symbol, side, qty, price, metadata=None):
+            self.calls.append((strategy_id, symbol, side, qty, price, metadata))
+            from futu_quant.execution import ExecutionResult
+            return ExecutionResult(1, "SUBMITTED", "ok")
+
+    executor = MockExecutor()
     results = execute_disposition_plans(
-        object(), store, object(), Session(),
+        MockBroker(), store, executor, Session(),
         datetime(2026, 7, 20, 15, 30, tzinfo=ZoneInfo("America/New_York")),
     )
-    assert results[0]["status"] == "BLOCKED"
-    assert "持仓归属" in results[0]["message"]
+    # 按照成熟期权到期防护新语义：无虚拟账本归属时不阻断平仓，兜底降级至 volatility_long_gamma 强平
+    assert results[0]["status"] == "SUBMITTED"
+    assert executor.calls[0][0] == "volatility_long_gamma"
+    assert executor.calls[0][5]["forced_expiry_exit"] is True

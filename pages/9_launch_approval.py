@@ -239,15 +239,18 @@ with reconcile_tab:
             st.error(str(exc))
     report = st.session_state.get("reconciliation_result")
     if isinstance(report, pd.DataFrame):
-        st.dataframe(report.rename(columns={
-            "symbol": "代码", "broker_quantity": "富途持仓",
-            "ledger_quantity": "虚拟账本持仓", "difference": "差异",
-            "status": "状态", "affected_strategies": "受影响策略",
-        }), hide_index=True)
-        mismatches = report[report["status"].astype(str).eq("MISMATCH")]
-        if not mismatches.empty:
-            st.subheader("差异快速调整")
-            st.caption("适用于你已在富途手动卖出/买入的情况。系统会把虚拟账本调整到富途当前实际数量，并保留审计记录。")
+        if report.empty:
+            st.success("三账对账完成：当前账户无在仓标的或未平账目，富途与本地账本完全一致（0 差异）。")
+        else:
+            st.dataframe(report.rename(columns={
+                "symbol": "代码", "broker_quantity": "富途持仓",
+                "ledger_quantity": "虚拟账本持仓", "difference": "差异",
+                "status": "状态", "affected_strategies": "受影响策略",
+            }), hide_index=True)
+            mismatches = report[report["status"].astype(str).eq("MISMATCH")] if "status" in report.columns else pd.DataFrame()
+            if not mismatches.empty:
+                st.subheader("差异快速调整")
+                st.caption("适用于你已在富途手动卖出/买入的情况。系统会把虚拟账本调整到富途当前实际数量，并保留审计记录。")
             for row in mismatches.to_dict("records"):
                 symbol = str(row["symbol"])
                 owners = [item.strip() for item in str(row.get("affected_strategies", "")).split(",") if item.strip()]

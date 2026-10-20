@@ -32,6 +32,8 @@ ml = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+testpaths = ["tests"]
+norecursedirs = [".*", "build", "dist", "data", "scripts", ".venv", ".uv-cache"]
 
 [tool.ruff]
 line-length = 100

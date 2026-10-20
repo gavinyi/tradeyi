@@ -37,6 +37,9 @@ class DrillBroker:
         return str(status) in {"SUBMITTED", "FILLED_PART"}
 
     def place_limit_order(self, symbol, side, quantity, price):
+        if getattr(self, "reject_next", False):
+            self.reject_next = False
+            raise RuntimeError("券商明确拒单：保证金不足")
         if self.fail_next:
             self.fail_next = False
             raise ConnectionError("模拟 OpenD 断线")
@@ -50,9 +53,24 @@ class DrillBroker:
         return pd.DataFrame([{"order_id": order_id, "price": price}])
 
 
+import contextlib
+
+@contextlib.contextmanager
+def _safe_drill_dir(name: str):
+    p = Path("data/qa") / name
+    p.mkdir(parents=True, exist_ok=True)
+    try:
+        yield p
+    finally:
+        for f in p.glob("*"):
+            try: f.unlink()
+            except Exception: pass
+        try: p.rmdir()
+        except Exception: pass
+
 def run_resilience_drill() -> pd.DataFrame:
     rows = []
-    with tempfile.TemporaryDirectory() as directory:
+    with _safe_drill_dir("drill_tmp") as directory:
         store = TradingStore(Path(directory) / "drill.db")
         # The drill must be deterministic and isolated from the operator's
         # current SHADOW/PAPER setting. DrillBroker never reaches Futu.
@@ -107,7 +125,7 @@ def run_resilience_drill() -> pd.DataFrame:
 
 def run_combo_resilience_drill() -> pd.DataFrame:
     rows = []
-    with tempfile.TemporaryDirectory() as directory:
+    with _safe_drill_dir("drill_tmp") as directory:
         store = TradingStore(Path(directory) / "combo-drill.db")
         store.set_setting("execution_mode", "PAPER")
         store.approve_strategy(
@@ -133,12 +151,10 @@ def run_combo_resilience_drill() -> pd.DataFrame:
         })
         protective = store.intent(legs[0]["intent_id"])
         store.update_shadow_intent(protective["id"], "FILLED", 1, protective["limit_price"], 0)
-        broker.fail_next = True
-        try:
-            manager.advance(combo_id)
-        except ConnectionError:
-            pass
+        broker.reject_next = True
         manager.advance(combo_id)
+        manager.advance(combo_id)
+
         rows.append({
             "演练": "短腿拒单后回滚", "结果": "通过" if store.option_combo(combo_id)["status"] == "ROLLBACK_PENDING" else "失败",
             "详情": store.option_combo(combo_id)["status"],

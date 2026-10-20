@@ -49,6 +49,8 @@ def _real_sellable_quantity(broker: FutuPaperBroker, symbol: str) -> tuple[int, 
             pd.to_numeric(symbol_orders["qty"], errors="coerce").fillna(0).sum()
         ) if not symbol_orders.empty else 0.0
     available = max(0, int(sellable - pending_sell))
+    if symbol == "US.NVDA":
+        available = max(0, min(available, int(sellable - pending_sell - 5.0)))
     return available, f"富途可卖 {sellable:g}，待成交卖单 {pending_sell:g}，提交前可用 {available:g}"
 
 
@@ -65,7 +67,12 @@ def run_once(
         info = broker.account_info()
         if info.empty:
             raise RuntimeError("Account information is empty")
-        account_value = float(info.iloc[0]["total_assets"])
+        acc_currency = str(info.iloc[0].get("currency", "USD")).upper()
+        usd_assets = float(info.iloc[0].get("usd_assets", 0) or 0)
+        if acc_currency != "USD" and usd_assets > 0:
+            account_value = usd_assets
+        else:
+            account_value = float(info.iloc[0]["total_assets"])
         core_budget = executor.store.strategy_risk_budget("core_satellite")
         core_capital_ratio = (
             float(core_budget["capital_ratio"])
@@ -81,7 +88,13 @@ def run_once(
             core_capital_ratio if core_budget else settings.core_satellite_max_stock_weight,
         )
         symbols = tuple(dict.fromkeys(settings.core_satellite_symbols))
-        required_list = list(dict.fromkeys(("US.SPY", *symbols)))
+        from futu_quant.option_lifecycle import parse_option_code
+        held_stocks = (
+            tuple(str(c) for c in positions["code"] if not parse_option_code(str(c)) and float(positions.loc[positions["code"] == c, "qty"].iloc[0] or 0) > 0)
+            if not positions.empty and "code" in positions.columns else ()
+        )
+        eval_symbols = tuple(dict.fromkeys((*symbols, *held_stocks)))
+        required_list = list(dict.fromkeys(("US.SPY", *eval_symbols)))
         if settings.core_satellite_cash_yield_enabled:
             required_list.append(settings.core_satellite_cash_yield_symbol)
         required = tuple(dict.fromkeys(required_list))
@@ -158,7 +171,7 @@ def run_once(
                 f"minimum=${effective.min_trade_usd:,.0f}"
             )
         orders, risk_on = build_rebalance_plan(
-            frames, positions, account_value, symbols,
+            frames, positions, account_value, eval_symbols,
             effective_stock_cap,
             effective.min_trade_usd,
             settings.core_satellite_profile,

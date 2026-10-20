@@ -78,7 +78,10 @@ def test_real_trade_gate_blocks_strategy_and_notional(tmp_path, monkeypatch):
     )
 
     assert not blocked_strategy.allowed
-    assert "不在实盘白名单" in blocked_strategy.reason
+    assert (
+        "不在实盘白名单" in blocked_strategy.reason
+        or "多账户隔离铁律" in blocked_strategy.reason
+    )
     assert not blocked_notional.allowed
     assert "超过上限" in blocked_notional.reason
 

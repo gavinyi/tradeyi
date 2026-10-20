@@ -127,10 +127,14 @@ def _latest_session_decisions(decisions: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=8, max_entries=4, show_spinner=False)
-def _load_store_snapshot() -> dict[str, pd.DataFrame]:
+def _load_store_snapshot(tenant_id: str | None = None, tenant_acc_id: str | int | None = None, is_real: bool = False) -> dict[str, pd.DataFrame]:
     from .store import TradingStore
 
     store = TradingStore()
+    equity_env = f"REAL_{tenant_acc_id}" if is_real and tenant_acc_id else ("REAL" if is_real else "SIMULATE")
+    equity_rows = store.equity_history(limit=1000, env=equity_env)
+    if not equity_rows and is_real:
+        equity_rows = store.equity_history(limit=1000, env="REAL")
     return {
         "heartbeats": _safe_frame(store.heartbeats()),
         "tasks": _safe_frame(store.task_runs(limit=1000)),
@@ -138,24 +142,28 @@ def _load_store_snapshot() -> dict[str, pd.DataFrame]:
         "intents": _safe_frame(store.intents(limit=1000)),
         "events": _safe_frame(store.operational_events(limit=500)),
         "alerts": _safe_frame(store.alerts(limit=200)),
-        "equity": _safe_frame(store.equity_history(limit=1000)),
+        "equity": _safe_frame(equity_rows),
         "incidents": _safe_frame(store.incidents(status="OPEN", limit=100)),
         "shadow_positions": _safe_frame(store.shadow_open_positions()),
         "budgets": _safe_frame(store.strategy_risk_budgets()),
-        "virtual_positions": _safe_frame(store.virtual_positions()),
+        "virtual_positions": _safe_frame(store.virtual_positions(account_id=tenant_acc_id)),
     }
 
 
-@st.cache_data(ttl=15, max_entries=4, show_spinner=False)
-def _account_snapshot(_broker, view_env: str = "DEFAULT") -> dict[str, Any]:
+@st.cache_data(ttl=10, max_entries=6, show_spinner=False)
+def _account_snapshot(_broker, view_env: str = "DEFAULT", tenant_id: str | None = None) -> dict[str, Any]:
     store = TradingStore()
-    if view_env == "SIMULATE":
-        info_snap = store.broker_snapshot("account_info_sim") or store.broker_snapshot("account_info")
-        pos_snap = store.broker_snapshot("positions_sim") or store.broker_snapshot("positions")
+    if tenant_id and (store.broker_snapshot(f"account_info_{tenant_id}") or store.broker_snapshot(f"positions_{tenant_id}")):
+        info_snap = store.broker_snapshot(f"account_info_{tenant_id}")
+        pos_snap = store.broker_snapshot(f"positions_{tenant_id}")
+        tag = tenant_id
+    elif view_env == "SIMULATE":
+        info_snap = store.broker_snapshot("account_info_sim_primary") or store.broker_snapshot("account_info_sim")
+        pos_snap = store.broker_snapshot("positions_sim_primary") or store.broker_snapshot("positions_sim")
         tag = "模拟盘"
     elif view_env == "REAL":
-        info_snap = store.broker_snapshot("account_info_real") or store.broker_snapshot("account_info")
-        pos_snap = store.broker_snapshot("positions_real") or store.broker_snapshot("positions")
+        info_snap = store.broker_snapshot("account_info_moomoo_real") or store.broker_snapshot("account_info_real")
+        pos_snap = store.broker_snapshot("positions_moomoo_real") or store.broker_snapshot("positions_real")
         tag = "实盘"
     else:
         info_snap = store.broker_snapshot("account_info")
@@ -314,7 +322,13 @@ def latest_strategy_interruption_from_frame(events: pd.DataFrame) -> dict[str, A
         return None
     event_type = frame["event_type"].astype(str).str.upper()
     start_mask = event_type.isin(PROTECTION_EVENT_TYPES) | event_type.eq("BROKER_CONNECTIVITY_FAILURE")
-    recovery_mask = event_type.isin({"PROTECTIVE_RECOVERY_CONFIRMED", "BROKER_CONNECTIVITY_RECOVERED"})
+    # 服务重启后会先完成账户/订单对账并写入 STARTUP_RECOVERY；这同样证明此前的
+    # OpenD 链路中断已恢复，不能继续将历史故障展示为“当前中断”。
+    recovery_mask = event_type.isin({
+        "PROTECTIVE_RECOVERY_CONFIRMED",
+        "BROKER_CONNECTIVITY_RECOVERED",
+        "STARTUP_RECOVERY",
+    })
     candidates = frame[start_mask].sort_values("_ts")
     if candidates.empty:
         return None
@@ -519,8 +533,11 @@ def _render_account_kpis(account: dict[str, Any], snapshot: dict[str, pd.DataFra
     equity_view = _equity_view(snapshot["equity"])
     equity_sparkline = equity_view["权益"].tolist()[-80:] if not equity_view.empty else []
     pnl_sparkline = equity_view["区间盈亏"].tolist()[-80:] if not equity_view.empty else []
-    total_assets = _number(row.get("total_assets"))
-    cash = _number(row.get("cash"))
+    curr = str(row.get("currency", "USD")).upper()
+    usd_assets = _number(row.get("usd_assets"))
+    us_cash = _number(row.get("us_cash"))
+    total_assets = usd_assets if (curr != "USD" and usd_assets > 0) else _number(row.get("total_assets"))
+    cash = us_cash if (curr != "USD" and us_cash > 0) else _number(row.get("cash"))
     cash_ratio = cash / total_assets if total_assets > 0 else 0.0
 
     stock_count = 0
@@ -843,10 +860,14 @@ def _render_risk_pulse(snapshot: dict[str, pd.DataFrame]) -> None:
 
 @st.fragment(run_every="30s")
 def _render_live_dashboard(_broker, _account_page=None) -> None:
-    snapshot = _load_store_snapshot()
     current_tenant = get_current_tenant(_broker.settings)
+    snapshot = _load_store_snapshot(
+        tenant_id=current_tenant["id"],
+        tenant_acc_id=current_tenant.get("acc_id"),
+        is_real=current_tenant["is_real"],
+    )
     selected_env = current_tenant["env"]
-    account = _account_snapshot(_broker, view_env=selected_env)
+    account = _account_snapshot(_broker, view_env=selected_env, tenant_id=current_tenant["id"])
 
     if not account["ok"]:
         st.warning(f"账户快照暂不可用，系统与策略图仍可查看：{account['error']}")
@@ -891,9 +912,9 @@ def _render_quick_links(account_page=None) -> None:
             st.page_link("pages/7_risk_center.py", label="风控中心", icon=":material/shield:")
 
 
-def _render_kill_switch_banner(store: TradingStore) -> None:
+def _render_kill_switch_banner(store: TradingStore, account_id: str | int | None = None, tenant_name: str = "") -> None:
     """Show the persisted emergency-stop state prominently on the home dashboard only when enabled."""
-    enabled = store.kill_switch()
+    enabled = store.kill_switch(account_id=account_id)
     if not enabled:
         return
     recent = [
@@ -902,31 +923,38 @@ def _render_kill_switch_banner(store: TradingStore) -> None:
     ]
     latest = recent[0] if recent else None
     payload = _json_loads(latest.get("payload_json")) if latest else {}
+    target_tag = f"【{tenant_name}】" if tenant_name else "【当前账户】"
     detail = (
         f"最近事件：{_to_china_label(latest.get('created_at'))}；"
         f"记录亏损：{_money(payload.get('loss'))}；"
-        "新增风险订单已暂停，请在核对账户权益快照后人工确认恢复。"
+        f"{target_tag} 新增风险订单已暂停（其他健康账户正常运行），请在核对账户权益快照后人工确认恢复。"
         if latest else
-        "新增风险订单已暂停，请在核对账户权益快照后人工确认恢复。"
+        f"{target_tag} 新增风险订单已暂停（其他健康账户正常运行），请在核对账户权益快照后人工确认恢复。"
     )
-    st.error(f"🚨 系统急停已开启\n\n{detail}", icon=":material/pause_circle:")
+    st.error(f"🚨 {target_tag} 急停已开启\n\n{detail}", icon=":material/pause_circle:")
 
 
 def render_home_dashboard(settings, broker, store, account_page=None) -> None:
     # 顶部专业轻量 Header (动态环境胶囊)
     current_tenant = get_current_tenant(settings)
     is_real = current_tenant["is_real"]
+    tenant_acc_id = current_tenant.get("acc_id")
 
     env_badge = (
         "<span style='font-size:12px;padding:3px 10px;border-radius:12px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-weight:700;margin-left:8px;vertical-align:middle'>🔴 实盘 REAL</span>"
         if is_real else
         "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#e0f2fe;color:#0369a1;font-weight:600;margin-left:8px;vertical-align:middle'>模拟盘 SIM</span>"
     )
+    kill_switch_active = store.kill_switch(account_id=tenant_acc_id)
+    status_badge = (
+        f"<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;font-weight:700;margin-left:6px;vertical-align:middle'>🚨 【{current_tenant['short_name']}】急停生效中</span>"
+        if kill_switch_active else
+        "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#dcfce7;color:#15803d;font-weight:600;margin-left:6px;vertical-align:middle'>风控正常 · 急停未触发</span>"
+    )
     col_title, col_status = st.columns([1.6, 1], vertical_alignment="center")
     with col_title:
         st.markdown(
-            f"### 📈 量化系统驾驶舱 {env_badge}"
-            "<span style='font-size:12px;padding:3px 9px;border-radius:12px;background:#dcfce7;color:#15803d;font-weight:600;margin-left:6px;vertical-align:middle'>风控正常 · 急停未触发</span>",
+            f"### 📈 量化系统驾驶舱 {env_badge}{status_badge}",
             unsafe_allow_html=True,
         )
         st.caption(f"当前操作租户：{current_tenant['label']} · {current_tenant['desc']}")
@@ -941,8 +969,8 @@ def render_home_dashboard(settings, broker, store, account_page=None) -> None:
                 st.cache_data.clear()
                 st.rerun()
 
-    # 仅当急停被激活时才弹出高亮红框
-    _render_kill_switch_banner(store)
+    # 仅当当前操作租户的急停被激活时才弹出高亮红框
+    _render_kill_switch_banner(store, account_id=tenant_acc_id, tenant_name=current_tenant["short_name"])
 
     _render_live_dashboard(broker, account_page)
     _render_quick_links(account_page)

@@ -124,6 +124,7 @@ def test_urgent_exit_retry_on_network_glitch():
         store.set_virtual_allocation("volatility_long_gamma", "US.AMD261023P550000", 1.0, 10.0)
         mock_broker = MagicMock()
         mock_broker.settings = MagicMock(trading_env="SIMULATE")
+        mock_broker.trading_env = "SIMULATE"
         mock_broker.trd_env = "SIMULATE"
         mock_broker.positions.return_value = pd.DataFrame([{"code": "US.AMD261023P550000", "qty": 1.0, "can_sell_qty": 1.0}])
 
