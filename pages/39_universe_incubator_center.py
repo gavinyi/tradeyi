@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
@@ -161,24 +163,204 @@ with tab_recall:
             })
         st.dataframe(pd.DataFrame(rec_data), hide_index=True, width="stretch")
 
+def _format_lifecycle_event(event: dict) -> dict:
+    created_at = event.get("created_at", "")
+    event_type = event.get("event_type", "")
+    symbol = event.get("symbol", "")
+    raw_details = event.get("details_json", "{}")
+    try:
+        details = json.loads(raw_details) if isinstance(raw_details, str) else (raw_details or {})
+    except Exception:
+        details = {}
+
+    display_symbol = "全部 / 系统" if symbol in ("ALL", "", None) else symbol
+
+    ACTION_MAP = {
+        "PROMOTION": ("🚀 晋级实盘池", "PROMOTION"),
+        "FAST_EVICTION": ("🚨 紧急秒踢清退", "FAST_EVICTION"),
+        "DEMOTION": ("📉 自然淘汰/降级", "DEMOTION"),
+        "PROMOTION_REJECTED_OVER_EXTENDED": ("⛔ 动量耗竭否决", "OVER_EXTENDED"),
+        "SANDBOX_SIGNAL_CAPTURED": ("🎯 沙盒突破信号", "SIGNAL"),
+        "SYNC_RUNTIME": ("🔄 热生效同步", "SYNC"),
+        "RECALL_COMPLETED": ("📥 周度召回完成", "RECALL"),
+        "FEISHU_REVIEW_DELIVERED": ("📢 飞书复盘投递", "NOTIFICATION"),
+        "PROFIT_SWEEPER_SETTLED": ("💰 收益收割归集", "SETTLEMENT"),
+    }
+    action_label, category = ACTION_MAP.get(event_type, (f"ℹ️ {event_type}", "OTHER"))
+
+    reason = ""
+    params = ""
+
+    if event_type == "PROMOTION":
+        score = float(details.get("score", 0))
+        track = details.get("track_mode", "常规")
+        industry = details.get("industry", "其他")
+        replaced = details.get("replaced_symbol")
+        if replaced:
+            reason = f"评分 {score:.2f} 达成迟滞替换门槛，替换现任标的 {replaced} 晋级外援实盘池"
+            params = f"综合评分: {score:.2f} | 模式: {track} | 替换: {replaced}"
+        else:
+            reason = f"综合评分 {score:.2f}，通过沙盒孵化({track})晋级外援实盘池（{industry}板块）"
+            expires = str(details.get("expires_at", ""))[:10]
+            params = f"综合评分: {score:.2f} | 模式: {track} | 授权至: {expires}"
+
+    elif event_type == "FAST_EVICTION":
+        raw_reason = details.get("reason", "触发应急风控红线")
+        reason = f"触发硬风控：{raw_reason}"
+        params = "风控状态: 触发应急秒踢并移出实盘池"
+
+    elif event_type == "DEMOTION":
+        raw_reason = details.get("reason", "授权到期自然降级")
+        reason = f"生命周期调整：{raw_reason}"
+        params = "流转状态: 自然淘汰出池"
+
+    elif event_type == "PROMOTION_REJECTED_OVER_EXTENDED":
+        reason = "近期涨幅过大进入动量耗竭期，触发防追高门禁一票否决"
+        params = "门禁裁定: 一票否决禁止高位接盘"
+
+    elif event_type == "SANDBOX_SIGNAL_CAPTURED":
+        intraday = details.get("intraday_move", "")
+        spread = details.get("spread_pct", "")
+        price = details.get("last_price", 0)
+        reason = f"沙盒捕获突破：日内异动 {intraday}，买卖价差 {spread}，现价 ${float(price):,.2f}"
+        params = f"异动: {intraday} | 价差: {spread} | 现价: ${float(price):,.2f}"
+
+    elif event_type == "SYNC_RUNTIME":
+        core = details.get("core_count", 0)
+        sat = details.get("satellite_count", 0)
+        tot = len(details.get("total_symbols", []))
+        reason = f"实盘标的池已热生效同步：底仓 {core} 只 + 晋级外援 {sat} 只 = 共 {tot} 只"
+        params = f"底仓: {core} | 外援: {sat} | 总计: {tot}"
+
+    elif event_type == "RECALL_COMPLETED":
+        count = details.get("recalled_count", 0)
+        week = details.get("week_start", "")
+        reason = f"全市场周度初筛完成：筛选出 {count} 只高流动性标的 (周期: {week})"
+        params = f"初筛入选: {count} 只"
+
+    elif event_type == "FEISHU_REVIEW_DELIVERED":
+        date_str = details.get("session_date", "")
+        reason = f"日度量化复盘报告已成功推送到飞书群 ({date_str})"
+        params = f"复盘日期: {date_str} | 状态: 投递成功"
+
+    elif event_type == "PROFIT_SWEEPER_SETTLED":
+        reason = details.get("reason", "完成日度超额收益锁定与利润归集")
+        params = "归集状态: 已对齐完成"
+
+    else:
+        reason = details.get("reason") or details.get("message") or "系统自动审计事件"
+        params = ", ".join(f"{k}: {v}" for k, v in list(details.items())[:3]) or "——"
+
+    return {
+        "created_at": created_at,
+        "标的代码": display_symbol,
+        "生命周期动作": action_label,
+        "决策原因与业务影响": reason,
+        "审计核验 / 关键参数": params,
+        "_raw_symbol": symbol,
+        "_event_type": event_type,
+        "_category": category,
+        "_details_json": raw_details if isinstance(raw_details, str) else json.dumps(raw_details, ensure_ascii=False),
+    }
+
+
 # ---------------- Tab 4: 生命周期流转审计 ----------------
 with tab_events:
     st.subheader("标的池生命周期流转审计流水")
-    st.caption("完整记录召回、沙盒评估、晋级实盘、秒踢清退与运行时同步的全部审计事件。")
+    st.caption("基于机构级风控标准，完整记录高流动性召回、沙盒影子评估、晋级实盘、风控秒踢与全系统热生效审计。")
 
-    events = store.universe_lifecycle_events(limit=200)
-    if not events:
+    raw_events = store.universe_lifecycle_events(limit=500)
+    if not raw_events:
         st.info("暂无生命周期事件记录。")
     else:
-        evt_data = []
-        for e in events:
-            evt_data.append({
-                "时间": e.get("created_at", ""),
-                "事件类型": e.get("event_type", ""),
-                "涉及标的": e.get("symbol", ""),
-                "详情负载": e.get("details_json", "{}"),
-            })
-        st.dataframe(china_time_columns(pd.DataFrame(evt_data)).rename(columns={"时间": "时间（中国）"}), hide_index=True, width="stretch")
+        china_tz = ZoneInfo("Asia/Shanghai")
+        now_china_date = datetime.now(timezone.utc).astimezone(china_tz).date()
+
+        def _is_today(ts_str: str) -> bool:
+            if not ts_str:
+                return False
+            try:
+                dt = datetime.fromisoformat(ts_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(china_tz).date() == now_china_date
+            except Exception:
+                return False
+
+        today_count = sum(1 for e in raw_events if _is_today(e.get("created_at", "")))
+        promotion_count = sum(1 for e in raw_events if e.get("event_type") == "PROMOTION")
+        eviction_count = sum(
+            1 for e in raw_events
+            if e.get("event_type") in ("FAST_EVICTION", "DEMOTION") or "EVICTION" in e.get("event_type", "")
+        )
+        signal_count = sum(1 for e in raw_events if e.get("event_type") == "SANDBOX_SIGNAL_CAPTURED")
+
+        kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+        kpi_col1.metric("今日事件总数", f"{today_count} 项", help="今日(中国时间)系统触发的全部生命周期与审计动作")
+        kpi_col2.metric("外援实盘晋级", f"{promotion_count} 次", help="历史累计通过沙盒孵化与ML精排晋级外援实盘池的次数")
+        kpi_col3.metric("风控秒踢 / 清退", f"{eviction_count} 次", help="触发价差恶化、连续硬止损或授权到期的移出次数")
+        kpi_col4.metric("沙盒异动捕获", f"{signal_count} 次", help="沙盒在全市场高流动性标的中实时捕获的突破信号总量")
+
+        st.markdown("---")
+
+        parsed_list = [_format_lifecycle_event(e) for e in raw_events]
+        df_all = pd.DataFrame(parsed_list)
+        if "created_at" in df_all.columns:
+            df_all = china_time_columns(df_all)
+            df_all["时间（中国）"] = pd.to_datetime(df_all["created_at"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S").fillna(df_all["created_at"])
+        else:
+            df_all["时间（中国）"] = ""
+
+        f_col1, f_col2 = st.columns(2)
+
+        unique_symbols = sorted([s for s in df_all["_raw_symbol"].dropna().unique() if s])
+        symbol_options = ["全部标的"] + [s for s in unique_symbols if s != "ALL"] + (["全部 / 系统 (ALL)"] if "ALL" in unique_symbols else [])
+        selected_sym = f_col1.selectbox("🎯 标的筛选", options=symbol_options, key="filter_universe_sym")
+
+        CATEGORY_OPTIONS = {
+            "全部事件": None,
+            "🚀 晋级实盘 (PROMOTION)": ["PROMOTION"],
+            "🚨 风控秒踢 (FAST_EVICTION)": ["FAST_EVICTION"],
+            "📉 淘汰降级 (DEMOTION)": ["DEMOTION"],
+            "⛔ 动量耗竭否决 (OVER_EXTENDED)": ["PROMOTION_REJECTED_OVER_EXTENDED"],
+            "🎯 沙盒突破信号 (SIGNAL)": ["SANDBOX_SIGNAL_CAPTURED"],
+            "🔄 池同步与召回 (SYNC/RECALL)": ["SYNC_RUNTIME", "RECALL_COMPLETED"],
+        }
+        selected_cat_label = f_col2.selectbox("🏷️ 事件分类筛选", options=list(CATEGORY_OPTIONS.keys()), key="filter_universe_cat")
+        target_event_types = CATEGORY_OPTIONS[selected_cat_label]
+
+        df_filtered = df_all.copy()
+        if selected_sym != "全部标的":
+            if selected_sym == "全部 / 系统 (ALL)":
+                df_filtered = df_filtered[df_filtered["_raw_symbol"] == "ALL"]
+            else:
+                df_filtered = df_filtered[df_filtered["_raw_symbol"] == selected_sym]
+
+        if target_event_types is not None:
+            df_filtered = df_filtered[df_filtered["_event_type"].isin(target_event_types)]
+
+        st.caption(f"当前筛选共呈现 **{len(df_filtered)}** 条结构化生命周期审计记录。")
+
+        display_columns = ["时间（中国）", "标的代码", "生命周期动作", "决策原因与业务影响", "审计核验 / 关键参数"]
+        st.dataframe(
+            df_filtered[display_columns],
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "时间（中国）": st.column_config.TextColumn("时间（中国）", width="medium"),
+                "标的代码": st.column_config.TextColumn("标的代码", width="small"),
+                "生命周期动作": st.column_config.TextColumn("生命周期动作", width="small"),
+                "决策原因与业务影响": st.column_config.TextColumn("决策原因与业务影响", width="large"),
+                "审计核验 / 关键参数": st.column_config.TextColumn("审计核验 / 关键参数", width="medium"),
+            },
+        )
+
+        with st.expander("🔍 原始技术负载排障抽检 (研发与运维专用)"):
+            st.caption("展示最新筛选事件的技术负载与 Raw JSON，用于底层微观数据对账。")
+            tech_view = df_filtered[["时间（中国）", "标的代码", "_event_type", "_details_json"]].rename(
+                columns={"_event_type": "原始事件码", "_details_json": "原始JSON负载"}
+            )
+            st.dataframe(tech_view.head(30), hide_index=True, width="stretch")
 
 # ---------------- 快捷运维操作区 ----------------
 st.divider()
