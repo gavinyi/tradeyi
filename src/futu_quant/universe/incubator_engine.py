@@ -131,7 +131,19 @@ class IncubatorEngine:
         if not current:
             return False
 
-        obs_days = current_days if current_days is not None else int(current.get("observation_days", 0))
+        if current_days is not None:
+            obs_days = current_days
+        else:
+            first_at = current.get("first_observed_at")
+            if first_at:
+                try:
+                    f_date = datetime.fromisoformat(str(first_at)).date()
+                    now_date = datetime.now(timezone.utc).date()
+                    obs_days = max(1, (now_date - f_date).days + 1)
+                except Exception:
+                    obs_days = max(1, int(current.get("observation_days", 1)) + 1)
+            else:
+                obs_days = max(1, int(current.get("observation_days", 1)) + 1)
         signals = int(current.get("signal_triggers", 0))
         pnl = float(current.get("simulated_pnl_usd", 0.0))
         max_dd = float(current.get("simulated_max_dd", 0.0))
@@ -150,7 +162,7 @@ class IncubatorEngine:
         fast_track_eligible = (
             obs_days >= 3
             and signals >= 2
-            and pnl > 0.0
+            and pnl >= 0.0
             and max_dd < 0.15
             and slippage <= 0.025
             and retention >= 0.65
@@ -163,7 +175,7 @@ class IncubatorEngine:
         standard_eligible = (
             obs_days >= 7
             and signals >= 3
-            and pnl > 0.0
+            and pnl >= 0.0
             and max_dd < 0.25
             and slippage <= 0.040
             and retention >= 0.60

@@ -63,7 +63,7 @@ def _safe_trfh_init(self, filename, *args, **kwargs):
     return _orig_trfh_init(self, filename, *args, **kwargs)
 logging.handlers.TimedRotatingFileHandler.__init__ = _safe_trfh_init
 
-import pytest
+import pytest  # noqa: E402  # 必须在上述 monkeypatch 之后导入：先装好兼容补丁再进入 pytest 装载流程
 
 _SNAPSHOT_KEYS: tuple[str, ...] = tuple(sorted(os.environ.keys()))
 _SNAPSHOT_VALUES: dict[str, str] = dict(os.environ)
