@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging.handlers
 import os
 import pathlib
-import sys
 import tempfile
 
 # 统一重定向 tempfile 根目录至工作区内部，杜绝在系统 Temp 目录下创建 sqlite 数据库导致的 WinError 5 沙箱拦截
