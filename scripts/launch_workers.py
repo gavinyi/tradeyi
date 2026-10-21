@@ -64,11 +64,15 @@ def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tu
 
     root_dir = Path(__file__).resolve().parents[1]
     cmd = [py, "-u", str(root_dir / "scripts" / "run_service.py"), "--tenant", tenant.tenant_id]
+    sub_env = os.environ.copy()
+    sub_env["PYTHONUTF8"] = "1"
+    sub_env["PYTHONIOENCODING"] = "utf-8"
 
     try:
         proc = subprocess.Popen(
             cmd,
             cwd=str(root_dir),
+            env=sub_env,
             stdout=log_f,
             stderr=subprocess.STDOUT,
             creationflags=creationflags,

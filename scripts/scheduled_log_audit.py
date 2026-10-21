@@ -185,19 +185,22 @@ def inspect_and_alert():
                 _fd, _qp = _tf.mkstemp(suffix=".txt")
                 _os.close(_fd)
                 try:
+                    _sub_env = _os.environ.copy()
+                    _sub_env["PYTHONIOENCODING"] = "utf-8"
                     subprocess.run(
                         [sys.executable, str(_qscript)],
                         stdout=open(_qp, "wb"),
                         stderr=subprocess.DEVNULL,
                         cwd=str(Path(__file__).resolve().parents[1]),
+                        env=_sub_env,
                         timeout=25,
                         check=False,
                         shell=False,
                     )
                     with open(_qp, "r", encoding="utf-8", errors="replace") as _fh:
-                        _qlines = [l[6:].strip() for l in _fh.read().splitlines() if l.startswith("QUOTE|")]
+                        _qlines = [item[6:].strip() for item in _fh.read().splitlines() if item.startswith("QUOTE|")]
                     if _qlines:
-                        watch_lines.extend("盘口：" + l for l in _qlines)
+                        watch_lines.extend("盘口：" + item for item in _qlines)
                     else:
                         watch_lines.append("盘口：本轮未取到行情数据（不影响巡检）")
                 except subprocess.TimeoutExpired:
