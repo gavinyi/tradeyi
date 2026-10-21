@@ -27,12 +27,15 @@ def is_pid_alive(pid: int) -> bool:
     if sys.platform == "win32":
         try:
             import ctypes
+            from ctypes import wintypes
             kernel32 = ctypes.windll.kernel32
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
             handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
             if handle:
+                exit_code = wintypes.DWORD()
+                success = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
                 kernel32.CloseHandle(handle)
-                return True
+                return bool(success and exit_code.value == 259)
             return False
         except Exception:
             return False
@@ -50,7 +53,15 @@ def get_active_tenants() -> list[TenantProfile]:
 
 def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tuple[bool, int | None, str]:
     """拉起单个租户的独立 Worker 守护进程"""
-    py = py_exe or sys.executable
+    py_candidate = Path(py_exe or sys.executable)
+    if sys.platform == "win32":
+        pyw = py_candidate.parent / "pythonw.exe"
+        py = str(pyw) if pyw.exists() else str(py_candidate)
+        creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        py = str(py_candidate)
+        creationflags = 0
+
     files = service_files(tenant.tenant_id)
     pid_file = files["pid"]
     log_file_path = files["log"]
@@ -69,10 +80,6 @@ def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tu
     # 2. 准备启动参数与日志输出文件
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
     log_f = open(log_file_path, "a", encoding="utf-8")
-
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
 
     root_dir = Path(__file__).resolve().parents[1]
     cmd = [py, "-u", str(root_dir / "scripts" / "run_service.py"), "--tenant", tenant.tenant_id]
