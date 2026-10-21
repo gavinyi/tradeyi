@@ -229,3 +229,33 @@ def test_tenant_kill_switch_blocks_risk_engine_buy(tmp_path):
     store.set_kill_switch(False, account_id="281756481476169109", tenant_id="futu_real_master")
     resumed = risk.check(broker, "US.QQQ", "BUY", 1, 100)
     assert resumed.allowed
+
+
+# ---------- 7. UI 租户集 ⊆ 服务注册租户集（同源一致性） ----------
+
+
+class _ReadOnlyStoreStub:
+    """替身：get_registered_tenants 内部会实例化 TradingStore() 直连生产库，
+    测试严禁触生产库（构造器会跑迁移写入），一律替换为本只读桩。"""
+
+    def get_setting(self, key, default=""):
+        return default
+
+
+def test_ui_tenant_set_subset_of_service_registry(monkeypatch):
+    """UI 切换器出现的每个租户（含禁用态），其 tenant_id 必须能被服务层
+    DEFAULT_TENANTS 解析（run_service --tenant 可拉起），杜绝「UI 可见、
+    服务不可管」。反向亦核：服务注册租户全部出现在 UI 注册表中。"""
+    import futu_quant.store as store_mod
+    from futu_quant.tenant import DEFAULT_TENANTS
+    from futu_quant.ui import get_registered_tenants
+
+    monkeypatch.setattr(store_mod, "TradingStore", _ReadOnlyStoreStub)
+    ui_tenants = get_registered_tenants(include_disabled=True)
+
+    ui_tids = {t["tenant_id"] for t in ui_tenants.values()}
+    service_tids = set(DEFAULT_TENANTS.keys())
+    missing = ui_tids - service_tids
+    assert not missing, f"UI 租户未在服务注册表登记（服务不可管）: {sorted(missing)}"
+    orphan = service_tids - ui_tids - {t["id"] for t in ui_tenants.values()}
+    assert not orphan, f"服务注册租户未出现在 UI 注册表: {sorted(orphan)}"

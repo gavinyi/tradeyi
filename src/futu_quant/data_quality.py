@@ -73,3 +73,42 @@ def option_book_status(row, maximum_spread_pct: float = 20.0) -> tuple[bool, str
     return True, (
         f"盘口可用：买一 {bid:.2f}、卖一 {ask:.2f}、价差 {spread_pct:.1f}%"
     ), spread_pct
+
+
+def option_quote_freshness_for_exit(
+    row,
+    now: datetime | None = None,
+    maximum_spread_pct: float = 20.0,
+    price_deviation_anchor_pct: float = 0.40,
+) -> tuple[bool, str, float]:
+    """平仓/止损减仓出口专属盘口新鲜度降级校验。
+
+    四条安全护栏保证：
+    1. 仅限平仓类减仓动作，严禁用于入场开仓；
+    2. 双边盘口（买一/卖一 > 0 且 ask >= bid）+ 价差 <= 阈值；
+    3. 价格合理性锚：仅防单向极端暴跌闪崩（买一低于最后成交价达阈值时拦截；买一高于最后成交价属有利平仓，绝不拦截）；
+    4. 允许在成交时长滞后时，基于健康双边盘口放行退出。
+    """
+    bid = float(row.get("bid_price") or 0)
+    ask = float(row.get("ask_price") or 0)
+    last = float(row.get("last_price") or 0)
+    middle = (bid + ask) / 2
+    spread_pct = (ask - bid) / middle * 100 if middle > 0 and ask >= bid else float("inf")
+
+    if bid <= 0 or ask <= 0:
+        return False, f"平仓盘口不可用：买一 {bid:.2f}、卖一 {ask:.2f}", spread_pct
+    if ask < bid:
+        return False, f"平仓盘口倒挂：买一 {bid:.2f}、卖一 {ask:.2f}", spread_pct
+    if spread_pct > maximum_spread_pct:
+        return False, f"平仓盘口价差过大：{spread_pct:.1f}% > {maximum_spread_pct:.1f}%", spread_pct
+
+    # 单向防暴跌滑点拦截：仅当 bid 明显低于 last 时校验下行偏离，有利滑点（bid >= last）严禁拦截
+    if last > 0 and price_deviation_anchor_pct > 0 and bid < last:
+        downside_dev = (last - bid) / last
+        if downside_dev > price_deviation_anchor_pct:
+            return False, (
+                f"平仓买一价 ${bid:.2f} 下行偏离最后成交价 ${last:.2f} 达 {downside_dev:.1%} "
+                f"> {price_deviation_anchor_pct:.1%}，防极端暴跌抽单保护拦截"
+            ), spread_pct
+
+    return True, f"双边盘口健康可用（买一 {bid:.2f}、卖一 {ask:.2f}、价差 {spread_pct:.1f}%），允许出口降级平仓", spread_pct

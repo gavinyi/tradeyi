@@ -529,6 +529,8 @@ class Settings:
     ml_model_path: str
     ml_threshold: float
     ml_weight: float
+    option_exit_max_spread_pct: float
+    option_exit_price_deviation_anchor_pct: float
 
     @classmethod
     def load(cls, refresh: bool = False) -> "Settings":
@@ -659,6 +661,12 @@ class Settings:
         ml_weight = float(os.getenv("ML_WEIGHT", "0.6"))
         if not 0 <= ml_weight <= 1.0:
             raise RuntimeError("ML_WEIGHT must be between 0 and 1")
+        option_exit_max_spread_pct = float(os.getenv("OPTION_EXIT_MAX_SPREAD_PCT", "20.0"))
+        if not 1.0 <= option_exit_max_spread_pct <= 50.0:
+            raise RuntimeError("OPTION_EXIT_MAX_SPREAD_PCT 必须在 1.0% 到 50.0% 之间")
+        option_exit_price_deviation_anchor_pct = float(os.getenv("OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT", "0.40"))
+        if not 0.01 <= option_exit_price_deviation_anchor_pct <= 0.80:
+            raise RuntimeError("OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT 必须在 0.01 到 0.80 之间")
         cash_yield_enabled = _load_runtime_value("core_satellite_cash_yield_enabled", False)
         cash_yield_symbol = normalize_us_symbol(str(_load_runtime_value("core_satellite_cash_yield_symbol", "US.SGOV")))
         return cls(
@@ -703,6 +711,8 @@ class Settings:
             ml_model_path=ml_model_path,
             ml_threshold=ml_threshold,
             ml_weight=ml_weight,
+            option_exit_max_spread_pct=option_exit_max_spread_pct,
+            option_exit_price_deviation_anchor_pct=option_exit_price_deviation_anchor_pct,
         )
 
     def quantity_for(self, symbol: str) -> int:

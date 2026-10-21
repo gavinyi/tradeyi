@@ -562,13 +562,23 @@ def run_campaign(
     # A quote between 180s and 900s old is explicitly marked degraded by the
     # data-quality layer. Permit a small, liquid entry in that window; fully
     # stale or unusable-book quotes remain blocked.
+    exit_book_bypass = False
+    exit_bypass_reason = ""
+    if quantity > 0:
+        from futu_quant.data_quality import option_quote_freshness_for_exit
+        max_spread = float(getattr(getattr(broker, "settings", None), "option_exit_max_spread_pct", 20.0))
+        anchor_pct = float(getattr(getattr(broker, "settings", None), "option_exit_price_deviation_anchor_pct", 0.40))
+        exit_book_bypass, exit_bypass_reason, _ = option_quote_freshness_for_exit(
+            option, now, maximum_spread_pct=max_spread, price_deviation_anchor_pct=anchor_pct,
+        )
+
     quote_stale = (
         not quote_check["underlying_fresh"]
         or (not quote_check["option_fresh"] and not quote_check["option_degraded"])
     )
     entry_book_blocked = not quote_check["book_ok"] and quantity <= 0
     entry_data_blocked = quote_stale and quantity <= 0
-    exit_data_blocked = quantity > 0 and not quote_check["underlying_fresh"]
+    exit_data_blocked = quantity > 0 and (not quote_check["underlying_fresh"] or (not quote_check["option_fresh"] and not exit_book_bypass))
     if entry_data_blocked or exit_data_blocked or entry_book_blocked:
         reason = (
             "行情/盘口检查未通过："
@@ -610,6 +620,18 @@ def run_campaign(
         print(f"{code}: {decision} ({reason})")
         return
     if quantity > 0 and not quote_check["option_fresh"]:
+        if exit_book_bypass:
+            executor.store.audit("OPTION_EXIT_HEALTHY_BOOK_BYPASS_ACCEPTED", {
+                "strategy_id": strategy_id, "symbol": code,
+                "option_quote_age_seconds": quote_check["option_age_seconds"],
+                "reason": exit_bypass_reason,
+                "position_quantity": quantity,
+            }, strategy_id)
+            executor.alerts.send(
+                "WARNING", "OPTION_EXIT_STALE_QUOTE_BYPASS",
+                f"期权 {code} 行情成交滞后但双边盘口健康，已放行平仓退出：{exit_bypass_reason}",
+                incident_key=f"option-stale-exit-bypass:{code}",
+            )
         executor.store.audit("OPTION_EXIT_STALE_QUOTE_ACCEPTED", {
             "strategy_id": strategy_id, "symbol": code,
             "option_quote_age_seconds": quote_check["option_age_seconds"],

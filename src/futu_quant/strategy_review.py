@@ -755,11 +755,16 @@ def review_advice_markdown(review: StrategyReview) -> str:
 
 
 def review_markdown(review: StrategyReview) -> str:
-    def table(frame: pd.DataFrame) -> str:
-        if frame is None or getattr(frame, "empty", False) or not len(frame):
+    def table(frame: object | None) -> str:
+        if frame is None:
             return "无记录。"
         if not hasattr(frame, "copy"):
-            frame = pd.DataFrame(frame)
+            try:
+                frame = pd.DataFrame(frame)
+            except Exception:
+                return "无记录。"
+        if getattr(frame, "empty", True) or len(frame) == 0:
+            return "无记录。"
         values = frame.copy()
         for column in values.columns:
             if values[column].dtype == "float64":
