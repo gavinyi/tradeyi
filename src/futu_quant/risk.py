@@ -85,14 +85,35 @@ class RiskEngine:
             return RiskDecision(False, "仅允许美股 BUY/SELL 指令", 0)
         if quantity <= 0 or price <= 0:
             return RiskDecision(False, "数量和限价必须大于 0", 0)
+        broker_acc = getattr(broker, "account_id", None)
+        acc_prefix = f"{broker_acc}:" if broker_acc else ""
         if side == "BUY" and self.store.get_setting("connectivity_degraded", "false") == "true":
             return RiskDecision(False, "连接恢复尚未完成对账，暂时禁止新增风险", 0)
-        if (
-            side == "BUY"
-            and execution_mode != "SHADOW"
-            and self.store.get_setting("recovery_blocked", "false") == "true"
-        ):
-            return RiskDecision(False, "启动恢复发现三账差异，请先完成持仓归属与对账", 0)
+        # 精细化对账风控隔离：仅当具体标的或具体策略自身存在对账差异时拦截，严禁全系统一刀切误伤独立策略
+        if side == "BUY" and execution_mode != "SHADOW":
+            # 1. 标的级阻断
+            if (
+                self.store.get_setting(f"symbol_blocked:{acc_prefix}{symbol}", "false") == "true"
+                or self.store.get_setting(f"symbol_blocked:{symbol}", "false") == "true"
+            ):
+                return RiskDecision(False, f"标的 {symbol} 存在持仓对账差异，该标的新增买入已临时阻断", 0)
+            # 2. 策略级阻断
+            if strategy_id:
+                broker_tenant = getattr(broker, "tenant_id", None)
+                is_strat_disabled = (
+                    self.store.get_setting(f"strategy_reconciliation_disabled:{strategy_id}", "false") == "true"
+                    or (broker_tenant and self.store.get_setting(f"strategy_reconciliation_disabled:{broker_tenant}:{strategy_id}", "false") == "true")
+                    or (broker_acc and self.store.get_setting(f"strategy_reconciliation_disabled:{broker_acc}:{strategy_id}", "false") == "true")
+                )
+                if is_strat_disabled:
+                    return RiskDecision(False, f"策略 {strategy_id} 存在持仓差异已被对账暂停，禁止新开仓", 0)
+            # 3. 全局阻断兜底（仅当未指定策略时）
+            acc_recovery_blocked = (
+                self.store.get_setting(f"recovery_blocked:{broker_acc}", "false") == "true"
+                if broker_acc else False
+            )
+            if not strategy_id and (acc_recovery_blocked or self.store.get_setting("recovery_blocked", "false") == "true"):
+                return RiskDecision(False, "启动恢复发现三账差异，请先完成持仓归属与对账", 0)
         contract_multiplier = multiplier or (100.0 if OPTION_PATTERN.match(symbol) else 1.0)
         notional = float(quantity) * float(price) * contract_multiplier
         # 急停禁止新增风险，但保留卖出平仓通道；严格支持按账户隔离急停。
