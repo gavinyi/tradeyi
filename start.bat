@@ -22,7 +22,7 @@ call :pid_alive "%SERVICE_PID%"
 if "!PID_ALIVE!"=="1" goto service_done
 del /q "%SERVICE_PID%" 2>nul
 echo [2/3] Starting Trading Service with project Python ...
-start "TradeFuto Trading Service" /b "%PY%" scripts\run_service.py >> "%SERVICE_LOG%" 2>&1
+start "TradeFuto Trading Service" /b "%PY%" -u scripts\run_service.py >> "%SERVICE_LOG%" 2>&1
 :service_done
 call :pid_alive "%RADAR_PID%"
 if "!PID_ALIVE!"=="1" goto radar_done

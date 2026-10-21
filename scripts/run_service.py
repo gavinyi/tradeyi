@@ -17,6 +17,17 @@ import time
 from zoneinfo import ZoneInfo
 
 os.environ.setdefault("FUTU_LOG_ROLE", "service")
+os.environ["PYTHONUNBUFFERED"] = "1"
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
 if sys.platform == "win32":
     _local_appdata = Path(__file__).resolve().parents[1] / "data" / "appdata"
     _local_appdata.mkdir(parents=True, exist_ok=True)
