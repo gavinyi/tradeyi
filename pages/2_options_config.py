@@ -3,19 +3,22 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from futu_quant.broker import BrokerError, FutuPaperBroker
+from futu_quant.broker import BrokerError
 from futu_quant.config import Settings, load_option_contracts, save_option_contracts
-from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
+from futu_quant.ui import (
+    chinese_columns, render_admin_login, render_sidebar, get_current_tenant, get_tenant_broker,
+)
 
 
 st.set_page_config(page_title="期权配置", page_icon="🧩", layout="wide")
-render_sidebar(Settings.load())
-st.title("期权配置")
-st.warning("仅用于美股模拟盘；第一版只保存候选合约，不会自动提交期权订单。")
-
 settings = Settings.load()
-broker = FutuPaperBroker(settings)
+render_sidebar(settings)
+current_tenant = get_current_tenant(settings)
+broker = get_tenant_broker(settings)
 admin = render_admin_login()
+
+st.title(f"{current_tenant.get('short_name', '租户')}期权配置")
+st.caption(f"当前操作租户：**{current_tenant.get('label')}** · 管理期权标的池与候选合约。")
 
 with st.expander("默认风险边界", expanded=True):
     st.markdown(

@@ -58,7 +58,8 @@ def save_group(label: str, changes: dict[str, str]) -> None:
 # ---------------------------------------------------------------------------
 current_tenant = get_current_tenant(Settings.load())
 tenant_acc_id = current_tenant.get("acc_id")
-tenant_stopped = store.kill_switch(account_id=tenant_acc_id)
+tenant_tid = current_tenant.get("tenant_id") or current_tenant.get("id")
+tenant_stopped = store.kill_switch(account_id=tenant_acc_id, tenant_id=tenant_tid)
 global_stopped = store.get_setting("kill_switch", "false").lower() == "true"
 
 with st.container(border=True):
@@ -72,16 +73,16 @@ with st.container(border=True):
             if tenant_stopped:
                 st.error("当前账户急停已开启：禁止新增买入与加仓，平仓可用。")
                 if st.button(f"解除【{current_tenant['short_name']}】急停", type="primary", width="stretch", key="btn_clear_tenant_kill"):
-                    store.set_kill_switch(False, account_id=tenant_acc_id)
-                    store.audit("TENANT_KILL_SWITCH_DISABLED", {"account_id": tenant_acc_id, "source": "risk_center"})
+                    store.set_kill_switch(False, account_id=tenant_acc_id, tenant_id=tenant_tid)
+                    store.audit("TENANT_KILL_SWITCH_DISABLED", {"account_id": tenant_acc_id, "tenant_id": tenant_tid, "source": "risk_center"})
                     st.success(f"已恢复【{current_tenant['short_name']}】正常交易。")
                     st.rerun()
             else:
                 st.success(f"【{current_tenant['short_name']}】风控正常")
                 st.caption("触发后仅对当前账户禁止开仓，其他账户继续运行。")
                 if st.button(f"一键急停【{current_tenant['short_name']}】", type="secondary", width="stretch", key="btn_set_tenant_kill"):
-                    store.set_kill_switch(True, account_id=tenant_acc_id)
-                    store.audit("TENANT_KILL_SWITCH_ENABLED", {"account_id": tenant_acc_id, "source": "risk_center"})
+                    store.set_kill_switch(True, account_id=tenant_acc_id, tenant_id=tenant_tid)
+                    store.audit("TENANT_KILL_SWITCH_ENABLED", {"account_id": tenant_acc_id, "tenant_id": tenant_tid, "source": "risk_center"})
                     st.warning(f"已暂停【{current_tenant['short_name']}】新增交易。")
                     st.rerun()
 

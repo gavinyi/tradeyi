@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import platform
 import shlex
@@ -81,6 +82,20 @@ PID_FILE = Path("data/trading-service.pid")
 STOP_FILE = Path("data/trading-service.stop")
 RESTART_FILE = Path("data/trading-service.restart")
 LOG_FILE = Path("data/service.log")
+
+
+def service_files(tenant_id: str | None = None) -> dict[str, Path]:
+    """根据租户生成独立的单例锁、PID 与状态文件路径"""
+    prefix = f"-{tenant_id}" if tenant_id else ""
+    return {
+        "lock": Path(f"data/trading-service{prefix}.lock"),
+        "pid": Path(f"data/trading-service{prefix}.pid"),
+        "stop": Path(f"data/trading-service{prefix}.stop"),
+        "restart": Path(f"data/trading-service{prefix}.restart"),
+        "log": Path(f"data/service{prefix}.log"),
+    }
+
+
 MARKET_CALENDAR = USMarketCalendar()
 STOP_EVENT = threading.Event()
 
@@ -558,7 +573,7 @@ def active_volatility_combo_ids(store: TradingStore) -> set[str]:
     return ids
 
 
-def service_cycle(settings: Settings, store: TradingStore) -> None:
+def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = None) -> None:
     now = datetime.now(NY)
     session = MARKET_CALENDAR.session(now)
     alerts = AlertManager(store)
@@ -608,8 +623,15 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
     if not futu_sdk_preflight(store, alerts, settings):
         store.set_setting("connectivity_degraded", "true")
         return
-    broker = FutuPaperBroker(settings)
-    executor = ExecutionManager(broker, store)
+    if tenant:
+        broker = FutuPaperBroker(
+            settings,
+            trading_env_override=tenant.trading_env,
+            account_id_override=tenant.account_id,
+        )
+    else:
+        broker = FutuPaperBroker(settings)
+    executor = ExecutionManager(broker, store, tenant=tenant)
     if store.get_setting("order_push_connected", "false") == "true" and due(
         store, "last_run:heartbeat:order_push", 60, now,
     ):
@@ -831,7 +853,7 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         store.heartbeat("portfolio_stress", "HEALTHY", "等待常规交易时段更新压力矩阵", os.getpid())
     if due(store, "last_run:ledger_reconciliation", 60, now):
         def ledger_check():
-            report = reconcile_ledgers(store, broker)
+            report = reconcile_ledgers(store, broker, tenant_id=tenant.tenant_id if tenant else None)
             mismatches = report[report["status"] == "MISMATCH"] if not report.empty else report
             store.set_setting("recovery_blocked", str(not mismatches.empty).lower())
             if not mismatches.empty:
@@ -853,12 +875,18 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         ).split(",") if value.strip()
     }
     known_strategies = {plugin.service_name for plugin in strategy_plugins(scheduled_only=True)}
-    paused = store.get_setting("strategies_paused", "false") == "true"
+    tenant_id = tenant.tenant_id if tenant else None
+    if tenant_id:
+        paused = store.get_tenant_setting(tenant_id, "strategies_paused", "false") == "true"
+    else:
+        paused = store.get_setting("strategies_paused", "false") == "true"
     configured = {
         name for name in known_strategies
-        if store.get_setting(
-            f"strategy_enabled:{name}", "true" if name in configured_env else "false"
-        ) == "true"
+        if (
+            store.get_setting(f"strategy_enabled:{tenant_id}:{name}", "") == "true"
+            if tenant_id and store.get_setting(f"strategy_enabled:{tenant_id}:{name}", "")
+            else store.get_setting(f"strategy_enabled:{name}", "true" if name in configured_env else "false") == "true"
+        )
     }
     if paused:
         configured.clear()
@@ -879,13 +907,13 @@ def service_cycle(settings: Settings, store: TradingStore) -> None:
         interval = max(30, int(os.getenv("VOLATILITY_INTERVAL_SECONDS", "30")))
         if due(store, "last_run:volatility_long_gamma", interval, now):
             started = time.monotonic()
-            # 1. 实盘受控通道：在真实美股账户中执行受控期权打猎
+            # 1. 专属受控通道：在当前租户绑定的账户中执行受控期权打猎
             succeeded = run_task(
                 store, alerts, "volatility_long_gamma",
                 lambda: run_volatility_once(reconcile=False, broker=broker, executor=executor),
             )
-            # 2. 模拟沙盒伴生通道：当处于实盘模式时，美股模拟盘 (20170229 · 100万) 也同步运行期权推演
-            if getattr(broker, "trading_env", "SIMULATE") == "REAL":
+            # 2. 模拟沙盒伴生通道：仅在未传 --tenant 的旧单体实盘模式下兼容运行，独立租户 Worker 运行自己的实例
+            if getattr(broker, "trading_env", "SIMULATE") == "REAL" and tenant is None:
                 try:
                     if not hasattr(broker, "_broker_sim_companion"):
                         broker._broker_sim_companion = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
@@ -1136,31 +1164,45 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Unified Futu paper strategy service")
     parser.add_argument("--once", action="store_true", help="Run one scheduling cycle")
     parser.add_argument("--poll", type=int, default=10, help="Scheduler polling seconds")
+    parser.add_argument("--tenant", type=str, default=None, help="Target tenant ID (e.g. futu_real_master, futu_paper_sandbox)")
     args = parser.parse_args()
     settings = Settings.load(refresh=True)
     if not settings.enable_paper_orders:
         raise RuntimeError("ENABLE_PAPER_ORDERS=false; automatic paper execution is disabled")
-    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STOP_FILE.unlink(missing_ok=True)
+
+    tenant_profile = None
+    if args.tenant:
+        from futu_quant.tenant import resolve_tenant
+        tenant_profile = resolve_tenant(args.tenant, strict=True)
+
+    files = service_files(tenant_profile.tenant_id if tenant_profile else None)
+    lock_file = files["lock"]
+    pid_file = files["pid"]
+    stop_file = files["stop"]
+
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    stop_file.unlink(missing_ok=True)
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
-    with LOCK_FILE.open("a+b") as lock:
+    with lock_file.open("a+b") as lock:
         try:
             lock_exclusive(lock, blocking=False)
         except FileLockError as exc:
-            raise RuntimeError("交易服务已经在运行，拒绝启动第二个实例") from exc
+            tenant_desc = f" [{tenant_profile.tenant_id}]" if tenant_profile else ""
+            raise RuntimeError(f"交易服务实例{tenant_desc}已经在运行，拒绝启动重复实例") from exc
         lock.seek(0)
         lock.write(f"{os.getpid()}\n".encode())
         lock.flush()
         lock.truncate()
-        PID_FILE.write_text(str(os.getpid()))
+        pid_file.write_text(str(os.getpid()))
         store = TradingStore()
+        service_name = f"trading_service:{tenant_profile.tenant_id}" if tenant_profile else "trading_service"
         runtime_manifest = publish_approval_runtime_manifest(store, os.getpid())
         ensure_default_budgets(store)
         sync_strategy_experiments(store, settings)
         store.operational_event(
-            "trading_service", "PROCESS_START", "STARTING",
-            {"pid": os.getpid(), "approval_runtime_manifest": runtime_manifest},
+            service_name, "PROCESS_START", "STARTING",
+            {"pid": os.getpid(), "tenant_id": getattr(tenant_profile, "tenant_id", None), "approval_runtime_manifest": runtime_manifest},
         )
         try:
             from futu_quant.radar_control import start as start_radar
@@ -1170,10 +1212,20 @@ def main() -> None:
                 "volatility_scanner", "AUTO_START", "DEGRADED", {"error": str(exc)},
             )
         push_context = None
+
+        def _make_broker():
+            if tenant_profile:
+                return FutuPaperBroker(
+                    settings,
+                    trading_env_override=tenant_profile.trading_env,
+                    account_id_override=tenant_profile.account_id,
+                )
+            return FutuPaperBroker(settings)
+
         try:
             if futu_sdk_preflight(store, AlertManager(store), settings, force=True):
                 try:
-                    push_context = open_order_push(FutuPaperBroker(settings), store)
+                    push_context = open_order_push(_make_broker(), store)
                 except Exception as exc:
                     store.set_setting("order_push_connected", "false")
                     store.heartbeat(
@@ -1181,8 +1233,8 @@ def main() -> None:
                         f"推送连接失败，已启用轮询兜底：{exc}", os.getpid(),
                     )
                 try:
-                    broker = FutuPaperBroker(settings)
-                    startup_recovery(store, broker, ExecutionManager(broker, store))
+                    broker = _make_broker()
+                    startup_recovery(store, broker, ExecutionManager(broker, store, tenant=tenant_profile))
                 except Exception as exc:
                     store.set_setting("connectivity_degraded", "true")
                     store.set_setting("recovery_blocked", "true")
@@ -1198,7 +1250,7 @@ def main() -> None:
                 if push_context is None:
                     if futu_sdk_preflight(store, AlertManager(store), settings):
                         try:
-                            push_context = open_order_push(FutuPaperBroker(settings), store)
+                            push_context = open_order_push(_make_broker(), store)
                         except Exception as exc:
                             store.set_setting("order_push_connected", "false")
                             store.heartbeat(
@@ -1206,9 +1258,9 @@ def main() -> None:
                             )
                 try:
                     settings = Settings.load(refresh=True)
-                    service_cycle(settings, store)
+                    service_cycle(settings, store, tenant=tenant_profile)
                 except Exception as exc:
-                    store.heartbeat("trading_service", "ERROR", str(exc), os.getpid())
+                    store.heartbeat(service_name, "ERROR", str(exc), os.getpid())
                     AlertManager(store).send("ERROR", "SERVICE_CYCLE_ERROR", str(exc))
                 if args.once or STOP_EVENT.is_set():
                     break
@@ -1217,10 +1269,10 @@ def main() -> None:
             if push_context is not None:
                 push_context.close()
             store.set_setting("order_push_connected", "false")
-            store.heartbeat("trading_service", "STOPPED", "服务已停止", os.getpid())
-            store.operational_event("trading_service", "PROCESS_STOP", "STOPPED", {"pid": os.getpid()})
-            PID_FILE.unlink(missing_ok=True)
-            STOP_FILE.unlink(missing_ok=True)
+            store.heartbeat(service_name, "STOPPED", "服务已停止", os.getpid())
+            store.operational_event(service_name, "PROCESS_STOP", "STOPPED", {"pid": os.getpid()})
+            pid_file.unlink(missing_ok=True)
+            stop_file.unlink(missing_ok=True)
             try:
                 from futu_quant.broker import close_all_connections
                 close_all_connections()

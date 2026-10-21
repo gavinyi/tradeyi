@@ -126,6 +126,8 @@ def test_urgent_exit_retry_on_network_glitch():
         mock_broker.settings = MagicMock(trading_env="SIMULATE")
         mock_broker.trading_env = "SIMULATE"
         mock_broker.trd_env = "SIMULATE"
+        # 显式账号：MagicMock 自动属性会被 resolve_tenant 当真实账号解析失败
+        mock_broker.account_id = "20170229"
         mock_broker.positions.return_value = pd.DataFrame([{"code": "US.AMD261023P550000", "qty": 1.0, "can_sell_qty": 1.0}])
 
         # 模拟前 2 次网络断开，第 3 次成功返回

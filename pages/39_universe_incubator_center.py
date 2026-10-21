@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
@@ -163,6 +162,15 @@ with tab_recall:
             })
         st.dataframe(pd.DataFrame(rec_data), hide_index=True, width="stretch")
 
+def _safe_float(v: object, default: float = 0.0) -> float:
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _format_lifecycle_event(event: dict) -> dict:
     created_at = event.get("created_at", "")
     event_type = event.get("event_type", "")
@@ -192,7 +200,7 @@ def _format_lifecycle_event(event: dict) -> dict:
     params = ""
 
     if event_type == "PROMOTION":
-        score = float(details.get("score", 0))
+        score = _safe_float(details.get("score"), 0.0)
         track = details.get("track_mode", "常规")
         industry = details.get("industry", "其他")
         replaced = details.get("replaced_symbol")
@@ -221,9 +229,10 @@ def _format_lifecycle_event(event: dict) -> dict:
     elif event_type == "SANDBOX_SIGNAL_CAPTURED":
         intraday = details.get("intraday_move", "")
         spread = details.get("spread_pct", "")
-        price = details.get("last_price", 0)
-        reason = f"沙盒捕获突破：日内异动 {intraday}，买卖价差 {spread}，现价 ${float(price):,.2f}"
-        params = f"异动: {intraday} | 价差: {spread} | 现价: ${float(price):,.2f}"
+        price = _safe_float(details.get("last_price"), 0.0)
+        price_str = f"${price:,.2f}" if price > 0 else "—"
+        reason = f"沙盒捕获突破：日内异动 {intraday}，买卖价差 {spread}，现价 {price_str}"
+        params = f"异动: {intraday} | 价差: {spread} | 现价: {price_str}"
 
     elif event_type == "SYNC_RUNTIME":
         core = details.get("core_count", 0)
@@ -273,37 +282,58 @@ with tab_events:
     if not raw_events:
         st.info("暂无生命周期事件记录。")
     else:
-        china_tz = ZoneInfo("Asia/Shanghai")
-        now_china_date = datetime.now(timezone.utc).astimezone(china_tz).date()
-
-        def _is_today(ts_str: str) -> bool:
-            if not ts_str:
-                return False
+        today_utc_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if hasattr(store, "universe_lifecycle_summary"):
+            stats = store.universe_lifecycle_summary(today_prefix=today_utc_prefix)
+        else:
             try:
-                dt = datetime.fromisoformat(ts_str)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt.astimezone(china_tz).date() == now_china_date
+                with store.connection() as connection:
+                    rows = connection.execute(
+                        "SELECT event_type, count(*) FROM universe_lifecycle_events GROUP BY event_type"
+                    ).fetchall()
+                    stats = {str(r[0]): int(r[1]) for r in rows}
+                    row = connection.execute(
+                        "SELECT count(*) FROM universe_lifecycle_events WHERE created_at LIKE ?",
+                        (f"{today_utc_prefix}%",),
+                    ).fetchone()
+                    stats["_today"] = int(row[0]) if row and row[0] is not None else 0
             except Exception:
-                return False
-
-        today_count = sum(1 for e in raw_events if _is_today(e.get("created_at", "")))
-        promotion_count = sum(1 for e in raw_events if e.get("event_type") == "PROMOTION")
-        eviction_count = sum(
-            1 for e in raw_events
-            if e.get("event_type") in ("FAST_EVICTION", "DEMOTION") or "EVICTION" in e.get("event_type", "")
-        )
-        signal_count = sum(1 for e in raw_events if e.get("event_type") == "SANDBOX_SIGNAL_CAPTURED")
+                stats = {
+                    "_today": sum(1 for e in raw_events if str(e.get("created_at", "")).startswith(today_utc_prefix)),
+                    "PROMOTION": sum(1 for e in raw_events if e.get("event_type") == "PROMOTION"),
+                    "FAST_EVICTION": sum(1 for e in raw_events if e.get("event_type") == "FAST_EVICTION"),
+                    "DEMOTION": sum(1 for e in raw_events if e.get("event_type") == "DEMOTION"),
+                    "SANDBOX_SIGNAL_CAPTURED": sum(1 for e in raw_events if e.get("event_type") == "SANDBOX_SIGNAL_CAPTURED"),
+                }
+        today_count = stats.get("_today", 0)
+        promotion_count = stats.get("PROMOTION", 0)
+        eviction_count = stats.get("FAST_EVICTION", 0) + stats.get("DEMOTION", 0)
+        signal_count = stats.get("SANDBOX_SIGNAL_CAPTURED", 0)
 
         kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
-        kpi_col1.metric("今日事件总数", f"{today_count} 项", help="今日(中国时间)系统触发的全部生命周期与审计动作")
-        kpi_col2.metric("外援实盘晋级", f"{promotion_count} 次", help="历史累计通过沙盒孵化与ML精排晋级外援实盘池的次数")
-        kpi_col3.metric("风控秒踢 / 清退", f"{eviction_count} 次", help="触发价差恶化、连续硬止损或授权到期的移出次数")
-        kpi_col4.metric("沙盒异动捕获", f"{signal_count} 次", help="沙盒在全市场高流动性标的中实时捕获的突破信号总量")
+        kpi_col1.metric("今日事件总数", f"{today_count} 项", help="今日(UTC自然日)全系统触发的全部生命周期与审计动作")
+        kpi_col2.metric("外援实盘晋级", f"{promotion_count} 次", help="历史全量真实累计通过沙盒孵化与ML精排晋级外援实盘池的次数")
+        kpi_col3.metric("风控秒踢 / 清退", f"{eviction_count} 次", help="历史全量真实累计触发价差恶化、连续硬止损或授权到期的移出次数")
+        kpi_col4.metric("沙盒异动捕获", f"{signal_count} 次", help="沙盒在全市场高流动性标的中实时捕获的突破信号全量真实累计")
 
         st.markdown("---")
 
-        parsed_list = [_format_lifecycle_event(e) for e in raw_events]
+        parsed_list = []
+        for e in raw_events:
+            try:
+                parsed_list.append(_format_lifecycle_event(e))
+            except Exception as exc:
+                parsed_list.append({
+                    "created_at": e.get("created_at", ""),
+                    "标的代码": e.get("symbol", "全部 / 系统"),
+                    "生命周期动作": f"⚠️ {e.get('event_type', 'UNKNOWN')}",
+                    "决策原因与业务影响": f"原始数据解析异常已隔离: {exc}",
+                    "审计核验 / 关键参数": "——",
+                    "_raw_symbol": e.get("symbol", ""),
+                    "_event_type": e.get("event_type", ""),
+                    "_category": "ERROR",
+                    "_details_json": str(e.get("details_json", "")),
+                })
         df_all = pd.DataFrame(parsed_list)
         if "created_at" in df_all.columns:
             df_all = china_time_columns(df_all)

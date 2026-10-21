@@ -29,11 +29,46 @@ class ExecutionResult:
 
 
 class ExecutionManager:
-    def __init__(self, broker, store: TradingStore | None = None, alerts: AlertManager | None = None):
+    def __init__(
+        self,
+        broker,
+        store: TradingStore | None = None,
+        alerts: AlertManager | None = None,
+        tenant: Any | None = None,
+        tenant_registry: dict[str, Any] | None = None,
+    ):
         self.broker = broker
         self.store = store or TradingStore()
         self.risk = RiskEngine(self.store)
         self.alerts = alerts or AlertManager(self.store)
+        self.tenant_registry = tenant_registry
+
+        from .tenant import resolve_tenant
+        broker_acc = getattr(self.broker, "account_id", None)
+        broker_settings = getattr(self.broker, "settings", None)
+        raw_env = getattr(self.broker, "trading_env", None)
+        if raw_env is None or not isinstance(raw_env, (str, bytes)):
+            raw_env = getattr(broker_settings, "trading_env", "SIMULATE")
+        broker_env = str(raw_env).split(".")[-1].upper()
+
+        self.tenant = resolve_tenant(
+            tenant,
+            account_id=broker_acc,
+            env=broker_env,
+            registry=self.tenant_registry,
+            strict=bool(tenant),
+        )
+        if tenant and self.tenant:
+            if broker_env != self.tenant.trading_env:
+                raise ValueError(
+                    f"租户环境冲突：租户 '{self.tenant.tenant_id}' 声明环境为 {self.tenant.trading_env}，"
+                    f"但券商实际环境为 {broker_env}"
+                )
+            if broker_acc and str(broker_acc).strip() != str(self.tenant.account_id).strip():
+                raise ValueError(
+                    f"租户账号冲突：租户 '{self.tenant.tenant_id}' 绑定账号为 {self.tenant.account_id}，"
+                    f"但券商实际账号为 {broker_acc}"
+                )
 
     def submit_limit(
         self, strategy_id: str, intent_key: str, symbol: str, side: str,
@@ -63,7 +98,11 @@ class ExecutionManager:
                 except Exception:
                     pass
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
-        override_mode = self.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
+        tenant_id = getattr(self.tenant, "tenant_id", "") if self.tenant else ""
+        if tenant_id:
+            metadata.setdefault("tenant_id", tenant_id)
+        tenant_mode_override = self.store.get_setting(f"strategy_execution_mode:{tenant_id}:{strategy_id}", "") if tenant_id else ""
+        override_mode = tenant_mode_override or self.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
         broker_settings = getattr(self.broker, "settings", None)
         raw_env = getattr(self.broker, "trading_env", None)
         if raw_env is None or not isinstance(raw_env, (str, bytes)):
@@ -155,7 +194,8 @@ class ExecutionManager:
         price = self._initial_smart_price(symbol, side, float(price), metadata)
         acc_tag = f":{broker_account_id}" if broker_account_id and str(broker_account_id) not in intent_key else ""
         intent, created = self.store.create_intent(
-            strategy_id, f"{intent_key}{acc_tag}:{mode}", symbol, side, int(quantity), float(price), metadata
+            strategy_id, f"{intent_key}{acc_tag}:{mode}", symbol, side, int(quantity), float(price), metadata,
+            tenant_id=tenant_id,
         )
         if not created:
             return ExecutionResult(
@@ -363,6 +403,10 @@ class ExecutionManager:
             expected_env = "REAL" if intent_mode == "REAL" else "SIMULATE"
             if expected_env != broker_env:
                 continue
+            if self.tenant:
+                intent_tenant = str(intent.get("tenant_id") or "")
+                if intent_tenant and intent_tenant != self.tenant.tenant_id:
+                    continue
             broker_order_id = str(intent.get("broker_order_id") or "")
             if not broker_order_id or broker_order_id in seen_order_ids:
                 continue
@@ -405,6 +449,10 @@ class ExecutionManager:
             return reference
 
     def _order_environment_ok(self, intent: dict) -> bool:
+        if self.tenant:
+            intent_tenant = str(intent.get("tenant_id") or "")
+            if intent_tenant and intent_tenant != self.tenant.tenant_id:
+                return False
         mode = str(intent.get("intent_key", "")).rsplit(":", 1)[-1].upper()
         expected = {"PAPER": "SIMULATE", "REAL": "REAL"}.get(mode)
         broker_settings = getattr(self.broker, "settings", None)

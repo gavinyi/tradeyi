@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from futu_quant.broker import BrokerError, FutuPaperBroker
+from futu_quant.broker import BrokerError
 from futu_quant.config import (
     Settings, normalize_us_symbol, save_core_satellite_settings, save_core_satellite_symbols,
     save_gamma_symbols, save_trading_preferences, save_volatility_symbols,
@@ -18,18 +18,21 @@ from futu_quant.core_validation import (
     load_core_daily_validation,
 )
 from futu_quant.store import TradingStore
-from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
+from futu_quant.ui import (
+    chinese_columns, render_admin_login, render_sidebar, get_current_tenant, get_tenant_broker,
+)
 
 
 st.set_page_config(page_title="交易配置", page_icon="⚙️", layout="wide")
-render_sidebar(Settings.load())
-st.title("交易配置")
-st.caption("仅配置美股模拟盘标的和每次委托股数。")
-
 settings = Settings.load()
-broker = FutuPaperBroker(settings)
+render_sidebar(settings)
+current_tenant = get_current_tenant(settings)
+broker = get_tenant_broker(settings)
 store = TradingStore()
 admin = render_admin_login()
+
+st.title(f"{current_tenant.get('short_name', '租户')}交易配置")
+st.caption(f"当前操作租户：**{current_tenant.get('label')}** · 管理标的池与每次委托参数。")
 
 
 @st.cache_data(ttl=3600, show_spinner="正在从富途载入美股证券目录……")

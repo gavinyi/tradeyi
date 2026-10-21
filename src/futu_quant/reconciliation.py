@@ -20,41 +20,53 @@ def _strategy_enable_keys(strategy_id: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(keys))
 
 
-def _disable_strategy_for_reconciliation(store, strategy_id: str) -> None:
-    restore_key = f"strategy_reconciliation_restore:{strategy_id}"
+def _disable_strategy_for_reconciliation(store, strategy_id: str, prefix: str = "") -> None:
+    restore_key = f"strategy_reconciliation_restore:{prefix}{strategy_id}"
     if not store.get_setting(restore_key, ""):
         restore = {
             key: store.get_setting(key, "")
             for key in _strategy_enable_keys(strategy_id)
         }
         store.set_setting(restore_key, json.dumps(restore, ensure_ascii=False))
-    store.set_setting(f"strategy_reconciliation_disabled:{strategy_id}", "true")
-    for key in _strategy_enable_keys(strategy_id):
-        store.set_setting(key, "false")
+    store.set_setting(f"strategy_reconciliation_disabled:{prefix}{strategy_id}", "true")
+    if prefix:
+        store.set_setting(f"strategy_enabled:{prefix}{strategy_id}", "false")
+    else:
+        for key in _strategy_enable_keys(strategy_id):
+            store.set_setting(key, "false")
 
 
-def _recover_strategy_from_reconciliation(store, strategy_id: str) -> None:
-    marker = f"strategy_reconciliation_disabled:{strategy_id}"
+def _recover_strategy_from_reconciliation(store, strategy_id: str, prefix: str = "") -> None:
+    marker = f"strategy_reconciliation_disabled:{prefix}{strategy_id}"
     if store.get_setting(marker, "false").lower() != "true":
         return
-    restore_raw = store.get_setting(f"strategy_reconciliation_restore:{strategy_id}", "")
+    restore_raw = store.get_setting(f"strategy_reconciliation_restore:{prefix}{strategy_id}", "")
     try:
         restore = json.loads(restore_raw) if restore_raw else {}
     except json.JSONDecodeError:
         restore = {}
-    for key in _strategy_enable_keys(strategy_id):
-        previous = str(restore.get(key, "true") or "true")
-        store.set_setting(key, previous)
+    if prefix:
+        previous = str(restore.get(f"strategy_enabled:{prefix}{strategy_id}", "true") or "true")
+        store.set_setting(f"strategy_enabled:{prefix}{strategy_id}", previous)
+    else:
+        for key in _strategy_enable_keys(strategy_id):
+            previous = str(restore.get(key, "true") or "true")
+            store.set_setting(key, previous)
     store.set_setting(marker, "false")
-    store.set_setting(f"strategy_reconciliation_restore:{strategy_id}", "")
+    store.set_setting(f"strategy_reconciliation_restore:{prefix}{strategy_id}", "")
     store.audit(
         "RECONCILIATION_STRATEGY_AUTO_RECOVERED",
-        {"strategy": strategy_id, "restored_settings": restore},
+        {"strategy": strategy_id, "restored_settings": restore, "prefix": prefix},
         strategy_id,
     )
 
 
-def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
+def reconcile_ledgers(
+    store,
+    broker,
+    tolerance: float = 1e-6,
+    tenant_id: str | None = None,
+) -> pd.DataFrame:
     broker_env = str(getattr(broker, "trading_env", "SIMULATE")).upper()
     broker_account_id = getattr(broker, "account_id", None)
     positions = broker.positions()
@@ -65,7 +77,7 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
         if not positions.empty else {}
     )
     virtual_rows = [
-        row for row in store.virtual_positions(env=broker_env, account_id=broker_account_id)
+        row for row in store.virtual_positions(env=broker_env, account_id=broker_account_id, tenant_id=tenant_id)
         if futu_reconciliation_symbol(row["symbol"])
     ]
     ledger_qty: dict[str, float] = {}
@@ -78,6 +90,7 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
     reports = []
     current_symbols = set(broker_qty) | set(ledger_qty)
     acc_prefix = f"{broker_account_id}:" if broker_account_id else ""
+    tenant_prefix = f"{tenant_id}:" if tenant_id else (f"{broker_account_id}:" if broker_account_id else "")
     for key in store.settings_with_prefix(f"symbol_blocked:{acc_prefix}"):
         symbol = key.removeprefix(f"symbol_blocked:{acc_prefix}")
         if symbol not in current_symbols or not futu_reconciliation_symbol(symbol):
@@ -107,16 +120,17 @@ def reconcile_ledgers(store, broker, tolerance: float = 1e-6) -> pd.DataFrame:
         if status == "MISMATCH":
             for strategy in strategy_owners:
                 mismatched_strategies.add(strategy)
-                _disable_strategy_for_reconciliation(store, strategy)
+                _disable_strategy_for_reconciliation(store, strategy, prefix=tenant_prefix)
         reports.append({
             "symbol": symbol, "broker_quantity": actual, "ledger_quantity": ledger,
             "difference": difference, "status": status,
             "affected_strategies": ",".join(sorted(strategy_owners)),
         })
-    for key in store.settings_with_prefix("strategy_reconciliation_disabled:"):
-        strategy = key.removeprefix("strategy_reconciliation_disabled:")
+    scan_prefix = f"strategy_reconciliation_disabled:{tenant_prefix}"
+    for key in store.settings_with_prefix(scan_prefix):
+        strategy = key.removeprefix(scan_prefix)
         if strategy not in mismatched_strategies:
-            _recover_strategy_from_reconciliation(store, strategy)
+            _recover_strategy_from_reconciliation(store, strategy, prefix=tenant_prefix)
     store.set_setting(f"recovery_blocked:{broker_account_id}" if broker_account_id else "recovery_blocked", str(bool(mismatched_strategies)).lower())
     if mismatched_strategies:
         store.record_incident(

@@ -7,7 +7,7 @@ from pathlib import Path
 import math
 import sqlite3
 import time
-from typing import Iterator
+from typing import Any, Iterator
 
 
 DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "trading.db"
@@ -42,9 +42,10 @@ def _json_dumps(value) -> str:
 
 
 class TradingStore:
-    def __init__(self, path: Path | str = DEFAULT_DB):
+    def __init__(self, path: Path | str = DEFAULT_DB, tenant_registry: dict[str, Any] | None = None):
         self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.tenant_registry = tenant_registry
         self.initialize()
 
     @contextmanager
@@ -128,6 +129,24 @@ class TradingStore:
                     );
                     """
                 )
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(order_intents)")}
+                if "tenant_id" not in columns:
+                    connection.execute("ALTER TABLE order_intents ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+                    connection.execute("CREATE INDEX IF NOT EXISTS idx_intents_tenant ON order_intents(tenant_id, strategy_id, created_at DESC)")
+                # 存量意图按尾段模式和状态精确派生回填，严禁残留空白或哑数据
+                connection.execute(
+                    """UPDATE order_intents SET tenant_id = 'futu_real_master'
+                    WHERE (intent_key LIKE '%:REAL' OR status LIKE 'REAL%')
+                    AND (tenant_id IS NULL OR tenant_id = '')"""
+                )
+                connection.execute(
+                    """UPDATE order_intents SET tenant_id = 'futu_paper_sandbox'
+                    WHERE (tenant_id IS NULL OR tenant_id = '')"""
+                )
+                v_cols = {row["name"] for row in connection.execute("PRAGMA table_info(virtual_allocations)")}
+                if "tenant_id" not in v_cols:
+                    connection.execute("ALTER TABLE virtual_allocations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+                    connection.execute("CREATE INDEX IF NOT EXISTS idx_virtual_alloc_tenant ON virtual_allocations(tenant_id, strategy_id, symbol)")
                 return
             connection.executescript(
                 """
@@ -616,9 +635,25 @@ class TradingStore:
                 "reprice_count": "INTEGER NOT NULL DEFAULT 0",
                 "last_reprice_at": "TEXT",
                 "fees": "REAL NOT NULL DEFAULT 0",
+                "tenant_id": "TEXT NOT NULL DEFAULT ''",
             }.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE order_intents ADD COLUMN {name} {definition}")
+            v_cols = {row["name"] for row in connection.execute("PRAGMA table_info(virtual_allocations)")}
+            if "tenant_id" not in v_cols:
+                connection.execute("ALTER TABLE virtual_allocations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
+                connection.execute("CREATE INDEX IF NOT EXISTS idx_virtual_alloc_tenant ON virtual_allocations(tenant_id, strategy_id, symbol)")
+            # 存量意图按尾段模式和状态精确派生回填，严禁残留空白或哑数据
+            connection.execute(
+                """UPDATE order_intents SET tenant_id = 'futu_real_master'
+                WHERE (intent_key LIKE '%:REAL' OR status LIKE 'REAL%')
+                AND (tenant_id IS NULL OR tenant_id = '')"""
+            )
+            connection.execute(
+                """UPDATE order_intents SET tenant_id = 'futu_paper_sandbox'
+                WHERE (tenant_id IS NULL OR tenant_id = '')"""
+            )
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_intents_tenant ON order_intents(tenant_id, strategy_id, created_at DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_logs_id_desc ON decision_logs(id DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_strategy_id ON decision_logs(strategy_id, id DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_symbol_id ON decision_logs(symbol, id DESC)")
@@ -724,16 +759,18 @@ class TradingStore:
     def create_intent(
         self, strategy_id: str, intent_key: str, symbol: str, side: str,
         quantity: int, limit_price: float, metadata: dict | None = None,
+        tenant_id: str | None = None,
     ) -> tuple[dict, bool]:
         now = self.now()
+        effective_tenant = tenant_id or (metadata or {}).get("tenant_id", "")
         try:
             with self.connection() as connection:
                 cursor = connection.execute(
                     """INSERT INTO order_intents
-                    (strategy_id,intent_key,symbol,side,quantity,limit_price,metadata_json,created_at,updated_at)
-                    VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (strategy_id,intent_key,symbol,side,quantity,limit_price,metadata_json,created_at,updated_at,tenant_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (strategy_id, intent_key, symbol, side, quantity, limit_price,
-                     json.dumps(metadata or {}, separators=(",", ":")), now, now),
+                     json.dumps(metadata or {}, separators=(",", ":")), now, now, str(effective_tenant or "")),
                 )
                 row = connection.execute(
                     "SELECT * FROM order_intents WHERE id=?", (cursor.lastrowid,)
@@ -972,19 +1009,38 @@ class TradingStore:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(query, params).fetchall()]
 
-    def kill_switch(self, account_id: str | int | None = None) -> bool:
+    def kill_switch(self, account_id: str | int | None = None, tenant_id: str | None = None) -> bool:
         if self.get_setting("kill_switch", "false").lower() == "true":
+            return True
+        if tenant_id and self.get_setting(f"kill_switch:{tenant_id}", "false").lower() == "true":
             return True
         if account_id:
             return self.get_setting(f"kill_switch:{account_id}", "false").lower() == "true"
         return False
 
-    def set_kill_switch(self, enabled: bool, account_id: str | int | None = None) -> None:
+    def set_kill_switch(
+        self, enabled: bool, account_id: str | int | None = None, tenant_id: str | None = None,
+    ) -> None:
         val = "true" if enabled else "false"
+        if tenant_id:
+            self.set_setting(f"kill_switch:{tenant_id}", val)
         if account_id:
             self.set_setting(f"kill_switch:{account_id}", val)
-        else:
+        if not tenant_id and not account_id:
             self.set_setting("kill_switch", val)
+
+    def get_tenant_setting(self, tenant_id: str, key: str, default: str = "") -> str:
+        """获取指定租户命名空间下的配置；若租户未配置，回退到全局默认配置"""
+        if tenant_id:
+            val = self.get_setting(f"{key}:{tenant_id}", "")
+            if val:
+                return val
+        return self.get_setting(key, default)
+
+    def set_tenant_setting(self, tenant_id: str, key: str, value: str) -> None:
+        """写入指定租户命名空间下的配置项"""
+        target_key = f"{key}:{tenant_id}" if tenant_id else key
+        self.set_setting(target_key, value)
 
     def audit(self, event_type: str, payload: dict, strategy_id: str | None = None) -> None:
         with self.connection() as connection:
@@ -993,11 +1049,17 @@ class TradingStore:
                 (event_type, strategy_id, _json_dumps(payload), self.now()),
             )
 
-    def intents(self, limit: int = 500) -> list[dict]:
+    def intents(self, limit: int = 500, tenant_id: str | None = None) -> list[dict]:
         with self.connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM order_intents ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
+            if tenant_id:
+                rows = connection.execute(
+                    "SELECT * FROM order_intents WHERE tenant_id=? ORDER BY id DESC LIMIT ?",
+                    (tenant_id, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM order_intents ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall()
             return [dict(row) for row in rows]
 
     def intent(self, intent_id: int) -> dict | None:
@@ -2156,16 +2218,38 @@ class TradingStore:
                 (strategy_id, symbol),
             )
 
-    def virtual_positions(self, env: str | None = None, account_id: int | str | None = None) -> list[dict]:
-        target_env = env.upper() if env else None
-        target_account = str(account_id).strip() if account_id is not None else ""
+    def virtual_positions(
+        self,
+        env: str | None = None,
+        account_id: int | str | None = None,
+        tenant_id: str | None = None,
+    ) -> list[dict]:
+        from .tenant import resolve_tenant
+        if tenant_id:
+            target_profile = resolve_tenant(tenant_id, account_id=account_id, env=env, registry=self.tenant_registry, strict=True)
+        elif account_id or env:
+            target_profile = resolve_tenant(None, account_id=account_id, env=env, registry=self.tenant_registry, strict=False)
+        else:
+            target_profile = None
+
+        target_env = (target_profile.trading_env if target_profile else env).upper() if (target_profile or env) else None
+        target_account = str(target_profile.account_id if target_profile else account_id or "").strip()
+        target_tid = str(target_profile.tenant_id if target_profile else tenant_id or "").strip()
         if target_env == "REAL":
-            # 严格实盘模式：持仓严格以真实成交流水为唯一真理，并按账户 ID 隔离
+            # 严格实盘模式：持仓严格以真实成交流水为唯一真理，并按账户 ID / 租户 ID 隔离
             account_filter = ""
             params = []
-            if target_account:
+            if target_tid and target_account:
+                account_filter = "AND (tenant_id = ? OR json_extract(metadata_json, '$.account_id') = ?)"
+                params.extend([target_tid, target_account])
+            elif target_account:
                 account_filter = "AND json_extract(metadata_json, '$.account_id') = ?"
                 params.append(target_account)
+            elif target_tid:
+                account_filter = "AND tenant_id = ?"
+                params.append(target_tid)
+            v_param = target_tid if target_tid else ""
+            params.append(v_param)
             with self.connection() as connection:
                 query = f"""WITH fills AS (
                     SELECT strategy_id, symbol,
@@ -2175,11 +2259,22 @@ class TradingStore:
                     WHERE status NOT LIKE 'SHADOW%' AND (intent_key LIKE '%:REAL' OR status LIKE 'REAL%')
                     {account_filter}
                     GROUP BY strategy_id, symbol
+                ), v_alloc AS (
+                    SELECT strategy_id, symbol, quantity, average_cost
+                    FROM virtual_allocations
+                    WHERE tenant_id = ? OR tenant_id = ''
+                ), keys AS (
+                    SELECT strategy_id, symbol FROM fills UNION
+                    SELECT strategy_id, symbol FROM v_alloc
                 )
-                SELECT strategy_id, symbol, qty AS quantity, COALESCE(avg_cost, 0) AS average_cost
-                FROM fills
-                WHERE ABS(qty) > 1e-9
-                ORDER BY strategy_id, symbol"""
+                SELECT keys.strategy_id, keys.symbol,
+                COALESCE(v.quantity, 0) + COALESCE(f.qty, 0) AS quantity,
+                COALESCE(NULLIF(v.average_cost, 0), f.avg_cost, 0) AS average_cost
+                FROM keys
+                LEFT JOIN fills f USING(strategy_id, symbol)
+                LEFT JOIN v_alloc v USING(strategy_id, symbol)
+                WHERE ABS(COALESCE(v.quantity, 0) + COALESCE(f.qty, 0)) > 1e-9
+                ORDER BY keys.strategy_id, keys.symbol"""
                 rows = connection.execute(query, params).fetchall()
                 return [dict(row) for row in rows]
 
@@ -2187,7 +2282,8 @@ class TradingStore:
         with self.connection() as connection:
             query = f"""WITH fills AS (
                 SELECT strategy_id,symbol,
-                SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE -filled_quantity END) qty
+                SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE -filled_quantity END) qty,
+                SUM(CASE WHEN side='BUY' THEN filled_quantity * average_fill_price ELSE 0 END) / MAX(1e-9, SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE 0 END)) as avg_cost
                 FROM order_intents WHERE status NOT LIKE 'SHADOW%' {env_filter}
                 GROUP BY strategy_id,symbol
             ), adjustments AS (
@@ -2199,7 +2295,7 @@ class TradingStore:
             )
             SELECT keys.strategy_id,keys.symbol,
             COALESCE(a.quantity,0)+COALESCE(f.qty,0)+COALESCE(r.quantity,0) quantity,
-            COALESCE(a.average_cost,0) average_cost
+            COALESCE(NULLIF(a.average_cost,0), f.avg_cost, 0) average_cost
             FROM keys LEFT JOIN fills f USING(strategy_id,symbol)
             LEFT JOIN virtual_allocations a USING(strategy_id,symbol)
             LEFT JOIN adjustments r USING(strategy_id,symbol)
@@ -2719,3 +2815,20 @@ class TradingStore:
                 "SELECT * FROM universe_lifecycle_events ORDER BY id DESC LIMIT ?", (limit,),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def universe_lifecycle_summary(self, today_prefix: str | None = None) -> dict[str, int]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT event_type, count(*) FROM universe_lifecycle_events GROUP BY event_type"
+            ).fetchall()
+            counts = {str(r[0]): int(r[1]) for r in rows}
+            counts["_total"] = sum(counts.values())
+            if today_prefix:
+                row = connection.execute(
+                    "SELECT count(*) FROM universe_lifecycle_events WHERE created_at LIKE ?",
+                    (f"{today_prefix}%",),
+                ).fetchone()
+                counts["_today"] = int(row[0]) if row and row[0] is not None else 0
+            else:
+                counts["_today"] = 0
+            return counts

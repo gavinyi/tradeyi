@@ -4,6 +4,14 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import subprocess
 
+# Windows GBK 控制台打印 ⚠️/🚨 等字符会抛 UnicodeEncodeError（有告警反而推不出去）；
+# stdout/stderr 强制 UTF-8 容错，保证巡检链路永不因打印中断。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from futu_quant.store import TradingStore
@@ -69,6 +77,138 @@ def inspect_and_alert():
             issues.append("🚨 **实盘风控急停触发**：富途香港账户当前处于急停状态，已阻断新开仓！")
     except Exception:
         pass
+
+    # 4.5 关注标的纳管监控（运维配置：runtime_config key ops_watch_symbols，JSON 字符串数组）
+    # 纯只读监控：读取订单意图与虚拟仓位，检测孤儿持仓；不触碰下单路径
+    watch_lines = []
+    try:
+        import json as _json
+        _raw_watch = store.get_setting("ops_watch_symbols", "")
+        _watch_symbols = [w for w in (_json.loads(_raw_watch) if _raw_watch.strip() else []) if isinstance(w, str) and w]
+    except Exception:
+        _watch_symbols = []
+    for _wsym in _watch_symbols:
+        try:
+            _ws_intents = [o for o in store.intents(limit=300) if o.get("symbol") == _wsym]
+            if not _ws_intents:
+                watch_lines.append(f"关注标的 {_wsym}：无订单意图记录")
+                continue
+            _latest = max(_ws_intents, key=lambda o: (o.get("updated_at") or o.get("created_at") or ""))
+            _lt = (_latest.get("updated_at") or _latest.get("created_at") or "")[:19]
+            # 租户环境从意图键事实派生（尾部 :<account_id>:<env>），不硬编码环境列表（N-Tenant 就绪）
+            _env_accounts = {}
+            for _o in _ws_intents:
+                _parts = str(_o.get("intent_key") or "").rsplit(":", 2)
+                if len(_parts) == 3 and _parts[2]:
+                    _env_accounts.setdefault(_parts[2], set()).add(_parts[1])
+            _tenant_qty = {}
+            _read_errs = []
+            for _env, _accs in sorted(_env_accounts.items()):
+                _q = 0.0
+                try:
+                    for _v in store.virtual_positions(env=_env):
+                        if _v.get("symbol") == _wsym:
+                            try:
+                                _q += float(_v.get("quantity") or 0)
+                            except (TypeError, ValueError):
+                                pass
+                except Exception as _re:
+                    _read_errs.append(f"{_env}:{type(_re).__name__}")
+                if _q:
+                    _label = _env if len(_accs) == 1 else _env + "@" + ",".join(sorted(a[-4:] for a in _accs))
+                    _tenant_qty[_label] = _q
+            if _read_errs:
+                issues.append(
+                    f"🚨 **关注标的 {_wsym} 监控数据读取异常**（{'; '.join(_read_errs)}）——"
+                    f"雷达本轮部分致盲，请检查 store/tenant 模块导入是否损坏"
+                )
+            # 决策流水证据：有近期策略决策 = 状态机在管，非孤儿；同时检测「止损触发但平仓受阻」
+            try:
+                _ws_decisions = [d for d in store.decisions(limit=2000) if d.get("symbol") == _wsym]
+                _recent_decs = [d for d in _ws_decisions if (d.get("created_at") or "") >= cutoff]
+            except Exception:
+                _recent_decs = []
+            for _label, _q in _tenant_qty.items():
+                if not _q:
+                    continue
+                _env = _label.split("@", 1)[0]
+                _acts = [
+                    o for o in _ws_intents
+                    if (o.get("updated_at") or "") >= cutoff and str(o.get("intent_key") or "").endswith(":" + _env)
+                ]
+                if not _acts and not _recent_decs:
+                    issues.append(
+                        f"⚠️ **关注标的 {_wsym} [{_label}] 持仓 {_q:g} 且近30分钟无管理动作与决策**"
+                        f"（疑似孤儿单，请检查策略状态机是否纳管）"
+                    )
+                # 硬止损触发但无新 SELL 意图 → 平仓受阻（报价门控/时段门控等）
+                _stop_decs = [d for d in _recent_decs if "止损触发" in str(d.get("reason") or "")]
+                if _stop_decs and not _acts:
+                    _last_reason = str(_stop_decs[-1].get("reason") or "")[:70]
+                    issues.append(
+                        f"🚨 **关注标的 {_wsym} [{_label}] 硬止损已触发但平仓未推进**：{_last_reason}"
+                        f"（近30分钟止损决策 {len(_stop_decs)} 次，无新 SELL 意图，请检查报价新鲜度/时段门控）"
+                    )
+            _recent_acts = [o for o in _ws_intents if (o.get("updated_at") or "") >= cutoff]
+            _recent_fills = [
+                o for o in _ws_intents
+                if (o.get("updated_at") or "") >= cutoff and str(o.get("status") or "").startswith("FILLED")
+            ]
+            _tenant_desc = "，".join(f"{_env} {_q:g}" for _env, _q in _tenant_qty.items() if _q) or "0"
+            _tail = (_latest.get("intent_key") or "")[-52:]
+            watch_lines.append(
+                f"关注标的 {_wsym}：虚拟持仓（{_tenant_desc}）；最新意图 …{_tail}"
+                f" 状态 `{_latest.get('status')}`（{_lt} UTC，近30分钟动作 {len(_recent_acts)} 次）"
+            )
+            if _recent_decs:
+                _last_dec = sorted(_recent_decs, key=lambda d: d.get("created_at") or "")[-1]
+                watch_lines.append(
+                    f"关注标的 {_wsym}：策略决策活跃（近30分钟 {len(_recent_decs)} 条），最新："
+                    f"{str(_last_dec.get('reason') or '')[:80]}"
+                )
+            for _rf in _recent_fills[:3]:
+                watch_lines.append(
+                    f"关注标的 {_wsym} 近30分钟成交：{_rf.get('side')} `{_rf.get('status')}`"
+                    f" 均价 ${_rf.get('average_fill_price')} x {_rf.get('filled_quantity')}"
+                )
+        except Exception as _e:
+            issues.append(f"关注标的 {_wsym} 监控读取异常: {_e}")
+
+    # 4.6 关注标的盘口快照（OpenD 行情，子进程 + 25s 硬超时保护，失败不阻断巡检主链路）
+    if _watch_symbols:
+        try:
+            import os as _os
+            import tempfile as _tf
+
+            _qscript = Path(__file__).resolve().parents[1] / "data" / "qa" / "ops_watch_quote.py"
+            if _qscript.exists():
+                _fd, _qp = _tf.mkstemp(suffix=".txt")
+                _os.close(_fd)
+                try:
+                    subprocess.run(
+                        [sys.executable, str(_qscript)],
+                        stdout=open(_qp, "wb"),
+                        stderr=subprocess.DEVNULL,
+                        cwd=str(Path(__file__).resolve().parents[1]),
+                        timeout=25,
+                        check=False,
+                        shell=False,
+                    )
+                    with open(_qp, "r", encoding="utf-8", errors="replace") as _fh:
+                        _qlines = [l[6:].strip() for l in _fh.read().splitlines() if l.startswith("QUOTE|")]
+                    if _qlines:
+                        watch_lines.extend("盘口：" + l for l in _qlines)
+                    else:
+                        watch_lines.append("盘口：本轮未取到行情数据（不影响巡检）")
+                except subprocess.TimeoutExpired:
+                    watch_lines.append("盘口：获取超时（25s），本轮跳过行情，不影响巡检")
+                finally:
+                    try:
+                        _os.unlink(_qp)
+                    except OSError:
+                        pass
+        except Exception:
+            pass
 
     # 5. 检查本地日志中的 FATAL / Traceback 致命报错 (最近30分钟)
     log_path = Path(__file__).resolve().parents[1] / "data" / "service.log"
@@ -137,6 +277,10 @@ def inspect_and_alert():
             for f in recent_fills[:3]
         ]
         msg_body += "\n• **近30分钟新成交**：\n  - " + "\n  - ".join(fill_lines) + "\n"
+
+    # 附加关注标的纳管监控摘要
+    if watch_lines:
+        msg_body += "\n• **关注标的纳管监控**：\n  - " + "\n  - ".join(watch_lines) + "\n"
 
     # 附加资产与持仓概况
     if acc_summary.get("usd_assets") != "-":

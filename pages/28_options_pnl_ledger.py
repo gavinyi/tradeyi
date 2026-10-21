@@ -3,7 +3,6 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from futu_quant.broker import FutuPaperBroker
 from futu_quant.config import Settings
 from futu_quant.option_pnl import build_option_pnl_ledger, option_pnl_summary
 from futu_quant.store import TradingStore
@@ -13,32 +12,31 @@ from futu_quant.ui import (
     chinese_columns,
     render_sidebar,
     translate_common_values,
-    get_active_battleground,
+    get_current_tenant,
+    get_tenant_broker,
 )
 
 
 st.set_page_config(page_title="期权盈亏台账", page_icon="💹", layout="wide")
 settings = Settings.load()
 render_sidebar(settings)
-battleground = get_active_battleground(settings)
-is_real = (battleground == "REAL")
-env_title = "实盘期权盈亏台账" if is_real else "模拟盘期权盈亏台账"
+current_tenant = get_current_tenant(settings)
+is_real = current_tenant.get("is_real", False)
+env_title = f"{current_tenant.get('short_name', '租户')}期权盈亏台账"
 
 st.title(env_title)
 if is_real:
-    st.error("🔴 当前呈现：实盘真金期权成交与已实现盈亏台账")
+    st.error(f"🔴 当前呈现：[{current_tenant.get('label')}] 期权成交与已实现盈亏台账")
 else:
-    st.caption("🟢 当前呈现：100万模拟沙盒期权成交与已实现盈亏台账")
+    st.caption(f"🟢 当前呈现：[{current_tenant.get('label')}] 期权成交与已实现盈亏台账")
 
 
 @st.cache_data(ttl=20, max_entries=4, show_spinner=False)
-def load_option_pnl(refresh_quotes: bool, target_env: str) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+def load_option_pnl(refresh_quotes: bool, tenant_key: str) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     store = TradingStore()
+    target_env = current_tenant.get("env", "SIMULATE")
     if refresh_quotes:
-        if target_env == "REAL":
-            broker = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
-        else:
-            broker = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
+        broker = get_tenant_broker(settings)
     else:
         broker = None
     return build_option_pnl_ledger(store, broker=broker, env=target_env)
@@ -69,7 +67,7 @@ def pnl_badge(value) -> str:
 
 
 refresh_quotes = st.toggle("刷新当前期权行情并计算未实现盈亏", value=True)
-ledger, orders, quote_status = load_option_pnl(refresh_quotes, target_env=battleground)
+ledger, orders, quote_status = load_option_pnl(refresh_quotes, tenant_key=current_tenant.get("id", "default"))
 st.caption(f"行情状态：{quote_status}")
 
 if ledger.empty and orders.empty:

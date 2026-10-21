@@ -707,9 +707,18 @@ def _review_issue_advice(review: StrategyReview) -> tuple[list[str], list[str]]:
             action_items = pd.DataFrame(action_items)
         top_actions = action_items.copy()
 
+        priority_order = {"高": 0, "中": 1, "低": 2}
+        if "优先级排序" not in top_actions.columns:
+            if "优先级" in top_actions.columns:
+                top_actions["优先级排序"] = top_actions["优先级"].map(lambda p: priority_order.get(p, 9))
+            else:
+                top_actions["优先级排序"] = 9
 
-
-        top_actions = top_actions.sort_values(["优先级排序", "对象"]).head(3)
+        sort_cols = [c for c in ["优先级排序", "对象"] if c in top_actions.columns]
+        if sort_cols:
+            top_actions = top_actions.sort_values(sort_cols).head(3)
+        else:
+            top_actions = top_actions.head(3)
         action_lines = [
             f"{row.get('对象', '')}：{row.get('建议动作', row.get('问题', ''))}".strip()
             for _, row in top_actions.iterrows()

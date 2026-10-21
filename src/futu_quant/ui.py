@@ -240,6 +240,7 @@ def get_registered_tenants(settings=None, include_disabled: bool = False) -> dic
     all_tenants = {
         "futuhk_real": {
             "id": "futuhk_real",
+            "tenant_id": "futu_real_master",
             "label": f"🟡 {hk_display_name} ({futuhk_id} · 现货再平衡与期权打猎)",
             "short_name": hk_display_name,
             "badge": "🟡 实盘 Futu HK",
@@ -254,6 +255,7 @@ def get_registered_tenants(settings=None, include_disabled: bool = False) -> dic
         },
         "moomoo_real": {
             "id": "moomoo_real",
+            "tenant_id": "moomoo_real",
             "label": f"🔴 {moomoo_display_name} ({moomoo_id} · 备用专户)",
             "short_name": moomoo_display_name,
             "badge": "🔴 实盘 Moomoo US",
@@ -268,6 +270,7 @@ def get_registered_tenants(settings=None, include_disabled: bool = False) -> dic
         },
         "sim_primary": {
             "id": "sim_primary",
+            "tenant_id": "futu_paper_sandbox",
             "label": f"🟢 美股模拟 沙盒大盘 ({sim_id} · 100万美元)",
             "short_name": "美股模拟沙盒",
             "badge": "🟢 模拟 SIMULATE",
@@ -281,6 +284,32 @@ def get_registered_tenants(settings=None, include_disabled: bool = False) -> dic
             "enabled": True,
         },
     }
+
+    # 动态融入通用多租户注册表 (N-Tenant) 中的其它扩展租户
+    try:
+        from .tenant import DEFAULT_TENANTS
+        for tid, prof in DEFAULT_TENANTS.items():
+            if tid in all_tenants or any(t.get("tenant_id") == tid for t in all_tenants.values()):
+                continue
+            is_real = (prof.trading_env == "REAL")
+            badge = f"🔴 {prof.display_name}" if is_real else f"🟢 {prof.display_name}"
+            all_tenants[tid] = {
+                "id": tid,
+                "tenant_id": tid,
+                "label": f"{badge} ({prof.account_id} · {prof.broker_type.upper()})",
+                "short_name": prof.display_name,
+                "badge": badge,
+                "env": prof.trading_env,
+                "security_firm": "FUTUSECURITIES" if prof.broker_type == "futu" else prof.broker_type.upper(),
+                "acc_id": prof.account_id,
+                "card_num": f"ACC-{prof.account_id}",
+                "desc": f"通用多租户架构动态接入专户 [{prof.display_name}]",
+                "is_real": is_real,
+                "auto_trade": prof.is_active,
+                "enabled": prof.is_active,
+            }
+    except Exception:
+        pass
 
     if include_disabled:
         return all_tenants

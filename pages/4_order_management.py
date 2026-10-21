@@ -6,30 +6,30 @@ import json
 import pandas as pd
 import streamlit as st
 
-from futu_quant.broker import BrokerError, FutuPaperBroker
+from futu_quant.broker import BrokerError
 from futu_quant.config import Settings
 from futu_quant.store import TradingStore
 from futu_quant.ui import (
     china_time_columns, chinese_columns, render_admin_login, render_sidebar,
-    translate_common_values, get_active_battleground,
+    translate_common_values, get_current_tenant, get_tenant_broker,
 )
 
 
 st.set_page_config(page_title="订单管理", page_icon="🧾", layout="wide")
 settings = Settings.load()
 render_sidebar(settings)
-battleground = get_active_battleground(settings)
-is_real = (battleground == "REAL")
-env_label = "实盘" if is_real else "模拟盘"
+current_tenant = get_current_tenant(settings)
+broker = get_tenant_broker(settings)
+battleground = str(current_tenant.get("env", "SIMULATE")).upper()
+is_real = current_tenant.get("is_real", False)
+env_label = current_tenant.get("short_name", "实盘" if is_real else "模拟盘")
 
 st.title(f"{env_label}订单管理")
 if is_real:
-    st.error("🔴 当前处于实盘真金战区：撤单操作将直接撤销富途美股真实账户中的挂单！请谨慎操作。")
-    broker = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
+    st.error(f"🔴 当前处于实盘战区 [{current_tenant.get('label')}]：撤单操作将直接撤销富途真实账户中的挂单！请谨慎操作。")
     env_suffix = "_real"
 else:
-    st.warning("🟢 当前处于模拟实验战区：撤单仅作用于美股模拟账户；已成交部分无法撤回。")
-    broker = FutuPaperBroker(settings, trading_env_override="SIMULATE", account_id_override=20170229)
+    st.warning(f"🟢 当前处于模拟沙盒战区 [{current_tenant.get('label')}]：撤单仅作用于该沙盒专户。")
     env_suffix = "_sim"
 
 store = TradingStore()
@@ -122,7 +122,8 @@ def shadow_order_sheet() -> None:
         "这里显示本地策略的 Shadow 虚拟订单，不会出现在富途模拟账户订单里。"
         "限价、成交数量和状态都从本地账本读取。"
     )
-    intents = pd.DataFrame(store.intents(limit=2000))
+    active_tid = current_tenant.get("tenant_id") or current_tenant.get("id")
+    intents = pd.DataFrame(store.intents(limit=2000, tenant_id=active_tid))
     if intents.empty:
         st.info("当前没有本地 Shadow 订单。")
         return
