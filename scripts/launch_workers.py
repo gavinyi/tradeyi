@@ -60,7 +60,7 @@ def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tu
 
     creationflags = 0
     if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
 
     root_dir = Path(__file__).resolve().parents[1]
     cmd = [py, "-u", str(root_dir / "scripts" / "run_service.py"), "--tenant", tenant.tenant_id]
@@ -75,6 +75,9 @@ def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tu
             close_fds=(sys.platform != "win32"),
         )
         time.sleep(1.0)
+        exit_code = proc.poll()
+        if exit_code is not None:
+            return False, None, f"启动后异常退出 (退出码: {exit_code})，详情见 {log_file_path.name}"
         new_pid = proc.pid
         return True, new_pid, f"启动成功 (PID: {new_pid})"
     except Exception as exc:
