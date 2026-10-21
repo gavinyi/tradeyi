@@ -30,8 +30,11 @@
 2. **进程生命周期与资源隔离**：
    - 单例锁与 PID 文件按租户前缀完全隔离（`trading-service-<tenant_id>.lock` / `.pid`）；
    - 伴生通道与外部组件（如 volatility-radar）受 `guard` 保护，防止多 Worker 启动时误复活被停掉的组件；
-3. **运维实测全绿**：
-   - 盘后拉起独立 Worker（`--tenant futu_paper_sandbox --once`）实测 Exit Code 0，完成调度后优雅断开 OpenD，主实盘服务（PID 13356）心跳 `HEALTHY` 零受扰。
+3. **自适应一键启停编排（工业级产品闭环）**：
+   - 新增 `scripts/launch_workers.py` 动态读取租户注册中心，自动识别所有 `is_active=True` 的活跃租户并并发拉起；
+   - 用户永远只需双击 `start.bat` 一键自适应全启，双击 `stop.bat` 级联扫描定向回收所有 Worker PID，告别多脚本与手动改参；
+4. **运维实测全绿**：
+   - 盘后拉起独立 Worker（`--tenant futu_paper_sandbox --once`）实测 Exit Code 0，完成调度后优雅断开 OpenD，主实盘服务（PID 13356）心跳 `HEALTHY` 零受扰；一键启停脚本实测通过。
 
 ### 阶段三：全局多租户视窗与端到端闭环（✅ 已放行）
 1. **UI 全局动态切换器**：
@@ -89,6 +92,7 @@
 - **Commit `3998495`**: `feat(tenant): 通用多租户架构演进三阶段全量落地`（20 文件 +1477 行）
 - **Commit `a4df962`**: `fix(service): 修复复盘任务表格键缺失并加固服务日志行缓冲`
 - **Commit `47301e2`**: `feat(options): 期权止损通道加固与复盘任务健壮性收口 (P1+P0.5)`（8 文件 +303 行）
+- **Commit `af8ab5e`**: `feat(ops): 配置驱动自适应多租户一键启停 (start.bat + launch_workers.py + stop.bat)`（4 文件 +264 行）
 
 ---
 
