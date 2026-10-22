@@ -428,6 +428,28 @@ def render_sidebar(settings=None) -> str:
     st.markdown(MOBILE_RESPONSIVE_CSS, unsafe_allow_html=True)
     current_tenant = render_sidebar_tenant_switcher(settings)
     active_env = current_tenant["env"]
+
+    # 全局视窗强警示：当前选定租户若存在对账断账或策略挂起，常驻醒目标红提醒
+    try:
+        from .store import TradingStore
+        store = TradingStore()
+        tid = current_tenant.get("tenant_id") or current_tenant.get("id")
+        acc = current_tenant.get("acc_id")
+
+        has_blocked_symbol = any(
+            str(store.get_setting(k, "")).lower() == "true"
+            for k in [f"recovery_blocked:{acc}", f"recovery_blocked:{tid}", "recovery_blocked"]
+        )
+        disabled_strats = [
+            k.split(":")[-1] for k in store.settings_with_prefix("strategy_reconciliation_disabled")
+            if str(store.get_setting(k, "")).lower() == "true" and (not tid or tid in k or not acc or str(acc) in k)
+        ]
+        if has_blocked_symbol or disabled_strats:
+            strat_txt = f"[{'、'.join(disabled_strats)}]" if disabled_strats else ""
+            st.sidebar.error(f"🚨 **对账异常警示**：当前租户策略 {strat_txt} 存在持仓差异已被暂停！请前往风控与对账中心核查平账。")
+    except Exception:
+        pass
+
     if settings is not None:
         st.sidebar.caption(f"OpenD 网关: {settings.host}:{settings.port}")
         st.sidebar.caption(

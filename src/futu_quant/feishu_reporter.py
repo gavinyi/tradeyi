@@ -170,13 +170,13 @@ class FeishuReporter:
         if is_recovered:
             header_color = "green"
             icon = "🟢"
-            status_title = f"{icon} 【故障恢复】{event_type} 已恢复正常"
+            status_title = "🟢 【故障自愈】三账对账已恢复一致" if event_type == "LEDGER_MISMATCH" else f"{icon} 【故障恢复】{event_type} 已恢复正常"
             level_text = "🟢 **级别**: **NORMAL (已恢复正常)**"
-        elif sev_upper == "CRITICAL":
+        elif sev_upper == "CRITICAL" or event_type == "LEDGER_MISMATCH":
             header_color = "red"
             icon = "🚨"
-            status_title = f"{icon} 【紧急告警】{event_type}"
-            level_text = "🔴 **级别**: **CRITICAL (致命严重)**"
+            status_title = "🚨 【紧急告警】三账对账异常，策略已自动暂停" if event_type == "LEDGER_MISMATCH" else f"{icon} 【紧急告警】{event_type}"
+            level_text = "🔴 **级别**: **CRITICAL (持仓不一致/已触发策略熔断)**"
         elif sev_upper == "ERROR":
             header_color = "orange"
             icon = "⚠️"

@@ -136,3 +136,25 @@ def test_reconciliation_isolation_tenant_id_prefix(tmp_path):
     assert dec_paper_pass.allowed is True
 
 
+def test_alert_manager_whitelisted_ledger_mismatch_not_swallowed_when_incident_already_open(tmp_path):
+    """
+    防静默熔断用例：
+    验证即便事故早已处于 OPEN 状态，白名单致命事件（如 LEDGER_MISMATCH）调用 alerts.send 时
+    绝不会在第一毫秒被 return 拦截吞噬，必须允许向下派发告警与卡片。
+    """
+    from futu_quant.alerts import AlertManager
+    store = TradingStore(tmp_path / "alerts_anti_silence.db")
+    alerts = AlertManager(store)
+
+    # 1. 模拟对账底层抢先写入了 OPEN 状态的 incident
+    store.record_incident("LEDGER_MISMATCH", "ERROR", "底层对账差异预先记录")
+
+    # 2. 模拟外部调度器再次调用 alerts.send，验证不会被提前 return 拦截，必须生成 alert 记录
+    alerts.send("ERROR", "LEDGER_MISMATCH", "发现持仓差异，策略已暂停")
+
+    # 3. 校验 alert 已成功落盘
+    recent = store.alerts(limit=5)
+    assert len(recent) > 0
+    assert any(a["event_type"] == "LEDGER_MISMATCH" for a in recent)
+
+

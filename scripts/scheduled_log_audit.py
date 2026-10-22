@@ -14,9 +14,9 @@ for _stream in (sys.stdout, sys.stderr):
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from futu_quant.store import TradingStore
-from futu_quant.service_control import status
-from futu_quant.market_calendar import USMarketCalendar
+from futu_quant.store import TradingStore  # noqa: E402
+from futu_quant.service_control import status  # noqa: E402
+from futu_quant.market_calendar import USMarketCalendar  # noqa: E402
 
 CHINA_TZ = timezone(timedelta(hours=8))
 NY_TZ = ZoneInfo("America/New_York")
@@ -77,6 +77,21 @@ def inspect_and_alert():
             issues.append("🚨 **实盘风控急停触发**：富途香港账户当前处于急停状态，已阻断新开仓！")
     except Exception:
         pass
+
+    # 4.1 检查三账对账与策略挂起熔断状态 (防静默熔断)
+    try:
+        disabled_map = store.settings_with_prefix("strategy_reconciliation_disabled")
+        active_disabled = [k for k, v in disabled_map.items() if str(v).lower() == "true"]
+        if active_disabled:
+            paused_descs = []
+            for k in active_disabled:
+                parts = k.split(":")
+                paused_descs.append(":".join(parts[1:]))
+            issues.append(f"🔴 **三账对账异常熔断**：检测到策略处于挂起暂停状态（{', '.join(paused_descs)}），开仓已被阻断！")
+        if str(store.get_setting("recovery_blocked", "")).lower() == "true":
+            issues.append("⚠️ **系统对账恢复受阻**：recovery_blocked=true，已阻断自动恢复，需人工对账校准！")
+    except Exception as e:
+        issues.append(f"检查对账挂起状态异常: {e}")
 
     # 4.5 关注标的纳管监控（运维配置：runtime_config key ops_watch_symbols，JSON 字符串数组）
     # 纯只读监控：读取订单意图与虚拟仓位，检测孤儿持仓；不触碰下单路径

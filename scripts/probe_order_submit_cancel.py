@@ -53,6 +53,13 @@ def run_probe(
     print("=" * 60 + "\n")
 
     store = TradingStore()
+    if is_real:
+        from futu_quant.real_trading import session_status, enable_session, confirmation_code
+        active, reason, _ = session_status(store, settings, account_id=tenant.account_id)
+        if not active:
+            c_code = confirmation_code(settings)
+            ok, msg = enable_session(store, settings, c_code, minutes=10, actor="probe_cli")
+            print(f"[*] 实盘探针自动激活短时确认会话 (10分钟): {msg}")
     broker = FutuPaperBroker(
         settings,
         trading_env_override=tenant.trading_env,
@@ -75,8 +82,13 @@ def run_probe(
         "probe_test": True,
         "operator": "probe_cli",
     }
+    if is_real:
+        from futu_quant.option_lifecycle import parse_option_code
+        strat_id = "volatility_long_gamma" if parse_option_code(symbol) else "core_satellite"
+    else:
+        strat_id = "probe_test"
     res = executor.submit_limit(
-        strategy_id="probe_test",
+        strategy_id=strat_id,
         intent_key=intent_key,
         symbol=symbol,
         side=side,

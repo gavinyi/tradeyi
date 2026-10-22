@@ -31,7 +31,7 @@ class AlertManager:
     ) -> None:
         if severity.upper() in {"ERROR", "CRITICAL"}:
             opened, _ = self.store.record_incident(incident_key or event_type, severity, message)
-            if not opened:
+            if not opened and event_type not in FEISHU_GROUP_ALERT_WHITELIST:
                 return
         dedupe_seconds = max(0, int(os.getenv("ALERT_DEDUPE_SECONDS", "900")))
         if dedupe_seconds and self.store.alert_recently_exists(

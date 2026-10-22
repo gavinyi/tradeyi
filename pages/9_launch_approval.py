@@ -5,7 +5,7 @@ import streamlit as st
 
 from futu_quant.approval import approval_enforcement_enabled, approval_version_status
 from futu_quant.acceptance import strategy_acceptance
-from futu_quant.broker import BrokerError, FutuPaperBroker
+from futu_quant.broker import BrokerError
 from futu_quant.config import Settings, save_runtime_settings
 from futu_quant.execution_quality import execution_quality_report
 from futu_quant.reconciliation import reconcile_ledgers
@@ -13,15 +13,18 @@ from futu_quant.store import TradingStore
 from futu_quant.stress import stress_test
 from futu_quant.replay import run_resilience_drill
 from futu_quant.service_control import restart as restart_service, status as service_status
-from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar
+from futu_quant.ui import (
+    china_time_columns, render_admin_login, render_sidebar, get_current_tenant, get_tenant_broker,
+)
 
 
 st.set_page_config(page_title="上线审批", page_icon="✅", layout="wide")
 settings = Settings.load()
 render_sidebar(settings)
+current_tenant = get_current_tenant(settings)
 st.title("策略上线审批与验收")
 store = TradingStore()
-broker = FutuPaperBroker(settings)
+broker = get_tenant_broker(settings)
 admin = render_admin_login()
 
 approval_tab, reconcile_tab, quality_tab, stress_tab = st.tabs(
@@ -233,7 +236,7 @@ with reconcile_tab:
     st.write("比较富途实际持仓、本地成交账本和策略虚拟持仓。")
     if st.button("立即运行三账对账", type="primary"):
         try:
-            report = reconcile_ledgers(store, broker)
+            report = reconcile_ledgers(store, broker, tenant_id=current_tenant.get("tenant_id") or current_tenant.get("id"))
             st.session_state.reconciliation_result = report
         except BrokerError as exc:
             st.error(str(exc))

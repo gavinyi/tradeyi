@@ -868,14 +868,26 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             mismatches = report[report["status"] == "MISMATCH"] if not report.empty else report
             store.set_setting("recovery_blocked", str(not mismatches.empty).lower())
             if not mismatches.empty:
+                diff_lines = []
+                for _, r in mismatches.iterrows():
+                    diff_lines.append(
+                        f"• **标的**: `{r.get('symbol')}` | **券商实物**: {r.get('broker_quantity'):g} | "
+                        f"**虚拟账本**: {r.get('ledger_quantity'):g} | **差异**: {r.get('difference'):+g} | "
+                        f"**关联策略**: `{r.get('affected_strategies')}`"
+                    )
+                diff_summary = "\n".join(diff_lines)
+                tenant_desc = f" [{tenant.display_name}]" if tenant else ""
                 alerts.send(
                     "ERROR", "LEDGER_MISMATCH",
-                    f"三账对账发现 {len(mismatches)} 个标的差异，相关策略已暂停",
+                    f"三账对账发现 {len(mismatches)} 个标的存在持仓差异{tenant_desc}：\n{diff_summary}\n\n"
+                    f"🛡️ **系统动作**: 相关标的 SELL 通道已锁定，策略新开仓已自动暂停\n"
+                    f"💡 **处置指引**: 请前往 Streamlit「策略审批与对账」页面执行【按富途持仓同步】一键平账恢复！",
                 )
             else:
+                tenant_desc = f" [{tenant.display_name}]" if tenant else ""
                 alerts.recover(
                     "LEDGER_MISMATCH",
-                    "三账对账已恢复一致，自动解除恢复阻断",
+                    f"三账对账{tenant_desc}已恢复一致，持仓与账本完全对齐，自动解除恢复阻断与策略暂停",
                 )
         if run_task(store, alerts, "ledger_reconciliation", ledger_check):
             mark_run(store, "last_run:ledger_reconciliation", now)
