@@ -76,3 +76,9 @@
 | 8 | DB 备份恢复点 `pre-stage2-20261020T190942Z` | Reviewer 阶段二放行清单 | Ops | - | **已完成** | 1.5GB 完整校验（SHA-256 一致 + integrity_check ok + 52 表 837 意图） |
 | 9 | DR 灾备校验环境适配（`verify_latest_backup.py` / `create_recovery_point` 支持 `TMPDIR` 重定向） | Ops 运维需求 | Coder | P2 | 待排期 | 官方恢复点本体在沙箱外服务不受影响，此项只惠及受限会话内自检 |
 | 10 | 租户切换器默认租户产品定性（无 session 时默认落 REAL 还是 SIMULATE） | Product 需求把关 | Product | P2 | 待对齐 | 当前代码默认回退落 REAL，待与 Product 最终对齐 |
+| 11 | 自适应多租户一键启停（`start.bat`/`stop.bat`/`launch_workers.py`） | 用户需求（配置驱动零心智负担） | Coder / Product / Ops | P0 | **已完成** | 动态发现 `is_active=True` 租户、防重拉、定向级联停止；CREATE_NO_WINDOW 消除弹窗，Commit af8ab5e/fb1bbe5 |
+| 12 | 全局 UTF-8 统一固化（根治 Windows GBK 乱码） | 用户需求 | Coder / Ops | P0 | **已完成** | sitecustomize.py 全局钩子 + PYTHONUTF8 环境注入，Commit a821f2c |
+| 13 | 风控对账隔离精细化（全局连坐误伤根治）+ 历史虚构账本出清 | 2026-10-22 AMD 误伤病例 | Coder / Reviewer / Tester | **P0** | **已完成** | 标的级+策略级+租户级三级隔离，SELL 通道永不阻断，实盘/模拟历史残留账本全部校准归零，Commit 3af3384 |
+| 14 | $0.01 极低价下单与撤单测试用例 + 实机探针工具 | 用户需求 | Coder / Reviewer / Tester / Ops | P0 | **已完成** | 模拟沙盒实测闭环（订单 9123615/9123623 毫秒撤单零成交）；实盘探针经全套门禁验证被富途境内 IP 监管拦截（待 Proxifier 启动后复跑），Commit 75168a4 |
+| 15 | 三账对账异常穿透告警与防静默熔断 | 用户需求（杜绝静默拦截） | Product / Coder / Ops / Reviewer | **P0** | **已完成** | 飞书红卡秒级穿透 + 绿色自愈闭环 + 30分钟巡检置顶 + 41页全局Banner + 一键平账，告警吞噬 Bug 根治，84/84 测试全绿，Commit 5dead60，PRD 已归档飞书 |
+| 16 | 实盘出海网络恢复（Proxifier 客户端启动）并复跑实盘 $0.01 探针 | 实盘探针被富途境内 IP 拦截 | 用户 / Ops | **P0** | **等待用户操作** | 需用户在桌面双击启动 Proxifier（C:\Program Files (x86)\Proxifier\），OpenD 流量经 7900 SOCKS5 出海后实盘报单即恢复；启动后 Ops 复跑探针拿回真实券商回执 |
