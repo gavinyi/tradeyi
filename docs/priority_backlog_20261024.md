@@ -45,6 +45,17 @@
 | 13 | ML 板块整体（A→B→C 串行 + 自动月度重训规划） | 用户 2026-10-23 决定：自动月度重训统一并入 ML 板块后再做；当前批次未放行 |
 | 14 | 效率优化（停机 VACUUM 回收约 663MB、缓存/索引写进 `initialize()`、对账日志降采样） | 用户明确：所有功能事项完结后再做 |
 
+## 移出范围（用户 2026-10-24 裁定）
+
+- **财报策略（Earnings Gamma / Earnings Gamma Manual）**：不再使用，**移出一切改造与修复范围**。
+  已按裁定把 `strategy_enabled:Earnings Gamma` / `Earnings Gamma Manual` 置 **false**（审计事件 `EARNINGS_GAMMA_DISABLED`）；
+  `GAMMA_CAMPAIGNS=0`、执行模式 SHADOW，**无持仓风险**，开关可随时恢复。
+- **币（crypto）相关功能**：不再使用，移出范围（`strategy_enabled:crypto_volatility_swap` 已为 false；历史 `crypto_*` 状态键暂不清理）。
+- **影响**：时区修复范围**不含** `earnings_calendar.py` 三处（只有财报策略链路用）。
+  仍需修：`gamma_debug.py:47`（65 次假 BLOCK 直接来源，VOLATILITY campaign 同样命中「合约已于」硬判据）、
+  `option_ranking.py:58`（roll 调用未传 `as_of`）、`run_volatility_strategy.py:141`（平仓路径提前 ≤4h）、
+  `volatility_optimizer.py:932` 默认值（调用处已传 `ny_today`），外加 `hard_campaign_issues` 的 return 分家。
+
 ## 已确认口径
 
 1. **暂停新开仓**：`run_gamma_strategy.py:63-84` 为**租户级优先、全局兜底**。
@@ -54,3 +65,10 @@
 2. **告警投递**：`alerts.py:60` 读取 `ALERT_WEBHOOK_URL`（当前为空）；
    `:92-105` 仅白名单事件 / CRITICAL 才推飞书卡片，其余 ERROR 只落库 → `delivered=0`。
    截至 2026-10-24 00:00，未投递告警 **20 条**。
+
+## 测试策略（用户 2026-10-24 定）
+
+- **单需求/单 bug 分支：只跑该批自己的用例**（目标文件级），不跑全量；
+- **全量回归只在「版本合 `master` 上生产」时跑一次**（发布闸门）；
+- 单批用例清单必须在交付消息里写明（文件 + 通过数），否则不算验证；
+- 例外：改动触及共享核心（`store.py` / `execution.py` / `reconciliation.py` / 迁移）时，**允许要求该批补跑与其调用点相关的用例集**，但仍不跑全量。
