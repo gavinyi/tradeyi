@@ -72,3 +72,16 @@
 - **全量回归只在「版本合 `master` 上生产」时跑一次**（发布闸门）；
 - 单批用例清单必须在交付消息里写明（文件 + 通过数），否则不算验证；
 - 例外：改动触及共享核心（`store.py` / `execution.py` / `reconciliation.py` / 迁移）时，**允许要求该批补跑与其调用点相关的用例集**，但仍不跑全量。
+
+## 发布记录与教训（2026-10-24 上午）
+
+**已上生产**：`v2026.10.24-1`（`master` = `ddaa2d5`）
+- 内容：`fix/timezone-expiry`（4 处 NY + return 分家）+ `fix/alert-delivery`（S1–S4 告警断链）
+- 发布闸门：`test` 全量 **989 passed / 20 skipped / 0 failed（318.63s）**
+- 部署：`stop.bat` → `start.bat`，新 PID：real `38272` / paper `16264` / radar `37120`；全量任务/心跳恢复正常；`alert_delivery_probe` 已在跑；新页面「告警投递中心」已注册
+
+**🔴 部署验证抓到的真实缺陷（教训）**：
+- `alerts` 三列迁移被写进了 `initialize()` 的**「新建库」分支**（`existing is None`），**存量库永远拿不到** → 生产 `alerts` 缺列，而新 `add_alert` 已引用三列，**下一次写告警会 OperationalError**
+- **全量 989 绿没抓到**：守卫测试 `test_existing_db_gains_tristate_columns` 建库时没有 `order_intents`，于是走了新建库分支才通过 —— **测试没走真实存量库路径**
+- 处置：紧急手工 `ALTER TABLE` 补列（`quick_check ok`，`INSERT_OK` 验证），服务恢复；代码修复 + 测试升级（造含 `order_intents` 的旧库 + 负向变异）已派 Coder
+- **规则升级**：① **任何 `ALTER TABLE` 迁移必须写在「存量库必经之路」**（优先 `migrations.py`），并在新建库路径也能补齐；② **迁移守卫测试必须用「含核心表的旧库」构造**，否则等于没测；③ **部署后必须做一次真实写入探针**（本次正是靠它发现）。
