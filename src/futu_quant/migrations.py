@@ -93,6 +93,20 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_recon_adj_tenant
             ON reconciliation_adjustments(tenant_id, account_id, strategy_id, symbol);
     """),
+    # P0-2 告警投递通道三态。**必须走版本化迁移**，不能写在 `initialize()` 的
+    # 「新建库」分支里：存量库在 `apply_migrations()` 之后就 `return` 了
+    # （`store.py:190-191`），**永远走不到那个分支**。
+    # 2026-10-24 部署实测：生产 `alerts` 表仍只有 8 列，而新的 `add_alert` 已引用
+    # 这三列 → 下一次写告警直接 OperationalError。
+    # **一列一条迁移**：`apply_migrations` 只吞 "duplicate column name"，而
+    # `executescript` 在首条失败后会中断剩余语句 —— 合在一条里会让
+    # 「已有部分列」的库补不齐剩下的列，却仍被记为已应用。
+    Migration(8, "alerts_webhook_delivered_column",
+              "ALTER TABLE alerts ADD COLUMN webhook_delivered INTEGER NOT NULL DEFAULT -1;"),
+    Migration(9, "alerts_feishu_delivered_column",
+              "ALTER TABLE alerts ADD COLUMN feishu_delivered INTEGER NOT NULL DEFAULT -1;"),
+    Migration(10, "alerts_muted_column",
+              "ALTER TABLE alerts ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;"),
 )
 
 
