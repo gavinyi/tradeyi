@@ -447,10 +447,30 @@ def volatility_hard_loss_exit_reason(
     *,
     pnl_ratio: float,
     pnl_amount: float,
-    max_loss_usd: float = 100.0,
+    max_loss_usd: float = 300.0,
     max_loss_ratio: float = 0.25,
 ) -> str | None:
-    """Absolute per-position kill switch for long-gamma option campaigns."""
+    """Absolute per-position kill switch for long-gamma option campaigns.
+
+    **口径必须与 campaign 配置一致**：本函数默认值与
+    `run_gamma_strategy` 的回落值此前分别是 100 与 300（同一件事两个数，靠
+    「键不存在」决定用哪个），属静默分歧。现统一为 300 / 0.25，并且
+    **下单前强制校验 campaign 必须显式带这两个键**（缺省即拒绝开仓并记 ERROR），
+    不再依赖任何回落值。
+
+    **两层是 OR（取较紧者先生效），不是「先相对、不够再绝对」**：
+
+    - `max_loss_ratio`（相对止损，默认 -25%）：随仓位规模自动缩放，小仓位上先生效；
+    - `max_loss_usd`（绝对上限，默认 $300）：大仓位上先生效，防极端跳空下相对止损失守。
+
+    例：1 张 $294 权利金的仓位，-25% ≈ $75 就先触发，$300 那层够不着；
+    1 张 $2,076 权利金的仓位，$300（≈14%）比 -25% 更紧，故 $300 生效。
+    两层互补，**较紧的那层决定实际止损位** —— 小仓位实际止损比 $300 更紧，属保守一侧。
+
+    **盈亏口径**：`pnl_amount` 是**整仓美元盈亏**
+    （`(executable_mark − cost) × quantity × multiplier`），与 `max_loss_usd` 同口径。
+    切勿按「每张权利金」重写 —— 那会差 100 倍（合约乘数）。
+    """
     usd_limit = max(0.0, float(max_loss_usd or 0.0))
     ratio_limit = max(0.0, float(max_loss_ratio or 0.0))
     usd_hit = usd_limit > 0 and float(pnl_amount) <= -usd_limit

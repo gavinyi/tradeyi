@@ -11,6 +11,12 @@ class FakeStore:
         self.decisions: list[dict] = []
         self.heartbeats: list[dict] = []
         self.audits: list[dict] = []
+        # #1 键级分区后，campaign 键解析失败会走 operational_event 留痕 ——
+        # 测试替身必须与生产 store 保持同一接口，否则"替身缺方法"会伪装成产品缺陷。
+        self.operational_events: list[tuple] = []
+
+    def operational_event(self, component, event_type, status, payload=None):
+        self.operational_events.append((component, event_type, status, payload))
 
     def heartbeat(self, strategy_id, status, message, pid):
         self.heartbeats.append({
@@ -24,15 +30,16 @@ class FakeStore:
     def set_setting(self, key, value):
         self.settings[key] = value
 
-    def decision(self, strategy_id, symbol, decision, reason, payload=None):
+    def decision(self, strategy_id, symbol, decision, reason, payload=None, tenant_id=None):
         self.decisions.append({
             "strategy_id": strategy_id, "symbol": symbol,
             "decision": decision, "reason": reason, "payload": payload,
+            "tenant_id": tenant_id,
         })
 
     def decision_if_changed(self, strategy_id, symbol, decision, reason,
-                            payload=None, repeat_after_seconds=900):
-        self.decision(strategy_id, symbol, decision, reason, payload)
+                            payload=None, repeat_after_seconds=900, tenant_id=None):
+        self.decision(strategy_id, symbol, decision, reason, payload, tenant_id=tenant_id)
         return True
 
     def audit(self, event_type, payload, actor):
@@ -106,7 +113,7 @@ def test_active_signal_creates_campaign_and_enables_auto_monitor(monkeypatch):
             return None
 
     monkeypatch.setattr(scanner, "load_volatility_symbols", lambda: ("US.AMD",))
-    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda: [])
+    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda *_a, **_k: [])
     monkeypatch.setattr(scanner, "AlertManager", FakeAlertManager)
     monkeypatch.setattr(
         scanner, "volatility_threshold_profile",
@@ -148,7 +155,9 @@ def test_active_signal_creates_campaign_and_enables_auto_monitor(monkeypatch):
     assert saved_campaigns[0]["efficiency_decline_exit_ratio"] == .40
     assert saved_campaigns[0]["contraction_confirmations_required"] == 3
     assert "strategy_execution_mode:volatility_long_gamma" not in store.settings
-    assert store.settings["strategy_enabled:Volatility Long Gamma"] == "true"
+    # 控制面不得跨租户连坐：无租户上下文的调用方**不许**写全局启用键。
+    assert "strategy_enabled:Volatility Long Gamma" not in store.settings
+    assert "strategy_enabled:volatility_long_gamma" not in store.settings
     assert any(
         item["event_type"] == "VOLATILITY_AUTO_CAMPAIGN_CREATED"
         for item in store.audits
@@ -166,7 +175,7 @@ def test_active_signal_records_visible_rejection_when_no_contract_passes(monkeyp
         def send(self, *_args, **_kwargs):
             return None
 
-    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda: [])
+    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda *_a, **_k: [])
     monkeypatch.setattr(scanner, "AlertManager", FakeAlertManager)
     monkeypatch.setattr(
         scanner, "volatility_threshold_profile",
@@ -214,7 +223,7 @@ def test_rejected_candidate_enters_cooldown_until_signal_strengthens(monkeypatch
         def send(self, *_args, **_kwargs):
             return None
 
-    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda: [])
+    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda *_a, **_k: [])
     monkeypatch.setattr(scanner, "AlertManager", FakeAlertManager)
     monkeypatch.setattr(
         scanner, "volatility_threshold_profile",
@@ -247,7 +256,7 @@ def test_scanner_limits_broker_snapshot_to_scanned_symbols(monkeypatch):
     store = FakeStore()
     monkeypatch.setenv("RADAR_MAX_SYMBOLS_PER_SCAN", "5")
     symbols = tuple(f"US.TEST{i}" for i in range(10))
-    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda: [])
+    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda *_a, **_k: [])
     monkeypatch.setattr(scanner, "volatility_threshold_profile", lambda _: {
         "entry_zscore": 2.0, "minimum_underlying_move": .02,
     })

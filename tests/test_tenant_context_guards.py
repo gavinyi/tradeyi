@@ -127,7 +127,11 @@ def test_reconcile_real_mismatch_does_not_pause_paper_strategy(tmp_path):
     t_sim = TenantProfile("futu_paper_sandbox", "模拟", "futu", "SIMULATE", "20170229")
 
     # 实盘租户：本地有虚拟分配、券商无持仓 → 触发 MISMATCH
-    store.set_virtual_allocation("volatility_long_gamma", "US.QQQ", 1.0, 100.0)
+    # 虚拟分配必须显式归属实盘租户：tenant_id='' 的行属于纸面/legacy 分区，
+    # 按账户隔离契约绝不串入实盘账本（见 test_real_ledger_native_offset.py 守卫）。
+    store.set_virtual_allocation(
+        "volatility_long_gamma", "US.QQQ", 1.0, 100.0, tenant_id=t_real.tenant_id
+    )
     store.create_intent(
         "volatility_long_gamma", "one:REAL", "US.QQQ", "BUY", 1, 100.0, tenant_id=t_real.tenant_id
     )

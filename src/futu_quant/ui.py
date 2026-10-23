@@ -440,13 +440,23 @@ def render_sidebar(settings=None) -> str:
             str(store.get_setting(k, "")).lower() == "true"
             for k in [f"recovery_blocked:{acc}", f"recovery_blocked:{tid}", "recovery_blocked"]
         )
-        disabled_strats = [
+        # 同一策略可能同时存在多种前缀变体（如 20170229: 与 futu_paper_sandbox:），
+        # 按策略名去重后再展示，避免同一名重复出现。
+        disabled_strats = list(dict.fromkeys(
             k.split(":")[-1] for k in store.settings_with_prefix("strategy_reconciliation_disabled")
             if str(store.get_setting(k, "")).lower() == "true" and (not tid or tid in k or not acc or str(acc) in k)
-        ]
+        ))
         if has_blocked_symbol or disabled_strats:
-            strat_txt = f"[{'、'.join(disabled_strats)}]" if disabled_strats else ""
-            st.sidebar.error(f"🚨 **对账异常警示**：当前租户策略 {strat_txt} 存在持仓差异已被暂停！请前往风控与对账中心核查平账。")
+            if disabled_strats:
+                strat_txt = f"[{'、'.join(disabled_strats)}]"
+                msg = (f"🚨 **对账异常警示**：当前租户策略 {strat_txt} 存在持仓差异已被暂停！"
+                       "请前往风控与对账中心核查平账。")
+            else:
+                # 只有标的级/全局阻断、没有具体策略被暂停时，不弹空横幅，
+                # 改为明确的「存在阻断标的」文案，避免用户看到一句没有信息量的话。
+                msg = ("🚨 **对账异常警示**：当前租户存在被阻断的标的（恢复阻断标志已置位），"
+                       "策略暂不新增仓位。请前往风控与对账中心核查平账。")
+            st.sidebar.error(msg)
     except Exception:
         pass
 

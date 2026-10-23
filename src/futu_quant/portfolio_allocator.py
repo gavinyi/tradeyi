@@ -66,7 +66,14 @@ def strategy_budget_usage(store, broker) -> tuple[pd.DataFrame, float]:
     } if not positions.empty else {}
     usage = {item["strategy_id"]: {"capital_used": 0.0, "loss_used": 0.0,
                                            "option_premium_used": 0.0} for item in budgets}
-    for item in store.virtual_positions():
+    # 租户隔离铁律：预算账本必须与当前 broker 同环境同账户，严禁把模拟沙盒历史账本计入实盘配额（反之亦然）
+    broker_env = str(getattr(broker, "trading_env", "") or "").upper()
+    broker_account = getattr(broker, "account_id", None)
+    ledger_positions = store.virtual_positions(
+        env=broker_env or None,
+        account_id=broker_account,
+    )
+    for item in ledger_positions:
         strategy, symbol = item["strategy_id"], item["symbol"]
         if strategy not in usage:
             continue

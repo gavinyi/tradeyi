@@ -3,17 +3,39 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+import logging
 import os
 import re
 import math
 
-from .store import TradingStore
+from .alerts import AlertManager
+from .store import USED_NOTIONAL_STATUSES, TradingStore
+from .tenant import broker_scope, tenant_config_key_candidates, tenant_of_broker
 from .portfolio_risk import projected_portfolio_allowed
 from .portfolio_allocator import strategy_budget_allowed
 
 
+logger = logging.getLogger(__name__)
+
+
 OPTION_PATTERN = re.compile(r"^US\..+\d{6}[CP]\d+$")
 NY = ZoneInfo("America/New_York")
+
+#: 纸面账户的**告警线**配置键 —— **与硬停线（`max_daily_loss`）是两个字段**。
+#:
+#: B 方案（Chief 10-23 裁定，Product 确认）：``max_daily_loss`` 的既有急停逻辑
+#: **一行不动**，只在它前面加一条「纸面账户过告警线 → 发 WARNING → 继续放行」的旁路。
+#: 引擎里因此**不得出现"这个数字是告警还是硬停"的语义分叉**：
+#: 告警线有自己的键（本键，仅纸面账户读），硬停线就是 ``max_daily_loss``（全账户统一）。
+#:
+#: 为什么告警线不能复用 ``max_daily_loss``：同一个数字承载两种语义（纸面=只告警、
+#: 实盘=真急停）时，"这个数字是告警还是硬停"必然在某处被分叉，而分叉的那一处
+#: 就是下一次事故的地方。分两个键，语义写在键名上，不需要任何分支去解释。
+#:
+#: **作用域铁律（Product 10-23）**：本键**仅对 ``trading_env=SIMULATE`` 的租户生效**，
+#: **禁止配到实盘账户上**。实盘账户的亏损上限只有 ``max_daily_loss`` 一条，
+#: 不存在"只告警"的口径 —— 真金账户的每一条亏损线都必须拦单。
+PAPER_DAILY_LOSS_WARN_KEY = "paper_daily_loss_warn"
 
 
 def ny_trading_day_start_utc(now: datetime | None = None) -> datetime:
@@ -70,9 +92,180 @@ class RiskDecision:
 
 
 class RiskEngine:
-    def __init__(self, store: TradingStore, limits: RiskLimits | None = None):
+    def __init__(
+        self,
+        store: TradingStore,
+        limits: RiskLimits | None = None,
+        broker=None,
+    ):
+        """``limits`` 显式注入时按注入值用（测试替身不受影响）；否则走**唯一解析入口**。
+
+        P0-7：解析动作只有一个入口 ``risk_limits.resolve_risk_limits``。
+        解析失败**不在这里抛** —— 服务必须能起来，缺配置时由下单路径
+        fail-closed 拒绝（见 ``execution.submit_limit``）。
+        """
         self.store = store
-        self.limits = limits or RiskLimits.load()
+        self.broker = broker
+        self._resolution_error: str | None = None
+        if limits is not None:
+            self.limits = limits
+            return
+        from .risk_limits import resolve_risk_limits
+
+        try:
+            self.limits = resolve_risk_limits(store, broker)
+        except Exception as exc:
+            self.limits = None
+            self._resolution_error = str(exc)
+            logger.warning("风控参数解析失败（下单路径将 fail-closed 拒绝）：%s", exc)
+
+    def _is_paper_account(self, broker) -> bool:
+        """这个 broker 是不是**纸面账户**（SIMULATE）。
+
+        走共享入口 ``broker_scope``（不裸读 ``broker.trading_env``）：该入口会把
+        mock 对象与非法值降级为 ``None``，避免测试替身把 mock 带进判定链路。
+        """
+        env, _ = broker_scope(broker)
+        return str(env or "").strip().upper() == "SIMULATE"
+
+    def _paper_warn_line(self, broker) -> float | None:
+        """纸面账户的**告警线**（``paper_daily_loss_warn``）—— 与硬停线**是两个字段**。
+
+        B 方案（Chief 10-23 裁定）：``max_daily_loss`` 的既有急停逻辑**一行不动**，
+        只在它前面加一条「纸面账户过告警线 → 发 WARNING → 继续放行」的旁路。
+        因此引擎里**不得出现"这个数字是告警还是硬停"的语义分叉** ——
+        告警线有自己的键，硬停线就是 ``max_daily_loss``，两者互不复用。
+
+        键的解析走共享入口 ``tenant_config_key_candidates``（租户键优先、无前缀
+        全局键兜底），**不手拼**。拿不到租户时直接读全局键 —— 刻意不调用共享入口，
+        否则每次都会记一条"回落"留痕、把 ``legacy_fallback_count`` 灌满（假警报）。
+        """
+        tenant_id = None
+        if broker is not None:
+            tenant_id = tenant_of_broker(broker, strict=False)[0]
+        if tenant_id:
+            tenant_key, _legacy = tenant_config_key_candidates(
+                tenant_id, PAPER_DAILY_LOSS_WARN_KEY,
+            )
+            key = tenant_key or PAPER_DAILY_LOSS_WARN_KEY
+        else:
+            key = PAPER_DAILY_LOSS_WARN_KEY
+        raw = self.store.get_setting(key, "") or ""
+        try:
+            value = float(str(raw).strip())
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _paper_warn_only(
+        self, broker, broker_acc, *,
+        metric_label: str, metric_value: float, assets: float,
+        metric_is_ratio: bool = False,
+    ) -> bool:
+        """纸面账户的**告警带**旁路 —— 返回 ``True`` 表示"已告警，调用方跳过拦单"。
+
+        **每个分支用它自己那条阈值，量纲必须对得上**（这是本函数存在的理由）：
+
+        | 分支 | ``metric_value`` | 告警阈值 | 硬停上限 |
+        | :--- | :--- | :--- | :--- |
+        | 当日亏损 | 美元额 | ``paper_daily_loss_warn``（$25,000） | ``max_daily_loss``（$100,000） |
+        | 日内权益损失 | 美元额 | ``paper_daily_loss_warn`` | ``max_daily_loss`` |
+        | 日内回撤 | **比例**（``metric_is_ratio=True``） | ``max_drawdown_pct``（10%） | ``max_daily_loss`` 折美元 |
+
+        **为什么必须这样分**：回撤分支原本把 ``drawdown * assets``（回撤**美元额**）传进来
+        比日亏损线 —— 两个不同量纲，结果是回撤 2.5% 就误报一条
+        "当日亏损 $29,100" 的告警，而实际当日亏损可能只有 $500。
+        **告警金额写错比不报警更糟**，所以这里按分支各用各的阈值、文案也按分支定量纲。
+
+        只在**过本分支告警线、未过硬停线**这条带子里生效：
+        * 没到告警线 → 不该有任何动静（返回 False，交给既有逻辑 → 什么都不做）；
+        * 已过硬停线 → 必须真停（返回 False，交给既有急停逻辑 → 写急停 + 拦单）；
+        * 落在带子里 → 发 WARNING + 留运行事件，返回 True 跳过拦单。
+
+        没配 ``paper_daily_loss_warn`` 时**不旁路**（fail-closed）：宁可少一条告警，
+        也不能因为"读不到配置"就把急停整个放过。
+        """
+        if not self._is_paper_account(broker):
+            return False
+        warn_line = self._paper_warn_line(broker)
+        if warn_line is None:
+            return False
+        if metric_is_ratio:
+            effective_warn = self.limits.max_drawdown_pct
+            metric_amount = metric_value * assets
+        else:
+            effective_warn = warn_line
+            metric_amount = metric_value
+        if metric_value < effective_warn or metric_amount >= self.limits.max_daily_loss:
+            return False
+        self.store.operational_event(
+            "risk_engine", "PAPER_DAILY_LOSS_WARN", "WARNING",
+            {
+                "account_id": broker_acc or None,
+                "metric": metric_label,
+                "metric_value": round(metric_value, 6),
+                "metric_amount_usd": round(metric_amount, 2),
+                "assets": round(assets, 2),
+                "warn_line": round(effective_warn, 6),
+                "hard_stop_line": self.limits.max_daily_loss,
+            },
+        )
+        # 告警必须带上下文（账户 / 该分支的实际数值 / 触发线）——Product 10-23 明确要求：
+        # 只说"已过告警线"等于没说，看的人还得翻日志才知道亏了多少。
+        # 代价：金额进文案后，AlertManager 的 900s 精确去重不再跨金额生效；
+        # 但本告警只在 **BUY 下单检查**时触发（不是定时任务），量级有界，不会刷屏。
+        if metric_is_ratio:
+            detail = f"日内回撤 {metric_value:.2%}（${metric_amount:,.0f}）"
+            warn_desc = f"回撤告警线 {effective_warn:.2%}"
+        else:
+            detail = f"{metric_label} ${metric_value:,.0f}"
+            warn_desc = f"日亏损告警线 ${effective_warn:,.0f}"
+        AlertManager(self.store).send(
+            "WARNING", "PAPER_DAILY_LOSS_WARN",
+            f"纸面账户 {broker_acc or '未知'} {detail}，已过{warn_desc}"
+            f"（硬停线 ${self.limits.max_daily_loss:,.0f}），仅告警、不中断验证",
+            incident_key="PAPER_DAILY_LOSS_WARN",
+        )
+        return True
+
+    def _loss_guard(
+        self, broker, broker_acc, *, metric_label: str,
+        loss_amount: float, assets: float, drawdown: float = 0.0,
+    ) -> bool:
+        """亏损 / 回撤守卫的**唯一出口** —— 返回 ``True`` 表示这一单必须被拦下。
+
+        **这里只有"硬停"一种语义**：写急停 + 拦单。
+        实盘与纸面**共用**这条路径（B 方案明令禁止在这里分叉告警/硬停语义）。
+
+        ``metric_label`` 决定文案量纲（"当日亏损" / "日内权益损失金额" / "日内回撤金额"）——
+        **不能一律写"当日亏损"**：把回撤额写成当日亏损就是误报信息。
+
+        顺带补上此前**缺失的告警**：``DAILY_LOSS_KILL_SWITCH`` 一直在飞书白名单里，
+        却没有任何发送方 —— 也就是"急停发生了但没人知道"（10-22 item 36 的形态）。
+        告警级别按账户性质区分：实盘是 ERROR（真金），纸面是 ERROR 但用**独立事件名**
+        ``PAPER_DAILY_LOSS_HARD_STOP`` —— 它同样拦单、同样要让人立刻看到（策略可能已坏）。
+        """
+        alerts = AlertManager(self.store)
+        self.store.set_kill_switch(True, account_id=broker_acc)
+        detail = f"{metric_label} ${loss_amount:,.0f}"
+        if self._is_paper_account(broker):
+            # 硬停是真事件：文案**带账户与该分支的实际数值**（Product 要求），
+            # 且此时 kill_switch 已置位、后续 BUY 会在急停门被拦住，不会反复推送。
+            alerts.send(
+                "ERROR", "PAPER_DAILY_LOSS_HARD_STOP",
+                f"账户 {broker_acc or '未知'} {detail}，"
+                f"已达硬停线 ${self.limits.max_daily_loss:,.0f}，已停止开仓"
+                "（策略失控兜底，不是验证中断）",
+                incident_key="PAPER_DAILY_LOSS_HARD_STOP",
+            )
+            return True
+        alerts.send(
+            "ERROR", "DAILY_LOSS_KILL_SWITCH",
+            f"账户 {broker_acc or '未知'} {detail}，"
+            f"已达硬停线 ${self.limits.max_daily_loss:,.0f}，已自动急停并停止开仓",
+            incident_key="DAILY_LOSS_KILL_SWITCH",
+        )
+        return True
 
     def check(
         self, broker, symbol: str, side: str, quantity: int, price: float,
@@ -80,7 +273,18 @@ class RiskEngine:
         strategy_id: str | None = None, execution_mode: str = "PAPER",
         protected_short: bool = False,
         metadata: dict | None = None,
+        limits: RiskLimits | None = None,
     ) -> RiskDecision:
+        # fail-closed：调用方（submit_limit）在风控门前按**目标 broker 账户**解析一次并传入；
+        # 未传入时用构造期解析结果；构造期解析失败则一律拒绝，绝不回落 env。
+        effective = limits if limits is not None else self.limits
+        if effective is None:
+            return RiskDecision(
+                False,
+                f"风控参数配置不完整，拒绝开仓：{self._resolution_error or '未解析出风控参数'}",
+                0,
+            )
+        self.limits = effective
         if not symbol.startswith("US.") or side not in {"BUY", "SELL"}:
             return RiskDecision(False, "仅允许美股 BUY/SELL 指令", 0)
         if quantity <= 0 or price <= 0:
@@ -99,7 +303,13 @@ class RiskEngine:
                 return RiskDecision(False, f"标的 {symbol} 存在持仓对账差异，该标的新增买入已临时阻断", 0)
             # 2. 策略级阻断
             if strategy_id:
-                broker_tenant = getattr(broker, "tenant_id", None)
+                # 租户优先级：**走共享入口** `tenant_of_broker`（broker 显式携带 >
+                # 按 account_id 反查注册表 > 仅无前缀键）。
+                # 生产 broker（FutuPaperBroker）不带 tenant_id 属性，必须能由 account_id 反解出租户，
+                # 否则对账写出的 `strategy_reconciliation_disabled:{tenant_id}:{strategy}` 将无人读取，拦多变成拦不住。
+                # 这里是读取侧（只判断"是否被暂停"），解析不出**不得** fail-closed ——
+                # 静默放行会让对账熔断失效；因此用 strict=False，取不到就只查无前缀键。
+                broker_tenant, _ = tenant_of_broker(broker, strict=False)
                 is_strat_disabled = (
                     self.store.get_setting(f"strategy_reconciliation_disabled:{strategy_id}", "false") == "true"
                     or (broker_tenant and self.store.get_setting(f"strategy_reconciliation_disabled:{broker_tenant}:{strategy_id}", "false") == "true")
@@ -163,8 +373,14 @@ class RiskEngine:
                 if quantity > strategy_owned:
                     # 检查是否有其他策略持有该标的；若无其他策略持有，且属于券商真实未认领底仓，
                     # 允许经授权的长线管理策略 (core_satellite) 参与调仓，避免误拦截用户手工建仓存量
+                    # 必须按本账户/租户取账本：无账户视图是跨租户混合账本，会把别家租户的持仓
+                    # 算成「其他策略持有」，使 unclaimed_broker_qty 偏大、卖出上限被放宽。
+                    scoped_env, scoped_account = broker_scope(broker)
                     other_strategies_qty = sum(
-                        float(r["quantity"]) for r in self.store.virtual_positions()
+                        float(r["quantity"]) for r in self.store.virtual_positions(
+                            env=scoped_env,
+                            account_id=scoped_account,
+                        )
                         if r.get("symbol") == symbol and r.get("strategy_id") != strategy_id
                     )
                     unclaimed_broker_qty = max(0.0, owned - other_strategies_qty)
@@ -204,7 +420,14 @@ class RiskEngine:
                 )
         day_start = ny_trading_day_start_utc()
         if risk_reducing_sell:
-            used = self.store.submitted_notional_since(day_start.isoformat(), side="SELL")
+            # 减仓桶的「已用额度」与实盘闸门走**同一个累加实现**（store.reduce_notional），
+            # 且状态集合一致 —— 否则同一笔 SELL 在两处算出的可用额度会分叉，错的那份先触发。
+            used = self.store.reduce_notional(
+                (row for row in self.store.intents(limit=50_000)
+                 if str(row.get("status")) in USED_NOTIONAL_STATUSES
+                 and str(row.get("created_at") or "") >= day_start.isoformat()),
+                "SELL",
+            )
             if used + notional > self.limits.max_daily_reduction_notional:
                 return RiskDecision(
                     False,
@@ -212,7 +435,7 @@ class RiskEngine:
                     notional,
                 )
         else:
-            used = self.store.submitted_notional_since(
+            used = self.store.sum_notional_since(
                 day_start.isoformat(), side=None if protected_short else "BUY",
             )
             if used + notional > self.limits.max_daily_notional:
@@ -230,9 +453,24 @@ class RiskEngine:
             daily_pl = market_number(account.get("unrealized_pl", account.get("profit_val", 0)))
             if buying_power > 0 and notional > buying_power:
                 return RiskDecision(False, "可用购买力不足", notional)
-            if daily_pl <= -self.limits.max_daily_loss:
-                self.store.set_kill_switch(True, account_id=broker_acc)
-                return RiskDecision(False, f"账户 {broker_acc or ''} 亏损已达到 ${self.limits.max_daily_loss:,.0f} 急停线", notional)
+            if self._paper_warn_only(
+                broker, broker_acc,
+                metric_label="当日亏损",
+                metric_value=-daily_pl, assets=assets,
+            ):
+                # 纸面账户落在告警带里：已发 WARNING，**跳过拦单**继续后续检查
+                pass
+            elif daily_pl <= -self.limits.max_daily_loss:
+                if self._loss_guard(
+                    broker, broker_acc,
+                    metric_label="当日亏损",
+                    loss_amount=-daily_pl, assets=assets,
+                ):
+                    return RiskDecision(
+                        False,
+                        f"账户 {broker_acc or ''} 亏损已达到 ${self.limits.max_daily_loss:,.0f} 急停线",
+                        notional,
+                    )
             if assets > 0 and positions is not None:
                 shadow_positions = self.store.shadow_open_positions()
                 shadow_total = sum(
@@ -259,12 +497,44 @@ class RiskEngine:
                 ]
                 peak = max(valid_snapshots + [assets])
                 drawdown = 1 - assets / peak if peak > 0 else 0
+                # 日内权益损失分支**不走**纸面告警线：它是"离峰值的美元损失"，
+                # 与"当日亏损"不是同一个量，更与回撤同源。Product 的两条线只覆盖
+                # 「当日亏损」与「日内回撤」两个分支，这里若也旁路，就等于从侧门
+                # 对 2.91% 的回撤发告警 —— 与"回撤 10% 才告警"的设计自相矛盾。
                 if peak - assets >= self.limits.max_daily_loss:
-                    self.store.set_kill_switch(True, account_id=broker_acc)
-                    return RiskDecision(False, f"账户 {broker_acc or ''} 日内权益损失达到急停线，已自动急停", notional)
-                if drawdown >= self.limits.max_drawdown_pct:
-                    self.store.set_kill_switch(True, account_id=broker_acc)
-                    return RiskDecision(False, f"账户 {broker_acc or ''} 日内回撤达到 {drawdown:.2%}，已自动急停", notional)
+                    if self._loss_guard(
+                        broker, broker_acc,
+                        metric_label="日内权益损失金额",
+                        loss_amount=peak - assets, assets=assets, drawdown=drawdown,
+                    ):
+                        return RiskDecision(
+                            False,
+                            f"账户 {broker_acc or ''} 日内权益损失达到急停线，已自动急停",
+                            notional,
+                        )
+                # 回撤分支：**告警线是 max_drawdown_pct，不是日亏损线** ——
+                # 拿回撤额去比 `paper_daily_loss_warn` 是两个不同量纲，会写出
+                # "当日亏损 $29,100" 这种与事实不符的告警（10-23 缺陷）。
+                if self._paper_warn_only(
+                    broker, broker_acc,
+                    metric_label="日内回撤",
+                    metric_value=drawdown, assets=assets,
+                    metric_is_ratio=True,
+                ):
+                    pass  # 纸面账户落在回撤告警带里：已告警，跳过拦单
+                elif drawdown >= self.limits.max_drawdown_pct:
+                    # 既有硬停条件**一字未改**（实盘行为不得因本次修改而变）：
+                    # 纸面若回撤额已过硬停线，`_paper_warn_only` 会返回 False 落到这里。
+                    if self._loss_guard(
+                        broker, broker_acc,
+                        metric_label="日内回撤金额",
+                        loss_amount=drawdown * assets, assets=assets, drawdown=drawdown,
+                    ):
+                        return RiskDecision(
+                            False,
+                            f"账户 {broker_acc or ''} 日内回撤达到 {drawdown:.2%}，已自动急停",
+                            notional,
+                        )
                 market_value = float(positions.get("market_val", []).sum()) if "market_val" in positions else 0
                 symbol_rows = positions[positions["code"] == symbol] if not positions.empty else positions
                 symbol_value = float(symbol_rows["market_val"].sum()) if "market_val" in symbol_rows else 0

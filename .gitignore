@@ -33,6 +33,32 @@ deploy-windows1.txt
 deploy-windows13.ps1
 uv-sync.log
 
+# ---- 本地临时/迁移产物（2026-10-24 加固：避免整目录 data/ 与转写产物被误提交）----
+data/
+tmp*/
+*.jsonl
+*.interchange.json
+draft_*_folder/
+.agents/
+.claude/
+.agent-teams/
+.acl-*
+.env.*
+*.log
+*.status
+*.err*
+*.out
+itemcount*.txt
+converted-*.txt
+parseok.txt
+WOULD
+expect
+*-qrcode.png
+opend-*
+convert_*.ps1
+convert_transcript.py
+*.cjs
+
 # ---- IDE / OS ----
 .idea/
 .vscode/

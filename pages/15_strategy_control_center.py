@@ -21,7 +21,7 @@ from futu_quant.strategy_budgeting import (
     recommended_active_budget_rows,
 )
 from futu_quant.strategy_plugins import strategy_plugins
-from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
+from futu_quant.ui import chinese_columns, get_current_tenant, render_admin_login, render_sidebar
 
 
 st.set_page_config(page_title="策略与资金控制", page_icon="🎛️", layout="wide")
@@ -35,14 +35,26 @@ st.caption(
     "统一管理策略启停、执行模式、资金配额和后台服务。策略页面只负责各自参数，组合风险页面只负责压力测试。"
 )
 
-@st.cache_data(ttl=30, max_entries=2, show_spinner=False)
 def load_control_snapshot():
+    """读取控制页快照。
+
+    **刻意不加 `st.cache_data`**：快照里含「当前租户的暂停状态」，而侧边栏可切换租户。
+    缓存会在切换租户后最多 30 秒内继续显示**上一个租户**的状态 ——
+    那正是本次要修的「界面显示与真实作用域不符」的同一类病。
+    """
     current_store = TradingStore()
+    # 暂停状态按**当前租户**读（租户键优先、全局键兜底），不再无条件读全局键 ——
+    # 否则界面会把「别的租户的暂停状态」显示成当前租户的，误导操作者。
+    try:
+        tenant_id = str(get_current_tenant(settings).get("tenant_id") or "")
+    except Exception:
+        tenant_id = ""
+    tenant_paused = current_store.get_tenant_setting(tenant_id, "strategies_paused", "") if tenant_id else ""
     return (
         current_store.heartbeats(),
         current_store.strategy_risk_budgets(),
         current_store.strategy_experiments(limit=300),
-        current_store.get_setting("strategies_paused", "false"),
+        tenant_paused or current_store.get_setting("strategies_paused", "false"),
         current_store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER")),
     )
 
@@ -187,8 +199,25 @@ with service_tab:
                 st.rerun()
 
     with st.container(border=True):
-        st.markdown("**全局运行方式**")
-        paused = store.get_setting("strategies_paused", "false") == "true"
+        st.markdown("**租户级运行方式**")
+        # 跨租户隔离（产品红线，10-23 实锤）：暂停键必须**按租户**写。
+        # 此前写的是全局键 `strategies_paused` —— 而 run_service 读取时
+        # **先看租户键、再回落全局键**，于是全局键一写，**所有租户**的策略循环
+        # 一起被停：在实盘租户点「暂停全部策略」，模拟盘也被连坐。
+        # N-Tenant 隔离会被一个全局开关整体绕过，那隔离就是假的。
+        # 读：租户键优先，回落全局键（兼容历史设置，不让既有暂停悄悄失效）；
+        # 写：只写租户键 —— 动不了别的租户。
+        try:
+            current_tenant = get_current_tenant(settings)
+            pause_tenant_id = str(current_tenant.get("tenant_id") or "")
+        except Exception:
+            pause_tenant_id = ""
+        tenant_paused = (
+            store.get_tenant_setting(pause_tenant_id, "strategies_paused", "")
+            if pause_tenant_id else ""
+        )
+        global_paused = store.get_setting("strategies_paused", "false")
+        paused = (tenant_paused or global_paused).lower() == "true"
         mode = str(execution_mode_setting).upper()
         is_real_env = getattr(settings, "trading_env", "SIMULATE") == "REAL"
         mode_options = ["SHADOW", "PAPER", "REAL"] if is_real_env else ["SHADOW", "PAPER"]
@@ -210,14 +239,26 @@ with service_tab:
             "恢复全部策略" if paused else "暂停全部策略",
             disabled=not admin, key="automation_pause_all",
         ):
-            store.set_setting("strategies_paused", str(not paused).lower())
+            new_paused = not paused
+            if pause_tenant_id:
+                store.set_tenant_setting(pause_tenant_id, "strategies_paused", str(new_paused).lower())
+                pause_scope = f"tenant:{pause_tenant_id}"
+            else:
+                # 拿不到租户上下文时不得静默写全局 —— 那正是本次修的漏洞
+                store.set_setting("strategies_paused", str(new_paused).lower())
+                pause_scope = "global(fallback:未取到租户上下文)"
             store.audit(
                 "STRATEGIES_PAUSE_CHANGED",
                 {"actor": "streamlit_admin", "source": "automation_control_center",
-                 "paused": not paused},
+                 "paused": new_paused, "scope": pause_scope, "tenant_id": pause_tenant_id},
             )
             st.rerun()
-        st.caption("暂停策略不会停止订单对账、风控、持仓监控和退出管理。")
+        st.caption(
+            f"⚠️ 「暂停全部策略」= 停掉**当前租户（`{pause_tenant_id or '未识别'}`）**的**整个策略循环**："
+            "不再评估任何持仓，因此**止盈、止损、到期退出、组合平仓管理会一并停止**，"
+            "只剩订单对账与风控引擎仍在跑。**该开关只作用于当前租户，不影响其他租户。**"
+            "若只想停开新仓、保留已有持仓的退出管理，请改用波动率策略页的「暂停新开仓」开关。"
+        )
 
 with overview_tab:
     st.info(

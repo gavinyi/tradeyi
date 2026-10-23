@@ -16,7 +16,8 @@ from .approval import (
     strategy_fingerprint, strategy_requires_approval,
 )
 from .fee_model import estimate_fees
-from .real_trading import check_real_trade
+from .real_trading import check_real_trade, resolve_real_account_limits
+from .risk_limits import RiskLimitsConfigError, resolve_risk_limits
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ class ExecutionManager:
     ):
         self.broker = broker
         self.store = store or TradingStore()
-        self.risk = RiskEngine(self.store)
+        self.risk = RiskEngine(self.store, broker=self.broker)
         self.alerts = alerts or AlertManager(self.store)
         self.tenant_registry = tenant_registry
 
@@ -88,15 +89,17 @@ class ExecutionManager:
             metadata.setdefault("security_firm", str(broker_firm_name).split(".")[-1].upper())
         # 铁律：实盘账户开启/关闭生命周期检查：已关闭统一管理的账户，严禁向其提交任何订单！
         if broker_account_id:
-            raw_acc_cfg = self.store.get_setting(f"real_account_config:{broker_account_id}", "")
-            if raw_acc_cfg:
-                try:
-                    if not json.loads(raw_acc_cfg).get("enabled", True):
-                        reason = f"账户管理安全铁律：实盘账户 {broker_account_id} 已关闭统一管理，禁止向其提交任何订单"
-                        self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id})
-                        return ExecutionResult(0, "REJECTED", reason)
-                except Exception:
-                    pass
+            broker_settings_obj = getattr(self.broker, "settings", None)
+            if broker_settings_obj is None:
+                from .config import Settings
+                broker_settings_obj = Settings.load()
+            limits = resolve_real_account_limits(
+                self.store, broker_settings_obj, broker_account_id,
+            )
+            if not limits.enabled:
+                reason = f"账户管理安全铁律：实盘账户 {broker_account_id} 已关闭统一管理，禁止向其提交任何订单"
+                self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id})
+                return ExecutionResult(0, "REJECTED", reason)
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
         tenant_id = getattr(self.tenant, "tenant_id", "") if self.tenant else ""
         if tenant_id:
@@ -220,12 +223,30 @@ class ExecutionManager:
                     f"{strategy_id} {symbol}: {real_decision.reason}",
                 )
                 return ExecutionResult(intent["id"], "REJECTED", real_decision.reason)
+        # P0-7 风控门：**按目标 broker 账户**解析一次生效限额，再交给风控引擎。
+        # 账户级 ``risk`` 段配置不完整 → fail-closed 拒绝开仓 + ERROR 审计，
+        # 绝不回落 env 静默补齐。
+        try:
+            risk_limits = resolve_risk_limits(self.store, self.broker)
+        except RiskLimitsConfigError as exc:
+            self.store.update_intent(intent["id"], "REJECTED", error=str(exc))
+            self.store.audit(
+                "RISK_LIMITS_CONFIG_INCOMPLETE",
+                {"intent_id": intent["id"], "reason": str(exc), "account_id": broker_account_id},
+                strategy_id,
+            )
+            self.alerts.send(
+                "ERROR", "RISK_LIMITS_CONFIG_INCOMPLETE",
+                f"{strategy_id} {symbol}: {exc}",
+            )
+            return ExecutionResult(intent["id"], "REJECTED", str(exc))
         try:
             decision = self.risk.check(
                 self.broker, symbol, side, int(quantity), float(price), metadata.get("multiplier"),
                 metadata.get("underlying"), strategy_id, mode,
                 bool(metadata.get("protected_short", False)),
                 metadata,
+                limits=risk_limits,
             )
         except Exception as exc:
             self.store.update_intent(intent["id"], "FAILED", error=f"交易前检查异常：{exc}")

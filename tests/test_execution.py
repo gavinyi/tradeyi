@@ -103,7 +103,12 @@ def test_recovery_block_does_not_block_shadow_buy(tmp_path):
     assert broker.calls == 0
 
 
-def test_recovery_block_still_blocks_paper_buy(tmp_path):
+def test_recovery_block_no_longer_blanket_blocks_named_strategy(tmp_path):
+    """精细化风控隔离后：全局 recovery_blocked 不再一刀切连坐健康的命名策略。
+
+    旧行为是「全局标志一置位就阻断全系统所有 BUY」，会把完全无关的期权策略
+    一起误杀（正是本次 AMD 买单被连坐拦截的根因）。现为标的级 + 策略级精准阻断。
+    """
     broker = FakeBroker()
     store = TradingStore(tmp_path / "test.db")
     store.set_setting("recovery_blocked", "true")
@@ -111,8 +116,34 @@ def test_recovery_block_still_blocks_paper_buy(tmp_path):
 
     result = executor.submit_limit("sma", "buy", "US.NVDA", "BUY", 1, 100)
 
+    assert result.status == "SUBMITTED"
+
+
+def test_symbol_blocked_still_blocks_named_strategy(tmp_path):
+    """标的级精准阻断仍然生效：发生对账差异的标的，其新增买入必须被拒。"""
+    broker = FakeBroker()
+    store = TradingStore(tmp_path / "test.db")
+    store.set_setting("symbol_blocked:US.NVDA", "true")
+    executor = ExecutionManager(broker, store)
+
+    result = executor.submit_limit("sma", "buy", "US.NVDA", "BUY", 1, 100)
+
     assert result.status == "REJECTED"
-    assert "三账差异" in result.message
+    assert "对账差异" in result.message
+    assert broker.calls == 0
+
+
+def test_strategy_reconciliation_disabled_blocks_named_strategy(tmp_path):
+    """策略级精准阻断仍然生效：被对账暂停的策略，其新开仓必须被拒。"""
+    broker = FakeBroker()
+    store = TradingStore(tmp_path / "test.db")
+    store.set_setting("strategy_reconciliation_disabled:sma", "true")
+    executor = ExecutionManager(broker, store)
+
+    result = executor.submit_limit("sma", "buy", "US.AAPL", "BUY", 1, 100)
+
+    assert result.status == "REJECTED"
+    assert "对账暂停" in result.message
     assert broker.calls == 0
 
 

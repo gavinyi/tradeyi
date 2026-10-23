@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 
-from .config import load_gamma_campaigns, load_volatility_campaigns
+from .config import load_all_volatility_campaigns, load_gamma_campaigns
 
 
 def strategy_reconciliation_symbols(store, strategy_id: str) -> set[str]:
@@ -14,7 +14,9 @@ def strategy_reconciliation_symbols(store, strategy_id: str) -> set[str]:
     if strategy_id in {"earnings_gamma", "earnings_gamma_manual"}:
         symbols.update(str(item.get("code", "")) for item in load_gamma_campaigns())
     if strategy_id == "volatility_long_gamma":
-        symbols.update(str(item.get("code", "")) for item in load_volatility_campaigns())
+        # #1 键级分区：**故意读全局**（含各租户键）—— 验收看的是"策略历史上用过哪些合约"，
+        # 本就该跨租户取全量；**只读**，不参与清理、不写键。
+        symbols.update(str(item.get("code", "")) for item in load_all_volatility_campaigns())
     return {symbol for symbol in symbols if symbol}
 
 

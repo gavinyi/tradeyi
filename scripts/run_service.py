@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta
+import contextvars
 import json
 import os
 from pathlib import Path
@@ -38,10 +39,12 @@ from futu_quant.approval import publish_approval_runtime_manifest
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings
 from futu_quant.execution import ExecutionManager
+from futu_quant.volatility_orphans import volatility_write_state_key
 from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.health import maintenance
 from futu_quant.reconciliation import reconcile_ledgers
 from futu_quant.store import TradingStore
+from futu_quant.tenant import tenant_config_key_candidates
 from futu_quant.shadow_matching import match_shadow_orders
 from futu_quant.earnings_calendar import refresh_earnings_events, sync_campaign_events
 from futu_quant.order_push import open_order_push
@@ -105,6 +108,44 @@ def service_files(tenant_id: str | None = None) -> dict[str, Path]:
         "restart": Path(f"data/trading-service{prefix}.restart"),
         "log": Path(f"data/service{prefix}.log"),
     }
+
+
+def resolve_configured_strategies(
+    store, tenant_id: str | None, configured_env: set[str],
+) -> set[str]:
+    """解析本租户实际要调度的策略集合（显示名）。
+
+    租户启用键有两种历史写法：显示名（``Core Satellite``）与小写策略 ID
+    （``core_satellite``）。对账的 disable/recover 路径写的是**策略 ID** 形式，
+    若这里只按 service_name 查就会查空、静默回落到全局键（全局
+    ``strategy_enabled:Core Satellite`` 为 false）—— 租户的启用声明被完全忽略，
+    实盘 core_satellite 永远不会被调度。两种形式都要认。
+    """
+    plugins = {
+        plugin.service_name: plugin.strategy_id
+        for plugin in strategy_plugins(scheduled_only=True)
+    }
+    configured: set[str] = set()
+    for name, strategy_id in plugins.items():
+        tenant_value = ""
+        if tenant_id:
+            for key in (
+                f"strategy_enabled:{tenant_id}:{name}",
+                f"strategy_enabled:{tenant_id}:{strategy_id}",
+            ):
+                candidate = store.get_setting(key, "")
+                if candidate:
+                    tenant_value = candidate
+                    break
+        if tenant_id and tenant_value:
+            enabled = tenant_value == "true"
+        else:
+            enabled = store.get_setting(
+                f"strategy_enabled:{name}", "true" if name in configured_env else "false"
+            ) == "true"
+        if enabled:
+            configured.add(name)
+    return configured
 
 
 MARKET_CALENDAR = USMarketCalendar()
@@ -440,15 +481,55 @@ def _request_stop(_signum=None, _frame=None) -> None:
     STOP_FILE.touch()
 
 
+# ----------------------------------------------------------------------------
+# P0-8：调度键租户化
+#
+# 事故形态（10-23 定位）：两个租户 Worker 共用同一批 `last_run:*` /
+# `task_backoff_until:*` / `task_failure_count:*` 键 —— A 跑完 `mark_run`，
+# B 的 `due()` 当场返回 False → **B 的整个任务被静默跳过**；退避键同理，
+# 一个租户失败压住另一个。**看起来在跑，实际没跑，而且没有任何日志能证明。**
+#
+# 修法：键带租户维度。每个 Worker 进程只服务一个租户，
+# 因此在 `service_cycle` 入口 `bind_tenant()` **绑定一次**，
+# 由 `due` / `mark_run` / `run_task` 共用 —— 不把 tenant_id 穿到 50 个调用点
+# （那是把一个作用域事实扩散成参数噪音），也不手拼键（走 tenant.py 共享入口）。
+#
+# 用 `contextvars` 而非模块全局：同一进程内的回调/线程能继承，且不存在
+# 「忘记清理导致下一个租户读到上一个」的风险（每次 service_cycle 都重绑）。
+# ----------------------------------------------------------------------------
+_ACTIVE_TENANT_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "active_tenant_id", default="",
+)
+
+
+def bind_tenant(tenant_id) -> None:
+    """在 `service_cycle` 入口绑定本进程服务的租户（P0-8）。"""
+    _ACTIVE_TENANT_ID.set(str(tenant_id or ""))
+
+
+def _sched_read_key(store: TradingStore, base_key: str) -> str:
+    """调度键读侧：**租户键优先、无前缀旧键兜底**（迁移前的存量状态）。"""
+    tenant_key, legacy = tenant_config_key_candidates(_ACTIVE_TENANT_ID.get(), base_key)
+    if tenant_key and store.get_setting(tenant_key):
+        return tenant_key
+    return legacy
+
+
+def _sched_write_key(base_key: str) -> str:
+    """调度键写侧：**只写租户键**（迁移后无前缀键必须零写入方）。"""
+    tenant_key, legacy = tenant_config_key_candidates(_ACTIVE_TENANT_ID.get(), base_key)
+    return tenant_key or legacy
+
+
 def due(store: TradingStore, key: str, interval: int, now: datetime) -> bool:
-    raw = store.get_setting(key)
+    raw = store.get_setting(_sched_read_key(store, key))
     if not raw:
         return True
     return (now - datetime.fromisoformat(raw)).total_seconds() >= interval
 
 
 def mark_run(store: TradingStore, key: str, now: datetime) -> None:
-    store.set_setting(key, now.isoformat())
+    store.set_setting(_sched_write_key(key), now.isoformat())
 
 
 def core_rebalance_window(store: TradingStore, session, now: datetime) -> tuple[bool, str]:
@@ -476,7 +557,7 @@ def run_task(
     store: TradingStore, alerts: AlertManager, strategy_id: str, callback,
     timeout_seconds: float | None = None,
 ) -> bool:
-    backoff_raw = store.get_setting(f"task_backoff_until:{strategy_id}")
+    backoff_raw = store.get_setting(_sched_read_key(store, f"task_backoff_until:{strategy_id}"))
     if backoff_raw and datetime.now(NY) < datetime.fromisoformat(backoff_raw):
         store.heartbeat(strategy_id, "DEGRADED", "故障退避中，等待自动重试", os.getpid())
         return False
@@ -487,8 +568,8 @@ def run_task(
     try:
         callback()
         duration = time.monotonic() - started
-        store.set_setting(f"task_failure_count:{strategy_id}", "0")
-        store.set_setting(f"task_backoff_until:{strategy_id}", "")
+        store.set_setting(_sched_write_key(f"task_failure_count:{strategy_id}"), "0")
+        store.set_setting(_sched_write_key(f"task_backoff_until:{strategy_id}"), "")
         if strategy_id in BROKER_CRITICAL_TASKS:
             store.set_setting("opend_consecutive_failures", "0")
             store.set_setting("opend_last_recovery_at", datetime.now(NY).isoformat())
@@ -520,7 +601,7 @@ def run_task(
         ):
             store.finish_task_run(run_id, "DEGRADED", duration, message)
             until = datetime.now(NY) + timedelta(hours=20)
-            store.set_setting(f"task_backoff_until:{strategy_id}", until.isoformat())
+            store.set_setting(_sched_write_key(f"task_backoff_until:{strategy_id}"), until.isoformat())
             store.decision(
                 strategy_id, None, "HOLD",
                 f"Core Satellite 提交前持仓校验未通过，本轮不再重复提交：{message}",
@@ -536,7 +617,7 @@ def run_task(
         store.finish_task_run(run_id, "DEGRADED", duration, message)
         record_broker_failure(store, alerts, strategy_id, message)
         store.set_setting(
-            f"task_backoff_until:{strategy_id}",
+            _sched_write_key(f"task_backoff_until:{strategy_id}"),
             (datetime.now(NY) + timedelta(seconds=15)).isoformat(),
         )
         store.heartbeat(strategy_id, "DEGRADED", message, os.getpid())
@@ -548,9 +629,9 @@ def run_task(
     except Exception as exc:
         duration = time.monotonic() - started
         store.finish_task_run(run_id, "ERROR", duration, str(exc))
-        failures = int(store.get_setting(f"task_failure_count:{strategy_id}", "0") or 0) + 1
+        failures = int(store.get_setting(_sched_read_key(store, f"task_failure_count:{strategy_id}"), "0") or 0) + 1
         delay = min(300, 5 * (2 ** min(failures - 1, 6)))
-        store.set_setting(f"task_failure_count:{strategy_id}", str(failures))
+        store.set_setting(_sched_write_key(f"task_failure_count:{strategy_id}"), str(failures))
         store.set_setting(
             f"task_backoff_until:{strategy_id}",
             (datetime.now(NY) + timedelta(seconds=delay)).isoformat(),
@@ -564,17 +645,31 @@ def run_task(
 
 
 def active_volatility_combo_ids(store: TradingStore) -> set[str]:
-    """Combo ids still owned by currently enabled volatility campaigns."""
+    """Combo ids still owned by currently enabled volatility campaigns.
+
+    #1 键级分区：只读本进程绑定的那个租户的清单（``bind_tenant`` 在 cycle 入口绑定）。
+    """
     states = store.campaign_states()
     ids: set[str] = set()
-    for campaign in load_volatility_campaigns():
+    for campaign in load_volatility_campaigns(_ACTIVE_TENANT_ID.get()):
         if not campaign.get("enabled", True):
             continue
         legs = campaign.get("legs") or []
         if len(legs) <= 1:
             continue
         code = str(campaign.get("code") or "")
-        state = states.get(f"volatility_long_gamma:{code}") or states.get(code) or {}
+        tenant = _ACTIVE_TENANT_ID.get()
+        # #1 键级分区：候选键从**共享助手**取（写形态 → 迁移前形态 → 裸 code），
+        # 不再手拼带租户的 f-string —— 手拼就是"同一个概念两份实现"的起点。
+        state = {}
+        for _candidate in (
+            volatility_write_state_key(code, tenant),
+            volatility_write_state_key(code),
+            code,
+        ):
+            if _candidate in states:
+                state = states[_candidate] or {}
+                break
         try:
             cycle = int(state.get("entry_cycle", 0) or 0)
         except (TypeError, ValueError):
@@ -585,6 +680,10 @@ def active_volatility_combo_ids(store: TradingStore) -> set[str]:
 
 
 def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = None) -> None:
+    # P0-8：绑定本进程服务的租户 —— 调度键（last_run:* / task_backoff_until:* /
+    # task_failure_count:*）据此带租户维度。**必须在任何 due/mark_run/run_task 之前**，
+    # 否则本周期仍会写无前缀键、被另一个租户的 Worker 读到。
+    bind_tenant(getattr(tenant, "tenant_id", "") if tenant else "")
     now = datetime.now(NY)
     session = MARKET_CALENDAR.session(now)
     alerts = AlertManager(store)
@@ -897,20 +996,12 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             "SERVICE_STRATEGIES", "Core Satellite,Earnings Gamma"
         ).split(",") if value.strip()
     }
-    known_strategies = {plugin.service_name for plugin in strategy_plugins(scheduled_only=True)}
     tenant_id = tenant.tenant_id if tenant else None
     if tenant_id:
         paused = store.get_tenant_setting(tenant_id, "strategies_paused", "false") == "true"
     else:
         paused = store.get_setting("strategies_paused", "false") == "true"
-    configured = {
-        name for name in known_strategies
-        if (
-            store.get_setting(f"strategy_enabled:{tenant_id}:{name}", "") == "true"
-            if tenant_id and store.get_setting(f"strategy_enabled:{tenant_id}:{name}", "")
-            else store.get_setting(f"strategy_enabled:{name}", "true" if name in configured_env else "false") == "true"
-        )
-    }
+    configured = resolve_configured_strategies(store, tenant_id, configured_env)
     if paused:
         configured.clear()
     if "Earnings Gamma" in configured and session.regular_open(now):
@@ -1165,16 +1256,31 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
         mark_run(store, "last_run:long_term_validation", now)
 
 
-def _wait_or_stop(seconds: float) -> None:
+def _wait_or_stop(seconds: float, stop_file: Path | None = None) -> None:
     """Wait up to *seconds*, waking early when a graceful stop is requested.
 
     POSIX wakes immediately when ``SIGTERM`` sets ``STOP_EVENT``.  Windows
     cannot deliver SIGTERM to the process, so the wait also polls the stop
     flag file that the control layer touches on stop/restart requests.
+
+    Two flag files are honoured on purpose:
+
+    * the tenant-level ``stop_file`` (``data/trading-service-<tenant>.stop``)
+      written for this worker, so one tenant can be stopped without touching
+      the others; and
+    * the global ``STOP_FILE`` (``data/trading-service.stop``), which the UI
+      stop button and the legacy single-service launcher still touch and which
+      must keep meaning "stop everything".
+
+    Polling only the global file would silently ignore a per-tenant stop, and
+    polling only the tenant file would leave the global kill-switch dead.
     """
+    watched = [STOP_FILE]
+    if stop_file is not None and stop_file != STOP_FILE:
+        watched.append(stop_file)
     deadline = time.monotonic() + max(0.0, seconds)
     while not STOP_EVENT.is_set():
-        if STOP_FILE.exists():
+        if any(path.exists() for path in watched):
             STOP_EVENT.set()
             break
         remaining = deadline - time.monotonic()
@@ -1205,6 +1311,10 @@ def main() -> None:
 
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     stop_file.unlink(missing_ok=True)
+    # 全局 stop 文件是「急停全部」的总闸：一旦残留（例如强杀进程时没来得及清），
+    # 新拉起的 Worker 会在第一次 _wait_or_stop 就立刻自杀，start.bat 静默失效。
+    # 启动语义即「开始运行」，故在此一并清除；运行中由 stop() 重新写入仍然有效。
+    STOP_FILE.unlink(missing_ok=True)
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
     with lock_file.open("a+b") as lock:
@@ -1287,7 +1397,7 @@ def main() -> None:
                     AlertManager(store).send("ERROR", "SERVICE_CYCLE_ERROR", str(exc))
                 if args.once or STOP_EVENT.is_set():
                     break
-                _wait_or_stop(max(5, args.poll))
+                _wait_or_stop(max(5, args.poll), stop_file)
         finally:
             if push_context is not None:
                 push_context.close()

@@ -1,7 +1,14 @@
-﻿# 富途量化交易系统 - Windows 部署脚本
+# 富途量化交易系统 - Windows 部署脚本
 # 使用方法：在 PowerShell 中运行 .\deploy-windows.ps1
 
 $ErrorActionPreference = "Stop"
+
+# Unbuffered stdout: Python block-buffers stdout when it is a file (8KB), which
+# freezes service/radar logs and makes a running process invisible. Set it for the
+# whole script so every child process inherits it.
+$env:PYTHONUNBUFFERED = "1"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "富途量化交易系统 - Windows 部署" -ForegroundColor Cyan
@@ -92,7 +99,18 @@ if (!(Test-Path ".env")) {
 
 # 6. 测试富途连接
 Write-Host "[6/7] 测试富途 OpenD 连接..." -ForegroundColor Yellow
+# Sink APPDATA before importing futu: the SDK's FTLog writes to
+# %APPDATA%\com.futunn.FutuOpenD\Log at import time, and on a sandboxed or
+# locked-down machine that path is not writable (the import then fails with a
+# bare PermissionError). Every other entry point does this via
+# futu_quant.broker:15-18; this inline probe must do it itself because it
+# imports futu directly.
 $testScript = @"
+import os
+from pathlib import Path
+_appdata = Path(r'$PSScriptRoot\data\appdata')
+_appdata.mkdir(parents=True, exist_ok=True)
+os.environ['APPDATA'] = str(_appdata)
 from futu import OpenQuoteContext
 try:
     from futu.common.constant import ContextStatus

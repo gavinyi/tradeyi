@@ -5,10 +5,15 @@ import json
 import os
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
 
 from dotenv import dotenv_values, set_key
 
 from .filelock import exclusive_lock
+from .tenant import VOLATILITY_CAMPAIGNS_KEY, campaigns_config_key
+
+if TYPE_CHECKING:  # 仅类型检查用，运行期由调用方/惰性导入提供，避免循环依赖
+    from .store import TradingStore
 
 
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -345,41 +350,184 @@ def save_gamma_campaigns(campaigns: list[dict]) -> None:
     _mirror_env("GAMMA_CAMPAIGNS", value)
 
 
-def load_volatility_campaigns() -> list[dict]:
-    value = _load_runtime_value("VOLATILITY_CAMPAIGNS", [])
+def _volatility_campaigns_key(tenant_id: str | None) -> str:
+    """波动率 campaign 清单的键 —— **无租户时必须是无前缀旧键**（#1 第 1 步的零行为改动）。
+
+    `tenant_id` 为空 → 无前缀旧键 ``VOLATILITY_CAMPAIGNS``：读侧、写侧、`.env` 镜像
+    三处全部落在**同一个键**上，与本签名引入之前逐字节等价（守卫
+    `tests/test_volatility_campaigns_key_signature.py` 钉住这一点）。
+
+    传租户 → 走 ``tenant.campaigns_config_key`` 拼出 ``VOLATILITY_CAMPAIGNS:{tenant}``。
+    键的拼接收敛在 tenant 层，**这里不手拼**。
+    """
+    if not tenant_id:
+        return VOLATILITY_CAMPAIGNS_KEY
+    return campaigns_config_key(tenant_id)
+
+
+def load_volatility_campaigns(tenant_id: str | None = None) -> list[dict]:
+    """读取波动率 campaign 清单。
+
+    `tenant_id=None`（默认，所有存量调用点）→ 无前缀旧键，行为与改动前一致；
+    传租户 → 读 ``VOLATILITY_CAMPAIGNS:{tenant}``（#1 第 3/4 步切流时启用）。
+    """
+    value = _load_runtime_value(_volatility_campaigns_key(tenant_id), [])
     return value if isinstance(value, list) else []
 
 
-def save_volatility_campaigns(campaigns: list[dict]) -> None:
+def load_all_volatility_campaigns() -> list[dict]:
+    """跨租户读取**全部** campaign —— 仅用于活动总览这类**只读**场景。
+
+    #1 键级分区后租户键是主存，无前缀旧键是迁移前的存量，两者都要读到才能
+    给出完整的活动视图。**任何写路径都不得用本函数的结果**（那会写回全局键）。
+    """
+    from .tenant import DEFAULT_TENANTS
+
+    rows = load_volatility_campaigns()
+    for tenant_id in DEFAULT_TENANTS:
+        rows = rows + load_volatility_campaigns(tenant_id)
+    return rows
+
+
+def save_volatility_campaigns(campaigns: list[dict], tenant_id: str | None = None) -> None:
+    """写回波动率 campaign 清单。
+
+    与读侧**同一个键函数**：`tenant_id=None` 写无前缀旧键，传租户写租户键 ——
+    写读必须用同一把钥匙，否则会出现"写进去没人读"的半状态。
+    """
+    key = _volatility_campaigns_key(tenant_id)
     if ENV_FILE == DEFAULT_ENV_FILE:
         from .store import TradingStore
-        TradingStore().set_runtime_config("VOLATILITY_CAMPAIGNS", campaigns, "streamlit_or_service")
+        TradingStore().set_runtime_config(key, campaigns, "streamlit_or_service")
     value = json_dumps(campaigns)
-    _mirror_env("VOLATILITY_CAMPAIGNS", value)
+    _mirror_env(key, value)
 
 
-def upsert_campaign(config_key: str, campaign: dict) -> list[dict]:
-    """Atomically add/replace one campaign without overwriting concurrent changes."""
-    from .store import TradingStore
-    identity = campaign.get("campaign_id", campaign.get("code"))
+def _campaign_scope(campaign: dict) -> tuple[str, str]:
+    """campaign 的两个身份维度 —— ``(租户, code)``。"""
+    tenant = str(campaign.get("tenant_id") or "").strip()
+    code = str(campaign.get("code") or campaign.get("campaign_id") or "").strip()
+    return tenant, code
+
+
+def _campaign_identity(campaign: dict) -> str:
+    """campaign 的唯一身份 —— **租户 + 合约 code**。
+
+    为什么不能以 `campaign_id` 优先：`campaign_id` 是「这次活动的编号」（例如
+    `orphan:<code>`），同一个合约可能因**重复接管**而带上不同的 campaign_id。
+    以它为身份会让同一张合约在配置里出现多条记录 —— 10-22 实测
+    `US.AMZN261028P250000` 同时存在两条（`orphan:…P252500` 与 `orphan:…P250000`），
+    worker 每轮把它当两个 campaign 执行，决策重复且互相干扰。
+
+    **旧铁律必须加边界（10-23，跨租户互相顶掉的实测）**：
+    - **同一租户内**：一张合约只应有一条 campaign 记录（旧铁律，保留）；
+    - **跨租户**：同一个 `code` **必须共存** —— 实盘与模拟各持一份，靠身份里的
+      租户前缀区分。两租户同 code 时，`code` 单独作为身份**不再唯一**，落库只会剩
+      1 条，另一个租户的归属被顶掉。
+
+    **不要因为"看起来复杂"删掉租户前缀**：删掉之后守卫
+    `test_two_tenants_adopting_same_code_do_not_overwrite` 会转红
+    （设计判据：`docs/volatility_campaigns_tenant_partition_design.md` §7.1 / §8.3）。
+    """
+    tenant, code = _campaign_scope(campaign)
+    return f"{tenant}|{code}" if tenant else code
+
+
+def upsert_campaign(
+    config_key: str, campaign: dict, store: "TradingStore | None" = None,
+) -> list[dict]:
+    """Atomically add/replace one campaign without overwriting concurrent changes.
+
+    按 `_campaign_identity`（**租户 + 合约 code**）去重：重复接管/滚动不会产生
+    重复记录；**跨租户同 code 各自共存**（10-23 P0-9 实测：只按 code 去重时
+    两租户会互相顶掉，落库只剩 1 条）。
+
+    **带租户写入时，同 code 的"无租户 legacy 记录"视为被取代，一并移除**（10-23）：
+    否则两种身份形态（`:US.X` 与 `futu_real_master:US.X`）会**同时存活**，worker 每轮
+    当两个 campaign 执行 —— 正是 `_campaign_identity` docstring 自己警告的那个 bug。
+    这条同时兜住**存量**（迁移前写入的 legacy 记录）与**漏设写入方**造成的形态并存，
+    守卫 `test_legacy_and_tenant_scoped_campaign_for_same_code_collapse_to_one` 钉住它。
+
+    `store` 可注入：**必须注入**。本函数若不接 store 就会自建 `TradingStore()`
+    直连生产库 —— 任何测试或临时脚本调用它都会写穿生产配置
+    （10-23 实测：守卫测试因此在生产配置里造出一条幽灵 campaign）。
+    """
+    from .store import TradingStore as _TradingStore
+
+    store = store or _TradingStore()
+    identity = _campaign_identity(campaign)
+    # 走 `_campaign_scope`：code 缺失时回落 `campaign_id`，与 `_campaign_identity` 同口径。
+    new_tenant, new_code = _campaign_scope(campaign)
+
     def update(current):
-        rows = [item for item in current if item.get("campaign_id", item.get("code")) != identity]
+        rows = []
+        for item in current:
+            if _campaign_identity(item) == identity:
+                continue                      # 同一身份 → 替换
+            item_tenant, item_code = _campaign_scope(item)
+            if new_tenant and new_code and not item_tenant and item_code == new_code:
+                continue                      # 同 code 的 legacy 无租户记录 → 被取代
+            rows.append(item)
         rows.append(campaign)
         return rows
-    value, _ = TradingStore().mutate_runtime_config(
+
+    value, _ = store.mutate_runtime_config(
         config_key, [], update, "streamlit_or_service",
     )
     _mirror_env(config_key, json_dumps(value))
     return value
 
 
-def delete_campaign(config_key: str, identity: str) -> list[dict]:
-    from .store import TradingStore
-    value, _ = TradingStore().mutate_runtime_config(
-        config_key, [],
-        lambda current: [item for item in current
-                         if item.get("campaign_id", item.get("code")) != identity],
-        "streamlit_or_service",
+def delete_campaign(
+    config_key: str, identity: str, store: "TradingStore | None" = None,
+) -> list[dict]:
+    """按**身份**（`{tenant_id}|{code}`）或**合约 code / campaign_id** 删除 campaign。
+
+    为什么两种形态都要接受（10-23）：身份改成带租户前缀后，调用方仍在传**裸 code**
+    （`run_volatility_strategy.py` 的 `old_identity`、控制页的 `item["code"]`/`code`）。
+    只按完整身份比对，裸 code 会**一条都匹配不上 → 静默不删**。
+
+    **但"裸 code 删所有租户副本"更糟**（10-23 Reviewer 实测）：控制页的"清理过期/失效
+    且无持仓策略"按钮正是传裸 code，而它的候选列表本身是**租户盲**的
+    （`pages/10_volatility_options_strategy.py:1313-1327` 按 code 查持仓）—— 实盘一张
+    **有真实持仓**的合约可能读到模拟盘的持仓（=0）而进入清理列表，点一下就把实盘的
+    campaign 删掉、**持仓失去管理**（META 那次的失效模式）。
+
+    所以采取**模糊即拒绝**（fail-closed，与今晚所有取舍一致）：
+    - 传**完整身份** → 删那一条；
+    - 传裸 code 且**只命中一个租户** → 删（兼容旧调用方）；
+    - 传裸 code 且**命中多个租户** → **抛异常**，要求调用方给完整身份。
+
+    **把"静默删掉别人"换成"响亮拒绝"。** B 批次再把控制页改成传完整身份（精确语义）。
+
+    **注意**：`upsert_campaign` 仍按完整身份去重（它必须区分租户）；只有删除放宽形态。
+    """
+    from .store import TradingStore as _TradingStore
+
+    store = store or _TradingStore()
+    target = str(identity or "").strip()
+
+    def _matches(item: dict) -> bool:
+        if _campaign_identity(item) == target:
+            return True
+        return target in {
+            str(item.get("code") or "").strip(),
+            str(item.get("campaign_id") or "").strip(),
+        }
+
+    def update(current):
+        matched = [item for item in current if _matches(item)]
+        tenants = {str(item.get("tenant_id") or "").strip() for item in matched}
+        if len(tenants) > 1:
+            raise ValueError(
+                f"拒绝模糊删除：{target!r} 在 {len(tenants)} 个租户下都存在"
+                f"（{sorted(tenants)}）—— 请用完整身份 {{tenant}}|{target} 删除，"
+                "避免跨租户连坐"
+            )
+        return [item for item in current if not _matches(item)]
+
+    value, _ = store.mutate_runtime_config(
+        config_key, [], update, "streamlit_or_service",
     )
     _mirror_env(config_key, json_dumps(value))
     return value

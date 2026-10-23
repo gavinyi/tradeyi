@@ -575,12 +575,13 @@ def _render_account_kpis(account: dict[str, Any], snapshot: dict[str, pd.DataFra
         )
         st.metric(
             "当日浮动盈亏", _money(pnl["today_position_pnl"]), border=True,
-            delta=f"股票 {stock_today_pnl:+,.0f} · 期权 {opt_today_pnl:+,.0f}",
+            # 带货币符号，避免「-1 · +0」被误读成持仓数量（10-23 用户反馈）
+            delta=f"股票 {_money(stock_today_pnl)} · 期权 {_money(opt_today_pnl)}",
             delta_color="normal",
         )
         st.metric(
             "总持仓浮动盈亏", _money(pnl["total_position_pnl"]), border=True,
-            delta=f"股票 {stock_total_pnl:+,.0f} · 期权 {opt_total_pnl:+,.0f}",
+            delta=f"股票 {_money(stock_total_pnl)} · 期权 {_money(opt_total_pnl)}",
             chart_data=pnl_sparkline or None, chart_type="line",
         )
         st.metric("现金缓冲", f"{cash_ratio:.1%}", _money(cash), border=True)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -12,6 +16,10 @@ from futu_quant.reconciliation import reconcile_ledgers
 from futu_quant.store import TradingStore
 from futu_quant.stress import stress_test
 from futu_quant.replay import run_resilience_drill
+
+# run_service 是脚本入口，不在包内；这里只为复用其中的启用键解析逻辑
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from run_service import resolve_configured_strategies  # noqa: E402
 from futu_quant.service_control import restart as restart_service, status as service_status
 from futu_quant.ui import (
     china_time_columns, render_admin_login, render_sidebar, get_current_tenant, get_tenant_broker,
@@ -62,9 +70,28 @@ with approval_tab:
             "Core Satellite 已设为免版本审批策略。按钮只启用该策略并切换到富途 PAPER；"
             "急停、亏损线、仓位和购买力风控仍然生效。"
         )
-        core_enabled = store.get_setting("strategy_enabled:Core Satellite", "false") == "true"
+        # 必须按当前租户判定：读全局 strategy_enabled:Core Satellite 在多租户下是错的
+        # （实盘租户键为 true、全局为 false，页面会显示"未启用"而实际在跑）。
+        _tenant_id = current_tenant.get("tenant_id") or current_tenant.get("id")
+        _configured_env = {
+            value.strip() for value in os.getenv(
+                "SERVICE_STRATEGIES", "Core Satellite,Earnings Gamma"
+            ).split(",") if value.strip()
+        }
+        core_enabled = (
+            "Core Satellite"
+            in resolve_configured_strategies(store, _tenant_id, _configured_env)
+        )
+        # 执行模式同样必须租户感知：execution.py 已按
+        # `strategy_execution_mode:{tenant_id}:{strategy_id}` 优先读取，页面若只读全局键，
+        # 会显示与真实调度不一致的模式。
+        _tenant_mode = (
+            store.get_setting(f"strategy_execution_mode:{_tenant_id}:core_satellite", "")
+            if _tenant_id else ""
+        )
         core_mode = (
-            store.get_setting("strategy_execution_mode:core_satellite", "")
+            _tenant_mode
+            or store.get_setting("strategy_execution_mode:core_satellite", "")
             or store.get_setting("execution_mode", "PAPER")
         ).upper()
         with st.container(horizontal=True):
@@ -74,19 +101,50 @@ with approval_tab:
                 "一键上线 Core Satellite", type="primary", icon=":material/rocket_launch:",
                 disabled=not admin or (core_enabled and core_mode == "PAPER"),
             ):
-                store.set_setting("strategy_enabled:Core Satellite", "true")
-                store.set_setting("strategy_execution_mode:core_satellite", "PAPER")
-                store.audit(
-                    "CORE_SATELLITE_QUICK_LAUNCH",
-                    {"actor": "streamlit_admin", "mode": "PAPER", "approval_exempt": True},
-                    "core_satellite",
-                )
-                st.success("Core Satellite 已启用并切换为 PAPER 模拟交易。")
+                # 写侧必须覆盖读侧认的每一种拼法与前缀：读侧租户键优先（两种拼法都认），
+                # 只写全局键在有租户键的情况下是静默无效的；写全局键还会污染另一个租户的回落值，
+                # 因此这里**只写租户级键**，没有租户上下文时不做任何修改。
+                if not _tenant_id:
+                    st.error("无法确定当前租户，未做任何修改。")
+                else:
+                    # 逐键显式写出（不用循环变量）：写侧必须覆盖读侧认的每一种拼法与前缀，
+                    # 只写全局键在有租户键的情况下是静默无效的；写全局键还会污染另一个
+                    # 租户的回落值，因此这里只写租户级键。
+                    store.set_setting(f"strategy_enabled:{_tenant_id}:Core Satellite", "true")
+                    store.set_setting(f"strategy_enabled:{_tenant_id}:core_satellite", "true")
+                    store.set_setting(
+                        f"strategy_execution_mode:{_tenant_id}:core_satellite", "PAPER"
+                    )
+                    store.audit(
+                        "CORE_SATELLITE_QUICK_LAUNCH",
+                        {
+                            "actor": "streamlit_admin", "mode": "PAPER", "approval_exempt": True,
+                            "tenant_id": _tenant_id,
+                            "enable_keys": [
+                                f"strategy_enabled:{_tenant_id}:Core Satellite",
+                                f"strategy_enabled:{_tenant_id}:core_satellite",
+                            ],
+                        },
+                        "core_satellite",
+                    )
+                    st.success(f"Core Satellite 已在租户 {_tenant_id} 启用并切换为 PAPER 模拟交易。")
                 st.rerun()
         if store.kill_switch():
             st.warning("系统急停当前已开启；策略虽已上线，但不会新增仓位。")
-        if store.get_setting("strategies_paused", "false") == "true":
-            st.warning("全局策略暂停当前已开启；请先到风控中心恢复策略调度。")
+        # 暂停状态按**当前租户**读（租户键优先、全局键兜底）—— 读全局键会把
+        # 别的租户的暂停状态显示成当前租户的，误导操作者。
+        try:
+            _tenant_id = str(get_current_tenant(settings).get("tenant_id") or "")
+        except Exception:
+            _tenant_id = ""
+        _paused = (
+            store.get_tenant_setting(_tenant_id, "strategies_paused", "") if _tenant_id else ""
+        ) or store.get_setting("strategies_paused", "false")
+        if _paused.lower() == "true":
+            st.warning(
+                f"租户 {_tenant_id or '未识别'} 的策略暂停当前已开启；"
+                "请先到策略与资金控制页恢复该租户的策略调度（不影响其他租户）。"
+            )
     status_rows = []
     for strategy in strategies:
         version = approval_version_status(store, strategy)
@@ -278,7 +336,9 @@ with reconcile_tab:
                             key=f"reconcile_sync:{symbol}:{strategy}",
                         ):
                             adjustment = store.sync_virtual_allocation_to_target(
-                                strategy, symbol, float(row["broker_quantity"]), current_cost
+                                strategy, symbol, float(row["broker_quantity"]), current_cost,
+                                tenant_id=current_tenant.get("tenant_id") or current_tenant.get("id"),
+                                account_id=current_tenant.get("acc_id"),
                             )
                             store.audit(
                                 "RECONCILIATION_MANUAL_SYNC",

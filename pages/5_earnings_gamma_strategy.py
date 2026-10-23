@@ -556,6 +556,20 @@ with config_tab:
     profit_target = left.number_input("止盈比例", 0.05, 10.0, 0.50, step=0.05)
     stop_loss = middle.number_input("硬止损比例", 0.05, 1.0, 0.40, step=0.05)
     trailing_stop = right.number_input("峰值回撤退出比例", 0.05, 1.0, 0.25, step=0.05)
+    with st.expander("单笔止损限额（策略保存后强制执行）", expanded=True):
+        limit_left, limit_right = st.columns(2)
+        max_position_loss_ratio = limit_left.number_input(
+            "单笔相对止损（权利金亏损比例）", 0.01, 1.0, 0.25, step=0.05,
+            help="单笔权利金相对亏损达到该比例时退出；随持仓规模自动缩放。",
+        )
+        max_position_loss_usd = limit_right.number_input(
+            "单笔绝对止损（美元）", 1.0, 100_000.0, 300.0, step=10.0,
+            help="单笔允许的最大美元亏损，防止极端跳空下仅靠比例止损失守。",
+        )
+        st.caption(
+            "两层止损取较紧者先生效（OR）：任一阈值触发即退出；"
+            "保存时会显式写入策略，避免配置缺失被静默兜底。"
+        )
     max_hold_hours = left.number_input("财报后最长持有小时", 1, 48, 8)
     automatic_timing = st.checkbox("自动优化入场与退出时间", value=True)
     minimum_move = st.number_input("自动方向最低当日涨跌幅", 0.0, 0.20, 0.003, step=0.001, format="%.3f")
@@ -790,6 +804,10 @@ with config_tab:
                     "max_premium_per_stage": float(max_premium), "entry_hours": int(saved_timing["entry_hours"]),
                     "profit_target": float(profit_target), "stop_loss": float(stop_loss),
                     "trailing_stop": float(trailing_stop), "enabled": True,
+                    # 单笔止损限额必须显式入库：执行侧「缺省即拒绝开仓」（VOLATILITY_STOP_LIMIT_MISSING），
+                    # 页面不写就等于保存了一条永远开不了仓的策略。
+                    "max_position_loss_ratio": float(max_position_loss_ratio),
+                    "max_position_loss_usd": float(max_position_loss_usd),
                     "max_hold_hours": float(saved_timing["max_hold_hours"]),
                     "timing_reason": str(saved_timing["timing_reason"]),
                     "minimum_underlying_move": float(minimum_move),

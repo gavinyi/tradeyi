@@ -14,6 +14,9 @@ from futu_quant.config import (
     load_volatility_symbols, delete_campaign, save_volatility_radar_budgets,
     save_volatility_campaigns, save_volatility_symbols,
     update_volatility_symbol, upsert_campaign,
+    # 身份（`{tenant}|{code}`）的唯一实现就在 config：这里必须复用而不是另拼一份，
+    # 否则页面删的身份口径与存储的去重口径一旦漂移，就会"删不掉"或"删错租户"。
+    _campaign_identity,
 )
 from futu_quant.earnings_gamma import screen_gamma_contracts
 from futu_quant.gamma_debug import diagnose_campaign, hard_campaign_issues
@@ -29,8 +32,12 @@ from futu_quant.volatility_scanner import scan_volatility_watchlist
 from futu_quant.volatility_optimizer import rank_volatility_contracts, volatility_regime
 from futu_quant.option_expectancy import add_iv_history_percentiles
 from futu_quant.volatility_structures import build_volatility_structure_candidates
+from futu_quant.volatility_orphans import volatility_state_keys
 from futu_quant.campaign_timing import campaign_time_display
 from futu_quant.store import TradingStore
+from futu_quant.tenant import (
+    campaign_belongs_to_tenant, campaigns_config_key_lenient, tenant_id_of_broker,
+)
 from futu_quant.security_search import search_securities, security_label
 from futu_quant.ui import (
     china_time_columns, chinese_columns, render_admin_login, render_sidebar,
@@ -49,6 +56,16 @@ settings = Settings.load()
 render_sidebar(settings)
 store = TradingStore()
 broker = FutuPaperBroker(settings)
+# #1 键级分区：本页所有 campaign 读写都按**当前页租户**（broker 所属租户）走租户键。
+# 在页面顶部算一次，两个页签共用 —— 避免"读租户键、写全局键"的半状态。
+_page_tenant_id = tenant_id_of_broker(broker) or ""
+_page_campaigns_key, _page_key_fell_back = campaigns_config_key_lenient(_page_tenant_id)
+if _page_key_fell_back:
+    store.operational_event(
+        "volatility_long_gamma", "CAMPAIGNS_KEY_TENANT_UNRESOLVED", "ERROR",
+        {"tenant_id": _page_tenant_id or None,
+         "message": "无法把 campaign 清单解析到租户键 —— 回落无前缀旧键（未隔离，已留痕）"},
+    )
 st.title("波动率期权策略")
 st.caption("独立策略 ID：volatility_long_gamma · 不依赖财报日历 · 仅限美股模拟盘")
 st.warning("高风险期权买方策略：只在异常波动已确认且 IV 成本合理时入场，最大损失仍可达全部权利金。")
@@ -72,7 +89,10 @@ admin = render_admin_login()
 
 # 工作台：把“今天要看什么”放在页面最前面，详细参数和明细表下沉到后面。
 # 这些读取只使用本地策略账本，不触发富途行情请求，避免打开页面就产生额外调用。
-_workbench_campaigns = load_volatility_campaigns()
+_workbench_campaigns = [
+    item for item in load_volatility_campaigns(_page_tenant_id)
+    if campaign_belongs_to_tenant(item, _page_tenant_id)
+]
 _workbench_decisions = [
     row for row in store.decisions(limit=500)
     if row.get("strategy_id") == "volatility_long_gamma"
@@ -144,7 +164,11 @@ with data_tab:
     st.subheader("常用数据")
     st.caption("日常只看这里：雷达状态、已保存策略、最近执行和快捷入口。参数调整放在第二个页签。")
     radar = radar_status()
-    campaigns = load_volatility_campaigns()
+    # 只看当前页租户的 campaign —— 跨租户记录不显示、也不参与任何清理。
+    campaigns = [
+        item for item in load_volatility_campaigns(_page_tenant_id)
+        if campaign_belongs_to_tenant(item, _page_tenant_id)
+    ]
     decisions = [
         row for row in store.decisions(limit=200)
         if row.get("strategy_id") == "volatility_long_gamma"
@@ -768,6 +792,35 @@ with config_tab:
             value=setting_bool("volatility_default_cooldown_bypass_enabled", False),
             help="成熟期权模式默认关闭。开启后极强信号可能在退出后提前重入，会增加过度交易和利润回吐风险。",
         )
+    with st.expander("单笔止损限额（下单前强制校验）", expanded=True):
+        stop_left, stop_right = st.columns(2)
+        max_position_loss_ratio = stop_left.number_input(
+            "相对止损（权利金亏损比例）", 0.01, 1.0,
+            value=setting_float("volatility_default_max_position_loss_ratio", 0.25),
+            step=0.05,
+            help=(
+                "主防线：持仓权利金相对亏损达到该比例即止损，随仓位规模自动缩放。"
+                "与上方「硬止损比例」语义不同 —— 这里是**单笔最大亏损**的相对口径。"
+            ),
+        )
+        max_position_loss_usd = stop_right.number_input(
+            "绝对止损（单笔最大亏损，美元）", 1.0, 100_000.0,
+            value=setting_float("volatility_default_max_position_loss_usd", 300.0),
+            step=10.0,
+            help=(
+                "兜底：单笔最大允许亏损金额，且不超过账户净值的 0.5%。"
+                "防止极端跳空下相对止损失守。"
+            ),
+        )
+        st.caption(
+            "**两层取较紧者先生效（OR）**：小仓位由相对止损决定（例：$294 权利金 → 约 $75 触发）；"
+            "大仓位由绝对上限决定（例：$2,076 权利金 → $300 先触发）。不是「先相对、不够再绝对」。"
+        )
+        st.caption(
+            "⚠️ 这两个限额会**显式写入每一条波动率策略**，并在**下单前强制校验**："
+            "任一条策略缺省即记 ERROR 并**拒绝开仓**（不静默兜底）。"
+            "改动会留痕到审计事件，可通过「运行审计」页追溯。"
+        )
         same_contract_cooldown = st.number_input(
             "同一合约止盈后冷却小时", 1, 168,
             value=setting_int("volatility_default_same_contract_cooldown_hours", 24),
@@ -823,6 +876,9 @@ with config_tab:
         "cooldown_contraction_hours": int(cooldown_contraction),
         "cooldown_bypass_enabled": bool(cooldown_bypass),
         "same_contract_cooldown_hours": int(same_contract_cooldown),
+        # 单笔止损限额（双层口径）—— 必须显式落库，缺省即拒绝开仓
+        "max_position_loss_ratio": float(max_position_loss_ratio),
+        "max_position_loss_usd": float(max_position_loss_usd),
     }
 
     volatility_exit_default_settings = {
@@ -877,8 +933,8 @@ with config_tab:
         "volatility_default_maturity_max_dte": int(max_days),
         "volatility_default_cooldown_bypass_enabled": str(bool(cooldown_bypass)).lower(),
         "volatility_default_same_contract_cooldown_hours": int(same_contract_cooldown),
-        "volatility_default_maturity_min_dte": int(maturity_min_dte),
-        "volatility_default_maturity_max_dte": int(max_days),
+        "volatility_default_max_position_loss_ratio": float(max_position_loss_ratio),
+        "volatility_default_max_position_loss_usd": float(max_position_loss_usd),
     }
     with st.container(border=True):
         st.subheader("保存退出/保护参数")
@@ -889,7 +945,7 @@ with config_tab:
         st.markdown(
             "当前会保存以下参数："
             "`独立平仓参数`、`入场稳定性确认`、`按信号强度分层保护`、"
-            "`分批止盈参数`、`时间衰减动态止损`、`按退出原因冷却`。"
+            "`分批止盈参数`、`时间衰减动态止损`、`按退出原因冷却`、`单笔止损限额`。"
         )
         save_default_col, apply_existing_col = st.columns(2)
         if save_default_col.button(
@@ -898,11 +954,18 @@ with config_tab:
             icon=":material/save:",
             key="save_volatility_exit_parameters_as_defaults",
         ):
+            previous_defaults = {
+                key: store.get_setting(key) for key in volatility_exit_default_settings
+            }
             for key, value in volatility_exit_default_settings.items():
                 store.set_setting(key, str(value))
             store.audit(
                 "VOLATILITY_EXIT_DEFAULTS_UPDATED",
-                {"parameters": volatility_exit_default_settings},
+                {
+                    "parameters": volatility_exit_default_settings,
+                    "previous": previous_defaults,
+                    "changed_by": "streamlit",
+                },
                 "volatility_long_gamma",
             )
             st.success("已保存为默认保护参数；以后新生成/新保存的波动率策略会使用这组默认值。")
@@ -912,15 +975,27 @@ with config_tab:
             icon=":material/published_with_changes:",
             key="save_volatility_exit_parameters_to_campaigns",
         ):
-            existing_campaigns = load_volatility_campaigns()
+            existing_campaigns = load_volatility_campaigns(_page_tenant_id)
+            previous_limits = {
+                campaign.get("code"): {
+                    key: campaign.get(key)
+                    for key in ("max_position_loss_ratio", "max_position_loss_usd")
+                }
+                for campaign in existing_campaigns
+            }
             updated_campaigns = [
                 {**campaign, **volatility_exit_parameters}
                 for campaign in existing_campaigns
             ]
-            save_volatility_campaigns(updated_campaigns)
+            save_volatility_campaigns(updated_campaigns, tenant_id=_page_tenant_id)
             store.audit(
                 "VOLATILITY_EXIT_PARAMETERS_UPDATED",
-                {"campaigns": len(updated_campaigns), "parameters": volatility_exit_parameters},
+                {
+                    "campaigns": len(updated_campaigns),
+                    "parameters": volatility_exit_parameters,
+                    "previous_stop_limits": previous_limits,
+                    "changed_by": "streamlit",
+                },
                 "volatility_long_gamma",
             )
             st.success(f"已更新 {len(updated_campaigns)} 条已保存波动率策略，下一轮服务循环生效。")
@@ -1165,7 +1240,10 @@ with config_tab:
         elif estimated > max_premium:
             st.error("本批超过最大权利金，不能保存。")
         elif st.button("保存为波动率自动策略", disabled=not admin):
-            campaigns = [item for item in load_volatility_campaigns() if item.get("code") != selected_code]
+            campaigns = [
+                item for item in load_volatility_campaigns(_page_tenant_id)
+                if item.get("code") != selected_code
+            ]
             campaigns.append({
                 "code": selected_code, "underlying": underlying,
                 "event_date": date.today().isoformat(), "event_session": "行情触发",
@@ -1173,6 +1251,8 @@ with config_tab:
                 "max_stages": int(stages), "max_premium_per_stage": float(max_premium),
                 "entry_hours": int(entry_hours), "profit_target": float(profit_target),
                 "stop_loss": float(stop_loss), "trailing_stop": float(trailing_stop),
+                "max_position_loss_ratio": float(max_position_loss_ratio),
+                "max_position_loss_usd": float(max_position_loss_usd),
                 **volatility_exit_parameters,
                 "minimum_underlying_move": float(minimum_move),
                 "entry_zscore": float(entry_zscore), "cooldown_hours": int(cooldown_hours),
@@ -1181,6 +1261,9 @@ with config_tab:
                 "entry_gamma_theta_efficiency": float(selected.get("gamma_theta_efficiency", 0)),
                 "optimizer_version": 2,
                 "enabled": True, "trigger_mode": "VOLATILITY",
+                # 显式带租户（P0-9）：否则身份退化成裸 {code}，与 ADOPT 产出的
+                # {tenant}|{code} 同 code 并存两条。
+                "tenant_id": _page_tenant_id,
                 **{
                     column: selected.get(column) for column in (
                         "strike_price", "strike_time", "bid_price", "ask_price", "mid_price",
@@ -1190,11 +1273,15 @@ with config_tab:
                     ) if column in selected.index
                 },
             })
-            upsert_campaign("VOLATILITY_CAMPAIGNS", campaigns[-1])
+            upsert_campaign(_page_campaigns_key, campaigns[-1])
             st.success("已保存到独立的 volatility_long_gamma 策略。")
 
     st.subheader("自动策略 · 已保存策略与当前持仓")
-    campaigns = load_volatility_campaigns()
+    # 列表、清理候选与删除都只认当前页租户（见 campaign_belongs_to_tenant）。
+    campaigns = [
+        item for item in load_volatility_campaigns(_page_tenant_id)
+        if campaign_belongs_to_tenant(item, _page_tenant_id)
+    ]
     if campaigns:
         campaign_codes = [item["code"] for item in campaigns]
         try:
@@ -1274,6 +1361,11 @@ with config_tab:
             if (expired or invalid_config) and current_quantity <= 0 and not pending:
                 expired_cleanup_candidates.append({
                     "code": campaign["code"],
+                    # 删除必须用**完整身份**：裸 code 在跨租户同 code 时会命中多个租户，
+                    # 被 delete_campaign 的"模糊即拒绝"抛异常（fail-closed），
+                    # 结果是"看着有候选、点下去删不掉"。
+                    "identity": _campaign_identity(campaign),
+                    "tenant": str(campaign.get("tenant_id") or "").strip() or "未标记(legacy)",
                     "expired": expired,
                     "invalid_config": invalid_config,
                     "issues": issues,
@@ -1286,6 +1378,7 @@ with config_tab:
                 "模拟盘持仓": paper_quantity,
                 "模拟盘成本价": paper_cost,
                 "当前 Shadow 持仓": shadow_quantity, "Shadow 平均成本": shadow_cost,
+                "租户": str(campaign.get("tenant_id") or "").strip() or "未标记(legacy)",
                 "运行状态": latest.get("decision", ""), "最新原因": latest.get("reason", ""),
                 "配置状态": "阻断" if hard_campaign_issues(campaign, issues) else "正常",
                 "诊断": "；".join(issues),
@@ -1300,15 +1393,16 @@ with config_tab:
             "每批最大权利金", "入场窗口（小时）", "止盈比例", "硬止损比例", "峰值回撤退出比例",
             "动态波动Z值门槛", "退出冷却小时", "入场隐含波动率", "入场Gamma/Theta效率",
             "波动率合约质量分", "波动率合约筛选原因", "最近表达复核",
-            "当前 Shadow 持仓", "Shadow 平均成本", "运行状态", "最新原因", "配置状态", "诊断",
+            "当前 Shadow 持仓", "Shadow 平均成本", "租户", "运行状态", "最新原因", "配置状态", "诊断",
             "入场开始时间（中国）", "入场截止时间（中国）",
         ) if column in saved.columns]
 
         with st.container(border=True):
             st.subheader("过期/失效策略清理")
             st.caption(
-                "只会清理已经过期或配置失效，且没有模拟盘持仓、没有 Shadow 持仓、"
-                "没有待成交订单的波动率策略。有任何风险暴露都会跳过。"
+                "只会清理**当前页租户**下已经过期或配置失效，且没有模拟盘持仓、没有 Shadow 持仓、"
+                "没有待成交订单的波动率策略。有任何风险暴露都会跳过；"
+                "跨租户记录既不显示也不会被误删。"
             )
             st.metric("可安全清理数量", len(expired_cleanup_candidates), border=True)
             if saved_broker_error:
@@ -1319,7 +1413,7 @@ with config_tab:
                 icon=":material/cleaning_services:",
             ):
                 for item in expired_cleanup_candidates:
-                    delete_campaign("VOLATILITY_CAMPAIGNS", item["code"])
+                    delete_campaign(_page_campaigns_key, item["identity"])
                 store.audit(
                     "VOLATILITY_EXPIRED_CAMPAIGNS_CLEANED",
                     {
@@ -1340,6 +1434,18 @@ with config_tab:
             if not click:
                 return
             code = str(saved.iloc[int(click["row"])]["代码"])
+            # 只允许删**当前页租户**的那一条：先按 code 找回本租户的记录，
+            # 再用完整身份删除。找不到就拒绝 —— 绝不退化成"按 code 全局删"。
+            match = next(
+                (item for item in campaigns if str(item.get("code") or "") == code), None,
+            )
+            if match is None:
+                st.session_state["remove_volatility_campaign_error"] = (
+                    f"{code} 不属于当前页租户（{_page_tenant_id or '未标记'}），"
+                    "已禁止删除 —— 跨租户记录不可在本页操作"
+                )
+                return
+            identity = _campaign_identity(match)
             shadow_quantity, _ = store.shadow_position("volatility_long_gamma", code)
             if shadow_quantity > 0:
                 st.session_state["remove_volatility_campaign_error"] = (
@@ -1370,10 +1476,10 @@ with config_tab:
                     f"{code} 仍有 {len(pending)} 笔待成交订单，请先到订单管理撤单。"
                 )
                 return
-            delete_campaign("VOLATILITY_CAMPAIGNS", code)
+            delete_campaign(_page_campaigns_key, identity)
             store.audit(
                 "VOLATILITY_CAMPAIGN_DELETED",
-                {"code": code, "source": "saved_campaign_row"},
+                {"code": code, "identity": identity, "source": "saved_campaign_row"},
                 "volatility_long_gamma",
             )
             st.session_state["removed_volatility_campaign"] = code
@@ -1418,8 +1524,10 @@ with config_tab:
                 cleared = store.clear_symbol_activity(
                     "volatility_long_gamma",
                     code,
-                    [
-                        f"volatility_long_gamma:{code}",
+                    # 铁律：**写侧用哪种形态，清理侧就必须认得哪种。**
+                    # 状态键现在有两种形态（带租户=新写入 / 不带租户=历史存量），
+                    # 走共享助手一次性取全，不在页面里手拼键形态，否则漏一种就清不干净。
+                    sorted(volatility_state_keys(code, _page_tenant_id, underlying_code)) + [
                         f"volatility_cooldown:{underlying_code}",
                         f"volatility_cooldown_hours:{underlying_code}",
                     ],

@@ -16,6 +16,39 @@ FEISHU_GROUP_ALERT_WHITELIST = {
     "STRATEGY_INTERRUPTED_WITH_OPEN_OPTIONS",     # 持仓期权时网络连续失败进入紧急保护
     "PROTECTIVE_RADAR_RESTART_FAILED",            # 雷达自动重启失败
     "OPEND_AUTO_RESTART_FAILED",                  # OpenD 自动重启失败
+    "OPTION_LIFECYCLE_RISK",                      # 期权临近到期/行权将产生裸空正股敞口（必须人工可见）
+    # 以下三条同属「涉及真金敞口/风控门禁」的 ERROR 级事件，历史上一律 delivered=0（仅落库、
+    # 从不推送）。产品口径：这类事件必须让人知道，不因「怕吵」而静默。
+    "DAILY_LOSS_KILL_SWITCH",                     # 账户当日亏损触及急停线，已自动急停
+    "REAL_TRADE_REJECTED",                        # 实盘下单被门禁拒绝（含超额/隔离铁律）
+    "ORDER_ENV_MISMATCH",                         # 订单执行环境与券商环境不一致，已禁止改单撤单
+    # 硬止损限额非法（<=0）。不修则 `usd_limit > 0` 恒假 → 止损在两层同时失效
+    # （共同失败点），而这是唯一的线索 —— 不落推送等于让用户在无声中失去止损。
+    "HARD_STOP_LIMIT_INVALID",
+    # 开仓被限额门禁拒绝（限额缺失 / 限额非法）。这两条是**开仓拒绝**，比退出路径的
+    # 回落更该让人看见：一旦 record_incident 置为 open 而首次投递恰好失败，后续每次
+    # 拒绝都会被 `send()` 的 `not opened and not in whitelist` 分支提前 return ——
+    # campaign 会**永久静默地被拒绝开仓**（10-22 item 36「检出但 delivered=0」同形态）。
+    "VOLATILITY_STOP_LIMIT_MISSING",
+    "VOLATILITY_STOP_LIMIT_INVALID",
+    # 纸面账户的亏损守卫分两层，两条都要推群：
+    # * PAPER_DAILY_LOSS_WARN —— **告警线**：纸面亏损不是真钱，自动急停会中断正在进行的
+    #   策略验证（2026-10-22 模拟账户亏 $10,351 被全局 $10,000 线误杀，根因在此）。
+    #   只告警、不拦单，但必须让人看见 —— 否则"放宽"就成了"没人知道"。
+    #   作用域：**仅 `trading_env=SIMULATE` 的租户**，禁止配到实盘账户（真金无"只告警"口径）。
+    # * PAPER_DAILY_LOSS_HARD_STOP —— **硬停线**（= `max_daily_loss`，$100,000）：拦单。
+    "PAPER_DAILY_LOSS_WARN",
+    "PAPER_DAILY_LOSS_HARD_STOP",
+    # ML 模型管理（2026-10-23）。三条都是「库里有、用户看不到」的形态，必须推群：
+    # * ML_MODEL_STALE        —— 模型超过新鲜度阈值未重训。评分质量退化是渐进的、
+    #   不会报错，唯一线索就是年龄，不推等于没有守卫。
+    # * ML_SCORING_DEGRADED  —— **本该用 ML 却回退了规则打分**（依赖缺失/文件缺失/
+    #   反序列化失败）。ml_scorer 把异常吞在 INFO 级，这是唯一的对外信号。
+    # * ML_ALERT_NOT_DELIVERED —— ML 守卫自己投递失败。守卫静默失效是最坏形态，
+    #   必须递归可见（否则「守卫坏了」这件事本身也没人知道）。
+    "ML_MODEL_STALE",
+    "ML_SCORING_DEGRADED",
+    "ML_ALERT_NOT_DELIVERED",
 }
 
 

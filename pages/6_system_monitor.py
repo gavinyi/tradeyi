@@ -17,7 +17,7 @@ from futu_quant.scheduled_tasks import (
     BOARD_TIMERS, next_board_timer_run, set_timer_enabled, timer_default_enabled, timer_enabled_setting_key,
 )
 from futu_quant.ui import (
-    CHINA_TZ, EVENT_LABELS, china_time_columns, readable_payload,
+    CHINA_TZ, EVENT_LABELS, china_time_columns, get_current_tenant, readable_payload,
     render_sidebar, translate_common_values,
 )
 
@@ -28,6 +28,26 @@ st.title("系统监控与策略归因")
 store = TradingStore()
 settings = Settings.load()
 broker = FutuPaperBroker(settings)
+
+
+def _current_tenant_id() -> str:
+    """当前侧边栏选中的租户 ID（拿不到时返回空串，由调用方回落）。"""
+    try:
+        return str(get_current_tenant(settings).get("tenant_id") or "")
+    except Exception:
+        return ""
+
+
+def _paused_for_current_tenant() -> bool:
+    """当前租户的策略暂停状态：**租户键优先、全局键兜底**。
+
+    与 `run_service.py` 的读取口径必须一致，否则界面显示的作用域与实际不符。
+    """
+    tenant_id = _current_tenant_id()
+    tenant_value = (
+        store.get_tenant_setting(tenant_id, "strategies_paused", "") if tenant_id else ""
+    )
+    return (tenant_value or store.get_setting("strategies_paused", "false")).lower() == "true"
 
 
 @st.cache_data(ttl=60)
@@ -44,8 +64,10 @@ with st.container(border=True):
         st.metric("统一交易服务", "运行中" if service.running else "未运行", border=True)
         st.metric("独立波动率雷达", "运行中" if radar.running else "未运行", border=True)
         st.metric(
-            "全部策略", "已暂停" if store.get_setting("strategies_paused", "false") == "true"
-            else "运行中", border=True,
+            # 暂停状态按**当前租户**读（租户键优先、全局键兜底）—— 读全局键会把
+            # 别的租户的暂停状态显示成当前租户的，误导操作者。
+            f"全部策略（{_current_tenant_id() or '未识别'}）",
+            "已暂停" if _paused_for_current_tenant() else "运行中", border=True,
         )
         st.metric(
             "全局执行模式", store.get_setting("execution_mode", "PAPER").upper(), border=True,

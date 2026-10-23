@@ -7,7 +7,9 @@ import pandas as pd
 import streamlit as st
 
 from futu_quant.broker import BrokerError, FutuPaperBroker
-from futu_quant.config import Settings, load_volatility_campaigns, load_volatility_symbols
+from futu_quant.config import (
+    Settings, load_all_volatility_campaigns, load_volatility_symbols,
+)
 from futu_quant.radar_control import start as radar_start, status as radar_status, stop as radar_stop
 from futu_quant.service_control import status as service_status
 from futu_quant.store import TradingStore
@@ -26,7 +28,9 @@ st.title("波动率策略总览")
 st.caption("只看当前状态、持仓和阻断原因；参数和策略维护请进入高级配置页面。")
 
 symbols = load_volatility_symbols()
-campaigns = load_volatility_campaigns()
+# #1 键级分区：总览页**故意读全局**（含各租户键）—— 它是跨租户的状态看板，
+# 且**只读**（本页不写任何 campaign 键）。
+campaigns = load_all_volatility_campaigns()
 decisions = [
     item for item in store.decisions(limit=500)
     if item.get("strategy_id") == "volatility_long_gamma"

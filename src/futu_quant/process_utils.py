@@ -18,10 +18,20 @@ import signal
 from ctypes import wintypes
 
 
-def pid_alive(pid: int) -> bool:
-    """Return whether *pid* refers to a live process."""
+def pid_alive(pid: int, *, python_only: bool = False) -> bool:
+    """Return whether *pid* refers to a live process.
+
+    ``python_only=True`` 时额外校验进程映像是 ``python``/``pythonw`` ——
+    用于区分「PID 被系统回收复用」。Windows 会复用 PID：10-23 凌晨
+    `volatility-radar.pid` 里的 8208 被 `csrss.exe` 复用，
+    `start.bat` 与 `launch_workers.is_pid_alive` 因此误判"服务还活着"，
+    服务被**静默跳过**。服务状态判定（`service_control` / `radar_control`）
+    是同一个坑，而且更危险：``stop()`` 的等待循环会因系统进程永远活跃而**挂死**。
+
+    默认 ``False`` 保持既有行为（POSIX 探针与其他调用方不受影响）。
+    """
     if os.name == "nt":
-        return _pid_alive_windows(int(pid))
+        return _pid_alive_windows(int(pid), python_only=python_only)
     try:
         os.kill(pid, 0)
         return True
@@ -57,8 +67,13 @@ def request_stop(pid: int, *, force_on_windows: bool = True) -> None:
             pass
 
 
-def _pid_alive_windows(pid: int) -> bool:
-    """Probe liveness via OpenProcess + GetExitCodeProcess (never kills)."""
+def _pid_alive_windows(pid: int, *, python_only: bool = False) -> bool:
+    """Probe liveness via OpenProcess + GetExitCodeProcess (never kills).
+
+    `python_only=True` 时再加一道映像名校验（`QueryFullProcessImageNameW`）——
+    取不到映像名即视为不匹配（宁可误判为"未运行"而重新拉起，
+    也不要因 PID 复用而让服务被静默跳过）。
+    """
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     open_process = kernel32.OpenProcess
     open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -82,6 +97,27 @@ def _pid_alive_windows(pid: int) -> bool:
         code = wintypes.DWORD()
         if not get_exit_code(handle, ctypes.byref(code)):
             return True  # Cannot tell; assume alive rather than kill logic
-        return code.value == STILL_ACTIVE
+        if code.value != STILL_ACTIVE:
+            return False
+        if not python_only:
+            return True
+        return _win_image_is_python(kernel32, handle)
     finally:
         close_handle(handle)
+
+
+def _win_image_is_python(kernel32, handle) -> bool:
+    """校验进程映像名是否为 python/pythonw（排除 PID 被系统进程复用）。"""
+    try:
+        query = kernel32.QueryFullProcessImageNameW
+        query.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                          ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+        query.restype = wintypes.BOOL
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not query(handle, 0, buffer, ctypes.byref(size)):
+            return False
+        name = (buffer.value or "").lower()
+        return name.endswith(("python.exe", "pythonw.exe"))
+    except Exception:
+        return False

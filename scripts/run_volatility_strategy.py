@@ -6,6 +6,7 @@ import time
 os.environ.setdefault("FUTU_LOG_ROLE", "volatility")
 
 from futu_quant.broker import BrokerError, FutuPaperBroker
+from futu_quant.campaign_cleanup import reclaim_exit_only_orphans
 from futu_quant.config import Settings, load_volatility_campaigns, upsert_campaign, delete_campaign
 from futu_quant.execution import ExecutionManager
 from futu_quant.combo_execution import find_open_combo_for_campaign
@@ -14,7 +15,12 @@ from futu_quant.volatility_optimizer import volatility_entry_quality_allowed
 from futu_quant.volatility_orphans import (
     manage_volatility_orphans,
     protected_volatility_state_keys,
+    protection_coverage,
+    retain_campaign_if_at_risk,
+    active_volatility_state_keys,
 )
+from futu_quant.store import state_key_code
+from futu_quant.tenant import campaigns_config_key_lenient, tenant_id_of_broker, DEFAULT_TENANTS
 from futu_quant.option_lifecycle import parse_option_code
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
@@ -25,8 +31,40 @@ if __package__:
 else:
     from run_gamma_strategy import load_state, run_campaign, save_state
 
-STOP_FILE = Path("data/trading-service.stop")
-RESTART_FILE = Path("data/trading-service.restart")
+_VOL_STATE_PREFIX = "volatility_long_gamma:"
+
+
+def prunable_state_keys(
+    store, tenant_id: str, active_keys: set[str], active_codes: set[str],
+) -> list[str]:
+    """返回**可以安全删除**的波动率状态键；其他租户的键一律不碰。
+
+    **为什么必须按租户过滤**（2026-10-23 开盘实测缺陷）：`run_volatility_once` 是
+    逐租户执行的，而 `campaign_state` 是共享表。旧实现只按「本租户 active_keys +
+    本租户 active_codes」判定 stale —— 另一租户的带租户键（code 不在本租户
+    active_codes 里）会被当成 stale 删掉，对方下一轮再重建 → `peak` 等利润保护
+    状态每两分钟归零一次。**跨租户剪枝 = 静默清掉别人的持仓状态。**
+
+    口径：明确属于**其他已注册租户**的键永不删除；本租户键与历史无租户形态
+    （含 `signal:` 等共享段）仍按 active_keys / active_codes 判定。
+    """
+    foreign_prefixes = tuple(
+        f"{_VOL_STATE_PREFIX}{tid}:" for tid in DEFAULT_TENANTS if tid != tenant_id
+    )
+    candidates = [
+        key for key in store.campaign_states() if key.startswith(_VOL_STATE_PREFIX)
+    ]
+    return [
+        key for key in candidates
+        if not key.startswith(foreign_prefixes)
+        and key not in active_keys
+        and state_key_code(key, _VOL_STATE_PREFIX) not in active_codes
+    ]
+
+# 独立命名空间：此前复用 data/trading-service.stop，会让这个独立脚本顺带停掉
+# 全部租户 Worker（含实盘真金），属跨脚本污染。
+STOP_FILE = Path("data/volatility-strategy.stop")
+RESTART_FILE = Path("data/volatility-strategy.restart")
 
 
 def stop_requested() -> bool:
@@ -87,6 +125,19 @@ def run_once(
         executor.reconcile()
     positions = broker.positions()
     orders = broker.orders()
+    # 回收已了结的 exit_only 孤儿 campaign（无持仓/无挂单/无虚拟持仓才回收）。
+    # 不回收的话它们会长期留存：每轮被遍历、被护栏静默跳过、白烧周期，
+    # 还会盖住真正需要管的那条（10-23 生产配置里坐实过）。
+    try:
+        reclaimed = reclaim_exit_only_orphans(executor.store, broker)
+        if reclaimed.get("reclaimed"):
+            executor.store.audit("VOLATILITY_ORPHANS_RECLAIMED", reclaimed, "volatility_long_gamma")
+            print(f"VOLATILITY ORPHANS RECLAIMED: {len(reclaimed['reclaimed'])}")
+    except Exception as exc:
+        executor.store.operational_event(
+            "volatility_long_gamma", "ORPHAN_RECLAIM_FAILED", "WARNING",
+            {"error": str(exc)},
+        )
     stale_cleaned = close_stale_expired_combos(executor.store, positions, datetime.now().astimezone().date())
     if stale_cleaned:
         executor.store.audit(
@@ -95,7 +146,20 @@ def run_once(
             "volatility_long_gamma",
         )
     state = load_state()
-    campaigns = load_volatility_campaigns()
+    # #1 键级分区：本脚本所有 campaign 读写都走**本租户**的键（读写共用一个 helper）。
+    # 回落到全局键时留 ERROR —— 不静默。
+    _tenant_id = tenant_id_of_broker(broker) or ""
+    _campaigns_key, _key_fell_back = campaigns_config_key_lenient(_tenant_id)
+    if _key_fell_back:
+        executor.store.operational_event(
+            "volatility_long_gamma", "CAMPAIGNS_KEY_TENANT_UNRESOLVED", "ERROR",
+            {
+                "tenant_id": _tenant_id or None,
+                "broker_account_id": getattr(broker, "account_id", None),
+                "message": "无法把 campaign 清单解析到租户键 —— 回落无前缀旧键（未隔离，已留痕）",
+            },
+        )
+    campaigns = load_volatility_campaigns(_tenant_id)
     # Clean malformed contracts before they reach the decision loop.  A bad
     # code otherwise produces hundreds of repetitive BLOCKED decisions and
     # obscures the actionable diagnostics for valid campaigns.
@@ -169,20 +233,60 @@ def run_once(
                 campaigns.append(adopted)
                 existing_codes.add(str(adopted.get("code", "")).upper())
         state = load_state()
+    # 常驻保护覆盖率：任一时刻所有可解析的期权券商持仓都必须有归属（campaign 内或已 ADOPT）。
+    # 覆盖率 < 1.0 立即告警 —— 缺口是静默的，靠人工翻日志发现正是 10-22 事故的情报失效点。
+    try:
+        coverage, uncovered = protection_coverage(positions, campaigns)
+        executor.store.set_setting("volatility_protection_coverage", f"{coverage:.6f}")
+        if coverage < 1.0:
+            executor.alerts.send(
+                "ERROR", "VOLATILITY_PROTECTION_COVERAGE_GAP",
+                f"保护覆盖率 {coverage:.2%} < 100%：{len(uncovered)} 个期权持仓无归属"
+                f"（{'、'.join(uncovered[:10])}），止损评估看不到这些仓位，已暂停自动处置并等待人工复核",
+                incident_key="VOLATILITY_PROTECTION_COVERAGE_GAP",
+            )
+            print(f"VOLATILITY PROTECTION COVERAGE GAP: {coverage:.2%} uncovered={uncovered}")
+        else:
+            executor.store.recover_incident("VOLATILITY_PROTECTION_COVERAGE_GAP")
+    except Exception as exc:
+        executor.store.operational_event(
+            "volatility_long_gamma", "PROTECTION_COVERAGE_CHECK_FAILED", "WARNING",
+            {"error": str(exc)},
+        )
     protected_keys = protected_volatility_state_keys(
         executor.store, positions, orders, broker,
     )
-    active_keys = {
-        f"volatility_long_gamma:{item['code']}" for item in campaigns
-    } | {
-        f"volatility_long_gamma:signal:{str(item.get('underlying') or '').upper()}"
-        for item in campaigns if str(item.get('underlying') or '').strip()
-    } | protected_keys
+    # P0-9：active_keys 必须**同时**包含带租户与不带租户两种形态。
+    # 此前只认 \olatility_long_gamma:{code}\，而 order_push 写的是
+    # \olatility_long_gamma:{tenant}:{code}\ → 刚写进去的键同一个周期就被
+    # prune_campaign_states 当 stale 删掉（P0-1 的「成交即登记」被完全抵消）。
+    # 两处都从共享助手 volatility_state_keys 取，不再各自拼字符串。
+    # 走共享入口 tenant_of_broker —— 裸 getattr(broker, "tenant_id") 恒空，
+    # 会让"第一道防御"只剩无租户形态，带租户键失去保护（P0-9 的第一处漏）。
+    _tenant_id = tenant_id_of_broker(broker) or ""
+    active_keys = active_volatility_state_keys(campaigns, _tenant_id, protected_keys)
+    # P0-9 第二道保护：按**合约代码**再认一次。即使拿不到租户上下文
+    # （broker 无 tenant_id → 只产出去租户形态），带租户的键也不会被误删。
+    active_codes = {
+        str(item.get("code") or "").strip().upper()
+        for item in campaigns if str(item.get("code") or "").strip()
+    }
+    def _is_active(key: str) -> bool:
+        if key in active_keys:
+            return True
+        return state_key_code(key, "volatility_long_gamma:") in active_codes
     state = {
         key: value for key, value in state.items()
-        if not key.startswith("volatility_long_gamma:") or key in active_keys
+        if not key.startswith("volatility_long_gamma:") or _is_active(key)
     }
-    executor.store.prune_campaign_states("volatility_long_gamma:", active_keys)
+    # 逐租户剪枝：只删本租户（或历史无租户形态）的 stale 键。
+    # 不再调用 store.prune_campaign_states（它按全局前缀扫描，会删掉其他租户的
+    # 带租户键 —— 2026-10-23 开盘实测：实盘状态键被模拟那轮反复删除、peak 归零）。
+    stale_keys = prunable_state_keys(
+        executor.store, _tenant_id, active_keys, active_codes,
+    )
+    if stale_keys:
+        executor.store.delete_campaign_states(stale_keys)
     rolled_pairs = []
     prepared = []
     failures = []
@@ -193,10 +297,35 @@ def run_once(
             return
         campaign = {**campaign, "trigger_mode": "VOLATILITY"}
         try:
-            if not campaign.get("code") or campaign.get("exit_only") and not any(
-                str(leg.get("code", "")).upper() in set(positions.get("code", []))
+            leg_codes = {
+                str(leg.get("code", "")).upper()
                 for leg in (campaign.get("legs") or [{"code": campaign.get("code")}])
+            }
+            position_codes = set(positions.get("code", []))
+            if not campaign.get("code") or (
+                campaign.get("exit_only") and not leg_codes & position_codes
             ):
+                # 10-22 事故：这条 return 此前**完全静默** —— 合约身份被滚动覆写后，
+                # 策略认为「没有持仓」，实际持仓裸奔（无止损、无盈利保护、无到期强平），
+                # 日志里一个字都没有，只有决策表 position_quantity=0 能暴露。
+                # 因此这里必须留一条 WARN，否则同类故障永远无声。
+                held = sorted(position_codes & {str(campaign.get("code", "")).upper()})
+                executor.store.operational_event(
+                    "volatility_long_gamma", "EXIT_ONLY_CAMPAIGN_SKIPPED", "WARNING",
+                    {
+                        "code": campaign.get("code"),
+                        "campaign_id": campaign.get("campaign_id"),
+                        "legs": sorted(leg_codes),
+                        "broker_holds_code": bool(held),
+                        "broker_positions": sorted(position_codes),
+                        "reason": (
+                            "exit_only campaign 的 legs 与券商持仓不匹配 —— "
+                            "若券商仍持有该 code，则该仓位本轮**无人管理**"
+                            if held else
+                            "exit_only campaign 的 legs 已不在持仓中（正常跳过）"
+                        ),
+                    },
+                )
                 return
             started = time.monotonic()
             try:
@@ -238,6 +367,26 @@ def run_once(
         ) if len(legs) > 1 else None
         return max(broker_qty, int(shadow_qty), 1 if combo else 0)
 
+    def has_recorded_fill(code: str) -> bool:
+        """该合约是否存在已登记的成交（账本侧）。
+
+        券商持仓快照可能滞后于成交（成交经轮询入账），仅凭快照会把「刚成交」判成
+        「无持仓」。账本侧的成交记录是更早、更可靠的信号，用于兜底判定归属。
+        """
+        if not code:
+            return False
+        try:
+            rows = executor.store.fills(
+                strategy_id="volatility_long_gamma",
+                symbol=str(code).upper(),
+                limit=50,
+            )
+        except Exception:
+            return False
+        return any(
+            abs(float(row.get("quantity") or 0)) > 0 for row in rows
+        )
+
     # Perform all held-position exits before any potentially blocking roll/review.
     held_codes = set()
     for campaign in campaigns:
@@ -262,6 +411,17 @@ def run_once(
             )
             interrupted = True
             break
+        # 滚动判定必须看「此刻」的持仓，不能用本轮开头的快照：成交可能发生在本轮
+        # 快照之后，若沿用旧快照，已成交仓位会被判成「无持仓」，旧合约被删 → 仓位成孤儿。
+        # 每次滚动前重取一次，成本是一次券商查询，换来的是归属关系不被陈旧数据打断。
+        try:
+            positions = broker.positions()
+            orders = broker.orders()
+        except Exception as exc:
+            executor.store.operational_event(
+                "volatility_long_gamma", "ROLL_REFRESH_FAILED", "WARNING",
+                {"error": str(exc)},
+            )
         current_code = str(campaign.get("code", ""))
         underlying = str(campaign.get("underlying", ""))
         leg_symbols = {
@@ -305,7 +465,12 @@ def run_once(
         expiry = pd.to_datetime(campaign.get("strike_time"), errors="coerce")
         min_dte = max(1, int(float(campaign.get("maturity_min_dte", 5) or 5)))
         ny_today = datetime.now(ZoneInfo("America/New_York")).date()
-        needs_expiry_roll = pd.isna(expiry) or (expiry.date() - ny_today).days < min_dte
+        # `exit_only` campaign 只管理退出，到期临近时由退出逻辑（临近到期价内退出）处理，
+        # **不得靠滚动改写成另一个合约** —— 那会让真实持仓失去归属。
+        needs_expiry_roll = (
+            not campaign.get("exit_only")
+            and (pd.isna(expiry) or (expiry.date() - ny_today).days < min_dte)
+        )
         quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
             campaign,
             default_min_score=max(70.0, float(campaign.get("minimum_entry_quality_score", 70))),
@@ -319,10 +484,15 @@ def run_once(
             and pending.empty
             and not quality_allowed
         )
+        # `exit_only` campaign 是被接管的在险持仓，只管理退出，**不得重选合约**：
+        # 表达复核对它们照常跑，会把 `code` 从实际持仓合约改写成「当前最佳表达」，
+        # 于是 campaign 指向一个不存在的合约、真实持仓瞬间失去归属（10-22 META 事故根因）。
         should_review_expression = (
             campaign.get("enabled", True)
+            and not campaign.get("exit_only")
             and quantity <= 0
             and pending.empty
+            and not has_recorded_fill(current_code)
             and (due_for_review or needs_quality_replacement)
         )
         if needs_expiry_roll or should_review_expression:
@@ -379,27 +549,28 @@ def run_once(
         old_code = str(old_campaign.get("code") or "").upper()
         old_has_broker_position = False
         old_has_pending_order = False
-        if old_code:
-            if not positions.empty and "code" in positions.columns:
-                old_rows = positions[positions["code"].astype(str).str.upper() == old_code]
-                if not old_rows.empty:
-                    old_has_broker_position = (
-                        pd.to_numeric(old_rows.get("qty"), errors="coerce").fillna(0).abs().sum() > 0
-                    )
-            if not orders.empty and {"code", "order_status"}.issubset(orders.columns):
-                old_order_rows = orders[orders["code"].astype(str).str.upper() == old_code]
-                old_has_pending_order = bool(
-                    not old_order_rows.empty
-                    and old_order_rows["order_status"].map(broker.is_cancellable_status).any()
-                )
-        if old_has_broker_position or old_has_pending_order:
-            retained = {
+        # 共享不变量：持有券商持仓或挂单的 campaign 永不被删除，只降级为 exit_only。
+        # 抽成 volatility_orphans.retain_campaign_if_at_risk，雷达滚动路径同样走它。
+        retained_campaign = retain_campaign_if_at_risk(old_campaign, positions, orders, broker)
+        if old_code and retained_campaign is None and has_recorded_fill(old_code):
+            # 券商快照尚未反映成交，但成交账本已有记录 → 同样视为在险
+            retained_campaign = {
                 **old_campaign,
                 "exit_only": True,
                 "replacement_code": rolled.get("code"),
-                "replacement_reason": "旧合约仍有富途风险，保留为退出维护配置",
+                "replacement_reason": "成交账本已有该合约记录（券商快照未反映），保留为退出维护配置",
             }
-            upsert_campaign("VOLATILITY_CAMPAIGNS", retained)
+        if retained_campaign is not None:
+            retained = {
+                **retained_campaign,
+                # 显式带租户：否则身份退化成裸 {code}，与 ADOPT 产出的
+                # {tenant}|{code} 同 code 并存两条（P0-9）。
+                "tenant_id": tenant_id_of_broker(broker) or "",
+                "replacement_code": rolled.get("code"),
+                "replacement_reason": retained_campaign.get("retained_reason")
+                or "旧合约仍有富途风险，保留为退出维护配置",
+            }
+            upsert_campaign(_campaigns_key, retained)
             executor.store.audit("VOLATILITY_OLD_CAMPAIGN_RETAINED_FOR_EXIT", {
                 "old_code": old_code,
                 "new_code": rolled.get("code"),
@@ -407,8 +578,12 @@ def run_once(
                 "has_pending_order": old_has_pending_order,
             }, "volatility_long_gamma")
         else:
-            delete_campaign("VOLATILITY_CAMPAIGNS", old_identity)
-        upsert_campaign("VOLATILITY_CAMPAIGNS", rolled)
+            delete_campaign(_campaigns_key, old_identity)
+        upsert_campaign(_campaigns_key, {
+            **rolled,
+            # 显式带租户（同上）：滚动写入方必须与 ADOPT 用同一身份口径。
+            "tenant_id": _tenant_id,
+        })
     if not interrupted:
         for campaign in prepared:
             if stop_requested():

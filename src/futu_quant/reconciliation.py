@@ -20,17 +20,34 @@ def _strategy_enable_keys(strategy_id: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(keys))
 
 
+def _prefixed_enable_keys(strategy_id: str, prefix: str) -> tuple[str, ...]:
+    """带前缀变体实际会写的所有 strategy_enabled 键。
+
+    写侧用小写策略 ID（``core_satellite``），而有些调用方写显示名
+    （``Core Satellite``）；快照必须把两种拼法都记下来，否则恢复时读不到原值。
+    """
+    names = [strategy_id]
+    plugin = BY_ID.get(strategy_id)
+    if plugin and plugin.service_name and plugin.service_name != strategy_id:
+        names.append(plugin.service_name)
+    return tuple(dict.fromkeys(f"strategy_enabled:{prefix}{name}" for name in names))
+
+
 def _disable_strategy_for_reconciliation(store, strategy_id: str, prefix: str = "") -> None:
     restore_key = f"strategy_reconciliation_restore:{prefix}{strategy_id}"
     if not store.get_setting(restore_key, ""):
-        restore = {
-            key: store.get_setting(key, "")
-            for key in _strategy_enable_keys(strategy_id)
-        }
+        keys = _prefixed_enable_keys(strategy_id, prefix) if prefix else _strategy_enable_keys(strategy_id)
+        # 快照必须覆盖本变体**实际会写的那些键**，否则恢复时读不到原值、
+        # 只能回落 "true"，把用户主动停用的策略静默改回启用。
+        restore = {key: store.get_setting(key, "") for key in keys}
         store.set_setting(restore_key, json.dumps(restore, ensure_ascii=False))
     store.set_setting(f"strategy_reconciliation_disabled:{prefix}{strategy_id}", "true")
     if prefix:
-        store.set_setting(f"strategy_enabled:{prefix}{strategy_id}", "false")
+        # 写侧必须覆盖读侧认的**每一种拼法**：读侧显示名优先、蛇形兜底（先取到非空即止），
+        # 若这里只写蛇形键，那么只要 {prefix}Core Satellite 存在且为 "true"，
+        # 暂停写进蛇形键的 "false" 就永远读不到 —— 暂停静默失效。
+        for key in _prefixed_enable_keys(strategy_id, prefix):
+            store.set_setting(key, "false")
     else:
         for key in _strategy_enable_keys(strategy_id):
             store.set_setting(key, "false")
@@ -45,18 +62,39 @@ def _recover_strategy_from_reconciliation(store, strategy_id: str, prefix: str =
         restore = json.loads(restore_raw) if restore_raw else {}
     except json.JSONDecodeError:
         restore = {}
-    if prefix:
-        previous = str(restore.get(f"strategy_enabled:{prefix}{strategy_id}", "true") or "true")
-        store.set_setting(f"strategy_enabled:{prefix}{strategy_id}", previous)
-    else:
-        for key in _strategy_enable_keys(strategy_id):
-            previous = str(restore.get(key, "true") or "true")
-            store.set_setting(key, previous)
+    keys = _prefixed_enable_keys(strategy_id, prefix) if prefix else _strategy_enable_keys(strategy_id)
+    restored_keys: dict[str, str] = {}
+    removed_keys: list[str] = []
+    for key in keys:
+        # 只还原「仍然是本次暂停所设值」的键。若暂停期间有人手工改过这个键，
+        # 说明那是人的明确意图，对账恢复不该覆盖它。
+        #
+        # 已知限制（P2）：这个保护分辨不出「暂停期间有人手工**停用**」——因为暂停
+        # 自己写的就是 "false"，两者取值相同。要区分只能比对键的 updated_at 与暂停
+        # 时刻，本次不做，勿把这条当作完备保护。
+        if store.get_setting(key, "") != "false":
+            continue
+        snapshot_value = restore.get(key, "")
+        if snapshot_value:
+            store.set_setting(key, snapshot_value)
+            restored_keys[key] = snapshot_value
+        else:
+            # 快照记的是空串 = pause 前该键**不存在**。必须还原成「不存在」而不是
+            # 写一个空串：`get_setting(key, default)` 只在键缺失时才回落默认值，
+            # 写空串会把全局键的 configured_env 默认值短路掉，等于凭空改变启用状态。
+            store.delete_setting(key)
+            removed_keys.append(key)
     store.set_setting(marker, "false")
     store.set_setting(f"strategy_reconciliation_restore:{prefix}{strategy_id}", "")
     store.audit(
         "RECONCILIATION_STRATEGY_AUTO_RECOVERED",
-        {"strategy": strategy_id, "restored_settings": restore, "prefix": prefix},
+        {
+            "strategy": strategy_id,
+            "prefix": prefix,
+            "restored_settings": restore,
+            "restored_keys": restored_keys,
+            "removed_keys_absent_before_pause": removed_keys,
+        },
         strategy_id,
     )
 
@@ -126,11 +164,36 @@ def reconcile_ledgers(
             "difference": difference, "status": status,
             "affected_strategies": ",".join(sorted(strategy_owners)),
         })
-    scan_prefix = f"strategy_reconciliation_disabled:{tenant_prefix}"
-    for key in store.settings_with_prefix(scan_prefix):
-        strategy = key.removeprefix(scan_prefix)
-        if strategy not in mismatched_strategies:
-            _recover_strategy_from_reconciliation(store, strategy, prefix=tenant_prefix)
+    # 恢复扫描必须覆盖全部历史前缀：租户前缀（现行）、账户前缀（旧版）、无前缀（最旧）。
+    # 只扫现行前缀会让旧前缀键永久孤儿化 —— 账本已平，但 risk.py 仍会读到残留的
+    # `strategy_reconciliation_disabled:{account}:{strategy}=true`，策略被永久阻断
+    # （生产实测：偏移写入后账户前缀键仍残留为 true，core_satellite 开不出新仓）。
+    recovery_prefixes: list[str] = []
+    for candidate in (tenant_prefix, acc_prefix):
+        if candidate and candidate not in recovery_prefixes:
+            recovery_prefixes.append(candidate)
+
+    recovered: set[str] = set()
+    disabled_marker = "strategy_reconciliation_disabled:"
+    for key in store.settings_with_prefix(disabled_marker):
+        marker = key.removeprefix(disabled_marker)
+        # 只认两种形态：无前缀变体（marker 不含冒号）与「已知前缀 + 策略名」。
+        # 其余一律跳过 —— 那是**别家租户**的键（如 futu_paper_sandbox），
+        # 本租户的对账无权清理，否则会把别人真实的对账锁一并清掉。
+        strategy, matched_prefix = "", None
+        if ":" not in marker:
+            strategy, matched_prefix = marker, ""
+        else:
+            for prefix in recovery_prefixes:
+                if marker.startswith(prefix):
+                    strategy, matched_prefix = marker[len(prefix):], prefix
+                    break
+        if not strategy or matched_prefix is None:
+            continue
+        if strategy in recovered or strategy in mismatched_strategies:
+            continue
+        _recover_strategy_from_reconciliation(store, strategy, prefix=matched_prefix)
+        recovered.add(strategy)
     store.set_setting(f"recovery_blocked:{broker_account_id}" if broker_account_id else "recovery_blocked", str(bool(mismatched_strategies)).lower())
     if mismatched_strategies:
         store.record_incident(

@@ -44,11 +44,11 @@ def test_cleanup_removes_expired_campaign_without_open_risk(tmp_path, monkeypatc
     volatility_saved = [{"code": "US.NVDA260729P180000"}]
     saved = {}
     monkeypatch.setattr(campaign_cleanup, "load_gamma_campaigns", lambda: list(gamma_saved))
-    monkeypatch.setattr(campaign_cleanup, "load_volatility_campaigns", lambda: list(volatility_saved))
+    monkeypatch.setattr(campaign_cleanup, "load_volatility_campaigns", lambda *_a, **_k: list(volatility_saved))
     monkeypatch.setattr(campaign_cleanup, "save_gamma_campaigns", lambda rows: saved.setdefault("gamma", rows))
     monkeypatch.setattr(
         campaign_cleanup, "save_volatility_campaigns",
-        lambda rows: saved.setdefault("volatility", rows),
+        lambda rows, **_k: saved.setdefault("volatility", rows),
     )
     store.save_campaign_states({
         "earnings_gamma:US.AAPL260729C300000": {"peak": 1},
@@ -68,11 +68,11 @@ def test_cleanup_keeps_expired_campaign_with_broker_position(tmp_path, monkeypat
     volatility_saved = [{"code": "US.NVDA260729P180000"}]
     saved = {}
     monkeypatch.setattr(campaign_cleanup, "load_gamma_campaigns", lambda: [])
-    monkeypatch.setattr(campaign_cleanup, "load_volatility_campaigns", lambda: list(volatility_saved))
+    monkeypatch.setattr(campaign_cleanup, "load_volatility_campaigns", lambda *_a, **_k: list(volatility_saved))
     monkeypatch.setattr(campaign_cleanup, "save_gamma_campaigns", lambda rows: saved.setdefault("gamma", rows))
     monkeypatch.setattr(
         campaign_cleanup, "save_volatility_campaigns",
-        lambda rows: saved.setdefault("volatility", rows),
+        lambda rows, **_k: saved.setdefault("volatility", rows),
     )
     broker = Broker(positions=[{"code": "US.NVDA260729P180000", "qty": 1}])
 

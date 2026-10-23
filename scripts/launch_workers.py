@@ -21,7 +21,37 @@ from futu_quant.tenant import DEFAULT_TENANTS, TenantProfile
 from run_service import service_files
 
 
+def _win_process_image_name(pid: int) -> str:
+    """返回进程映像的完整路径；取不到返回空串。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return ""
+        try:
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return buffer.value
+            return ""
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return ""
+
+
 def is_pid_alive(pid: int) -> bool:
+    """判断 pid 是否是**我们的** Worker，而不只是"这个 PID 活着"。
+
+    Windows 会回收复用 PID：今晚 `volatility-radar.pid` 里的 8208 被 `csrss.exe`
+    复用，`start.bat` 因此判定"雷达还活着"、直接跳过启动 —— 服务被静默跳过。
+    Worker 启动路径上是同一个坑，而且更危险：一旦某租户的 PID 文件里是一个被复用的
+    陌生 PID，这里就会返回 True → **该租户的 Worker 静默不启动**。
+    所以除了"进程活跃"，还必须校验映像名是 python/pythonw。
+    """
     if pid <= 0:
         return False
     if sys.platform == "win32":
@@ -35,8 +65,12 @@ def is_pid_alive(pid: int) -> bool:
                 exit_code = wintypes.DWORD()
                 success = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
                 kernel32.CloseHandle(handle)
-                return bool(success and exit_code.value == 259)
-            return False
+                if not (success and exit_code.value == 259):
+                    return False
+            else:
+                return False
+            image = _win_process_image_name(pid).rsplit("\\", 1)[-1].lower()
+            return image.startswith("python")
         except Exception:
             return False
     try:
@@ -86,6 +120,10 @@ def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tu
     sub_env = os.environ.copy()
     sub_env["PYTHONUTF8"] = "1"
     sub_env["PYTHONIOENCODING"] = "utf-8"
+    # Unbuffered stdout (belt and braces with the "-u" above): Python block-buffers
+    # stdout when it is a file, which freezes the worker log and makes a running
+    # worker invisible.
+    sub_env["PYTHONUNBUFFERED"] = "1"
 
     try:
         proc = subprocess.Popen(

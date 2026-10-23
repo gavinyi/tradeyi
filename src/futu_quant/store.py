@@ -1,13 +1,39 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import math
+import re
 import sqlite3
 import time
 from typing import Any, Iterator
+
+# 标准美股期权合约代码：US.<正股><到期><C|P><行权价>
+OPTION_SYMBOL_RE = re.compile(r"^US\.[A-Z0-9.]+[0-9][CP][0-9]+$")
+
+# 计入「已用额度」的状态集合 —— **风控引擎与实盘闸门共用同一口径**。
+# 未确认的券商结果（SUBMITTING/UNKNOWN）同样占用真实购买力；
+# 撤单在途（CANCEL_REQUESTED）在成交前仍占用。
+USED_NOTIONAL_STATUSES = (
+    "SUBMITTING", "SUBMITTED", "UNKNOWN", "FILLED", "FILLED_PART", "CANCEL_REQUESTED",
+)
+
+
+def state_key_code(state_key: str, prefix: str) -> str:
+    """从状态键提取**合约代码段**（最后一段），忽略租户命名空间段。
+
+    `volatility_long_gamma:US.META261030P660000`        → `US.META261030P660000`
+    `volatility_long_gamma:futu_real_master:US.META...`  → `US.META261030P660000`
+
+    用途：判断一个状态键是否属于某在管 campaign 时，**租户段只是命名空间**，
+    不该成为剪除依据（P0-9：拿不到租户上下文时不得误删带租户的键）。
+    """
+    rest = state_key[len(prefix):] if state_key.startswith(prefix) else state_key
+    parts = [part for part in rest.split(":") if part]
+    return parts[-1].upper() if parts else ""
 
 
 DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "trading.db"
@@ -42,6 +68,18 @@ def _json_dumps(value) -> str:
 
 
 class TradingStore:
+    # 成交账本的两个匹配窗口（秒）。
+    # - PROXY：order push / 轮询先写下的「无 deal_id 投影行」，deal push 后到时**认领**它。
+    #   窗口要够宽，覆盖推送与轮询之间的延迟（轮询周期约 10s，推送可能滞后更久）。
+    # - DUP：同一来源重复上报同一笔（无 deal_id 时按 同源+同量+同价 去重）。
+    # 两者**取值统一为 120s**（Reviewer 裁定）：认领方向出错是「欠计」，会被下一轮累计判定
+    # 自愈；而窗口越宽 → 认领越多 → 插入越少 → 过计风险越低，所以 120s 是安全侧。
+    # 保留两个具名常量，是为了让语义不同这一点不被后来者当成笔误抹掉。
+    # 已知残余风险：SHADOW 路径没有券商累计兜底，同源同量同价的真实两笔若在 120s 内
+    # 先后到达会被合并成一笔（欠计）—— 由 Reviewer 记录在案。
+    FILL_PROXY_MATCH_WINDOW_SECONDS = 120.0
+    FILL_DUP_MATCH_WINDOW_SECONDS = 120.0
+
     def __init__(self, path: Path | str = DEFAULT_DB, tenant_registry: dict[str, Any] | None = None):
         self.path = Path(path).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +185,9 @@ class TradingStore:
                 if "tenant_id" not in v_cols:
                     connection.execute("ALTER TABLE virtual_allocations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
                     connection.execute("CREATE INDEX IF NOT EXISTS idx_virtual_alloc_tenant ON virtual_allocations(tenant_id, strategy_id, symbol)")
+                # 存量库同样必须跑版本化迁移：否则任何新增迁移对已存在的库永远不生效
+                from .migrations import apply_migrations
+                apply_migrations(connection)
                 return
             connection.executescript(
                 """
@@ -418,6 +459,7 @@ class TradingStore:
                     decision TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     payload_json TEXT NOT NULL DEFAULT '{}',
+                    tenant_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_decision_logs_lookup
@@ -654,6 +696,17 @@ class TradingStore:
                 WHERE (tenant_id IS NULL OR tenant_id = '')"""
             )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_intents_tenant ON order_intents(tenant_id, strategy_id, created_at DESC)")
+            # decision_logs 的租户维度：雷达扇出后同一 strategy/symbol 会被多个租户各判一次，
+            # 无租户列时两方留痕互相压制（旧库需就地补列，SQLite ADD COLUMN 只改元数据）。
+            d_cols = {row["name"] for row in connection.execute("PRAGMA table_info(decision_logs)")}
+            if "tenant_id" not in d_cols:
+                connection.execute(
+                    "ALTER TABLE decision_logs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_decision_tenant "
+                "ON decision_logs(tenant_id, strategy_id, symbol, id DESC)"
+            )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_logs_id_desc ON decision_logs(id DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_strategy_id ON decision_logs(strategy_id, id DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_decision_symbol_id ON decision_logs(symbol, id DESC)")
@@ -865,6 +918,12 @@ class TradingStore:
             row = connection.execute("SELECT value FROM system_settings WHERE key=?", (key,)).fetchone()
             return str(row["value"]) if row else default
 
+    def delete_setting(self, key: str) -> None:
+        """删除一个系统设置键，用于「还原为未设置」——写空串不等价于不存在
+        （``get_setting(key, default)`` 只在键**缺失**时才回落默认值）。"""
+        with self.connection() as connection:
+            connection.execute("DELETE FROM system_settings WHERE key=?", (key,))
+
     def settings_with_prefix(self, prefix: str) -> dict[str, str]:
         with self.connection() as connection:
             return {row["key"]: row["value"] for row in connection.execute(
@@ -944,12 +1003,31 @@ class TradingStore:
             )
             return connection.total_changes - before
 
-    def prune_campaign_states(self, prefix: str, active_keys: set[str]) -> int:
+    def prune_campaign_states(
+        self,
+        prefix: str,
+        active_keys: set[str],
+        active_codes: set[str] | None = None,
+    ) -> int:
+        """剪除不属于任何在管 campaign 的状态键。
+
+        `active_codes` 是**按合约代码**的二次保护（P0-9）：
+        状态键有两种形态 —— `prefix{code}`（历史）与 `prefix{tenant}:{code}`（带租户，
+        `order_push` 写入）。若调用方拿不到租户上下文（broker 无 tenant_id），
+        只靠 `active_keys` 会漏掉带租户形态、把刚写进去的键当 stale 删掉。
+        传入 `active_codes` 后，**只要键的合约代码段命中在管清单就保留** ——
+        租户段只是命名空间，不该成为剪除的依据。
+        """
+        active_codes = {str(c).strip().upper() for c in (active_codes or ()) if str(c).strip()}
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT state_key FROM campaign_state WHERE state_key LIKE ?", (f"{prefix}%",)
+                "SELECT state_key FROM campaign_state WHERE state_key LIKE ?", (f"{prefix}%",),
             ).fetchall()
-            stale = [row["state_key"] for row in rows if row["state_key"] not in active_keys]
+            stale = [
+                row["state_key"] for row in rows
+                if row["state_key"] not in active_keys
+                and state_key_code(row["state_key"], prefix) not in active_codes
+            ]
             connection.executemany("DELETE FROM campaign_state WHERE state_key=?", [(key,) for key in stale])
         return len(stale)
 
@@ -1042,12 +1120,62 @@ class TradingStore:
         target_key = f"{key}:{tenant_id}" if tenant_id else key
         self.set_setting(target_key, value)
 
+    def campaigns(
+        self, config_key: str = "VOLATILITY_CAMPAIGNS", tenant_id: str | None = None,
+    ) -> list[dict]:
+        """读取 campaign 列表（当前仅支持 VOLATILITY_CAMPAIGNS）。
+
+        成交即登记等路径需要「此刻的 campaign 归属」，直接读配置源而不是走缓存，
+        避免读到过期的内存副本。
+
+        `tenant_id=None`（默认，存量调用点）→ 无前缀旧键 ``VOLATILITY_CAMPAIGNS``，
+        与签名引入前逐字节等价；传租户 → 读 ``VOLATILITY_CAMPAIGNS:{tenant}``
+        （#1 第 3/4 步切流时启用）。`config_key` 只接受旧键形态：它存在的意义是
+        让"误传别的键"继续响亮失败，而不是让调用方自己拼租户键。
+        """
+        if config_key != "VOLATILITY_CAMPAIGNS":
+            raise ValueError(f"不支持的 campaign 配置键: {config_key}")
+        from .config import load_volatility_campaigns
+        return load_volatility_campaigns(tenant_id)
+
     def audit(self, event_type: str, payload: dict, strategy_id: str | None = None) -> None:
         with self.connection() as connection:
             connection.execute(
                 "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at) VALUES(?,?,?,?)",
                 (event_type, strategy_id, _json_dumps(payload), self.now()),
             )
+
+    def _emit_fill_overcount(
+        self, connection, intent_id, symbol, ledger_total: float,
+        broker_total: float, delta: float, source: str,
+    ) -> None:
+        """过计防护的可见化出口：账本累计超出券商累计时，留痕 + 落告警 + 记运行事件。
+
+        静默留在账本里的过计，是今晚所有事故的共同形态 —— 数字错了，但没人知道。
+        用**调用方的连接**写，避免在已持有连接时再开一个（SQLite 写锁）。
+        """
+        payload = {
+            "intent_id": int(intent_id), "symbol": symbol, "source": source,
+            "ledger_total": float(ledger_total), "broker_total": float(broker_total),
+            "attempted_delta": float(delta),
+        }
+        message = (
+            f"成交账本过计：intent {intent_id} {symbol or ''} 账本累计 {ledger_total:g} "
+            f"> 券商累计 {broker_total:g}（本次上报 {delta:g}，来源 {source}），已跳过写入"
+        )
+        now = self.now()
+        connection.execute(
+            "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at) VALUES(?,?,?,?)",
+            ("FILL_LEDGER_OVER_COUNT", None, _json_dumps(payload), now),
+        )
+        connection.execute(
+            "INSERT INTO alerts(severity,event_type,message,delivered,created_at) VALUES(?,?,?,?,?)",
+            ("ERROR", "FILL_LEDGER_OVER_COUNT", message, 0, now),
+        )
+        connection.execute(
+            "INSERT INTO operational_events(component,event_type,status,payload_json,created_at) VALUES(?,?,?,?,?)",
+            ("fill_ledger", "FILL_LEDGER_OVER_COUNT", "ERROR", _json_dumps(payload), now),
+        )
 
     def intents(self, limit: int = 500, tenant_id: str | None = None) -> list[dict]:
         with self.connection() as connection:
@@ -1076,7 +1204,17 @@ class TradingStore:
             ).fetchone()
             return dict(row) if row else None
 
-    def submitted_notional_since(self, iso_timestamp: str, side: str | None = None) -> float:
+    def sum_notional_since(self, iso_timestamp: str, side: str | None = None) -> float:
+        """按方向汇总名义金额 —— **底层聚合原语，无业务语义**。
+
+        ⚠️ **不要直接调用它做额度判定**。本函数只负责「给定一组 intent，按 `side`
+        过滤后求和」，它**不知道自己算出来的是开仓额度还是减仓额度** —— 那层语义
+        由调用方负责：实盘侧走 `submitted_real_entry_notional_since` /
+        `submitted_real_reduction_notional_since`，各自显式传 `side`。
+
+        10-22 事故的根源正是这层语义缺失：一个名字里没有方向的额度函数，
+        被理解成「所有在途单」，于是没人知道要过滤 `side`。**命名即契约**。
+        """
         side_filter = " AND side=?" if side else ""
         parameters = (iso_timestamp, side) if side else (iso_timestamp,)
         with self.connection() as connection:
@@ -1089,6 +1227,40 @@ class TradingStore:
                 parameters,
             ).fetchone()
             return float(row["total"])
+
+    def reduce_notional(
+        self,
+        rows: Iterable[dict],
+        side: str | None,
+        multiplier_of: Callable[[dict], float] | None = None,
+    ) -> float:
+        """按方向汇总名义金额 —— **唯一的累加实现**。
+
+        为什么放在这里：同一个「当日已用额度」概念此前有**三份实现**
+        （`real_trading.submitted_real_entry_notional_since`、
+        `submitted_real_reduction_notional_since`、`store.sum_notional_since`），
+        口径各不相同（状态集合不同、是否按账户过滤不同），
+        导致「同一笔 SELL 在实盘闸门与风控引擎算出的可用额度不一致」——
+        错的那份先触发，就是 10-22「盈利的平仓单被自己的买入额度挡住」的根因。
+
+        铁律：**任何「已用额度」的计算都必须走这里**，不得在别处重写累加逻辑。
+        `side` 传 `"BUY"` / `"SELL"` 做方向分桶；`side=None` 表示不分方向。
+        `multiplier_of` 提供合约乘数（默认按期权代码给 100、正股给 1）。
+        """
+        if multiplier_of is None:
+            def multiplier_of(row: dict) -> float:
+                return 100.0 if OPTION_SYMBOL_RE.match(str(row.get("symbol") or "")) else 1.0
+        target = (side or "").upper() or None
+        total = 0.0
+        for row in rows:
+            if target is not None and str(row.get("side") or "").upper() != target:
+                continue
+            total += abs(
+                float(row.get("quantity") or 0)
+                * float(row.get("limit_price") or 0)
+                * float(multiplier_of(row) or 0)
+            )
+        return total
 
     def update_by_broker_order(
         self, broker_order_id: str, status: str, filled_quantity: float = 0,
@@ -1118,15 +1290,47 @@ class TradingStore:
             if previous and delta > 0:
                 intent = connection.execute("SELECT * FROM order_intents WHERE id=?", (previous["id"],)).fetchone()
                 metadata = json.loads(intent["metadata_json"] or "{}")
-                connection.execute(
-                    """INSERT OR IGNORE INTO fill_ledger
-                    (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,reference_price,source,quote_json,filled_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (intent["id"], intent["strategy_id"], intent["symbol"], intent["side"], delta,
-                     average_fill_price, float(metadata.get("multiplier", 100 if "C" in intent["symbol"] or "P" in intent["symbol"] else 1)),
-                     max(0.0, float(fees or 0) - float(previous["fees"] or 0)),
-                     metadata.get("reference_price"), "BROKER_POLL_DIFF", "{}", self.now()),
-                )
+                # 幂等去重：同一笔成交会被**多个写入路径**重复上报 —— deal push 写
+                # BROKER_DEAL，order push 与轮询写 BROKER_POLL_DIFF，三条路径互不相识。
+                # 所以判定**不能按来源过滤**，只能看「该 intent 已落账的累计成交量」：
+                # 账本始终是「补到券商累计成交」的投影，无论哪条路径、重放几次都只记一次。
+                # （10-22 实盘事故：真金成交因跨来源重复上报而双计，P&L 与平仓成本翻倍。）
+                recorded = connection.execute(
+                    """SELECT COALESCE(SUM(quantity),0) AS total FROM fill_ledger
+                    WHERE intent_id=? AND side=?""",
+                    (intent["id"], intent["side"]),
+                ).fetchone()
+                ledger_total = float(recorded["total"] or 0)
+                broker_total = float(filled_quantity or 0)
+                # 账本 = 「补到券商累计成交」的投影 —— **唯一正确的判定基准**。
+                # 三种情形必须分开：
+                #   ① ledger_total > broker_total → 真的过计（账本比券商还多），
+                #      既不插也不静默，必须留痕告警；
+                #   ② ledger_total >= broker_total（相等或已被别的路径写满）→
+                #      **幂等命中**：本笔已被覆盖，跳过插入，且**不告警**。
+                #      此前这里走的是 ① 的分支 —— 把「已覆盖」误报成「过计」，
+                #      既刷屏又掩盖真实过计；
+                #   ③ ledger_total < broker_total → 补差额，把账本抬到券商累计。
+                # 无论哪条推送路径、被调用几次，账本都收敛到同一个值（天然幂等）。
+                if ledger_total > broker_total + 0.000001:
+                    self._emit_fill_overcount(
+                        connection, intent["id"], intent["symbol"],
+                        ledger_total, broker_total, delta, "BROKER_POLL_DIFF",
+                    )
+                elif ledger_total >= broker_total - 0.000001:
+                    # 幂等命中：账本已覆盖券商累计成交，本笔无需再落账
+                    pass
+                else:
+                    connection.execute(
+                        """INSERT INTO fill_ledger
+                        (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,reference_price,source,quote_json,filled_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (intent["id"], intent["strategy_id"], intent["symbol"], intent["side"],
+                         broker_total - ledger_total,
+                         average_fill_price, float(metadata.get("multiplier", 100 if "C" in intent["symbol"] or "P" in intent["symbol"] else 1)),
+                         max(0.0, float(fees or 0) - float(previous["fees"] or 0)),
+                         metadata.get("reference_price"), "BROKER_POLL_DIFF", "{}", self.now()),
+                    )
             if previous and (
                 previous["status"] != status
                 or float(previous["filled_quantity"]) != float(filled_quantity)
@@ -2119,26 +2323,32 @@ class TradingStore:
             deleted["task_runs"] = cursor.rowcount
         return deleted
 
-    _DECISION_CACHE: dict[tuple[str, str | None], tuple[str, str, float]] = {}
+    _DECISION_CACHE: dict[tuple[str, str | None, str], tuple[str, str, float]] = {}
 
     def decision(
         self, strategy_id: str, symbol: str | None, decision: str, reason: str,
-        payload: dict | None = None,
+        payload: dict | None = None, tenant_id: str | None = None,
     ) -> None:
-        self._DECISION_CACHE[(strategy_id, symbol)] = (decision, reason, time.time())
+        tenant = str(tenant_id or "")
+        self._DECISION_CACHE[(strategy_id, symbol, tenant)] = (decision, reason, time.time())
         with self.connection() as connection:
             connection.execute(
                 """INSERT INTO decision_logs
-                (strategy_id,symbol,decision,reason,payload_json,created_at) VALUES(?,?,?,?,?,?)""",
+                (strategy_id,symbol,decision,reason,payload_json,created_at,tenant_id)
+                VALUES(?,?,?,?,?,?,?)""",
                 (strategy_id, symbol, decision, reason,
-                 _json_dumps(payload or {}), self.now()),
+                 _json_dumps(payload or {}), self.now(), tenant),
             )
 
     def decision_if_changed(
         self, strategy_id: str, symbol: str | None, decision: str, reason: str,
         payload: dict | None = None, repeat_after_seconds: int = 900,
+        tenant_id: str | None = None,
     ) -> bool:
-        cache_key = (strategy_id, symbol)
+        # 缓存键必须带租户：雷达扇出时租户 A 对 (strategy, symbol) 的决策
+        # 不得压住租户 B 同一标的的留痕（旧键是 (strategy_id, symbol)）。
+        tenant = str(tenant_id or "")
+        cache_key = (strategy_id, symbol, tenant)
         now_ts = time.time()
         cached = self._DECISION_CACHE.get(cache_key)
         if cached is not None:
@@ -2147,7 +2357,9 @@ class TradingStore:
                 if (now_ts - prev_ts) < repeat_after_seconds:
                     return False
 
-        self.decision(strategy_id, symbol, decision, reason, payload)
+        self.decision(
+            strategy_id, symbol, decision, reason, payload, tenant_id=tenant_id,
+        )
         return True
 
     def decisions(self, limit: int = 1000) -> list[dict]:
@@ -2164,44 +2376,70 @@ class TradingStore:
 
     def set_virtual_allocation(
         self, strategy_id: str, symbol: str, quantity: float, average_cost: float = 0,
+        tenant_id: str | None = None,
     ) -> None:
         with self.connection() as connection:
             connection.execute(
-                """INSERT INTO virtual_allocations(strategy_id,symbol,quantity,average_cost,updated_at)
-                VALUES(?,?,?,?,?) ON CONFLICT(strategy_id,symbol) DO UPDATE SET
+                """INSERT INTO virtual_allocations(strategy_id,symbol,quantity,average_cost,updated_at,tenant_id)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(strategy_id,symbol) DO UPDATE SET
                 quantity=excluded.quantity,average_cost=excluded.average_cost,
-                updated_at=excluded.updated_at""",
-                (strategy_id, symbol, quantity, average_cost, self.now()),
+                updated_at=excluded.updated_at,tenant_id=excluded.tenant_id""",
+                (strategy_id, symbol, quantity, average_cost, self.now(), str(tenant_id or "")),
             )
 
     def sync_virtual_allocation_to_target(
         self, strategy_id: str, symbol: str, target_quantity: float,
-        average_cost: float = 0,
+        average_cost: float = 0, tenant_id: str | None = None,
+        account_id: str | int | None = None,
     ) -> dict[str, float]:
         """Set the allocation so allocation + settled fills equals broker target.
 
         Reconciliation must not overwrite the historical fill ledger.  The
         initial virtual allocation is therefore the residual after applying
-        non-shadow filled orders for this strategy and symbol.
+        non-shadow filled orders for this strategy and symbol.  When a tenant
+        or account is supplied the residual is computed from that tenant's own
+        fills only, so one tenant's native base holding never leaks into
+        another tenant's quota or ledger.
         """
-        with self.connection() as connection:
-            row = connection.execute(
+        tid = str(tenant_id or "").strip()
+        acc = str(account_id).strip() if account_id is not None else ""
+        if tid:
+            net_query = (
                 """SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_quantity
                 ELSE -filled_quantity END), 0) AS net_fills
                 FROM order_intents WHERE strategy_id=? AND symbol=?
-                AND status NOT LIKE 'SHADOW%'""",
-                (strategy_id, symbol),
-            ).fetchone()
+                AND status NOT LIKE 'SHADOW%' AND tenant_id = ?"""
+            )
+            net_params: tuple = (strategy_id, symbol, tid)
+        elif acc:
+            net_query = (
+                """SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_quantity
+                ELSE -filled_quantity END), 0) AS net_fills
+                FROM order_intents WHERE strategy_id=? AND symbol=?
+                AND status NOT LIKE 'SHADOW%' AND json_extract(metadata_json, '$.account_id') = ?"""
+            )
+            net_params = (strategy_id, symbol, acc)
+        else:
+            net_query = (
+                """SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_quantity
+                ELSE -filled_quantity END), 0) AS net_fills
+                FROM order_intents WHERE strategy_id=? AND symbol=?
+                AND status NOT LIKE 'SHADOW%'"""
+            )
+            net_params = (strategy_id, symbol)
+        with self.connection() as connection:
+            row = connection.execute(net_query, net_params).fetchone()
             net_fills = float(row["net_fills"] or 0)
         residual = float(target_quantity) - net_fills
-        self.set_virtual_allocation(strategy_id, symbol, 0.0, average_cost)
+        self.set_virtual_allocation(strategy_id, symbol, 0.0, average_cost, tenant_id=tid)
         with self.connection() as connection:
             connection.execute(
                 """INSERT INTO reconciliation_adjustments
-                (strategy_id,symbol,quantity,reason,updated_at) VALUES(?,?,?,?,?)
-                ON CONFLICT(strategy_id,symbol) DO UPDATE SET quantity=excluded.quantity,
-                reason=excluded.reason,updated_at=excluded.updated_at""",
-                (strategy_id, symbol, residual, "外部券商持仓调整", self.now()),
+                (tenant_id,account_id,strategy_id,symbol,quantity,reason,updated_at)
+                VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(tenant_id,account_id,strategy_id,symbol) DO UPDATE SET
+                quantity=excluded.quantity, reason=excluded.reason, updated_at=excluded.updated_at""",
+                (tid, acc, strategy_id, symbol, residual, "外部券商持仓调整", self.now()),
             )
         return {"target_quantity": float(target_quantity), "net_fills": net_fills, "residual": residual}
 
@@ -2249,7 +2487,14 @@ class TradingStore:
                 account_filter = "AND tenant_id = ?"
                 params.append(target_tid)
             v_param = target_tid if target_tid else ""
-            params.append(v_param)
+            # 空租户 virtual_allocations 只在无租户上下文时作为 legacy 兜底，已知租户时绝不串入
+            if target_tid:
+                v_alloc_clause = "WHERE tenant_id = ?"
+                params.append(v_param)
+            else:
+                v_alloc_clause = "WHERE tenant_id = ''"
+            # 原生底仓偏移同样按账户严格隔离：账户已知时绝不回落 legacy 空账户行，杜绝跨租户污染
+            params.append(target_account if target_account else "")
             with self.connection() as connection:
                 query = f"""WITH fills AS (
                     SELECT strategy_id, symbol,
@@ -2262,23 +2507,38 @@ class TradingStore:
                 ), v_alloc AS (
                     SELECT strategy_id, symbol, quantity, average_cost
                     FROM virtual_allocations
-                    WHERE tenant_id = ? OR tenant_id = ''
+                    {v_alloc_clause}
+                ), adjustments AS (
+                    SELECT strategy_id, symbol, quantity
+                    FROM reconciliation_adjustments
+                    WHERE account_id = ? AND account_id <> ''
                 ), keys AS (
                     SELECT strategy_id, symbol FROM fills UNION
-                    SELECT strategy_id, symbol FROM v_alloc
+                    SELECT strategy_id, symbol FROM v_alloc UNION
+                    SELECT strategy_id, symbol FROM adjustments
                 )
                 SELECT keys.strategy_id, keys.symbol,
-                COALESCE(v.quantity, 0) + COALESCE(f.qty, 0) AS quantity,
+                COALESCE(v.quantity, 0) + COALESCE(f.qty, 0) + COALESCE(a.quantity, 0) AS quantity,
                 COALESCE(NULLIF(v.average_cost, 0), f.avg_cost, 0) AS average_cost
                 FROM keys
                 LEFT JOIN fills f USING(strategy_id, symbol)
                 LEFT JOIN v_alloc v USING(strategy_id, symbol)
-                WHERE ABS(COALESCE(v.quantity, 0) + COALESCE(f.qty, 0)) > 1e-9
+                LEFT JOIN adjustments a USING(strategy_id, symbol)
+                WHERE ABS(COALESCE(v.quantity, 0) + COALESCE(f.qty, 0) + COALESCE(a.quantity, 0)) > 1e-9
                 ORDER BY keys.strategy_id, keys.symbol"""
                 rows = connection.execute(query, params).fetchall()
                 return [dict(row) for row in rows]
 
         env_filter = "AND intent_key NOT LIKE '%:REAL' AND status NOT LIKE 'REAL%'" if target_env in {"SIMULATE", "PAPER"} else ""
+        adj_param = target_account if target_account else ""
+        # 模拟侧 virtual_allocations 历史上统一写入 tenant_id=''（纸面租户无独立租户键），
+        # 因此空租户行必须保留；但绝不能把其它租户（如实盘）的行串入模拟账本。
+        if target_tid:
+            v_alloc_clause = "WHERE tenant_id = '' OR tenant_id = ?"
+            query_params: tuple = (target_tid, adj_param)
+        else:
+            v_alloc_clause = "WHERE tenant_id = ''"
+            query_params = (adj_param,)
         with self.connection() as connection:
             query = f"""WITH fills AS (
                 SELECT strategy_id,symbol,
@@ -2286,21 +2546,25 @@ class TradingStore:
                 SUM(CASE WHEN side='BUY' THEN filled_quantity * average_fill_price ELSE 0 END) / MAX(1e-9, SUM(CASE WHEN side='BUY' THEN filled_quantity ELSE 0 END)) as avg_cost
                 FROM order_intents WHERE status NOT LIKE 'SHADOW%' {env_filter}
                 GROUP BY strategy_id,symbol
+            ), v_alloc AS (
+                SELECT strategy_id,symbol,quantity,average_cost FROM virtual_allocations
+                {v_alloc_clause}
             ), adjustments AS (
                 SELECT strategy_id,symbol,quantity FROM reconciliation_adjustments
+                WHERE account_id = ? AND account_id <> ''
             ), keys AS (
                 SELECT strategy_id,symbol FROM fills UNION
-                SELECT strategy_id,symbol FROM virtual_allocations UNION
+                SELECT strategy_id,symbol FROM v_alloc UNION
                 SELECT strategy_id,symbol FROM adjustments
             )
             SELECT keys.strategy_id,keys.symbol,
             COALESCE(a.quantity,0)+COALESCE(f.qty,0)+COALESCE(r.quantity,0) quantity,
             COALESCE(NULLIF(a.average_cost,0), f.avg_cost, 0) average_cost
             FROM keys LEFT JOIN fills f USING(strategy_id,symbol)
-            LEFT JOIN virtual_allocations a USING(strategy_id,symbol)
+            LEFT JOIN v_alloc a USING(strategy_id,symbol)
             LEFT JOIN adjustments r USING(strategy_id,symbol)
             ORDER BY keys.strategy_id,keys.symbol"""
-            rows = connection.execute(query).fetchall()
+            rows = connection.execute(query, query_params).fetchall()
             return [dict(row) for row in rows]
 
     def strategy_position(self, strategy_id: str, symbol: str, env: str | None = None) -> float:
@@ -2405,15 +2669,63 @@ class TradingStore:
                 ).fetchone()
                 if existing:
                     return int(existing["id"])
+                # 跨路径幂等（10-22 实盘事故）：order push / 轮询可能已经先记了同一笔成交
+                # —— 它们拿不到 deal_id，写的是 BROKER_POLL_DIFF 投影行。若账本里已有一行
+                # 「同 intent + 同方向 + 同数量 + 同价格 + 无 deal_id」的投影行，就**认领它**
+                # （补上 deal_id 与真实来源）而不是再插一行；否则一笔真金成交记两次，
+                # P&L 与平仓成本翻倍。
+                proxy = connection.execute(
+                    """SELECT id FROM fill_ledger
+                    WHERE intent_id=? AND side=? AND broker_deal_id IS NULL
+                    AND ABS(quantity-?) < 0.000001 AND ABS(price-?) < 0.000001
+                    AND ABS((julianday(filled_at)-julianday(?))*86400) < ?
+                    LIMIT 1""",
+                    (intent_id, intent["side"], quantity, price, timestamp,
+                     self.FILL_PROXY_MATCH_WINDOW_SECONDS),
+                ).fetchone()
+                if proxy:
+                    # 只升级 source，**不写 broker_deal_id**：这条投影行来自累计上报，
+                    # 它本身并不知道自己代表哪一笔成交，硬标一个 deal_id 就是制造假归因。
+                    # 归因宁可「未知」，不可「错误」—— 审计链是排查这类事故的唯一依据。
+                    connection.execute(
+                        "UPDATE fill_ledger SET source=? WHERE id=?",
+                        (source, int(proxy["id"])),
+                    )
+                    return int(proxy["id"])
             if not broker_deal_id:
                 duplicate = connection.execute(
                     """SELECT id FROM fill_ledger WHERE intent_id=? AND source=? AND side=?
                     AND ABS(quantity-?) < 0.000001 AND ABS(price-?) < 0.000001
-                    AND ABS((julianday(filled_at)-julianday(?))*86400) < 30""",
-                    (intent_id, source, intent["side"], quantity, price, timestamp),
+                    AND ABS((julianday(filled_at)-julianday(?))*86400) < ?""",
+                    (intent_id, source, intent["side"], quantity, price, timestamp,
+                     self.FILL_DUP_MATCH_WINDOW_SECONDS),
                 ).fetchone()
                 if duplicate:
                     return int(duplicate["id"])
+            # 过计防护：账本累计已超出券商累计时，本笔不再写入，并让过计可见。
+            # 只对券商来源生效 —— SHADOW/虚拟成交没有券商累计可比，不适用。
+            if str(source).upper().startswith("BROKER"):
+                broker_total = float(intent.get("filled_quantity") or 0)
+                if broker_total > 0:
+                    recorded = connection.execute(
+                        """SELECT COALESCE(SUM(quantity),0) AS total FROM fill_ledger
+                        WHERE intent_id=? AND side=?""",
+                        (intent_id, intent["side"]),
+                    ).fetchone()
+                    ledger_total = float(recorded["total"] or 0)
+                    if ledger_total + float(quantity) > broker_total + 0.000001:
+                        # 拦是对的：账本若越过券商累计，没有任何机制会把它降回来。
+                        # 但**只在真的过计时才告警** —— ledger_total <= broker_total 时，
+                        # 本笔只是「券商还没报到」（正常的部分成交序列），下一轮 order push
+                        # 的累计判定会把它补齐，属良性。若这里也发 ERROR，每一笔正常部分成交
+                        # 都会刷一条 ERROR；而 Product 已定「ERROR 一律必推」——那就是在真金
+                        # 路径上制造告警疲劳，把刚建起来的可信度毁掉。
+                        if ledger_total > broker_total + 0.000001:
+                            self._emit_fill_overcount(
+                                connection, intent_id, intent.get("symbol"),
+                                ledger_total, broker_total, float(quantity), source,
+                            )
+                        return None
             cursor = connection.execute(
                 """INSERT INTO fill_ledger
                 (intent_id,strategy_id,symbol,side,quantity,price,multiplier,commission,

@@ -12,6 +12,7 @@ from .config import (
 )
 from .option_lifecycle import parse_option_code
 from .store import TradingStore
+from .tenant import campaigns_config_key_lenient, tenant_of_broker
 
 
 NY = ZoneInfo("America/New_York")
@@ -216,6 +217,80 @@ def _cleanup_one_group(
     return kept, result
 
 
+def reclaim_exit_only_orphans(store=None, broker=None) -> dict:
+    """回收**已了结**的 `exit_only` 孤儿 campaign（P0-2 的配置防腐化路径）。
+
+    背景（10-23 Reviewer 在生产配置里坐实）：接管的 `exit_only` 孤儿在券商持仓归零后
+    仍长期留存 —— 每轮被遍历、被护栏静默 return、白烧周期，还会**盖住真正需要管的那条**。
+    更糟的是有的 `campaign_id` 与 `code` 不一致（表达复核改写合约号留下的痕迹）。
+
+    铁律（沿用团队滚动不变量的安全侧）：
+    - **持有券商持仓或挂单的 campaign 永不被删除** —— 只在「无持仓 + 无挂单 + 无虚拟持仓」时回收；
+    - 拿不到券商数据时**什么都不删**（抛出由调用方处理），绝不猜。
+
+    返回 ``{"reclaimed": [...], "kept": [...]}``。
+    """
+    if broker is None:
+        raise ValueError("reclaim_exit_only_orphans requires a broker for safety checks")
+    store = store or TradingStore()
+    positions_by_code = _broker_positions_by_code(broker)
+    open_broker_symbols = _open_broker_order_symbols(broker)
+    # #1 键级分区：回收只作用于**本租户**的清单（读写共用一个键解析 helper）。
+    _tenant_id = tenant_of_broker(broker, strict=False)[0] or ""
+    _campaigns_key, _key_fell_back = campaigns_config_key_lenient(_tenant_id)
+    if _key_fell_back:
+        store.operational_event(
+            "campaign_cleanup", "CAMPAIGNS_KEY_TENANT_UNRESOLVED", "ERROR",
+            {"tenant_id": _tenant_id or None,
+             "message": "无法把 campaign 清单解析到租户键 —— 回落无前缀旧键（未隔离，已留痕）"},
+        )
+    campaigns = load_volatility_campaigns(_tenant_id)
+    kept: list[dict] = []
+    reclaimed: list[dict] = []
+    for campaign in campaigns:
+        if not campaign.get("exit_only"):
+            kept.append(campaign)
+            continue
+        codes = campaign_option_codes(campaign)
+        # 注意：券商会返回 qty=0 的**已平仓**条目（同一合约仍在列表里）。
+        # 只看「code 在不在字典里」会把已平仓合约误判为在险 —— 必须看数量。
+        still_at_risk = any(
+            abs(float(positions_by_code.get(code, 0.0) or 0.0)) > 1e-9
+            or code in open_broker_symbols
+            for code in codes
+        )
+        # 虚拟持仓（模拟/Shadow 侧）也算在险，不得回收
+        if not still_at_risk:
+            for code in codes:
+                shadow_qty, _ = store.shadow_position("volatility_long_gamma", code)
+                if abs(float(shadow_qty or 0)) > 1e-9:
+                    still_at_risk = True
+                    break
+        if still_at_risk:
+            kept.append(campaign)
+            continue
+        identity = _identity(campaign)
+        reclaimed.append({
+            "campaign_id": campaign.get("campaign_id"),
+            "code": campaign.get("code"),
+            "identity": identity,
+            "id_code_mismatch": bool(
+                campaign.get("campaign_id")
+                and str(campaign.get("campaign_id")).startswith("orphan:")
+                and str(campaign.get("campaign_id")) != f"orphan:{campaign.get('code')}"
+            ),
+        })
+        store.audit("VOLATILITY_EXIT_ONLY_ORPHAN_RECLAIMED", {
+            "campaign_id": campaign.get("campaign_id"),
+            "code": campaign.get("code"),
+            "id_code_mismatch": str(campaign.get("campaign_id")) != f"orphan:{campaign.get('code')}",
+            "reason": "券商持仓与挂单均已归零，退出管理已无对象，回收配置防腐化",
+        }, "volatility_long_gamma")
+    if reclaimed:
+        save_volatility_campaigns(kept, tenant_id=_tenant_id)
+    return {"reclaimed": reclaimed, "kept": [c.get("code") for c in kept]}
+
+
 def cleanup_expired_campaigns(
     store: TradingStore | None = None,
     broker=None,
@@ -233,21 +308,30 @@ def cleanup_expired_campaigns(
     positions_by_code = _broker_positions_by_code(broker)
     open_broker_symbols = _open_broker_order_symbols(broker)
     gamma = load_gamma_campaigns()
-    volatility = load_volatility_campaigns()
+    # #1 键级分区：过期清理只作用于**本租户**的清单（gamma 尚未租户化，保持全局键）。
+    _tenant_id = tenant_of_broker(broker, strict=False)[0] or ""
+    _campaigns_key, _key_fell_back = campaigns_config_key_lenient(_tenant_id)
+    if _key_fell_back:
+        store.operational_event(
+            "campaign_cleanup", "CAMPAIGNS_KEY_TENANT_UNRESOLVED", "ERROR",
+            {"tenant_id": _tenant_id or None,
+             "message": "无法把 campaign 清单解析到租户键 —— 回落无前缀旧键（未隔离，已留痕）"},
+        )
+    volatility = load_volatility_campaigns(_tenant_id)
     gamma_kept, gamma_result = _cleanup_one_group(
         store, broker, gamma, "GAMMA_CAMPAIGNS", "earnings_gamma",
         ("earnings_gamma", "earnings_gamma_manual"),
         positions_by_code, open_broker_symbols, as_of,
     )
     volatility_kept, volatility_result = _cleanup_one_group(
-        store, broker, volatility, "VOLATILITY_CAMPAIGNS", "volatility_long_gamma",
+        store, broker, volatility, _campaigns_key, "volatility_long_gamma",
         ("volatility_long_gamma",),
         positions_by_code, open_broker_symbols, as_of,
     )
     if len(gamma_kept) != len(gamma):
         save_gamma_campaigns(gamma_kept)
     if len(volatility_kept) != len(volatility):
-        save_volatility_campaigns(volatility_kept)
+        save_volatility_campaigns(volatility_kept, tenant_id=_tenant_id)
     result = {
         "groups": [asdict(gamma_result), asdict(volatility_result)],
         "removed_total": gamma_result.removed + volatility_result.removed,

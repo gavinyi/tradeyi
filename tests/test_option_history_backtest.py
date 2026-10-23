@@ -50,7 +50,11 @@ def test_collector_records_point_in_time_snapshot(tmp_path, monkeypatch):
         "futu_quant.option_history.load_gamma_campaigns",
         lambda: [{"code": "US.AAPL260720C300000"}],
     )
-    monkeypatch.setattr("futu_quant.option_history.load_volatility_campaigns", lambda: [])
+    # #1 键级分区：option_history 是「显式读全局」的三处之一，读取入口已改为
+    # `load_all_volatility_campaigns()`（跨租户只读），这里按新名字打桩。
+    monkeypatch.setattr(
+        "futu_quant.option_history.load_all_volatility_campaigns", lambda: []
+    )
 
     class Broker:
         @staticmethod

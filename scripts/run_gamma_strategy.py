@@ -44,6 +44,7 @@ from futu_quant.volatility_optimizer import (
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
 )
 from futu_quant.volatility_structures import automatic_combo_id
+from futu_quant.volatility_orphans import volatility_write_state_key
 from futu_quant.campaign_cleanup import campaign_expired
 from futu_quant.data_quality import (
     option_book_status, option_quote_freshness, quote_freshness,
@@ -51,6 +52,7 @@ from futu_quant.data_quality import (
 from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.option_lifecycle import parse_option_code
 from futu_quant.store import TradingStore
+from futu_quant.tenant import tenant_id_of_broker
 
 
 NY = ZoneInfo("America/New_York")
@@ -58,7 +60,27 @@ MARKET_CALENDAR = USMarketCalendar()
 LEGACY_STATE_FILE = Path("data/gamma_state.json")
 
 
-def volatility_new_entries_paused(store: TradingStore) -> bool:
+def volatility_new_entries_paused(store: TradingStore, broker=None) -> bool:
+    """波动率期权是否暂停**新开仓**（退出管理不受影响）。
+
+    **租户级优先、全局兜底**：键为 `volatility_new_entries_paused:<tenant_id>`。
+    10-23 起改为租户级 —— 此前是全局键，停实盘会连带把**模拟盘**也停掉，
+    而修复验证恰恰要用模拟盘（改的是共享代码路径）。
+
+    兜底读旧的全局键，保证既有设置仍然生效（改键名不会让已停的实盘悄悄恢复）。
+    """
+    tenant_id = ""
+    if broker is not None:
+        # P0-9：走共享入口 tenant_of_broker（显式 → 账户反解），不再裸 getattr。
+        # 生产 broker 无 tenant_id 属性 → 旧写法恒空，只剩 account_id 分支恰好兜住；
+        # 而 resolve_tenant(None) **不 fail-closed**，会静默回落到默认租户 ——
+        # 依赖它就是把"租户待定"放大成"按实盘租户处理"。
+        tenant_id = tenant_id_of_broker(broker) or ""
+    if tenant_id:
+        tenant_key = f"volatility_new_entries_paused:{tenant_id}"
+        value = store.get_setting(tenant_key, "")
+        if value.strip():
+            return value.lower() == "true"
     return store.get_setting("volatility_new_entries_paused", "false").lower() == "true"
 
 
@@ -323,6 +345,85 @@ def _campaign_naked_short_rows(campaign: dict, positions: pd.DataFrame) -> pd.Da
     return normalized[normalized["_code"].isin(uncovered)].drop(columns=["_code", "_qty"])
 
 
+def _stop_limit_problems(campaign: dict) -> tuple[list[str], list[str]]:
+    """校验 campaign 的单笔止损限额 —— 返回 ``(缺失键, 非法值)``。
+
+    **开仓前强制校验**（P1-3 + Chief 10-23 裁定）：
+    - 缺键 → 拒绝开仓（不得静默兜底）；
+    - **值非法同样拒绝**：`ratio` 须 ∈ (0, 1]、`usd` 须 > 0。
+      `0` 或负数会让 `volatility_hard_loss_exit_reason` 的
+      `usd_limit > 0 and ...` 恒为假 → **止损永不触发**（静默失效）。
+
+    抽成独立函数是为了**可直接测试**（内联在 `run_campaign` 里就只能端到端测），
+    并与退出路径的 `_hard_stop_limits` 形成对照：
+    **开仓拒绝、退出保守默认** —— 配置错误不该把退出管理一起锁死
+    （那正是 `strategies_paused` 踩过的坑）。
+    """
+    missing = [
+        key for key in ("max_position_loss_usd", "max_position_loss_ratio")
+        if key not in campaign
+    ]
+    invalid: list[str] = []
+    ratio_raw = campaign.get("max_position_loss_ratio")
+    if "max_position_loss_ratio" in campaign:
+        try:
+            if not 0 < float(ratio_raw) <= 1:
+                invalid.append(f"max_position_loss_ratio={ratio_raw!r}（须 ∈ (0, 1]）")
+        except (TypeError, ValueError):
+            invalid.append(f"max_position_loss_ratio={ratio_raw!r}（不可解析）")
+    usd_raw = campaign.get("max_position_loss_usd")
+    if "max_position_loss_usd" in campaign:
+        try:
+            if not float(usd_raw) > 0:
+                invalid.append(f"max_position_loss_usd={usd_raw!r}（须 > 0）")
+        except (TypeError, ValueError):
+            invalid.append(f"max_position_loss_usd={usd_raw!r}（不可解析）")
+    return missing, invalid
+
+
+def _hard_stop_limits(campaign: dict, executor, code: str) -> dict:
+    """解析单笔硬止损限额 —— **两层共用这一处实现**（Reviewer 保留意见）。
+
+    为什么必须共享：硬止损纵深防御的**第 1 层**（`:740` 分支内）与**第 2 层**
+    （`:1169` 分支后）在控制流上是两道独立检查，但**数据上是耦合的** ——
+    它们读同一份 campaign 限额。**共享数据源就是一个共同失败点**：
+    数据层出错会同时击败两层，"两道锁"在数据层其实只有一道。
+
+    本函数把解析收敛到一处，并补上**数据层保护**：
+    限额 `<= 0` 时 `volatility_hard_loss_exit_reason` 的
+    `usd_limit > 0 and ...` 恒为假 → **止损永不触发**（静默失效）。
+    这不是"用 0 做限额"，是配置错误 —— 必须**记 ERROR 并回落保守默认**。
+    """
+    usd_raw = campaign.get("max_position_loss_usd")
+    ratio_raw = campaign.get("max_position_loss_ratio")
+    usd = float(usd_raw) if usd_raw not in (None, "") else 300.0
+    ratio = float(ratio_raw) if ratio_raw not in (None, "") else 0.25
+    if usd <= 0 or ratio <= 0:
+        # 配置错误：静默用 0 会让止损在两层同时失效（共同失败点）
+        if executor is not None:
+            detail = {
+                "code": code,
+                "max_position_loss_usd": usd_raw,
+                "max_position_loss_ratio": ratio_raw,
+                "fallback": {"max_position_loss_usd": 300.0, "max_position_loss_ratio": 0.25},
+                "reason": "限额 <= 0 会让硬止损永不触发（两层同时失效）——已回落保守默认",
+            }
+            executor.store.operational_event(
+                "volatility_long_gamma", "HARD_STOP_LIMIT_INVALID", "ERROR", detail,
+            )
+            # P1-1：这条 ERROR 此前**只落库、从不推送** —— 用户看不到，等于静默失效
+            # （与 10-22 那条 P0 同一形态："库里有、用户看不到"）。
+            # 它同时是"止损永不触发"的唯一线索：不落推送，下次开仓就还是非法限额。
+            executor.alerts.send(
+                "ERROR", "HARD_STOP_LIMIT_INVALID",
+                f"{code}: 硬止损限额非法（ratio={ratio_raw!r} / usd={usd_raw!r}）"
+                f"—— 已回落保守默认 0.25/300；不修正则硬止损永不触发，请修正 campaign 配置",
+                incident_key="HARD_STOP_LIMIT_INVALID",
+            )
+        return {"max_loss_usd": 300.0, "max_loss_ratio": 0.25}
+    return {"max_loss_usd": usd, "max_loss_ratio": ratio}
+
+
 def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
@@ -352,9 +453,19 @@ def run_campaign(
         print(f"{code}: BLOCKED {reason}")
         return
     now = datetime.now(NY)
-    state_key = f"{strategy_id}:{code}"
-    if state_key not in state and strategy_id == "volatility_long_gamma" and code in state:
-        state[state_key] = state.pop(code)
+    # #1 键级分区：状态键写形态收敛到**共享助手** —— 四个读写点必须用同一个拼法。
+    # 此前这里手拼 `{strategy_id}:{code}`（无租户），而 order_push 写带租户形态：
+    # 同一份状态裂成两个键、读侧各看各的 → 成交回写的 peak / entry_iv / position_opened_at
+    # 策略侧读不到 → **止盈止损基准错**。
+    _state_tenant = tenant_id_of_broker(broker) or ""
+    state_key = volatility_write_state_key(code, _state_tenant, prefix=f"{strategy_id}:")
+    if state_key not in state:
+        # 读侧**兼容旧格式**（迁移前的无租户键，以及更早的裸 code 键）：
+        # 读到后**就地收敛成写形态**。**只搬不复制** —— 两份键并存会让读侧读到旧值。
+        for _old_key in (f"{strategy_id}:{code}", code):
+            if _old_key != state_key and _old_key in state:
+                state[state_key] = state.pop(_old_key)
+                break
     campaign_state = state.setdefault(state_key, {"peak": 0.0})
     trigger_mode = campaign.get("trigger_mode", "EARNINGS")
     # Entry confirmation belongs to the underlying volatility episode, not to
@@ -695,6 +806,36 @@ def run_campaign(
     profit_capture_ratio = volatility_profit_capture_ratio(pnl_ratio, peak_pnl_ratio)
     tier_lock_floor, tier_lock_label = volatility_profit_lock_floor(peak_pnl_ratio)
     underlying_bars = broker.candles(campaign["underlying"], count=90)
+    # 硬止损必须绕过退出冷却：冷却分支一旦命中就 `return`，会挡住后面的硬止损判定，
+    # 导致「亏损已到线却要等下一次机会」。10-22 实盘 META 看跌就是这样从 $300 线
+    # 一路跑到 $366 才被动平仓 —— 冷却本意是「止损后 24h 内不再开新仓」，
+    # 不该把「已持仓的退出」一起挡住。
+    #
+    # 硬止损必须绕过退出冷却：冷却分支一旦命中就 `return`，会挡住后面的硬止损判定，
+    # 导致「亏损已到线却要等下一次机会」。10-22 实盘 META 看跌就是这样从 $300 线
+    # 一路跑到 $366 才被动平仓 —— 冷却本意是「止损后 24h 内不再开新仓」，
+    # 不该把「已持仓的退出」一起挡住。
+    #
+    # 做法：提前判定硬止损并置 `action="SELL"`（`action` 在此处尚未赋值，必须初始化），
+    # 命中时打标记 `hard_stop_fired`，让后面的常规决策不覆盖它；退出由**既有路径**统一提交。
+    action, reason = "HOLD", "初始：未触发任何退出条件"
+    hard_stop_fired = False
+    if trigger_mode == "VOLATILITY" and quantity > 0:
+        _hard_reason = volatility_hard_loss_exit_reason(
+            pnl_ratio=pnl_ratio,
+            pnl_amount=position_pnl_amount,
+            **_hard_stop_limits(campaign, executor, code),
+        )
+        if _hard_reason:
+            action, reason = "SELL", _hard_reason
+            hard_stop_fired = True
+            executor.store.decision(
+                strategy_id, code, "SELL", reason,
+                {"position_quantity": quantity, "position_pnl_amount": position_pnl_amount,
+                 "pnl_ratio": pnl_ratio, "hard_stop_bypasses_cooldown": True,
+                 "trigger_mode": trigger_mode},
+            )
+            print(f"{code}: SELL ({reason}) [硬止损绕过冷却]")
     regime = None
     if trigger_mode == "VOLATILITY":
         adaptive = volatility_threshold_profile(underlying_bars)
@@ -982,7 +1123,17 @@ def run_campaign(
                 tier2_fraction=float(campaign.get("partial_profit_tier2_fraction", .25)),
             )
         )
-        if partial_exit_quantity > 0 and partial_exit_reason:
+        # 【硬止损纵深防御 · 第 1 层】挡的是**分支内的提前覆盖**：
+        # 分批止盈 / 常规决策把已置好的 action="SELL" 改掉。
+        # 硬止损在 :740-756 已置 action="SELL" + hard_stop_fired=True，
+        # 此处**必须最先判定** —— 否则分批止盈分支会无条件把 action 覆盖掉，硬止损白设。
+        #
+        # 与第 2 层（:1169 起）算**同一个不变量**：删任一层行为不变、删两层失效
+        # （变异 C 已证）。保留两层的意义是纵深 —— 将来任何一处新增的提前 return，
+        # 都需要两层同时失效才会让止损无声消失。
+        if hard_stop_fired:
+            pass  # 硬止损已定 action/reason，退出由既有路径统一提交
+        elif partial_exit_quantity > 0 and partial_exit_reason:
             batch = select_partial_exit_batch(
                 campaign_state.get("tranches") or [],
                 mode=str(campaign.get("partial_exit_mode", "FIFO")),
@@ -1084,6 +1235,9 @@ def run_campaign(
     else:
         partial_exit_quantity = 0
         partial_exit_tier = None
+        # 原先这里有 `if not hard_stop_fired:` 包裹 —— 死代码：`hard_stop_fired`
+        # 只在 VOLATILITY 分支（:740-756）被置位，EARNINGS 分支恒为 False，
+        # 该条件恒真。去掉包裹，直接调用（Reviewerr 裁定）。
         action, reason = decide_gamma_action(
             now, event_time, quantity, stages_filled, int(campaign["max_stages"]),
             int(campaign["entry_hours"]), pnl_ratio, drawdown, direction_ok,
@@ -1091,12 +1245,18 @@ def run_campaign(
             float(campaign["trailing_stop"]),
             float(campaign.get("max_hold_hours", 8)),
         )
+    # 【硬止损纵深防御 · 第 2 层】挡的是**分支之后的重算与降级**：
+    # 第 1 层只保护分支内；本层在决策分支全部走完之后独立重算一次，
+    # 并覆盖到期/临近到期等下游分支。
+    # 两层算同一不变量，删任一层行为不变、删两层失效（变异 C 已证）——
+    # **不要因为"看起来重复"就删掉一层**：那是纵深防御，不是冗余。
+    # **本层之后不得再出现把 action 从 SELL 改回非 SELL 的分支**
+    #（结构守卫 test_no_branch_downgrades_sell_after_hard_loss_layer 钉住）。
     if trigger_mode == "VOLATILITY" and quantity > 0:
         hard_loss_reason = volatility_hard_loss_exit_reason(
             pnl_ratio=pnl_ratio,
             pnl_amount=position_pnl_amount,
-            max_loss_usd=float(campaign.get("max_position_loss_usd", 300)),
-            max_loss_ratio=float(campaign.get("max_position_loss_ratio", .25)),
+            **_hard_stop_limits(campaign, executor, code),
         )
         if hard_loss_reason:
             partial_exit_quantity = 0
@@ -1215,12 +1375,57 @@ def run_campaign(
                     }, strategy_id,
                 )
 
-        if trigger_mode == "VOLATILITY" and volatility_new_entries_paused(executor.store):
+        if trigger_mode == "VOLATILITY" and volatility_new_entries_paused(executor.store, broker):
+            paused_key = "volatility_new_entries_paused"
+            _paused_tenant = tenant_id_of_broker(broker) or ""
+            if _paused_tenant:
+                paused_key = f"volatility_new_entries_paused:{_paused_tenant}"
             block_reason = "波动率期权新开仓已临时暂停：只保留已有持仓止盈、止损和组合平仓管理"
             record_pretrade_block("VOLATILITY_ENTRY_PAUSED", block_reason, {
                 "entry_paused": True,
-                "setting_key": "volatility_new_entries_paused",
+                "setting_key": paused_key,
             })
+            print(f"{code}: BLOCKED ({block_reason})")
+            return
+
+        # P1-3 限额必须显式写入 campaign：缺省不是「用默认值」，而是**配置错误**。
+        # 风控额度绝不允许靠默认值静默兜底 —— 此前 100/300 两个默认值打架，
+        # 就是「键不存在才决定用哪个」这种静默分歧造成的。缺省即拒绝开仓并记 ERROR。
+        missing_limit, invalid_limit = _stop_limit_problems(campaign)
+        if missing_limit:
+            block_reason = (
+                f"波动率期权开仓被拒：campaign 缺少显式止损限额 {', '.join(missing_limit)}"
+                f"（禁止静默兜底，请先在策略配置中显式设置后再开仓）"
+            )
+            record_pretrade_block("VOLATILITY_STOP_LIMIT_MISSING", block_reason, {
+                "missing_keys": missing_limit,
+                "campaign_id": campaign.get("campaign_id"),
+                "code": code,
+            })
+            executor.alerts.send(
+                "ERROR", "VOLATILITY_STOP_LIMIT_MISSING",
+                f"{code}: campaign {campaign.get('campaign_id')} 缺少显式止损限额 "
+                f"{', '.join(missing_limit)}，已拒绝开仓（禁止静默兜底）",
+                incident_key="VOLATILITY_STOP_LIMIT_MISSING",
+            )
+            print(f"{code}: BLOCKED ({block_reason})")
+            return
+        if invalid_limit:
+            block_reason = (
+                f"波动率期权开仓被拒：止损限额非法 —— {', '.join(invalid_limit)}"
+                f"（限额为 0 会让硬止损永不触发；禁止静默兜底，请设为合法值后再开仓）"
+            )
+            record_pretrade_block("VOLATILITY_STOP_LIMIT_INVALID", block_reason, {
+                "invalid_values": invalid_limit,
+                "campaign_id": campaign.get("campaign_id"),
+                "code": code,
+            })
+            executor.alerts.send(
+                "ERROR", "VOLATILITY_STOP_LIMIT_INVALID",
+                f"{code}: campaign {campaign.get('campaign_id')} 止损限额非法 —— "
+                f"{', '.join(invalid_limit)}，已拒绝开仓（禁止静默兜底）",
+                incident_key="VOLATILITY_STOP_LIMIT_INVALID",
+            )
             print(f"{code}: BLOCKED ({block_reason})")
             return
 

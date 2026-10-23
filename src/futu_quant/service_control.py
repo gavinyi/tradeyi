@@ -31,7 +31,10 @@ class ServiceStatus:
 
 def _pid_alive(pid: int) -> bool:
     # Cross-platform; never os.kill(pid, 0) on Windows (that terminates).
-    return pid_alive(pid)
+    # python_only=True：必须校验进程身份 —— 只判 PID 存活会被 Windows 的
+    # PID 复用欺骗（10-23 雷达被静默跳过），且 stop() 的等待循环会因
+    # 系统进程永远活跃而挂死。
+    return pid_alive(pid, python_only=True)
 
 
 def _launchd_target() -> str:

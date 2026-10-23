@@ -73,6 +73,26 @@ MIGRATIONS = (
         ALTER TABLE equity_snapshots ADD COLUMN env TEXT NOT NULL DEFAULT 'SIMULATE';
         CREATE INDEX IF NOT EXISTS idx_equity_snapshots_env_time ON equity_snapshots(env, created_at);
     """),
+    Migration(7, "reconciliation_adjustments_tenant_account", """
+        CREATE TABLE IF NOT EXISTS reconciliation_adjustments_v2 (
+            tenant_id TEXT NOT NULL DEFAULT '',
+            account_id TEXT NOT NULL DEFAULT '',
+            strategy_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            reason TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(tenant_id, account_id, strategy_id, symbol)
+        );
+        INSERT OR REPLACE INTO reconciliation_adjustments_v2
+            (tenant_id, account_id, strategy_id, symbol, quantity, reason, updated_at)
+        SELECT '', '', strategy_id, symbol, quantity, reason, updated_at
+        FROM reconciliation_adjustments;
+        DROP TABLE reconciliation_adjustments;
+        ALTER TABLE reconciliation_adjustments_v2 RENAME TO reconciliation_adjustments;
+        CREATE INDEX IF NOT EXISTS idx_recon_adj_tenant
+            ON reconciliation_adjustments(tenant_id, account_id, strategy_id, symbol);
+    """),
 )
 
 

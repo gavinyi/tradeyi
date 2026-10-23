@@ -15,6 +15,7 @@ from futu_quant.core_validation import (
     resolve_core_rebalance_settings,
 )
 from futu_quant.execution import ExecutionManager
+from futu_quant.risk import market_number
 from futu_quant.strategies import STRATEGIES, Signal
 
 
@@ -68,11 +69,21 @@ def run_once(
         if info.empty:
             raise RuntimeError("Account information is empty")
         acc_currency = str(info.iloc[0].get("currency", "USD")).upper()
-        usd_assets = float(info.iloc[0].get("usd_assets", 0) or 0)
+        usd_assets = market_number(info.iloc[0].get("usd_assets"), 0.0)
         if acc_currency != "USD" and usd_assets > 0:
             account_value = usd_assets
         else:
-            account_value = float(info.iloc[0]["total_assets"])
+            # 券商字段容错（10-23 core_satellite_sim 实测）：模拟盘的
+            # `total_assets` 会返回 'N/A'，直接 float() 会抛
+            # "could not convert string to float: 'N/A'" → 整个策略轮次失败、零委托。
+            # 归因必须可见：解析失败要留 ERROR，不能静默当 0 让策略带 0 资金跑。
+            raw_assets = info.iloc[0].get("total_assets")
+            account_value = market_number(raw_assets, 0.0)
+            if account_value <= 0 and raw_assets not in (None, "", 0, "0", 0.0):
+                raise RuntimeError(
+                    f"账户总资产字段无法解析：total_assets={raw_assets!r} "
+                    f"（币种 {acc_currency}）——拒绝以 0 资金执行调仓"
+                )
         core_budget = executor.store.strategy_risk_budget("core_satellite")
         core_capital_ratio = (
             float(core_budget["capital_ratio"])
@@ -90,7 +101,11 @@ def run_once(
         symbols = tuple(dict.fromkeys(settings.core_satellite_symbols))
         from futu_quant.option_lifecycle import parse_option_code
         held_stocks = (
-            tuple(str(c) for c in positions["code"] if not parse_option_code(str(c)) and float(positions.loc[positions["code"] == c, "qty"].iloc[0] or 0) > 0)
+            tuple(
+                str(c) for c in positions["code"]
+                if not parse_option_code(str(c))
+                and market_number(positions.loc[positions["code"] == c, "qty"].iloc[0], 0.0) > 0
+            )
             if not positions.empty and "code" in positions.columns else ()
         )
         eval_symbols = tuple(dict.fromkeys((*symbols, *held_stocks)))

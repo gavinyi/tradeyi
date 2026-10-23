@@ -8,7 +8,7 @@ import streamlit as st
 
 from futu_quant.acceptance import strategy_acceptance
 from futu_quant.config import (
-    Settings, load_gamma_campaigns, load_volatility_campaigns,
+    Settings, load_all_volatility_campaigns, load_gamma_campaigns,
     save_gamma_campaigns, save_volatility_campaigns,
 )
 from futu_quant.service_control import status as service_status
@@ -38,9 +38,12 @@ with activity_tab:
     for row in store.decisions(limit=3000):
         decisions.setdefault((row["strategy_id"], row["symbol"]), row)
     rows = []
+    # #1 键级分区：本概览页**故意读全局**（含各租户键）—— 它是跨租户的活动总览，
+    # 且**只读**：不参与任何清理、不写任何键。若这里改成"只读当前租户"，
+    # 总览就会静默漏掉另一个租户的活动（那正是最难发现的失效形态）。
     for strategy, campaigns in (
         ("earnings_gamma", load_gamma_campaigns()),
-        ("volatility_long_gamma", load_volatility_campaigns()),
+        ("volatility_long_gamma", load_all_volatility_campaigns()),
     ):
         for campaign in campaigns:
             latest = decisions.get((strategy, campaign.get("code")), {})
@@ -118,7 +121,8 @@ with combo_tab:
     combo_rows = []
     for strategy, campaigns in (
         ("earnings_gamma", load_gamma_campaigns()),
-        ("volatility_long_gamma", load_volatility_campaigns()),
+        # 组合总览**故意读全局**（含各租户键）—— 只读展示，不写任何键。
+        ("volatility_long_gamma", load_all_volatility_campaigns()),
     ):
         for campaign in campaigns:
             legs = campaign.get("legs") or [{"code": campaign.get("code"), "side": "BUY"}]
@@ -171,6 +175,12 @@ with version_tab:
                 save_gamma_campaigns(value)
             elif selected["config_key"] == "VOLATILITY_CAMPAIGNS":
                 save_volatility_campaigns(value)
+            elif str(selected["config_key"]).startswith("VOLATILITY_CAMPAIGNS:"):
+                # #1 键级分区：回滚必须写回**原来那个租户键** —— 配置版本是按键留痕的，
+                # 写回全局键会让这条回滚落错地方（且不会被任何租户读到）。
+                save_volatility_campaigns(
+                    value, tenant_id=str(selected["config_key"]).split(":", 1)[1],
+                )
             store.audit("CONFIG_ROLLED_BACK", {
                 "config_key": selected["config_key"], "version_id": int(selected_id), "reason": reason,
             })

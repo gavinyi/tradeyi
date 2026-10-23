@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from .tenant import broker_scope
+
 
 OPTION_CODE = re.compile(
     r"^US\.(?P<underlying>[A-Z][A-Z0-9.]*)"
@@ -171,7 +173,10 @@ def execute_disposition_plans(broker, store, executor, session, now: datetime) -
     """Submit explicitly enabled expiry exits through the normal simulated execution layer."""
     results: list[dict] = []
     lifecycle = {row["code"]: row for row in store.latest_option_lifecycle()}
-    virtual = store.virtual_positions()
+    # 按本账户/租户取账本：无账户视图是跨租户混合账本，会把别家租户的期权持仓
+    # 当成需要退出管理的仓位。
+    scoped_env, scoped_account = broker_scope(broker)
+    virtual = store.virtual_positions(env=scoped_env, account_id=scoped_account)
 
     # 1. 执行用户或系统显式配置的自动平仓计划
     plans = list(store.option_dispositions())

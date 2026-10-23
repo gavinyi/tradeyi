@@ -28,7 +28,9 @@ class RadarStatus:
 
 def _pid_alive(pid: int) -> bool:
     # Cross-platform; never os.kill(pid, 0) on Windows (that terminates).
-    return pid_alive(pid)
+    # python_only=True：必须校验进程身份 —— 雷达被静默跳过的直接原因就是
+    # 只判 PID 存活（PID 被 csrss.exe 复用）。
+    return pid_alive(pid, python_only=True)
 
 
 def _lock_owner_pid() -> int | None:

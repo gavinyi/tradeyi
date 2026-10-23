@@ -5,14 +5,16 @@ import json
 
 import pandas as pd
 
-from .config import load_gamma_campaigns, load_volatility_campaigns
+from .config import load_all_volatility_campaigns, load_gamma_campaigns
 from .data_quality import option_quote_freshness
 from .option_lifecycle import parse_option_code
 
 
 def configured_option_contracts(broker=None) -> tuple[str, ...]:
+    # #1 键级分区：**故意读全局**（含各租户键）—— 期权历史是回测/研究数据源，
+    # 本就该看全量合约；且这里**只读**，不参与清理、不写键。
     codes: set[str] = set()
-    for campaign in (*load_gamma_campaigns(), *load_volatility_campaigns()):
+    for campaign in (*load_gamma_campaigns(), *load_all_volatility_campaigns()):
         direct = str(campaign.get("code", "")).upper()
         if parse_option_code(direct):
             codes.add(direct)
