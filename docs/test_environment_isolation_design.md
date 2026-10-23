@@ -47,31 +47,51 @@
 - 与生产**并行**跑，用于验证策略改动在真实行情下的行为
 - **成本**：需要第二个 OpenD 与第二个账户，**不在本次范围**
 
-## 4. git 分支策略
+## 4. git 分支策略（**2026-10-24 用户定案，已执行**）
 
-**现状（实测）**：`main` 跟踪 `origin/main`（gitee `tradeyi/trade_futo`）；本地另有 `master`；
-**48 个已修改文件 + 大量未跟踪文件未提交** —— 工作树**就是**当前生产跑的代码。
+| 分支 / 标签 | 用途 | 当前位置 |
+| :--- | :--- | :--- |
+| **`master`** | **正式基线 + 部署分支**（生产目录停在这里） | `2113260`（2026-10-23 生产运行态快照） |
+| **`test`** | 开发 / 验证 / 测试（隔离区 `E:\Thisyi\trade-test` 的 worktree） | `c3627fa`（隔离守卫 + 测试修复，领先 master 1 个提交） |
+| `main` | 仅作 `origin/main` 远端镜像，**不是部署基线** | `b7c1be7` |
+| `archive/2026-09-windows-migration`（tag） | 旧 master（Windows 迁移基线）历史存档 | `00e01ee` |
+| `snapshot/2026-10-23-production`（tag） | 今夜生产运行态的独立锚点 | `2113260` |
 
-| 分支 | 用途 |
-| :--- | :--- |
-| `main` | 生产基线（与 `origin/main` 同步） |
-| **`test`** | **隔离开发/测试**：所有新改动先落这里，验证通过再合入 `main` |
+**部署流程（用户定案）**：开发在 `test` → 全量回归绿 + Reviewer 签字 + **用户批准** → 合入 `master` → 重启部署生产。
+
+### 4.1 特性分支 + worktree 组合模型（**用户 2026-10-24 问「加特性分支还是用 worktree」——答案是两者组合**）
+
+**分支是提交线，worktree 是工作目录，两者正交，不冲突。**
+
+| 角色 | 目录 | 分支 |
+| :--- | :--- | :--- |
+| 生产 | `E:\Thisyi\trade` | `master`（只部署，不开发） |
+| 集成测试（Tester 专用） | `E:\Thisyi\trade-test` | `test` |
+| 需求开发（每个需求一个） | `E:\Thisyi\wt-<需求>` | `feature/<需求>`（从 `test` 切出） |
+
+**流程**：`feature/<需求>` 开发 + 开发者自测 → 合回 `test` → **Tester 只在 `trade-test` 做全量回归 + 真机验证** → Reviewer 签 + 用户批准 → 合 `master` → 重启部署。
 
 **硬规则**：
-1. **生产目录（`E:\Thisyi\trade`）永远停在 `main`** —— 工作树被运行中的服务加载，
-   切分支等于**在线换代码**（00:15 那次事故的成因）；
-2. **`test` 分支只在测试目录里 checkout**，绝不在此目录切；
-3. **提交前必须通过**：全量回归 + 静态巡检 + `fail_closed_design_rules.md` §8 检查清单。
+1. **Tester 不在 feature worktree 验**——feature 只做开发者自测；验收一律在 `test` 上做，保证「验的就是要合的那份」；
+2. **同时最多 2 个 feature worktree**（串行纪律，避免并发改同一文件；超出的排队）；
+3. **合并后立刻清理**：`git worktree remove E:\Thisyi\wt-<需求>` + `git branch -d feature/<需求>`，不留堆积；
+4. **venv 复用**：所有 worktree 共用测试区 venv（`E:\Thisyi\trade-test\.venv`）跑 pytest（CWD=各自 worktree，`pythonpath=src` 按 CWD 解析）——不必每个 worktree 建一份 venv；
+5. **feature 分支禁止直接改 `master`/`test` 指针**，只能经合并流程推进。
 
-## 5. 落地步骤（**开盘窗口后执行**）
+**硬规则**：
+1. **生产目录（`E:\Thisyi\trade`）停在 `master`** —— 工作树被运行中的服务加载，**不得为了开发在此目录切分支**；代码部署 = `master` 前移 + 重启；
+2. **`test` 只在测试目录里 checkout**，验证通过才允许合入 `master`；
+3. **合并前必须通过**：隔离区全量回归 + 静态巡检 + `fail_closed_design_rules.md` §8 检查清单；
+4. **禁止在服务运行期间切到不同 commit 的分支**（切同 commit 分支只改 `.git/HEAD`，不碰文件，安全）。
 
-1. **提交当前工作树**（48 改 + 新文件）到 `main` 或先落 `test` —— **由 Chief 定**，
-   因为这是**在线生产代码**，提交即固化；
-2. 建 `test` 分支；
-3. 用 `git worktree add ../trade-test test` 建独立工作目录；
-4. 测试目录内：独立 CWD、`TRADEYI_ENV=test`、UI 端口 8502；
-5. 加一条守卫：**`TRADEYI_ENV=test` 时若连到生产 DB 路径 → 直接拒绝启动**；
-6. `docs/` 与 `data/qa/` 的同步策略：文档随分支走，`data/` 各自独立。
+## 5. 落地步骤（**已执行，2026-10-24 00:41–01:04**）
+
+1. ✅ 生产工作树 200 项改动中**白名单 124 文件 / 21,297 行**固化进 `master` 快照（排除 `data/`、临时产物、库文件）；
+2. ✅ `git worktree add E:\Thisyi\trade-test test` 建独立工作目录；
+3. ✅ 测试区独立 venv（`uv sync --extra dev --no-install-project` + pytest `pythonpath=src`）、独立 `data/`、独立锁；
+4. ✅ `TRADEYI_ENV=test` + `TRADEYI_PROD_DB_PATH` 守卫（`tests/conftest.py`，缺失即 fail-closed）；生产指纹会话守卫在测试区指向**真生产库**；
+5. ✅ 隔离区全量回归 **959 passed / 20 skipped / 0 failed（349.77s）**，生产 `runtime_config` 指纹前后一致。
+6. UI 端口 8502 与 `data/qa` 独立目录：测试区按需起 UI 时使用（本轮未起 UI）。
 
 ## 6. 验收
 

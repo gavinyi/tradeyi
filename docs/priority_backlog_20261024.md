@@ -8,7 +8,7 @@
 
 | # | 事项 | 责任人 | 前置 / 依赖 | 状态 |
 |---|---|---|---|---|
-| 0 | **测试环境隔离 Tier 1**：独立 worktree + 独立 CWD/data + `TRADEYI_ENV=test` + UI 端口 8502 + 生产库路径拒连守卫 + git 分支策略 | Product（PRD）→ Architect（实施方案）→ Coder → Tester | 设计稿已有：`docs/test_environment_isolation_design.md`（飞书 https://my.feishu.cn/docx/OglHdiSPGo39lIxn1PccOEqknPe ）；**待补 PRD + 实施方案 + 签字 + 计划** | **进行中（今晚出文档）** |
+| 0 | **测试环境隔离 Tier 1**（已完成） | Chief（用户裁定不出 PRD，直接实施） | 设计稿：`docs/test_environment_isolation_design.md` | ✅ **已完成 2026-10-24 00:55**：测试区 `E:\Thisyi\trade-test`（worktree，`test` 分支 `c3627fa`）+ 独立 venv；**生产目录停 `master`（正式基线）**；隔离区全量 **959 passed / 20 skipped / 0 failed（349.77s）**；会话守卫比对生产 `runtime_config` 指纹前后一致。**分支模型（用户 10-24 定）**：`master`=正式基线/部署，`test`=开发验证，旧 master 存 `archive/2026-09-windows-migration` tag，今夜生产态存 `snapshot/2026-10-23-production` tag。**待收盘后**：`test` 领先 master 的 1 个提交（隔离守卫+测试修复）经 Reviewer 签 + 用户批准后合入 master |
 
 > **用户裁定（2026-10-24）**：**先解决环境隔离，之后什么时候都可以开工**；在此之前**所有开发项不动手**；
 > 生产相关改动一律**收盘后（北京时间 04:00 之后）**再动。隔离环境搭建本身只新建目录 / 独立 venv / 独立库，
@@ -22,6 +22,7 @@
 | 2 | 告警推送断链修复（PRD + 设计**已签字**；实施计划已出 `docs/alert_delivery_fix_plan.md`） | Coder → Reviewer → Tester | **待 P0-0 完成 + 收盘后** | **已过闸，等开工** |
 | 3 | 「暂停新开仓」生效口径核实 | Ops / Chief | — | ✅ 已核实（见下方口径） |
 | 4 | BUY 路径是否写 `registered_fill_*`、读侧缺口 | Reviewer（只读） | — | 进行中 |
+| 5 | **候选合约质量过滤（P0-5）**：低流动性 / 宽价差 / 当日到期合约在**候选池阶段**排除；`exclusion_reason` 审计 + 监控页可见；降级放行只对未排除候选生效；降级上限 900s→300s（需用户拍板） | Product（PRD）→ Architect（设计）→ Reviewer（红区审）→ **用户拍板** → Coder | 根因①已由 Ops 探针确认（低流动性报价冻结，非订阅故障） | **PRD 进行中**；门禁维持现状 |
 
 ## P1
 
@@ -35,6 +36,7 @@
 | 10 | 旧无前缀死键清理 101 条（retry_until 19 / retry_z 19 / rejection 18 / notified 45） | Ops |
 | 11 | ~~测试环境隔离落地~~ → **已提升为 P0-0** | Coder |
 | 12 | git 白名单提交 + `test` 分支指向该提交（并入 P0-0 的分支策略） | Chief |
+| 13 | **生产进程启动方式与守护**：生产 Worker/雷达**不得从 DSH/Agent 会话的 tool call 启动**（关闭 DSH 会连带杀死进程树，2026-10-24 00:15 事故已验证）；必须走桌面双击 `start.bat`（conhost 父进程）；补进程失联守护 + 告警 | Ops / Chief |
 
 ## P2
 
