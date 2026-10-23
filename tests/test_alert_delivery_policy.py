@@ -235,34 +235,47 @@ def test_rejected_mute_entry_is_reported_once(fake_feishu):
 
 
 def test_existing_db_gains_tristate_columns(tmp_path):
-    """**存量库**（alerts 表是旧 6 列结构）打开后必须自动补上三列。
+    """**存量库**打开后必须自动补上三列 —— 而且必须走**存量库路径**。
 
-    这条是 S1 的核心判据：把三列只写进 `CREATE TABLE` 时，新建库有、存量库没有，
-    功能上线即失效 —— 而新建库的测试**照样绿**。
+    这是 S1 的核心判据。`initialize()` 对存量库在 `apply_migrations()` 之后就 `return`
+    （`store.py:190-191`），所以把三列写在「新建库」分支里的实现，**存量库永远拿不到** ——
+    2026-10-24 部署实测正是这个形态：生产 `alerts` 仍 8 列，而新 `add_alert` 已引用
+    这三列 → **下一次写告警直接 OperationalError**。
+
+    做法：先用新库路径建出完整 schema，再**删掉三列 + 抹掉迁移记录**，
+    模拟「真实生产存量库缺这三列」，然后重新打开。
+
+    旧版本这条测试只建了一张 `alerts` 表（**没有 `order_intents`**）→ 于是走了
+    **新建库**分支 → 绿得没有意义。夹具必须包含 `order_intents`，否则测的不是存量路径。
     """
     db = tmp_path / "legacy.db"
-    connection = sqlite3.connect(db)
-    connection.execute(
-        """CREATE TABLE alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, severity TEXT NOT NULL,
-            event_type TEXT NOT NULL, message TEXT NOT NULL,
-            delivered INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
-        )"""
-    )
-    connection.execute(
+    TradingStore(db)  # 建出完整 schema（新库路径）
+
+    raw = sqlite3.connect(db)
+    raw.execute(
         "INSERT INTO alerts(severity,event_type,message,delivered,created_at)"
         " VALUES('ERROR','LEGACY','存量行',0,'2026-01-01T00:00:00+00:00')"
     )
-    connection.commit()
-    connection.close()
+    for column in ("webhook_delivered", "feishu_delivered", "muted"):
+        raw.execute(f"ALTER TABLE alerts DROP COLUMN {column}")
+    raw.execute("DELETE FROM schema_migrations WHERE version IN (8,9,10)")
+    raw.commit()
+    before = {row[1] for row in raw.execute("PRAGMA table_info(alerts)")}
+    assert not ({"webhook_delivered", "feishu_delivered", "muted"} & before), (
+        "夹具失效：三列没被删掉，这条测试测不出「存量库补列」"
+    )
+    assert raw.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_intents'"
+    ).fetchone() is not None, "夹具失效：没有 order_intents，会走新建库分支"
+    raw.close()
 
-    store = TradingStore(db)
+    store = TradingStore(db)  # 必须走存量库路径
     with store.connection() as connection:
         columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(alerts)")
         }
     assert {"webhook_delivered", "feishu_delivered", "muted"} <= columns, (
-        "存量库没有拿到三列 —— 说明三列没走幂等 ALTER 批"
+        "存量库没有拿到三列 —— 迁移被放在「新建库」分支里了（存量库走不到那里）"
     )
 
     # 存量行保持默认值，**不伪回填**
@@ -271,6 +284,23 @@ def test_existing_db_gains_tristate_columns(tmp_path):
     assert legacy["feishu_delivered"] == -1
     assert legacy["muted"] == 0
     assert legacy["delivered"] == 0
+
+
+def test_tristate_columns_come_from_migrations_not_create_table(tmp_path):
+    """三列必须由**迁移**补齐（新建库也一样）—— 判据用行为，不用源码形状。
+
+    新库打开后 `schema_migrations` 里必须记录 8/9/10。若谁把列写回 `CREATE TABLE alerts`
+    又去掉迁移，版本号就不会被记录 → 本用例转红。
+    """
+    store = TradingStore(tmp_path / "fresh.db")
+    with store.connection() as connection:
+        versions = {
+            int(row["version"])
+            for row in connection.execute("SELECT version FROM schema_migrations")
+        }
+    assert {8, 9, 10} <= versions, (
+        "三列不是由迁移补齐的（schema_migrations 缺 8/9/10）—— 只有一条迁移路径"
+    )
 
 
 def test_delivered_is_derived_from_tristate(tmp_path):

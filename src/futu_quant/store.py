@@ -762,13 +762,6 @@ class TradingStore:
             for name, definition in {
                 "acknowledged": "INTEGER NOT NULL DEFAULT 0",
                 "action_status": "TEXT NOT NULL DEFAULT 'OPEN'",
-                # 投递通道可观测（P0-2 告警断链）。三态语义：**-1 未尝试 / 0 尝试失败 / 1 成功**。
-                # 必须走这条幂等 ALTER 批：塞进 `CREATE TABLE alerts` 只影响新建库，
-                # 存量库永远拿不到这三列 → 功能上线即失效（设计 §3.1）。
-                # 存量行保持默认值，**不做伪回填**。
-                "webhook_delivered": "INTEGER NOT NULL DEFAULT -1",
-                "feishu_delivered": "INTEGER NOT NULL DEFAULT -1",
-                "muted": "INTEGER NOT NULL DEFAULT 0",
             }.items():
                 if name not in alert_columns:
                     connection.execute(f"ALTER TABLE alerts ADD COLUMN {name} {definition}")
