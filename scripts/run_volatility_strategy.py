@@ -33,6 +33,10 @@ else:
 
 _VOL_STATE_PREFIX = "volatility_long_gamma:"
 
+# 平仓路径的日期判定必须用纽约日期：北京日期比纽约早 12–13 小时，
+# 会让「纽约当日到期」的 combo 提前约 4 小时被 `close_stale_expired_combos` 平掉。
+NY = ZoneInfo("America/New_York")
+
 
 def prunable_state_keys(
     store, tenant_id: str, active_keys: set[str], active_codes: set[str],
@@ -138,7 +142,7 @@ def run_once(
             "volatility_long_gamma", "ORPHAN_RECLAIM_FAILED", "WARNING",
             {"error": str(exc)},
         )
-    stale_cleaned = close_stale_expired_combos(executor.store, positions, datetime.now().astimezone().date())
+    stale_cleaned = close_stale_expired_combos(executor.store, positions, datetime.now(NY).date())
     if stale_cleaned:
         executor.store.audit(
             "VOLATILITY_STALE_EXPIRED_COMBOS_CLOSED",

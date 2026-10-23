@@ -424,6 +424,19 @@ def _hard_stop_limits(campaign: dict, executor, code: str) -> dict:
     return {"max_loss_usd": usd, "max_loss_ratio": ratio}
 
 
+def hard_issues_block_action(hard_issues: list[str], quantity: int) -> bool:
+    """硬诊断是否应当**阻断本次动作**。
+
+    **只拦新开仓（`quantity <= 0`），不拦退出管理（`quantity > 0`）。**
+
+    此前 `run_campaign` 在函数开头对 `hard_issues` 无条件 `return`，会在任何动作之前
+    冻结**全部**动作 —— 包括已持仓的止盈/止损/平仓，结果是「诊断出问题」反而让风险
+    敞口无人管理。判据刻意用**持仓量**而非诊断类别：退出路径与开仓路径的分界点就是
+    「有没有仓」，用类别判断会随诊断项增减而失效。
+    """
+    return bool(hard_issues) and int(quantity) <= 0
+
+
 def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
@@ -447,11 +460,11 @@ def run_campaign(
         campaign = {**campaign, "code": code}
     issues = diagnose_campaign(campaign, executor.store.earnings_events())
     hard_issues = hard_campaign_issues(campaign, issues)
-    if hard_issues:
-        reason = "；".join(hard_issues)
-        executor.store.decision(strategy_id, code, "BLOCKED", reason)
-        print(f"{code}: BLOCKED {reason}")
-        return
+    # 硬诊断的处置**延后**到「持仓量已解析」之后（见下方 `hard_issues and quantity <= 0`）：
+    # 此前这里无条件 `return`，会在任何动作之前冻结**全部**动作（含止盈/止损/平仓），
+    # 结果是「诊断出问题」反而让风险敞口无人管理。本函数被
+    # `scripts/run_volatility_strategy.py:284` 直接调用 —— 现在在跑的波动率持仓走的就是这道门。
+    hard_issue_reason = "；".join(hard_issues)
     now = datetime.now(NY)
     # #1 键级分区：状态键写形态收敛到**共享助手** —— 四个读写点必须用同一个拼法。
     # 此前这里手拼 `{strategy_id}:{code}`（无租户），而 order_push 写带租户形态：
@@ -561,6 +574,14 @@ def run_campaign(
     if execution_mode == "SHADOW":
         shadow_quantity, shadow_cost = executor.store.shadow_position(strategy_id, code)
         quantity, cost = int(shadow_quantity), float(shadow_cost)
+    # 硬诊断**只拦新开仓，不拦退出管理**（止盈/止损/平仓/在途组合推进）。
+    # 判据：`quantity > 0` = 有持仓 = 走退出管理路径，必须放行。
+    # 放在这里而不是函数开头，是因为**此刻 `quantity` 才是权威值**
+    # （已包含 SHADOW 虚拟持仓与 OPEN combo 的 mark）。
+    if hard_issues_block_action(hard_issues, quantity):
+        executor.store.decision(strategy_id, code, "BLOCKED", hard_issue_reason)
+        print(f"{code}: BLOCKED {hard_issue_reason}")
+        return
     if trigger_mode == "VOLATILITY" and quantity <= 0:
         pending_exit_reason = str(campaign_state.get("pending_exit_reason", ""))
         cycle_transition = sync_volatility_position_cycle(

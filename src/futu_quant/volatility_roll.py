@@ -153,6 +153,9 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         realized_volatility=rv, regime=regime,
         holding_hours=float(campaign.get("expectancy_horizon_hours", 4)),
         option_history=option_history,
+        # 显式传 NY 日期：DTE 直接喂给到期盈利概率 → 决定 probability / 排序。
+        # 不依赖函数内兜底默认值，避免"调用方悄悄退回本机日期"。
+        as_of=ny_today,
     )
     candidates = add_iv_history_percentiles(candidates, option_history)
     premium_budget, entry_tier = tiered_premium_budget(

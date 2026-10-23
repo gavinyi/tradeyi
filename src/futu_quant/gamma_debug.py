@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import re
+from zoneinfo import ZoneInfo
+
+
+# 到期判定必须用**交易所所在时区**。北京日期比纽约早 12–13 小时，用 `date.today()`
+# 会在纽约当日仍可交易时就把合约判成「已到期」→ 这是 65 次假 BLOCK 的直接来源。
+# 展示/命名类时间戳不在此列（保持本地无害）。
+NY = ZoneInfo("America/New_York")
 
 
 EXPIRY = re.compile(r"^US\.[A-Z.]+(\d{6})[CP]\d+$")
@@ -44,7 +51,9 @@ def diagnose_campaign(campaign: dict, events: list[dict]) -> list[str]:
         issues.append("期权代码无法识别到期日")
     else:
         expiry = datetime.strptime(match.group(1), "%y%m%d").date()
-        if expiry < date.today():
+        # 到期判定必须用交易所时区（NY）。用 `date.today()`（北京）会在纽约当日仍可交易时
+        # 就把合约判成「已到期」→ 65 次假 BLOCK 的直接来源。
+        if expiry < datetime.now(NY).date():
             issues.append(f"合约已于 {expiry} 到期")
         if trigger_mode == "EARNINGS":
             try:
