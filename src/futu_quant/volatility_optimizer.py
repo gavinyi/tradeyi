@@ -929,7 +929,7 @@ def rank_volatility_contracts(
         result["budget_alternative"] = pd.Series(dtype=bool)
         result["adaptive_risk_tier"] = pd.Series(dtype=str)
         return result
-    today = as_of or date.today()
+    today = as_of or datetime.now(ZoneInfo("America/New_York")).date()
     result = candidates.copy()
     if strong_signal:
         iv_rv_limit, risk_tier = 1.8, "强波动精选"

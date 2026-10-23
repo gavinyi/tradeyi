@@ -72,7 +72,30 @@ import pytest  # noqa: E402  # 必须在上述 monkeypatch 之后导入：先装
 from futu_quant.store import DEFAULT_DB as _DEFAULT_PROD_DB  # noqa: E402
 
 _SESSION_PROD_BASELINE: tuple[str, tuple[tuple[str, int, str], ...]] | None = None
-_PROD_GUARD_DB_PATH = Path(_DEFAULT_PROD_DB).resolve()
+
+# 隔离环境（TRADEYI_ENV=test）下，本工作区的 DEFAULT_DB 是**测试库**，不是生产库。
+# 守卫必须显式知道生产库在哪，否则会把测试库当生产库：要么假绿（测的是副本），
+# 要么因测试库不存在而误红。两者都会让「生产是否被写穿」这个问题失去答案。
+if os.environ.get("TRADEYI_ENV", "").strip().lower() == "test":
+    _prod_guard_env = os.environ.get("TRADEYI_PROD_DB_PATH", "").strip()
+    if not _prod_guard_env:
+        raise pytest.UsageError(
+            "[PROD-GUARD] TRADEYI_ENV=test 时必须显式提供 TRADEYI_PROD_DB_PATH"
+            "（生产库绝对路径），否则无法判断「生产是否被测试写穿」—— fail-closed。"
+        )
+    _PROD_GUARD_DB_PATH = Path(_prod_guard_env).resolve()
+else:
+    _PROD_GUARD_DB_PATH = Path(_DEFAULT_PROD_DB).resolve()
+
+
+def production_db_path() -> Path:
+    """生产库路径（供断言"生产未被写穿"的用例使用）。
+
+    - 生产目录（未设 ``TRADEYI_ENV=test``）：源文件相对的 ``DEFAULT_DB``；
+    - 隔离测试区（``TRADEYI_ENV=test``）：``TRADEYI_PROD_DB_PATH`` 指定的真生产库 ——
+      因为该工作区的 ``DEFAULT_DB`` 是测试库，直接拿它当"生产库"会假绿。
+    """
+    return _PROD_GUARD_DB_PATH
 
 
 def prod_config_fingerprint() -> tuple[str, tuple[tuple[str, int, str], ...]] | None:

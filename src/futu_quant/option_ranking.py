@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from math import erf, log, sqrt
 import os
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from futu_quant.gamma_risk import market_number, normalize_iv
 from futu_quant.option_expectancy import short_horizon_option_expectancy
+
+
+# `today` 直接决定 `dte`（`:72`），而 `dte` 喂给到期盈利概率 → 影响 probability /
+# breakeven / confidence / **排序**。用北京日期会让 DTE 最多差 1 天，排序失真。
+NY = ZoneInfo("America/New_York")
 
 
 def _normal_cdf(value: float) -> float:
@@ -55,7 +61,7 @@ def rank_long_option_candidates(
     """
     if candidates.empty:
         return candidates.copy()
-    today = as_of or date.today()
+    today = as_of or datetime.now(NY).date()
     rate = float(os.getenv("OPTION_RISK_FREE_RATE", "0"))
     ranked = candidates.copy()
     probabilities: list[float] = []

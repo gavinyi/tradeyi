@@ -139,8 +139,9 @@ def test_adoption_does_not_write_production_config(tmp_path):
     import json
     import sqlite3
 
+    import conftest
     from futu_quant import order_push as op
-    from futu_quant.store import DEFAULT_DB, TradingStore
+    from futu_quant.store import TradingStore
 
     store = TradingStore(tmp_path / "isolated.db")
     op.register_fill_to_campaign(
@@ -152,8 +153,8 @@ def test_adoption_does_not_write_production_config(tmp_path):
     adopted = [c for c in store.campaigns(tenant_id=REAL_TENANT)
                if c.get("code") == "US.AMZN261120P205000"]
     assert adopted, "采用结果未写进调用方传入的 store"
-    # 生产库不得出现该测试合约
-    with sqlite3.connect(f"file:{DEFAULT_DB}?mode=ro", uri=True) as con:
+    # 生产库不得出现该测试合约（隔离环境下 production_db_path() 指向真生产库）
+    with sqlite3.connect(f"file:{conftest.production_db_path().as_posix()}?mode=ro", uri=True) as con:
         row = con.execute(
             "SELECT value_json FROM runtime_config WHERE config_key='VOLATILITY_CAMPAIGNS'"
         ).fetchone()

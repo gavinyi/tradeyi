@@ -12,10 +12,14 @@ from futu_quant.store import TradingStore
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_alert_manager_dispatches_feishu_card(tmp_path):
+def test_alert_manager_dispatches_feishu_card(tmp_path, monkeypatch):
     # 必须用 tmp_path：此前写死 `data/test_alert_feishu.db`（仓库内运行期目录），
     # 一旦有 Worker 或另一个 pytest 进程占用同名文件就 PermissionError/WinError 32，
     # 变成与代码无关的环境假红；而且它违反「测试不得写工作区运行期数据」。
+    #
+    # P0-2 起必须显式声明「通道已配置」：`_push_feishu` 用 `feishu_configured()` 区分
+    # **未尝试(-1)** 与 **失败(0)**，通道没配时**不会**调用 reporter。
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "https://example.invalid/hook")
     db_path = tmp_path / "test_alert_feishu.db"
     store = TradingStore(str(db_path))
     alerts = AlertManager(store=store)
@@ -28,6 +32,7 @@ def test_alert_manager_dispatches_feishu_card(tmp_path):
         assert alert_rows[0]["severity"] == "CRITICAL"
         assert alert_rows[0]["event_type"] == "OPEND_DISCONNECTED"
         assert mock_send.call_count == 1
+        assert alert_rows[0]["feishu_delivered"] == 1, "投递成功必须留下三态留痕"
 
         # 2. 验证防刷屏：立即再次发送相同告警，不重复记录，也不重复推送
         alerts.send("CRITICAL", "OPEND_DISCONNECTED", "OpenD 网关掉线演练测试", incident_key="TEST_INCIDENT")
@@ -53,32 +58,35 @@ def test_alert_manager_dispatches_feishu_card(tmp_path):
 def test_hard_stop_limit_invalid_is_whitelisted():
     """P1-1 之一：事件必须在推送白名单里。
 
-    **不在白名单的后果**：`AlertManager.send` 对**新** ERROR 事件会**提前 return**
-    （`alerts.py` 的 `if not opened and event_type not in WHITELIST: return`）——
-    既不推 webhook，也不推飞书卡片。**用户完全看不到**，等于静默失效。
+    白名单在 P0-2 之后仍有**两处**作用：
+    ① `recover()` **只对白名单事件**发恢复卡片 —— 不进白名单就只报故障、不报恢复；
+    ② 它是「这些事件必须被人看见」的显式清单，与 `ALERT_NEVER_MUTE` 相互印证。
 
-    这正是 P1-1 的原缺陷形态："库里有、用户看不到"。
+    旧缺陷形态（"不在白名单的 ERROR 会被提前 return，连库都不落"）**已在 P0-2 删除**：
+    现在 ERROR 及以上**默认推送**。这条断言保留，是为了不让白名单被清空 ——
+    清空会让上面的恢复卡片链路一起断掉。
     """
     assert "HARD_STOP_LIMIT_INVALID" in FEISHU_GROUP_ALERT_WHITELIST, (
-        "HARD_STOP_LIMIT_INVALID 不在白名单 —— 新事件会被 AlertManager 提前 return，"
-        "用户收不到，而它是'硬止损永不触发'的唯一线索"
+        "HARD_STOP_LIMIT_INVALID 不在白名单 —— 恢复卡片不会再发，"
+        "而它是'硬止损永不触发'的唯一线索"
     )
 
 
-def test_entry_rejection_events_are_whitelisted_and_deliver(tmp_path):
+def test_entry_rejection_events_are_whitelisted_and_deliver(tmp_path, monkeypatch):
     """P1-1 之五：**开仓拒绝**的两条事件必须进白名单，并真的推出去。
 
     为什么单独测这两条：`run_gamma_strategy.py:1395` / `:1413` **已经在调 `alerts.send`**，
-    但事件不在白名单时，`send()` 对未 opened 的新 ERROR 事件会**提前 return** ——
-    接线接好了也推不出去。这是「第二重静默」，与 `HARD_STOP_LIMIT_INVALID` 的原缺陷同构。
+    接线接好了还要确认它真的走到推送分支。
 
-    后果比退出路径更重：开仓被拒意味着策略根本拿不到仓位；一旦 `record_incident` 置为
-    open 且首次投递恰好失败，后续**每次**拒绝都会提前 return —— 永久静默地被拒绝开仓。
-    这正是 10-22 item 36「检出但 delivered=0」的形态。
+    白名单在 P0-2 之后的作用：① `recover()` 只对白名单事件发**恢复卡片**；
+    ② 这两条同时在 `ALERT_NEVER_MUTE` 里 —— **静音配置覆盖不了它们**，
+    否则「被拒绝开仓」可以被人为静默，而它是策略根本没拿到仓位的唯一线索。
+    （旧那句「不在白名单会提前 return、永久静默」的机制**已在 P0-2 删除**。）
     """
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "https://example.invalid/hook")
     for event_type in ("VOLATILITY_STOP_LIMIT_MISSING", "VOLATILITY_STOP_LIMIT_INVALID"):
         assert event_type in FEISHU_GROUP_ALERT_WHITELIST, (
-            f"{event_type} 不在白名单 —— 开仓被拒绝时会静默，用户永远不知道该策略没开仓"
+            f"{event_type} 不在白名单 —— 恢复卡片不会再发，用户只知道被拒、不知道已恢复"
         )
 
         store = TradingStore(str(tmp_path / f"{event_type}.db"))
@@ -92,20 +100,24 @@ def test_entry_rejection_events_are_whitelisted_and_deliver(tmp_path):
             rows = store.alerts()
             assert len(rows) == 1, f"{event_type} 必须产生 alert 行"
             assert rows[0]["delivered"], f"{event_type} 必须投递成功并留痕（delivered 为真）"
+            assert rows[0]["feishu_delivered"] == 1, (
+                f"{event_type} 三态没留痕 —— 投递与留痕必须一起验，不能只看'调用过'"
+            )
             assert mock_send.call_count == 1, (
-                f"{event_type} 卡片没被调用 —— 走了'提前 return'，用户收不到"
+                f"{event_type} 卡片没被调用 —— 事件没走到推送分支，用户收不到"
             )
 
 
-def test_hard_stop_limit_invalid_actually_delivers(tmp_path):
+def test_hard_stop_limit_invalid_actually_delivers(tmp_path, monkeypatch):
     """P1-1 之二：**本地投递链路**验证（不是"真实飞书送达"）。
 
     ① 产生 alert 行（落库与推送解耦的前提）；
     ② 飞书卡片**被调用**（证明它真的走了推送分支）；
-    ③ `delivered` 为真且留痕（证明推送**成功**，不是"发了但没到"）。
+    ③ `delivered` 为真且三态 `feishu_delivered=1` 留痕（证明推送**成功**，不是"发了但没到"）。
 
     缺任何一件，都退化成"以为推了，其实没推"。
     """
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "https://example.invalid/hook")
     store = TradingStore(str(tmp_path / "hard_stop_alerts.db"))
     alerts = AlertManager(store=store)
 
@@ -123,9 +135,10 @@ def test_hard_stop_limit_invalid_actually_delivers(tmp_path):
         assert rows[0]["event_type"] == "HARD_STOP_LIMIT_INVALID"
         assert rows[0]["severity"] == "ERROR"
         assert mock_send.call_count == 1, (
-            "卡片没被调用 —— 说明它走了'提前 return'那条路，用户收不到"
+            "卡片没被调用 —— 事件没走到推送分支，用户收不到"
         )
         assert rows[0]["delivered"], "投递必须成功并留痕（delivered 为真）"
+        assert rows[0]["feishu_delivered"] == 1, "三态必须留痕（feishu_delivered=1）"
 
 
 def test_hard_stop_limit_invalid_delivery_failure_is_not_silent_but_flagged(tmp_path):
@@ -165,30 +178,36 @@ def test_hard_stop_limit_invalid_delivery_failure_is_not_silent_but_flagged(tmp_
     )
 
 
-def test_alert_not_in_whitelist_new_incident_is_silent(tmp_path):
-    """反向对照：不在白名单的新 ERROR 事件**落库但 delivered=false** —— 白名单是投递的必要条件。
+def test_non_whitelisted_error_pushes_and_reports_stay_logged(tmp_path, monkeypatch):
+    """新契约（P0-2）：不在白名单的 ERROR **默认推**；复报**仍必须写行**。
 
-    实测纠正一个常见误解：`send` 的提前 return 只在 `record_incident` 判定
-    **不是新开事件**（`opened=False`，即同一 incident 复报）时生效；**首次**事件仍会落库。
-    因此历史形态不是"库里没有"，而是 **"库里有、delivered=false、用户看不到"**
-    —— 这正是 10-22 item 36 的形态，也是 P1-1 必须进白名单的理由。
+    旧契约的两条都已作废，而且**旧契约本身就是缺陷**：
+    ① 「未入白名单不该推群」—— 正是本次要修的断链（ERROR 过去默认不推群，
+       今日 13 条 ERROR 全部 `delivered=0`）；
+    ② 「复报走提前 return、连行都不新增」—— 该分支已删除，它让事件连线索都不留，
+       事后无法审计「到底有没有报过」。
+
+    这条是**契约反转的守卫**：把任一条旧行为改回来，它立刻转红。
     """
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "https://example.invalid/hook")
     store = TradingStore(str(tmp_path / "non_whitelisted.db"))
     alerts = AlertManager(store=store)
     with patch(
         "futu_quant.feishu_reporter.FeishuReporter.send_alert_card", return_value=True
     ) as mock_send:
         alerts.send("ERROR", "SOME_NON_WHITELISTED_EVENT", "未入白名单演练")
-        assert mock_send.call_count == 0, "未入白名单的事件不该推群"
         rows = store.alerts()
-        assert len(rows) == 1, "首次事件仍落库"
-        assert not rows[0]["delivered"], (
-            "未入白名单却 delivered=true —— 会让人误以为已送达"
+        assert len(rows) == 1, "ERROR 必须落库"
+        assert mock_send.call_count == 1, (
+            "不在白名单的 ERROR 也必须默认推（P0-2 新契约）"
         )
+        assert rows[0]["feishu_delivered"] == 1, "三态必须留痕"
 
-        # 复报（opened=False）才走提前 return：连行都不再新增
+        # 复报（opened=False）：事故已 OPEN，但**仍必须新增一行**
         alerts.send("ERROR", "SOME_NON_WHITELISTED_EVENT", "未入白名单演练-复报")
-        assert len(store.alerts()) == 1, "复报走了提前 return，不该新增行"
+        assert len(store.alerts()) == 2, (
+            "复报没有新增行 —— 提前 return 被改回来了（它让事件连线索都不留）"
+        )
 
 
 def test_hard_stop_limit_invalid_is_wired_to_alerts_send():
@@ -219,19 +238,22 @@ OPEN_BLOCK_EVENTS = ("VOLATILITY_STOP_LIMIT_MISSING", "VOLATILITY_STOP_LIMIT_INV
 def test_open_entry_block_events_are_whitelisted():
     """开仓拒绝事件必须在白名单里（与 HARD_STOP_LIMIT_INVALID 同构）。
 
-    **不对称的后果**：首次告警若正好投递失败，`record_incident` 已把该 incident 置为 open；
-    之后每次拒绝都命中 `alerts.py` 的 `if not opened and event_type not in WHITELIST: return`
-    —— 这条 campaign 会**永久静默地被拒绝开仓**（10-22 item 36「检出但 delivered=0」）。
-    开仓拒绝比退出路径的回落更该让人看见。
+    保留理由：① `recover()` 只对白名单事件发**恢复卡片**；
+    ② 这两条同时在 `ALERT_NEVER_MUTE` 里 —— **静音配置覆盖不了**，
+    否则「被拒绝开仓」可以被人为静默，而它是策略根本没拿到仓位的唯一线索。
+
+    P0-2 之后 ERROR 默认推送，旧那句「首次投递失败后每次都被静默吞掉」已不成立
+    （那个提前 return 分支已删除）。
     """
     missing = [e for e in OPEN_BLOCK_EVENTS if e not in FEISHU_GROUP_ALERT_WHITELIST]
     assert not missing, (
-        f"{missing} 不在白名单 —— 首次投递失败后，后续每次开仓拒绝都会被静默吞掉"
+        f"{missing} 不在白名单 —— 恢复卡片不会再发，用户只知道被拒、不知道已恢复"
     )
 
 
-def test_open_entry_block_events_actually_deliver(tmp_path):
-    """两条开仓拒绝事件真的走推送分支：卡片被调用 + `delivered=true` 留痕。"""
+def test_open_entry_block_events_actually_deliver(tmp_path, monkeypatch):
+    """两条开仓拒绝事件真的走推送分支：卡片被调用 + `delivered=true` + 三态留痕。"""
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "https://example.invalid/hook")
     store = TradingStore(str(tmp_path / "open_block_alerts.db"))
     alerts = AlertManager(store=store)
 
@@ -249,9 +271,10 @@ def test_open_entry_block_events_actually_deliver(tmp_path):
         f"两条事件都必须落库，实际 {[r['event_type'] for r in rows]}"
     )
     assert mock_send.call_count == len(OPEN_BLOCK_EVENTS), (
-        "卡片调用次数不足 —— 有事件走了「提前 return」，用户收不到"
+        "卡片调用次数不足 —— 有事件没走到推送分支，用户收不到"
     )
     assert all(r["delivered"] for r in rows), "投递成功却没留 delivered=true 痕迹"
+    assert all(r["feishu_delivered"] == 1 for r in rows), "三态没留痕（feishu_delivered=1）"
 
 
 def test_open_entry_block_events_are_wired_to_alerts_send():

@@ -111,15 +111,25 @@ def _guard_source_isolated(tmp_path, monkeypatch):
 
 
 def test_guard_source_is_fixed_to_real_production(tmp_path, monkeypatch):
-    """守卫默认数据源必须是**真生产库**，且与 `store.DEFAULT_DB` 同源。"""
+    """守卫默认数据源必须是**真生产库**。
+
+    - 生产目录：与 `store.DEFAULT_DB` 同源（源文件相对）；
+    - 隔离测试区（`TRADEYI_ENV=test`）：本工作区 `DEFAULT_DB` 是测试库，
+      守卫数据源必须是 `TRADEYI_PROD_DB_PATH` 指向的真生产库 —— 拿测试库当生产库会假绿。
+    """
+    import os
+
     import conftest
 
-    assert conftest._PROD_GUARD_DB_PATH == Path(DEFAULT_DB).resolve(), (
-        f"守卫数据源不是生产库：{conftest._PROD_GUARD_DB_PATH} != {DEFAULT_DB}"
+    expected = Path(DEFAULT_DB).resolve()
+    if os.environ.get("TRADEYI_ENV", "").strip().lower() == "test":
+        expected = Path(os.environ["TRADEYI_PROD_DB_PATH"]).resolve()
+    assert conftest._PROD_GUARD_DB_PATH == expected, (
+        f"守卫数据源不是生产库：{conftest._PROD_GUARD_DB_PATH} != {expected}"
     )
     # 反向：环境变量绝不能改指它
     monkeypatch.setenv("TRADEYI_PROD_DB_OVERRIDE", str(tmp_path / "evil.db"))
-    assert conftest._PROD_GUARD_DB_PATH == Path(DEFAULT_DB).resolve(), (
+    assert conftest._PROD_GUARD_DB_PATH == expected, (
         "TRADEYI_PROD_DB_OVERRIDE 改变了守卫数据源 —— 可被静默绕过"
     )
 
