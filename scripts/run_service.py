@@ -34,7 +34,7 @@ if sys.platform == "win32":
     _local_appdata.mkdir(parents=True, exist_ok=True)
     os.environ["APPDATA"] = str(_local_appdata)
 
-from futu_quant.alerts import AlertManager
+from futu_quant.alerts import ALERT_PROBE_INTERVAL_DEFAULT, AlertManager
 from futu_quant.approval import publish_approval_runtime_manifest
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings
@@ -165,6 +165,7 @@ TASK_TIMEOUTS = {
     "page_compatibility": 60,
     "paper_e2e": 180,
     "observability": 30,
+    "alert_delivery_probe": 60,
     "automatic_recovery": 30,
     "idempotency_audit": 30,
     "operations_report": 60,
@@ -1225,6 +1226,17 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
     if due(store, "last_run:observability", 300, now):
         run_task(store, alerts, "observability", lambda: observability_snapshot(store))
         mark_run(store, "last_run:observability", now)
+    # S3 投递探针：**必须真实投递**（`ALERT_DELIVERY_PROBE` 在不可静音清单里，
+    # 「静音」只能理解为页面折叠/不刷屏，不能是不投递）。
+    # 判据 `!=1` 即失败：`-1` → `ALERT_CHANNEL_NOT_CONFIGURED`，
+    # `0` → `ALERT_DELIVERY_FAILED`。间隔默认 30 分钟。
+    if due(
+        store, "last_run:alert_delivery_probe",
+        max(60, int(os.getenv("ALERT_PROBE_INTERVAL_SECONDS", str(ALERT_PROBE_INTERVAL_DEFAULT)))),
+        now,
+    ):
+        run_task(store, alerts, "alert_delivery_probe", alerts.probe_delivery)
+        mark_run(store, "last_run:alert_delivery_probe", now)
     if due(store, "last_run:automatic_recovery", 300, now):
         run_task(store, alerts, "automatic_recovery", lambda: automatic_recovery_cycle(store))
         mark_run(store, "last_run:automatic_recovery", now)

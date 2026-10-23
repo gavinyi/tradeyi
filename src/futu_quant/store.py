@@ -762,6 +762,13 @@ class TradingStore:
             for name, definition in {
                 "acknowledged": "INTEGER NOT NULL DEFAULT 0",
                 "action_status": "TEXT NOT NULL DEFAULT 'OPEN'",
+                # 投递通道可观测（P0-2 告警断链）。三态语义：**-1 未尝试 / 0 尝试失败 / 1 成功**。
+                # 必须走这条幂等 ALTER 批：塞进 `CREATE TABLE alerts` 只影响新建库，
+                # 存量库永远拿不到这三列 → 功能上线即失效（设计 §3.1）。
+                # 存量行保持默认值，**不做伪回填**。
+                "webhook_delivered": "INTEGER NOT NULL DEFAULT -1",
+                "feishu_delivered": "INTEGER NOT NULL DEFAULT -1",
+                "muted": "INTEGER NOT NULL DEFAULT 0",
             }.items():
                 if name not in alert_columns:
                     connection.execute(f"ALTER TABLE alerts ADD COLUMN {name} {definition}")
@@ -2108,11 +2115,25 @@ class TradingStore:
                 "SELECT * FROM config_releases ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()]
 
-    def add_alert(self, severity: str, event_type: str, message: str, delivered: bool = False) -> int:
+    def add_alert(
+        self, severity: str, event_type: str, message: str, delivered: bool = False, *,
+        webhook_delivered: int = -1, feishu_delivered: int = -1, muted: int = 0,
+    ) -> int:
+        """落一条告警。
+
+        `webhook_delivered` / `feishu_delivered` 是三态：**-1 未尝试 / 0 失败 / 1 成功**。
+        只要调用方给了三态，`delivered` 就**由三态推导**（`max(...) > 0`）——
+        单一真值来源，避免出现「`delivered` 说成功、三态说没推」的自相矛盾。
+        旧调用方只传 `delivered` 时行为不变（三态保持「未尝试」）。
+        """
+        if webhook_delivered != -1 or feishu_delivered != -1:
+            delivered = max(webhook_delivered, feishu_delivered) > 0
         with self.connection() as connection:
             cursor = connection.execute(
-                "INSERT INTO alerts(severity,event_type,message,delivered,created_at) VALUES(?,?,?,?,?)",
-                (severity, event_type, message, int(delivered), self.now()),
+                """INSERT INTO alerts(severity,event_type,message,delivered,
+                webhook_delivered,feishu_delivered,muted,created_at) VALUES(?,?,?,?,?,?,?,?)""",
+                (severity, event_type, message, int(delivered),
+                 int(webhook_delivered), int(feishu_delivered), int(muted), self.now()),
             )
             return int(cursor.lastrowid)
 
@@ -2132,6 +2153,32 @@ class TradingStore:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(
                 "SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()]
+
+    def undelivered_alerts(self, limit: int = 200) -> list[dict]:
+        """「未投递」视图（P0-2 设计 §3.2）。
+
+        `muted = 0` 是刻意的：静音是**人主动按下的**，把它混进「未投递」等于
+        把人工决策当成故障报 —— 静音一多，这个视图就被训练成噪声，
+        而它是本次修复的核心可见性，被噪声淹没就等于没做。
+        """
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                """SELECT * FROM alerts
+                WHERE severity IN ('ERROR','CRITICAL') AND delivered = 0 AND muted = 0
+                ORDER BY id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()]
+
+    def muted_alerts(self, limit: int = 200) -> list[dict]:
+        """被静音的告警。
+
+        **静音不是抹除** —— 它不出现在「未投递」视图，但必须仍然可见，
+        否则「人工决策」与「从来没发生过」就分不清了。
+        """
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM alerts WHERE muted = 1 ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()]
 
     def update_alert(self, alert_id: int, acknowledged: bool = True, action_status: str = "ACKNOWLEDGED") -> None:
