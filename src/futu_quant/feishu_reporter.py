@@ -226,7 +226,12 @@ class FeishuReporter:
         if is_recovered:
             header_color = "green"
             icon = "🟢"
-            status_title = "🟢 【故障自愈】三账对账已恢复一致" if event_type == "LEDGER_MISMATCH" else f"{icon} 【故障恢复】{h_name} 已恢复正常"
+            base_name = h_name
+            for neg_suffix in ["异常", "失败", "超时", "中断", "拦截", "急停", "暂不可用", "断开连接"]:
+                if base_name.endswith(neg_suffix):
+                    base_name = base_name[:-len(neg_suffix)]
+                    break
+            status_title = "🟢 【故障自愈】三账持仓对账已恢复一致" if event_type == "LEDGER_MISMATCH" else f"{icon} 【故障恢复】{base_name}已恢复正常"
             level_text = "🟢 **级别**: **NORMAL (已恢复正常)**"
         elif sev_upper == "CRITICAL" or event_type == "LEDGER_MISMATCH":
             header_color = "red"

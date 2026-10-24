@@ -41,5 +41,5 @@ def test_send_alert_card_uses_chinese_title(monkeypatch):
     # 2. 验证恢复卡片标题包含中文
     reporter.send_alert_card("INFO", "STRATEGY_ERROR", "策略恢复正常", is_recovered=True)
     markdown_text2 = captured_cmds[1][captured_cmds[1].index("--markdown") + 1]
-    assert "【故障恢复】策略执行恢复正常 已恢复正常" in markdown_text2
-    assert "策略执行恢复正常 (`STRATEGY_ERROR`)" in markdown_text2
+    assert "【故障恢复】策略执行已恢复正常" in markdown_text2
+    assert "策略执行异常 (`STRATEGY_ERROR`)" in markdown_text2
