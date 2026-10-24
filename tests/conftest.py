@@ -26,6 +26,28 @@ os.environ["TMP"] = str(_qa_dir)
 os.environ["TEMP"] = str(_qa_dir)
 os.environ["TMPDIR"] = str(_qa_dir)
 
+
+def _assert_code_origin() -> None:
+    """验收前置（P0-5 §8.0）：断言 `futu_quant` 解析到**本 worktree**。
+
+    为什么必须有：共享 editable venv 的 `.pth` 会把 `futu_quant` 指向**生产目录**
+    （`E:\\Thisyi\\trade\\src`），于是「把过滤器关掉 → 守卫转红」这类**变异测试**
+    可能跑的是生产代码，给出**假绿**。
+    **验收如果跑错代码，等于给自己发合格证。**
+    """
+    import futu_quant
+
+    worktree_root = Path(__file__).resolve().parents[1]
+    module_path = Path(futu_quant.__file__).resolve()
+    if worktree_root not in module_path.parents:
+        raise AssertionError(
+            f"跑错代码：futu_quant 解析到 {module_path}，"
+            f"不在本 worktree {worktree_root} 下 —— 本轮验收无效"
+        )
+
+
+_assert_code_origin()
+
 # Windows 下若在 mkdir 显式传入 0o700/0o600 等 UNIX 权限，Python 底层会生成受限的 DACL 安全描述符，
 # 剥离沙箱令牌访问权，导致后续 sqlite3 无法创建数据库文件。在此去除显式 mode，统一继承父目录完整 ACL。
 _orig_path_mkdir = pathlib.Path.mkdir

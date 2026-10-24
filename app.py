@@ -87,6 +87,7 @@ navigation = {
         st.Page("pages/22_data_research_center.py", title="数据研究中心", icon=":material/science:"),
         st.Page("pages/6_system_monitor.py", title="系统监控", icon=":material/monitoring:"),
         st.Page("pages/40_alert_delivery_center.py", title="告警投递中心", icon=":material/campaign:"),
+        st.Page("pages/41_candidate_quality_center.py", title="候选质量中心", icon=":material/ads_click:"),
         st.Page("pages/8_runtime_log.py", title="运行日志", icon=":material/article:"),
         st.Page("pages/19_stability_operations_center.py", title="稳定性运营中心", icon=":material/monitor_heart:"),
         st.Page("pages/18_infrastructure_disaster_recovery.py", title="基础设施与灾备", icon=":material/dns:"),

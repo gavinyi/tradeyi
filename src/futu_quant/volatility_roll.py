@@ -5,6 +5,9 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from .candidate_quality import (
+    filter_candidates, resolve_candidate_quality_for_campaign,
+)
 from .earnings_gamma import screen_gamma_contracts
 from .gamma_risk import contract_analysis, market_number, realized_volatility
 from .option_lifecycle import parse_option_code
@@ -144,9 +147,50 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     )
     quotes = broker.snapshots(chain["code"].tolist())
     spot = float(owner["last_price"])
-    candidates = screen_gamma_contracts(chain, quotes, spot, direction, 500, 12, 10)
+    # 阈值单源（P0-5 §3）：既有 `500/12/10` 字面量本批由 `candidate_quality:{tenant}`
+    # 接管，**默认值 = 现值（行为不变）**。租户**显式入参**（`campaign["tenant_id"]`），
+    # **禁止从 broker 反解** —— 那是 fail-closed 红线。
+    # 解析失败（非法/链式校验不过）会抛 `CandidateQualityError`，**不静默回落默认值**。
+    quality = resolve_candidate_quality_for_campaign(store, campaign)
+    candidates = screen_gamma_contracts(
+        chain, quotes, spot, direction,
+        quality.hard_oi_min, quality.hard_spread_pct, quality.hard_moneyness_max,
+    )
     option_history = pd.DataFrame(store.option_history_for_underlying(underlying))
     rv = realized_volatility(bars)
+    # 硬排除 + 软降权（P0-5）：**只作用于「候选列表」，绝不「跳过 symbol」** ——
+    # 已持仓的退出管理不受影响（A0 不变量，META 那次就是这么亏的）。
+    # 放在评分**之前**：被排除的合约不参与排序、不进结构、不写 campaign，源头干净。
+    # 复用 `:145` 已取回的批量 `quotes` 判报价停滞，**不新增任何行情调用**。
+    candidates, exclusions = filter_candidates(
+        candidates, quality, tenant_id=str(campaign.get("tenant_id") or ""),
+        underlying=underlying,
+    )
+    if exclusions:
+        try:
+            store.record_candidate_exclusions(exclusions)
+        except Exception as exc:  # noqa: BLE001
+            # **选标的绝不能被留痕失败阻断**，但**绝不能静默** ——
+            # 留痕写失败的直接后果是「候选质量页显示 0 条排除、而过滤照旧在排除」，
+            # **那正是本需求要消灭的沉默过滤器**。级别用 ERROR：`operational_event`
+            # 只落库、不触发飞书推送，不会刷屏。
+            try:
+                store.operational_event(
+                    "volatility_roll", "CANDIDATE_EXCLUSION_RECORD_FAILED", "ERROR",
+                    {
+                        "tenant_id": str(campaign.get("tenant_id") or ""),
+                        "underlying": underlying,
+                        "excluded_count": len(exclusions),
+                        "error": str(exc),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - 连事件都写不了时只能放弃，但不能影响选标的
+                pass
+    if candidates.empty:
+        # 过滤到空 = **原样返回原 campaign** → 退出管理照常（设计 §2.5 / A0）。
+        return _with_diagnostics(
+            campaign, candidates, regime, "候选质量过滤后没有可评分的新合约"
+        )
     candidates = rank_long_option_candidates(
         candidates, spot, profit_target=float(campaign.get("profit_target", .5)),
         stop_loss=float(campaign.get("stop_loss", .4)),
@@ -172,6 +216,18 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         contracts_per_stage=int(campaign.get("contracts_per_stage", 1)),
         store=store,
     )
+    # 软降权必须进**主排序键**（P0-5 §6.0.1）：`screen_gamma_contracts` 里价差只是
+    # tiebreaker，「排末尾」这个语义在候选层无法判定 —— 不前置就形同虚设。
+    # **软降权 ≠ 硬排除**：被降权的合约**仍在候选池**，只是排在未降权之后。
+    if "soft_demoted" in candidates.columns and not candidates.empty:
+        sort_keys = ["soft_demoted"]
+        ascending = [True]
+        if "volatility_quality_score" in candidates.columns:
+            sort_keys.append("volatility_quality_score")
+            ascending.append(False)
+        candidates = candidates.sort_values(
+            sort_keys, ascending=ascending, kind="stable",
+        ).reset_index(drop=True)
     if candidates.empty or "volatility_eligible" not in candidates:
         return _with_diagnostics(
             campaign, candidates, regime, "基础流动性筛选后没有可评分的新合约"
