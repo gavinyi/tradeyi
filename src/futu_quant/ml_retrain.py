@@ -24,7 +24,7 @@ from .filelock import FileLockError, exclusive_lock, unlock_exclusive
 from .store import TradingStore
 
 ROOT = Path(__file__).resolve().parents[2]
-RETRAIN_SCRIPT = ROOT / "scripts" / "run_monthly_ml_retrain.py"
+RETRAIN_SCRIPT = ROOT / "scripts" / "ml_retrain_monthly.py"
 LOCK_PATH = ROOT / "data" / "ml_retrain.lock"
 REPORT_DIR = ROOT / "data" / "ml_training" / "reports"
 DEFAULT_TIMEOUT_SECONDS = 1800
