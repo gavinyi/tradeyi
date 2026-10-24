@@ -166,6 +166,7 @@ TASK_TIMEOUTS = {
     "paper_e2e": 180,
     "observability": 30,
     "alert_delivery_probe": 60,
+    "candidate_exclusions_prune": 60,
     "automatic_recovery": 30,
     "idempotency_audit": 30,
     "operations_report": 60,
@@ -1237,6 +1238,16 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
     ):
         run_task(store, alerts, "alert_delivery_probe", alerts.probe_delivery)
         mark_run(store, "last_run:alert_delivery_probe", now)
+    # P0-5 候选排除留痕的**保留策略**：按天保留 7 天。
+    # 高频写入（每轮每候选一条），无保留策略就是下一个 `reconciliation_reports`（129 万行）。
+    if due(store, "last_run:candidate_exclusions_prune", 24 * 60 * 60, now):
+        run_task(
+            store, alerts, "candidate_exclusions_prune",
+            lambda: store.prune_candidate_exclusions(
+                int(os.getenv("CANDIDATE_EXCLUSIONS_RETAIN_DAYS", "7"))
+            ),
+        )
+        mark_run(store, "last_run:candidate_exclusions_prune", now)
     if due(store, "last_run:automatic_recovery", 300, now):
         run_task(store, alerts, "automatic_recovery", lambda: automatic_recovery_cycle(store))
         mark_run(store, "last_run:automatic_recovery", now)

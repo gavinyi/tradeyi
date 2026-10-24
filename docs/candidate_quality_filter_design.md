@@ -122,6 +122,12 @@ candidate_quality:{tenant_id}   （runtime_config）
 1. **链式校验（fail-closed）**：**`soft_spread_pct ≤ hard_spread_pct ≤ entry_max_spread_pct`**
    —— **候选层软线 ≤ 硬线 ≤ 入场层上限**，任一违反 → **拒绝解析 + ERROR**；
    否则会出现"候选层放行、入场层拦住"的**不可解释 BLOCK**（配置错误路径重新引入）；
+   🔴 **`entry_max_spread_pct` 的默认值 = 12，等于真实入场门禁**（campaign `max_spread_pct`
+   的 VOLATILITY 默认值）—— **不能用 20**，否则上界不是真实上界，
+   会掩盖「`hard=15` 但入场 12」这种配置不一致；
+   ⚠️ **本批没有放宽任何入场门禁**：入场价差门禁保持 campaign `max_spread_pct`（默认 12），
+   **本批只把报价降级上限从 900s 收到 300s**。`data_quality` 里的 20% 是**盘口 sanity**，
+   **不是入场上限**，不要拿它当门禁；
 2. **两层读同一个 `resolve_candidate_quality(store, tenant_id)`** —— **不各读各的**；
 3. 参数**按租户可配**（实盘严、模拟松），走与 P0-7 同构的三层解析链；
 4. 🔴 **租户必须显式传入，禁止从 broker 解析**（Chief 裁定 ④）：
@@ -355,6 +361,11 @@ if hard_issues:
 | 3 | 候选层加过滤 + 门禁层读同源阈值 | **回滚代码** |
 
 **回滚判据**：服务正常启动 + 候选数**不低于回滚前**（过滤误伤时能立刻发现）。
+
+> 🔴 **留痕写失败 → 落 `CANDIDATE_EXCLUSION_RECORD_FAILED`（ERROR），选标的不阻断**。
+> 写留痕失败却静默（裸 `except: pass`），等于**过滤器重新变成静默的** ——
+> 「候选质量页显示 0 条排除、而过滤照旧在排除」，正是本需求要消灭的形态。
+> 选标的当然不该被阻断，但**必须可见**。
 
 ---
 

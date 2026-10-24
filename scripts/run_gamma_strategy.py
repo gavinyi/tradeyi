@@ -110,6 +110,7 @@ def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float
 def refreshed_trade_quotes(
     broker: FutuPaperBroker, code: str, underlying: str, now: datetime,
     maximum_spread_pct: float, retries: int = 2, wait_seconds: float = 1.5,
+    maximum_stale_seconds: int = 300,
 ) -> tuple[pd.Series, pd.Series, dict]:
     attempts: list[dict] = []
     last_option = None
@@ -119,7 +120,7 @@ def refreshed_trade_quotes(
         option = quote[quote["code"] == code].iloc[0]
         owner = quote[quote["code"] == underlying].iloc[0]
         option_fresh, option_reason, option_age, option_degraded = option_quote_freshness(
-            option, now, fresh_seconds=180, maximum_seconds=900,
+            option, now, fresh_seconds=180, maximum_seconds=maximum_stale_seconds,
             maximum_spread_pct=maximum_spread_pct,
         )
         owner_fresh, owner_reason, owner_age = quote_freshness(owner, now)
@@ -685,12 +686,36 @@ def run_campaign(
         print(f"{code}: CLOSED ({reason})")
         return
 
+    quality = resolve_candidate_quality_for_campaign(executor.store, campaign)
     max_quote_spread_pct = float(campaign.get(
         "max_spread_pct", 12.0 if trigger_mode == "VOLATILITY" else 20.0
     ))
     option, owner, quote_check = refreshed_trade_quotes(
         broker, code, campaign["underlying"], now, max_quote_spread_pct,
+        # 降级上限与候选层**同源**（P0-5 §5.1：900 → 300）。
+        # **价差来源保持现状**：把这里改成 `quality.entry_max_spread_pct`（默认 20）
+        # 会把 VOLATILITY 的 12% 放宽到 20% —— 那是**放松真金入场门禁**，
+        # 不在本批授权范围内，故只接管停滞上限。
+        maximum_stale_seconds=quality.entry_max_stale_seconds,
     )
+    # `quote_age_at_submit` 埋点（P0-5 §5.1）：门禁**通过**（含降级通过）时记录当次年龄。
+    # 300s 是"先上线、带埋点、一周后按数据复审" —— **不许再用"影响几乎为零"这类断言**，
+    # P95 逼近 300s 就说明拦单过多，回退 600s。
+    if quote_check["option_fresh"] and quote_check["underlying_fresh"] and quote_check["book_ok"]:
+        try:
+            executor.store.record_candidate_exclusions([{
+                "tenant_id": str(campaign.get("tenant_id") or ""),
+                "strategy_id": strategy_id,
+                "underlying": campaign["underlying"],
+                "code": code,
+                "reason": "ADMITTED",
+                "age_seconds": float(quote_check["option_age_seconds"]),
+                "spread_pct": float(quote_check["spread_pct"]),
+                "volume": None,
+                "phase": "ADMITTED",
+            }])
+        except Exception:  # noqa: BLE001 - 埋点失败绝不能阻断下单
+            pass
     # A quote between 180s and 900s old is explicitly marked degraded by the
     # data-quality layer. Permit a small, liquid entry in that window; fully
     # stale or unusable-book quotes remain blocked.
