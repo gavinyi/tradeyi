@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -109,9 +110,14 @@ def run_retrain(
                 triggered_by=triggered_by, trigger_kind=trigger_kind, status="RUNNING",
             )
             try:
+                env = dict(os.environ)
+                env["PYTHONUTF8"] = "1"
+                env["PYTHONIOENCODING"] = "utf-8"
                 completed = run_subprocess(
                     [sys.executable, str(run_script)],
-                    capture_output=True, text=True, timeout=timeout_seconds,
+                    capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
+                    timeout=timeout_seconds, env=env,
                 )
             except subprocess.TimeoutExpired as exc:
                 store.finish_ml_retrain_run(

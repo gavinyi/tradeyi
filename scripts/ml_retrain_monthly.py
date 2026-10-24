@@ -28,6 +28,13 @@ from pathlib import Path
 
 import pandas as pd
 
+if sys.platform == "win32":
+    import io
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = ROOT / "data/ml_training/volatility_trades_v3_latest.csv"
 DEFAULT_MODEL = ROOT / "data/ml_models/volatility_scorer_v3.pkl"
@@ -41,7 +48,13 @@ MIN_IMPROVEMENT_MARGIN = float(os.getenv("ML_MIN_IMPROVEMENT_MARGIN", "0.01"))
 
 def run(cmd: list[str]) -> str:
     """运行子命令并返回输出"""
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    result = subprocess.run(
+        cmd, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", env=env,
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"命令失败: {' '.join(cmd)}\nstdout: {result.stdout[-2000:]}\nstderr: {result.stderr[-2000:]}"
@@ -52,7 +65,7 @@ def run(cmd: list[str]) -> str:
 def export_data(start_date: str | None = None) -> Path:
     """导出最新训练数据"""
     print("=" * 60)
-    print("📤 [1/4] 导出训练数据")
+    print("[EXPORT] [1/4] 导出训练数据")
     print("=" * 60)
     cmd = [
         sys.executable, str(ROOT / "scripts/ml_export_training_data_v3.py"),
@@ -70,7 +83,7 @@ def export_data(start_date: str | None = None) -> Path:
 def train_model(data_path: Path, model_output: Path) -> str:
     """训练新模型"""
     print("=" * 60)
-    print("🚀 [2/4] 训练新模型")
+    print("[TRAIN] [2/4] 训练新模型")
     print("=" * 60)
     cmd = [
         sys.executable, str(ROOT / "scripts/ml_train_symbol_scorer_v3.py"),
@@ -171,7 +184,7 @@ def promote_if_better(new_model: Path, production: Path) -> tuple[bool, float | 
     if production.exists():
         backup_path = BACKUP_DIR / f"volatility_scorer_v3_{stamp}.pkl"
         shutil.copy2(production, backup_path)
-        print(f"   💾 已备份当前模型: {backup_path}")
+        print(f"   [BACKUP] 已备份当前模型: {backup_path}")
         metrics_backup = BACKUP_DIR / f"volatility_scorer_v3_{stamp}.json"
         if production.with_suffix(".json").exists():
             shutil.copy2(production.with_suffix(".json"), metrics_backup)
@@ -180,7 +193,7 @@ def promote_if_better(new_model: Path, production: Path) -> tuple[bool, float | 
     shutil.copy2(new_model, production)
     if new_model.with_suffix(".json").exists():
         shutil.copy2(new_model.with_suffix(".json"), production.with_suffix(".json"))
-    print(f"   ✅ 已替换生产模型: {production}")
+    print(f"   [OK] 已替换生产模型: {production}")
     return True, new_auc, old_auc
 
 
@@ -191,7 +204,7 @@ def write_report(report: dict) -> Path:
     report_path = report_dir / f"retrain_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2, ensure_ascii=False, default=str)
-    print(f"   📄 报告已保存: {report_path}")
+    print(f"   [REPORT] 报告已保存: {report_path}")
     return report_path
 
 
@@ -238,7 +251,7 @@ def main() -> int:
         # 4. 清理临时文件
         if new_model.exists():
             new_model.unlink()
-            print(f"   🧹 已清理临时模型: {new_model.name}")
+            print(f"   [CLEAN] 已清理临时模型: {new_model.name}")
         if new_model.with_suffix(".json").exists():
             new_model.with_suffix(".json").unlink()
 
@@ -247,12 +260,12 @@ def main() -> int:
         write_report(report)
 
         print("\n" + "=" * 60)
-        print(f"✅ 月度重训练完成: {'已更新生产模型' if promoted else '保持当前模型'}")
+        print(f"[OK] 月度重训练完成: {'已更新生产模型' if promoted else '保持当前模型'}")
         print("=" * 60)
         return 0
 
     except Exception as e:
-        print(f"\n❌ 月度重训练失败: {e}")
+        print(f"\n[FAIL] 月度重训练失败: {e}")
         report["status"] = "FAILED"
         report["error"] = str(e)
         report["duration_seconds"] = (datetime.now() - started).total_seconds()
