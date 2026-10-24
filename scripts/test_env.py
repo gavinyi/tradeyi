@@ -67,6 +67,7 @@ def child_env(root: Path | None = None) -> dict[str, str]:
     qa.mkdir(parents=True, exist_ok=True)
     env["TEMP"] = str(qa)
     env["TMP"] = str(qa)
+    env["PYTHONPATH"] = str(base / "src")
     return env
 
 
