@@ -381,8 +381,13 @@ def _apply_ml_ranking(
 
         if resolve_scoring_mode(store, tenant_id) != MODE_ML:
             return structures
+        from .ml_config import resolve_ml_factor
         from .ml_symbol_scorer import MLSymbolScorer
-        scorer = MLSymbolScorer(enabled=True)
+        scorer = MLSymbolScorer(
+            model_path=resolve_ml_factor(store, tenant_id, "model_path"),
+            threshold=resolve_ml_factor(store, tenant_id, "ml_threshold"),
+            enabled=True,
+        )
         if not scorer.enabled:
             return structures
     except Exception as e:  # noqa: BLE001
@@ -396,12 +401,11 @@ def _apply_ml_ranking(
             pass
         return structures
 
-    # ML_WEIGHT 控制调整幅度（0=不调整，与原始排序一致）
-    try:
-        import os
-        ml_weight = float(os.getenv("ML_WEIGHT", "0.6"))
-    except Exception:  # noqa: BLE001
-        ml_weight = 0.6
+    # ML 权重控制调整幅度（0=不调整，与原始排序一致）。
+    # P2-3：走租户级三层解析，不再读 env —— 否则「按租户调参」无从谈起。
+    from .ml_config import resolve_ml_factor
+
+    ml_weight = float(resolve_ml_factor(store, tenant_id, "ml_weight"))
 
     def _main_leg_code(row) -> str:
         legs = list(row.get("legs") or [])

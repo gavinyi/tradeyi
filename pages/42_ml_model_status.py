@@ -30,10 +30,13 @@ from futu_quant.ml_freshness import (
     ml_model_health,
 )
 from futu_quant.ml_config import (
+    FACTOR_SPECS,
     MODE_LABELS,
     MODE_ML,
     MODE_RULE,
+    resolve_ml_factor,
     resolve_scoring_mode,
+    set_ml_factor,
     set_scoring_mode,
 )
 from futu_quant.store import TradingStore
@@ -120,6 +123,51 @@ if _selected_mode != _configured_mode:
                 actor="streamlit_admin:panel",
             )
             st.rerun()
+
+
+st.subheader("ML 配置（按租户）")
+st.caption(
+    "这些值全部走**租户级三层解析**（租户键 → 全局键 → 默认），改动只影响当前租户，"
+    "并写审计事件 `ML_FACTOR_CHANGED`。非法值会被拒绝，不会静默生效。"
+)
+with st.form("ml_factor_form", border=True):
+    _current_values = {
+        name: resolve_ml_factor(store, page_tenant_id, name) for name in FACTOR_SPECS
+    }
+    _inputs = {}
+    for _name, _spec in FACTOR_SPECS.items():
+        if _spec["kind"] == "str":
+            _inputs[_name] = st.text_input(
+                _spec["label"], value=str(_current_values[_name]), disabled=not admin,
+            )
+        else:
+            _inputs[_name] = st.number_input(
+                _spec["label"],
+                value=float(_current_values[_name]),
+                min_value=float(_spec["min"]), max_value=float(_spec["max"]),
+                step=1.0 if _spec["kind"] == "int" else 0.01,
+                disabled=not admin,
+            )
+    _saved = st.form_submit_button("保存 ML 配置", type="primary", disabled=not admin)
+if _saved:
+    if not page_tenant_id:
+        st.error("无法解析当前租户，已拒绝写全局配置。")
+    else:
+        _changed: list[dict] = []
+        for _name, _value in _inputs.items():
+            try:
+                _key = set_ml_factor(store, page_tenant_id, _name, _value)
+            except (ValueError, KeyError) as exc:
+                st.error(f"{_name}: {exc}")
+                continue
+            _changed.append({"factor": _name, "value": _value, "key": _key})
+        if _changed:
+            store.audit(
+                "ML_FACTOR_CHANGED",
+                {"tenant_id": page_tenant_id, "changes": _changed},
+                actor="streamlit_admin:panel",
+            )
+            st.success(f"已保存 {len(_changed)} 项（仅影响租户 {page_tenant_id}）。")
 
 st.subheader("为什么是这个状态")
 detail_rows = [

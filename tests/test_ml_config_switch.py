@@ -1,4 +1,4 @@
-"""P2-3 ML 打分开关（租户级）守卫。
+﻿"""P2-3 ML 打分开关（租户级）守卫。
 
 要守的三件事：
 1. **默认 `rule`**：不显式开启就不上 ML（用户 2026-10-24 确认"装依赖与开启放最后"）——
@@ -18,7 +18,9 @@ from futu_quant.ml_config import (
     DEFAULT_MODE,
     MODE_ML,
     MODE_RULE,
+    resolve_ml_factor,
     resolve_scoring_mode,
+    set_ml_factor,
     set_scoring_mode,
 )
 from futu_quant.store import TradingStore
@@ -70,3 +72,37 @@ def test_set_refuses_without_tenant_and_bad_value(tmp_path):
     with pytest.raises(ValueError):
         set_scoring_mode(store, REAL, "maybe")
     assert store.get_setting("scoring_mode") == "", "拒绝时不得悄悄写全局键"
+def test_factor_defaults_and_tenant_override(tmp_path):
+    store = TradingStore(tmp_path / "t.db")
+    assert resolve_ml_factor(store, REAL, "ml_threshold") == 0.5
+    assert resolve_ml_factor(store, REAL, "min_samples") == 200
+
+    set_ml_factor(store, PAPER, "ml_threshold", "0.62")
+    set_ml_factor(store, PAPER, "min_samples", "50")
+    assert resolve_ml_factor(store, PAPER, "ml_threshold") == pytest.approx(0.62)
+    assert resolve_ml_factor(store, PAPER, "min_samples") == 50
+    # 租户隔离
+    assert resolve_ml_factor(store, REAL, "ml_threshold") == 0.5
+
+
+def test_invalid_factor_falls_back_visibly(tmp_path):
+    store = TradingStore(tmp_path / "t.db")
+    store.set_setting(f"ml_threshold:{REAL}", "1.5")  # 越界
+
+    assert resolve_ml_factor(store, REAL, "ml_threshold") == 0.5
+    events = [
+        e for e in store.operational_events(limit=50)
+        if e["event_type"] == "ML_FACTOR_INVALID"
+    ]
+    assert events and events[0]["status"] == "ERROR"
+
+
+def test_set_factor_refuses_bad_input(tmp_path):
+    store = TradingStore(tmp_path / "t.db")
+    with pytest.raises(ValueError):
+        set_ml_factor(store, "", "ml_threshold", "0.6")
+    with pytest.raises(ValueError):
+        set_ml_factor(store, REAL, "ml_threshold", "2.0")
+    with pytest.raises(KeyError):
+        set_ml_factor(store, REAL, "no_such_factor", "1")
+
