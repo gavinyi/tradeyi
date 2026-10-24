@@ -1,98 +1,103 @@
 {
-  "version": "v3.1_retrained_20261014_011944",
-  "trained_at": "2026-10-14T01:19:44.659130+00:00",
-  "sample_trades_count": 308,
+  "version": "v3.1_retrained_20261024_103653",
+  "trained_at": "2026-10-24T10:36:54.098296+00:00",
+  "sample_trades_count": 330,
   "incubator_symbols_count": 8,
   "underlying_weights": {
     "US.AAPL": {
       "trades": 9,
       "win_rate": 0.5556,
-      "total_pnl": 240.0
+      "total_pnl": 212.75
     },
     "US.AMD": {
-      "trades": 35,
-      "win_rate": 0.5143,
-      "total_pnl": 712.0
+      "trades": 45,
+      "win_rate": 0.5556,
+      "total_pnl": 2411.08
+    },
+    "US.AMZN": {
+      "trades": 4,
+      "win_rate": 1.0,
+      "total_pnl": 212.87
     },
     "US.AVGO": {
       "trades": 7,
       "win_rate": 0.7143,
-      "total_pnl": 227.0
+      "total_pnl": 205.78
     },
     "US.BRK.B": {
       "trades": 3,
       "win_rate": 0.3333,
-      "total_pnl": -114.0
+      "total_pnl": -123.08
     },
     "US.COIN": {
-      "trades": 35,
-      "win_rate": 0.4857,
-      "total_pnl": 1389.0
+      "trades": 38,
+      "win_rate": 0.5,
+      "total_pnl": 1462.8
     },
     "US.GLD": {
       "trades": 6,
       "win_rate": 0.5,
-      "total_pnl": -20.6
+      "total_pnl": -37.7
     },
     "US.GOOG": {
       "trades": 15,
       "win_rate": 0.4667,
-      "total_pnl": -65.0
+      "total_pnl": -107.39
     },
     "US.INTC": {
       "trades": 6,
       "win_rate": 0.3333,
-      "total_pnl": -88.0
+      "total_pnl": -103.12
     },
     "US.JNJ": {
       "trades": 1,
       "win_rate": 0.0,
-      "total_pnl": -258.0
+      "total_pnl": -261.02
     },
     "US.KO": {
       "trades": 3,
       "win_rate": 0.0,
-      "total_pnl": -43.0
+      "total_pnl": -52.07
     },
     "US.META": {
-      "trades": 14,
-      "win_rate": 0.5714,
-      "total_pnl": 2120.0
+      "trades": 15,
+      "win_rate": 0.4667,
+      "total_pnl": 1712.41
     },
     "US.MSFT": {
       "trades": 5,
       "win_rate": 0.6,
-      "total_pnl": -122.0
+      "total_pnl": -137.15
     },
     "US.NVDA": {
-      "trades": 44,
-      "win_rate": 0.4773,
-      "total_pnl": 143.7
+      "trades": 46,
+      "win_rate": 0.3913,
+      "total_pnl": -48.8
     },
     "US.QQQ": {
-      "trades": 6,
-      "win_rate": 0.6667,
-      "total_pnl": 604.0
+      "trades": 7,
+      "win_rate": 0.4286,
+      "total_pnl": 490.32
     },
     "US.SKHY": {
       "trades": 37,
       "win_rate": 0.4054,
-      "total_pnl": 282.0
+      "total_pnl": 172.96
     },
     "US.SPCX": {
       "trades": 52,
-      "win_rate": 0.4423,
-      "total_pnl": -343.0
+      "win_rate": 0.4231,
+      "total_pnl": -473.13
     },
     "US.TSLA": {
       "trades": 26,
       "win_rate": 0.5385,
-      "total_pnl": -1331.0
+      "total_pnl": -1402.19
     },
     "US.TSM": {
-      "trades": 4,
-      "win_rate": 0.5,
-      "total_pnl": -111.0
+      "trades": 5,
+      "win_rate": 0.4,
+      "total_pnl": -282.17
     }
   },
   "features": [
