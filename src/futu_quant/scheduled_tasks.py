@@ -187,7 +187,7 @@ def queue_review_for_im_delivery(
             "markdown_path": markdown_path,
             "conclusion": conclusion,
         },
-    )
+     actor="scheduler:main")
 
 
 def mark_im_delivery_done(store: TradingStore, session_date: date, channel: str = "dsh_im_wechat") -> None:
@@ -202,7 +202,7 @@ def mark_im_delivery_done(store: TradingStore, session_date: date, channel: str 
     store.audit(
         "DAILY_STRATEGY_REVIEW_IM_DELIVERED",
         {"session_date": session_date.isoformat(), "channel": channel},
-    )
+     actor="scheduler:main")
 
 
 def pending_im_delivery(store: TradingStore) -> dict | None:
@@ -266,7 +266,7 @@ def shutdown_computer(
     if dry_run:
         message = "关机任务处于演练模式，未执行系统关机。"
         if store is not None:
-            store.audit("AUTO_COMPUTER_SHUTDOWN_DRY_RUN", {"message": message})
+            store.audit("AUTO_COMPUTER_SHUTDOWN_DRY_RUN", {"message": message}, actor="scheduler:main")
             store.set_setting(_task_timer_key(SHUTDOWN_TASK), now.isoformat())
         return message
     # 物理关机已按用户要求交由 Windows 原生计划任务接管，Python 侧仅负责安全落盘就绪
@@ -278,7 +278,7 @@ def shutdown_computer(
     #     command = ["systemctl", "poweroff"]
     message = "盘后数据与复盘已安全落盘，物理关机交由 Windows 计划任务接管执行。"
     if store is not None:
-        store.audit("AUTO_COMPUTER_SHUTDOWN_READY", {"platform": platform.system(), "message": message})
+        store.audit("AUTO_COMPUTER_SHUTDOWN_READY", {"platform": platform.system(), "message": message}, actor="scheduler:main")
         store.set_setting(_task_timer_key(SHUTDOWN_TASK), now.isoformat())
     return message
 
@@ -325,7 +325,7 @@ def set_timer_enabled(store: TradingStore, timer: TaskBoardTimer, enabled: bool)
     store.set_setting(timer_enabled_setting_key(timer), str(enabled).lower())
     store.audit("TASK_BOARD_TIMER_CHANGED", {
         "task_id": timer.task_id, "enabled": str(enabled).lower(),
-    })
+    }, actor="scheduler:main")
 
 
 def deliver_pending_im_review(

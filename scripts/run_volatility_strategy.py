@@ -135,7 +135,7 @@ def run_once(
     try:
         reclaimed = reclaim_exit_only_orphans(executor.store, broker)
         if reclaimed.get("reclaimed"):
-            executor.store.audit("VOLATILITY_ORPHANS_RECLAIMED", reclaimed, "volatility_long_gamma")
+            executor.store.audit("VOLATILITY_ORPHANS_RECLAIMED", reclaimed, "volatility_long_gamma", actor="service:volatility")
             print(f"VOLATILITY ORPHANS RECLAIMED: {len(reclaimed['reclaimed'])}")
     except Exception as exc:
         executor.store.operational_event(
@@ -148,7 +148,7 @@ def run_once(
             "VOLATILITY_STALE_EXPIRED_COMBOS_CLOSED",
             {"count": stale_cleaned},
             "volatility_long_gamma",
-        )
+         actor="service:volatility")
     state = load_state()
     # #1 键级分区：本脚本所有 campaign 读写都走**本租户**的键（读写共用一个 helper）。
     # 回落到全局键时留 ERROR —— 不静默。
@@ -195,7 +195,7 @@ def run_once(
                     "underlying": normalized.get("underlying"),
                     "structure": normalized.get("structure"),
                     "valid_legs": valid_legs,
-                }, "volatility_long_gamma")
+                }, "volatility_long_gamma", actor="service:volatility")
                 valid_campaigns.append(normalized)
                 continue
             executor.store.decision_if_changed(
@@ -215,7 +215,7 @@ def run_once(
                 "code": normalized["code"],
                 "old_strike_time": str(item.get("strike_time")),
                 "new_strike_time": normalized["strike_time"],
-            }, "volatility_long_gamma")
+            }, "volatility_long_gamma", actor="service:volatility")
         valid_campaigns.append(normalized)
     campaigns = valid_campaigns
     orphan_results = manage_volatility_orphans(
@@ -413,7 +413,7 @@ def run_once(
                 "VOLATILITY_LOOP_INTERRUPTED_FOR_SERVICE_CONTROL",
                 {"reason": "检测到服务停止或重启请求，提前结束本轮波动率策略循环"},
                 "volatility_long_gamma",
-            )
+             actor="service:volatility")
             interrupted = True
             break
         # 滚动判定必须看「此刻」的持仓，不能用本轮开头的快照：成交可能发生在本轮
@@ -517,7 +517,7 @@ def run_once(
                     "quality_reason": quality_reason,
                     "quality_checks": quality_checks,
                     "roll_reason": reason,
-                }, "volatility_long_gamma")
+                }, "volatility_long_gamma", actor="service:volatility")
             state[maintenance_key] = now.isoformat()
             if replace and rolled.get("code") != campaign.get("code"):
                 rolled_pairs.append((
@@ -533,7 +533,7 @@ def run_once(
                         "QUALITY_REPLACEMENT" if needs_quality_replacement else
                         "BEST_EXPRESSION_REVIEW"
                     ),
-                }, "volatility_long_gamma")
+                }, "volatility_long_gamma", actor="service:volatility")
                 executor.store.decision(
                     "volatility_long_gamma", rolled.get("code"), "HOLD",
                     f"已维护为当前最佳期权表达：{replace_reason}",
@@ -583,7 +583,7 @@ def run_once(
                 "new_code": rolled.get("code"),
                 "has_broker_position": old_has_broker_position,
                 "has_pending_order": old_has_pending_order,
-            }, "volatility_long_gamma")
+            }, "volatility_long_gamma", actor="service:volatility")
         else:
             delete_campaign(_campaigns_key, old_identity)
         upsert_campaign(_campaigns_key, {
@@ -598,7 +598,7 @@ def run_once(
                     "VOLATILITY_EXECUTION_INTERRUPTED_FOR_SERVICE_CONTROL",
                     {"reason": "检测到服务停止或重启请求，提前结束本轮波动率交易执行"},
                     "volatility_long_gamma",
-                )
+                 actor="service:volatility")
                 interrupted = True
                 break
             execute_campaign(campaign)

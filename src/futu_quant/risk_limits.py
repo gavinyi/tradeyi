@@ -315,7 +315,7 @@ def _record_env_fallback(store: Any, account_id: str, tenant_id: str) -> None:
         "message": "账户级与租户级风控配置均缺失，回落 env 全局默认（迁移前状态）",
     }
     try:
-        store.audit("RISK_LIMITS_ENV_FALLBACK", payload)
+        store.audit("RISK_LIMITS_ENV_FALLBACK", payload, actor="service:risk")
     except Exception:
         logger.warning("风控 env 回落审计写入失败", exc_info=True)
 
@@ -348,7 +348,7 @@ def _record_legacy_key_fallback(store: Any, account_id: str, tenant_id: str, leg
             "tenant_key": risk_limits_tenant_key(tenant_id),
             "legacy_key": legacy_key,
             "message": "租户键缺失，回落无前缀旧键（读侧兼容路径，旧键永不写入）",
-        })
+        }, actor="service:risk")
     except Exception:
         logger.warning("风控旧键回落审计写入失败", exc_info=True)
 

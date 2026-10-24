@@ -42,9 +42,9 @@ class FakeStore:
         self.decision(strategy_id, symbol, decision, reason, payload, tenant_id=tenant_id)
         return True
 
-    def audit(self, event_type, payload, actor):
+    def audit(self, event_type, payload, strategy_id=None, *, actor=None):
         self.audits.append({
-            "event_type": event_type, "payload": payload, "actor": actor,
+            "event_type": event_type, "payload": payload, "strategy_id": strategy_id, "actor": actor,
         })
 
 

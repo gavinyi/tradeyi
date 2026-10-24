@@ -148,7 +148,7 @@ def _scan_all_tenants(store, symbols: tuple[str, ...]) -> tuple[list, list]:
                 "VOLATILITY_TENANT_SCAN_FAILED",
                 {"tenant_id": profile.tenant_id, "error": str(tenant_exc)[:200]},
                 "volatility_long_gamma",
-            )
+             actor="service:radar")
             store.heartbeat(
                 "volatility_scanner", "ERROR",
                 f"租户 {profile.tenant_id} 扫描失败：{str(tenant_exc)[:120]}",

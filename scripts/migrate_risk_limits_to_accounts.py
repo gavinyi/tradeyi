@@ -318,7 +318,7 @@ def apply_plan(store, plan: MigrationPlan) -> bool:
         "key": plan.key,
         "risk": plan.risk,
         "actor": "migrate_risk_limits_to_accounts",
-    })
+    }, actor="cli:migrate_risk_limits")
     return True
 
 

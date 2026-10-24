@@ -126,7 +126,7 @@ def prune_recovery_points(store, root: Path | str = RECOVERY_ROOT) -> dict:
         "retention_days": keep_days,
     }
     if remove_ids or deleted_blobs:
-        store.audit("RECOVERY_POINT_RETENTION_APPLIED", result)
+        store.audit("RECOVERY_POINT_RETENTION_APPLIED", result, actor="service:dr")
     return result
 
 

@@ -333,7 +333,7 @@ def _maybe_create_tenant_campaign(
         store.set_setting(trigger_key, today)
         store.audit("VOLATILITY_SIGNAL_CONFIRMED", {
             "symbol": symbol, "regime": item.regime, "tenant_id": tenant_id,
-        }, "volatility_scanner")
+        }, "volatility_scanner", actor="service:radar")
     campaigns = load_volatility_campaigns(tenant_id)
     if any(entry.get("underlying") == symbol and entry.get("enabled", True) for entry in campaigns):
         return
@@ -525,7 +525,7 @@ def _maybe_create_tenant_campaign(
                         "new_code": rolled.get("code"),
                         "retained_reason": retained.get("retained_reason"),
                         "tenant_id": tenant_id,
-                    }, "volatility_scanner")
+                    }, "volatility_scanner", actor="service:radar")
         except Exception as exc:
             store.operational_event(
                 "volatility_scanner", "RETAIN_CHECK_FAILED", "WARNING",
@@ -556,7 +556,7 @@ def _maybe_create_tenant_campaign(
             "underlying": symbol, "code": rolled["code"], "reason": roll_reason,
             "execution_mode": execution_mode, "auto_monitor_enabled": True,
             "tenant_id": tenant_id,
-        }, "volatility_scanner")
+        }, "volatility_scanner", actor="service:radar")
         row.update({
             "campaign_created": True,
             "campaign_code": rolled["code"],
@@ -596,7 +596,7 @@ def _maybe_create_tenant_campaign(
         store.audit("VOLATILITY_AUTO_CAMPAIGN_REJECTED", {
             "underlying": symbol, "reason": roll_reason,
             "diagnostics": diagnostics, "tenant_id": tenant_id,
-        }, "volatility_scanner")
+        }, "volatility_scanner", actor="service:radar")
         store.set_setting(rejection_key, fingerprint)
 
 

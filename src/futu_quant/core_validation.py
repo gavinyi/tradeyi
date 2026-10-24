@@ -146,7 +146,7 @@ def enable_core_daily_validation(
         "disabled_reason": "",
     }
     store.set_runtime_config(CONFIG_KEY, payload, "admin")
-    store.audit("CORE_DAILY_VALIDATION_ENABLED", payload, "core_satellite")
+    store.audit("CORE_DAILY_VALIDATION_ENABLED", payload, "core_satellite", actor="service:validation")
     return load_core_daily_validation(store, started)
 
 
@@ -165,7 +165,7 @@ def disable_core_daily_validation(
         "CORE_DAILY_VALIDATION_DISABLED",
         {"reason": reason, "completed_sessions": value.get("completed_sessions", [])},
         "core_satellite",
-    )
+     actor="service:validation")
     return load_core_daily_validation(store, now)
 
 
@@ -199,7 +199,7 @@ def record_core_validation_session(
         {"session_date": session_date, "order_count": max(0, int(order_count)),
          "completed_sessions": value.get("completed_sessions", [])},
         "core_satellite",
-    )
+     actor="service:validation")
     return load_core_daily_validation(store, now)
 
 

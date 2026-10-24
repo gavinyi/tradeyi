@@ -58,7 +58,7 @@ def run_probe(
         active, reason, _ = session_status(store, settings, account_id=tenant.account_id)
         if not active:
             c_code = confirmation_code(settings)
-            ok, msg = enable_session(store, settings, c_code, minutes=10, actor="probe_cli")
+            ok, msg = enable_session(store, settings, c_code, minutes=10, actor="cli:probe")
             print(f"[*] 实盘探针自动激活短时确认会话 (10分钟): {msg}")
     broker = FutuPaperBroker(
         settings,

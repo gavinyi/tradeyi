@@ -396,7 +396,7 @@ def manage_volatility_orphans(
     payload = [item.to_dict() for item in orphans]
     message = f"发现 {len(orphans)} 个波动率期权未接管富途持仓，已进入安全处置流程"
     store.record_incident("volatility-orphan-broker-positions", "ERROR", message)
-    store.audit("VOLATILITY_ORPHAN_POSITIONS_DETECTED", {"positions": payload}, "volatility_long_gamma")
+    store.audit("VOLATILITY_ORPHAN_POSITIONS_DETECTED", {"positions": payload}, "volatility_long_gamma", actor="service:radar")
     policy = store.get_setting(
         "volatility_orphan_position_policy",
         os.getenv("VOLATILITY_ORPHAN_POSITION_POLICY", "ADOPT"),
@@ -419,7 +419,7 @@ def manage_volatility_orphans(
                 "VOLATILITY_ORPHAN_QUOTE_FAILED",
                 {"error": str(exc), "codes": sellable_codes},
                 "volatility_long_gamma",
-            )
+             actor="service:radar")
     for item in orphans:
         base = item.to_dict()
         if policy == "ADOPT":
@@ -494,7 +494,7 @@ def manage_volatility_orphans(
             "broker_order_id": result.broker_order_id,
             "execution_status": result.status,
         })
-    store.audit("VOLATILITY_ORPHAN_POSITIONS_HANDLED", {"results": results}, "volatility_long_gamma")
+    store.audit("VOLATILITY_ORPHAN_POSITIONS_HANDLED", {"results": results}, "volatility_long_gamma", actor="service:radar")
     return results
 
 
@@ -600,7 +600,7 @@ def adopt_volatility_orphan_position(
         "pnl_value": item.pnl_value,
         "pnl_ratio": item.pnl_ratio,
         "campaign": adopted,
-    }, "volatility_long_gamma")
+    }, "volatility_long_gamma", actor="service:radar")
     return adopted
 
 

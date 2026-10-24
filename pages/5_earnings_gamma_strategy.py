@@ -830,7 +830,7 @@ with config_tab:
                         "execution_mode": "SHADOW",
                     },
                     "earnings_gamma",
-                )
+                 actor="streamlit_admin:panel")
             st.success("自动策略已保存。启动常驻运行器后才会开始监控和模拟交易。")
 
     st.subheader("已保存的自动 Gamma 策略")

@@ -375,7 +375,7 @@ with config_tab:
                 )
                 store.audit(
                     "VOLATILITY_RADAR_BUDGETS_UPDATED", saved_budgets, "streamlit",
-                )
+                 actor="streamlit_admin:panel")
                 st.success("自动雷达权利金预算已保存，下一轮扫描立即生效。")
                 st.rerun()
             st.metric(
@@ -530,7 +530,7 @@ with config_tab:
                     "VOLATILITY_SYMBOL_REMOVED_FROM_RADAR",
                     {"symbol": code, "scanner_paused": True},
                     "streamlit",
-                )
+                 actor="streamlit_admin:panel")
                 st.session_state["radar_volatility_removed"] = code
 
             st.dataframe(display, hide_index=True, height=420, column_config={
@@ -967,7 +967,7 @@ with config_tab:
                     "changed_by": "streamlit",
                 },
                 "volatility_long_gamma",
-            )
+             actor="streamlit_admin:panel")
             st.success("已保存为默认保护参数；以后新生成/新保存的波动率策略会使用这组默认值。")
         if apply_existing_col.button(
             "应用到所有已保存策略",
@@ -997,7 +997,7 @@ with config_tab:
                     "changed_by": "streamlit",
                 },
                 "volatility_long_gamma",
-            )
+             actor="streamlit_admin:panel")
             st.success(f"已更新 {len(updated_campaigns)} 条已保存波动率策略，下一轮服务循环生效。")
     minimum_move = st.number_input("自动方向最低当日涨跌幅", 0.0, 0.20, 0.020, step=0.001, format="%.3f")
     entry_zscore = st.number_input("动态波动Z值门槛", 0.5, 5.0, 2.0, step=0.1)
@@ -1422,7 +1422,7 @@ with config_tab:
                         "rule": "expired_or_invalid_and_no_position_no_pending_order",
                     },
                     "volatility_long_gamma",
-                )
+                 actor="streamlit_admin:panel")
                 st.success(f"已清理 {len(expired_cleanup_candidates)} 条过期/失效且无持仓策略。")
                 st.rerun()
 
@@ -1481,7 +1481,7 @@ with config_tab:
                 "VOLATILITY_CAMPAIGN_DELETED",
                 {"code": code, "identity": identity, "source": "saved_campaign_row"},
                 "volatility_long_gamma",
-            )
+             actor="streamlit_admin:panel")
             st.session_state["removed_volatility_campaign"] = code
 
         st.dataframe(saved[saved_columns], hide_index=True, height=520, column_config={
@@ -1539,7 +1539,7 @@ with config_tab:
                         "reason": restart_reason, "cleared": cleared,
                     },
                     "volatility_long_gamma",
-                )
+                 actor="streamlit_admin:panel")
                 try:
                     run_volatility_once()
                 except Exception as exc:

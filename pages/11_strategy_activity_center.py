@@ -183,7 +183,7 @@ with version_tab:
                 )
             store.audit("CONFIG_ROLLED_BACK", {
                 "config_key": selected["config_key"], "version_id": int(selected_id), "reason": reason,
-            })
+            }, actor="streamlit_admin:panel")
             st.success("配置已恢复；统一服务将在下一调度周期读取。")
 
 with data_tab:
@@ -203,5 +203,5 @@ with data_tab:
             if st.button("确认导入历史期权数据", disabled=not admin):
                 clean = imported.astype(object).where(pd.notna(imported), None)
                 count = store.import_option_history(clean.to_dict("records"))
-                store.audit("OPTION_HISTORY_IMPORTED", {"rows": count})
+                store.audit("OPTION_HISTORY_IMPORTED", {"rows": count}, actor="streamlit_admin:panel")
                 st.success(f"已导入 {count} 条历史期权记录。")

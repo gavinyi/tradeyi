@@ -403,7 +403,7 @@ class RiskEngine:
                     "RECONCILIATION_EXIT_ALLOWED",
                     {"symbol": symbol, "quantity": quantity, "broker_owned": owned},
                     strategy_id,
-                )
+                 actor="service:risk")
         elif side == "SELL" and protected_short:
             if not OPTION_PATTERN.match(symbol):
                 return RiskDecision(False, "组合保护卖出只允许标准美股期权合约", notional)
@@ -411,7 +411,7 @@ class RiskEngine:
                 "PROTECTED_COMBO_SHORT_ALLOWED",
                 {"symbol": symbol, "quantity": quantity, "underlying": underlying},
                 strategy_id,
-            )
+             actor="service:risk")
         if side == "SELL" and not risk_reducing_sell and not protected_short:
             if notional > self.limits.max_order_notional:
                 return RiskDecision(

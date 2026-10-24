@@ -94,7 +94,7 @@ def match_shadow_orders(store, broker, now: datetime | None = None) -> int:
                             "reprice_count": int(intent.get("reprice_count", 0)) + 1,
                         },
                         intent["strategy_id"],
-                    )
+                     actor="service:shadow_matching")
                     intent["limit_price"] = target
                     intent["last_reprice_at"] = now.isoformat()
                     age = 0.0
@@ -173,6 +173,6 @@ def match_shadow_orders(store, broker, now: datetime | None = None) -> int:
                       "model_draw": draw, "model_session": "RTH" if regular else "EXTENDED"})
         store.record_shadow_fill(intent["id"], fill_qty, executable, fill_fee, quote)
         store.audit("SHADOW_FILL", {"intent_id": intent["id"], "quantity": fill_qty,
-                                    "price": executable, "status": status}, intent["strategy_id"])
+                                    "price": executable, "status": status}, intent["strategy_id"], actor="service:shadow_matching")
         matched += 1
     return matched

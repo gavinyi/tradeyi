@@ -147,7 +147,7 @@ with drift_tab:
     )
     if selected != auto_downgrade:
         store.set_setting("validation_auto_downgrade", str(selected).lower())
-        store.audit("VALIDATION_AUTO_DOWNGRADE_SETTING", {"enabled": selected})
+        store.audit("VALIDATION_AUTO_DOWNGRADE_SETTING", {"enabled": selected}, actor="streamlit_admin:panel")
         st.rerun()
     if drift.empty:
         st.info("还没有策略执行样本。")

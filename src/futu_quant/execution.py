@@ -98,7 +98,7 @@ class ExecutionManager:
             )
             if not limits.enabled:
                 reason = f"账户管理安全铁律：实盘账户 {broker_account_id} 已关闭统一管理，禁止向其提交任何订单"
-                self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id})
+                self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id}, actor="service:execution")
                 return ExecutionResult(0, "REJECTED", reason)
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
         tenant_id = getattr(self.tenant, "tenant_id", "") if self.tenant else ""
@@ -135,12 +135,12 @@ class ExecutionManager:
         if mode == "PAPER" and (broker_env != "SIMULATE" or
                                 (actual_env is not None and str(actual_env).upper().split(".")[-1] != "SIMULATE")):
             reason = "PAPER 只能使用模拟券商环境，禁止向 REAL 券商提交"
-            self.store.audit("EXECUTION_ENV_REJECTED", {"mode": mode, "broker_env": broker_env}, strategy_id)
+            self.store.audit("EXECUTION_ENV_REJECTED", {"mode": mode, "broker_env": broker_env}, strategy_id, actor="service:execution")
             return ExecutionResult(0, "REJECTED", reason)
         if mode == "REAL" and (broker_settings is None or broker_env != "REAL" or
                                (actual_env is not None and str(actual_env).upper().split(".")[-1] != "REAL")):
             reason = "REAL 必须连接 REAL 券商环境"
-            self.store.audit("EXECUTION_ENV_REJECTED", {"mode": mode, "broker_env": broker_env}, strategy_id)
+            self.store.audit("EXECUTION_ENV_REJECTED", {"mode": mode, "broker_env": broker_env}, strategy_id, actor="service:execution")
             return ExecutionResult(0, "REJECTED", reason)
         # 铁律：实盘环境严格保护 NVDA 至少保留 5 股长线核心底仓；
         # 同时若非 core_satellite 策略 (如期权策略)，绝对禁止卖出任何正股！
@@ -151,12 +151,12 @@ class ExecutionManager:
                 broker_acc = str(getattr(self.broker, "account_id", "") or "").strip()
                 if broker_acc and broker_acc != "281756481476169109":
                     reason = f"实盘账户隔离铁律：正股卖单仅允许在富途香港底仓专户 (281756481476169109) 执行，账户 {broker_acc} 禁止提交正股卖单 ({symbol})"
-                    self.store.audit("REAL_STOCK_SELL_UNAUTHORIZED", {"symbol": symbol, "account_id": broker_acc, "strategy_id": strategy_id})
+                    self.store.audit("REAL_STOCK_SELL_UNAUTHORIZED", {"symbol": symbol, "account_id": broker_acc, "strategy_id": strategy_id}, actor="service:execution")
                     self.alerts.send("CRITICAL", "REAL_STOCK_SELL_UNAUTHORIZED", reason)
                     return ExecutionResult(0, "REJECTED", reason)
                 if strategy_id != "core_satellite":
                     reason = f"实盘底仓安全铁律：策略 {strategy_id} 无权向实盘提交正股卖单 ({symbol})"
-                    self.store.audit("REAL_STOCK_SELL_UNAUTHORIZED", {"symbol": symbol, "strategy_id": strategy_id})
+                    self.store.audit("REAL_STOCK_SELL_UNAUTHORIZED", {"symbol": symbol, "strategy_id": strategy_id}, actor="service:execution")
                     self.alerts.send("CRITICAL", "REAL_STOCK_SELL_UNAUTHORIZED", reason)
                     return ExecutionResult(0, "REJECTED", reason)
                 if symbol == "US.NVDA":
@@ -165,7 +165,7 @@ class ExecutionManager:
                     current_nvda_qty = float(nvda_rows.iloc[0]["qty"]) if not nvda_rows.empty else 0.0
                     if current_nvda_qty - float(quantity) < 5.0 - 1e-6:
                         reason = f"实盘底仓物理保护铁律：NVDA 卖单数量 {quantity} 导致剩余数量低于最低保护底线 5 股 (当前在仓 {current_nvda_qty} 股)"
-                        self.store.audit("REAL_PROTECTED_STOCK_SELL_FORBIDDEN", {"symbol": symbol, "strategy_id": strategy_id, "quantity": quantity, "retained_floor": 5.0})
+                        self.store.audit("REAL_PROTECTED_STOCK_SELL_FORBIDDEN", {"symbol": symbol, "strategy_id": strategy_id, "quantity": quantity, "retained_floor": 5.0}, actor="service:execution")
                         self.alerts.send("CRITICAL", "REAL_PROTECTED_STOCK_SELL_FORBIDDEN", reason)
                         return ExecutionResult(0, "REJECTED", reason)
         fingerprint = runtime_strategy_fingerprint(strategy_id, self.store)
@@ -190,7 +190,7 @@ class ExecutionManager:
                     "runtime_manifest": approval_runtime_manifest(self.store),
                 },
                 strategy_id,
-            )
+             actor="service:execution")
             self.store.decision(strategy_id, symbol, "BLOCKED", reason, tenant_id=tenant_id)
             return ExecutionResult(0, "APPROVAL_REQUIRED", reason)
         metadata.setdefault("reference_price", float(price))
@@ -217,7 +217,7 @@ class ExecutionManager:
                     {"intent_id": intent["id"], "reason": real_decision.reason,
                      "details": real_decision.details},
                     strategy_id,
-                )
+                 actor="service:execution")
                 self.alerts.send(
                     "ERROR", "REAL_TRADE_REJECTED",
                     f"{strategy_id} {symbol}: {real_decision.reason}",
@@ -234,7 +234,7 @@ class ExecutionManager:
                 "RISK_LIMITS_CONFIG_INCOMPLETE",
                 {"intent_id": intent["id"], "reason": str(exc), "account_id": broker_account_id},
                 strategy_id,
-            )
+             actor="service:execution")
             self.alerts.send(
                 "ERROR", "RISK_LIMITS_CONFIG_INCOMPLETE",
                 f"{strategy_id} {symbol}: {exc}",
@@ -253,11 +253,11 @@ class ExecutionManager:
             self.store.audit(
                 "PRE_TRADE_CHECK_FAILED", {"intent_id": intent["id"], "error": str(exc)},
                 strategy_id,
-            )
+             actor="service:execution")
             raise
         if not decision.allowed:
             self.store.update_intent(intent["id"], "REJECTED", error=decision.reason)
-            self.store.audit("RISK_REJECTED", {"intent_id": intent["id"], "reason": decision.reason}, strategy_id)
+            self.store.audit("RISK_REJECTED", {"intent_id": intent["id"], "reason": decision.reason}, strategy_id, actor="service:execution")
             self.alerts.send("WARNING", "RISK_REJECTED", f"{strategy_id} {symbol}: {decision.reason}")
             return ExecutionResult(intent["id"], "REJECTED", decision.reason)
         self.store.decision_snapshot(strategy_id, symbol, self._snapshot_context({
@@ -271,7 +271,7 @@ class ExecutionManager:
             self.store.audit(
                 "SHADOW_ORDER", {"intent_id": intent["id"], "price": price, "quantity": quantity},
                 strategy_id,
-            )
+             actor="service:execution")
             self.store.decision(strategy_id, symbol, side, "Shadow 模式：风控通过但未提交券商", tenant_id=tenant_id)
             return ExecutionResult(intent["id"], "SHADOW", "Shadow 模式：未提交富途")
         # Persist the irreversible boundary before invoking the broker. FAILED is retryable
@@ -299,7 +299,7 @@ class ExecutionManager:
                 # 券商业务级明确拒绝（例如中国内地监管限制、不可交易、权限不足等），记录为 REJECTED，绝不标记为 UNKNOWN 虚假占用日额度
                 if not is_net_err:
                     self.store.update_intent(intent["id"], "REJECTED", error=str(exc))
-                    self.store.audit("ORDER_SUBMISSION_REJECTED", {"intent_id": intent["id"], "error": str(exc)}, strategy_id)
+                    self.store.audit("ORDER_SUBMISSION_REJECTED", {"intent_id": intent["id"], "error": str(exc)}, strategy_id, actor="service:execution")
                     return ExecutionResult(intent["id"], "REJECTED", f"券商明确拒绝订单：{exc}")
                 self._mark_unknown(intent, f"券商下单结果不确定：{exc}", "ORDER_SUBMISSION_UNKNOWN")
                 raise
@@ -325,7 +325,7 @@ class ExecutionManager:
             "ORDER_SUBMITTED",
             {"intent_id": intent["id"], "broker_order_id": order_id, "notional": decision.notional},
             strategy_id,
-        )
+         actor="service:execution")
         order_label = "实盘订单" if mode == "REAL" else "模拟订单"
         self.store.decision(strategy_id, symbol, side, f"风控通过并提交{order_label}", tenant_id=tenant_id)
         final = self.store.intent(intent["id"])
@@ -344,7 +344,7 @@ class ExecutionManager:
             pass
         try:
             self.store.audit(event, {"intent_id": intent["id"], "broker_order_id": order_id,
-                                     "reason": reason}, intent["strategy_id"])
+                                     "reason": reason}, intent["strategy_id"], actor="service:execution")
             self.alerts.send("ERROR", event, f"{intent['strategy_id']} {intent['symbol']}: {reason}")
         except Exception:
             pass
@@ -552,7 +552,7 @@ class ExecutionManager:
                 except TypeError:
                     self.broker.modify_limit_order(intent["broker_order_id"], int(intent["quantity"]), target)
                 self.store.record_reprice(intent["id"], target)
-                self.store.audit("ORDER_REPRICED", {"intent_id": intent["id"], "price": target, "urgent": is_urgent})
+                self.store.audit("ORDER_REPRICED", {"intent_id": intent["id"], "price": target, "urgent": is_urgent}, actor="service:execution")
                 repriced += 1
             except Exception as exc:
                 self.alerts.send("WARNING", "REPRICE_FAILED", f"订单 {intent['broker_order_id']} 追价失败: {exc}")
@@ -579,7 +579,7 @@ class ExecutionManager:
                 except TypeError:
                     self.broker.cancel_order(intent["broker_order_id"])
                 self.store.update_intent(intent["id"], "CANCEL_REQUESTED")
-                self.store.audit("STALE_ORDER_CANCELLED", {"intent_id": intent["id"], "age": age, "urgent": is_urgent})
+                self.store.audit("STALE_ORDER_CANCELLED", {"intent_id": intent["id"], "age": age, "urgent": is_urgent}, actor="service:execution")
                 cancelled += 1
             except Exception as exc:
                 self.alerts.send("ERROR", "CANCEL_FAILED", f"订单 {intent['broker_order_id']} 超时撤单失败: {exc}")

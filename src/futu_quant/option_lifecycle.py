@@ -260,5 +260,5 @@ def execute_disposition_plans(broker, store, executor, session, now: datetime) -
             },
         )
         results.append({"code": plan["code"], "status": result.status, "message": result.message})
-        store.audit("OPTION_DISPOSITION_EXECUTED", results[-1], owner)
+        store.audit("OPTION_DISPOSITION_EXECUTED", results[-1], owner, actor="service:option_lifecycle")
     return results

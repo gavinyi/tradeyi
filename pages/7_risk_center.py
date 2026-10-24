@@ -49,7 +49,7 @@ def save_group(label: str, changes: dict[str, str]) -> None:
     store.audit(
         "RISK_SETTINGS_CHANGED",
         {"actor": "streamlit_admin", "group": label, "before": before, "after": changes},
-    )
+     actor="streamlit_admin:panel")
     st.success(f"「{label}」已保存；请重启统一交易服务使全部参数生效。")
 
 
@@ -74,7 +74,7 @@ with st.container(border=True):
                 st.error("当前账户急停已开启：禁止新增买入与加仓，平仓可用。")
                 if st.button(f"解除【{current_tenant['short_name']}】急停", type="primary", width="stretch", key="btn_clear_tenant_kill"):
                     store.set_kill_switch(False, account_id=tenant_acc_id, tenant_id=tenant_tid)
-                    store.audit("TENANT_KILL_SWITCH_DISABLED", {"account_id": tenant_acc_id, "tenant_id": tenant_tid, "source": "risk_center"})
+                    store.audit("TENANT_KILL_SWITCH_DISABLED", {"account_id": tenant_acc_id, "tenant_id": tenant_tid, "source": "risk_center"}, actor="streamlit_admin:panel")
                     st.success(f"已恢复【{current_tenant['short_name']}】正常交易。")
                     st.rerun()
             else:
@@ -82,7 +82,7 @@ with st.container(border=True):
                 st.caption("触发后仅对当前账户禁止开仓，其他账户继续运行。")
                 if st.button(f"一键急停【{current_tenant['short_name']}】", type="secondary", width="stretch", key="btn_set_tenant_kill"):
                     store.set_kill_switch(True, account_id=tenant_acc_id, tenant_id=tenant_tid)
-                    store.audit("TENANT_KILL_SWITCH_ENABLED", {"account_id": tenant_acc_id, "tenant_id": tenant_tid, "source": "risk_center"})
+                    store.audit("TENANT_KILL_SWITCH_ENABLED", {"account_id": tenant_acc_id, "tenant_id": tenant_tid, "source": "risk_center"}, actor="streamlit_admin:panel")
                     st.warning(f"已暂停【{current_tenant['short_name']}】新增交易。")
                     st.rerun()
 
@@ -93,7 +93,7 @@ with st.container(border=True):
                 st.error("全局总制动已开启：全系统所有账户已统一停止新增交易！")
                 if st.button("解除全局总制动", type="primary", width="stretch", key="btn_clear_global_kill"):
                     store.set_kill_switch(False)
-                    store.audit("GLOBAL_KILL_SWITCH_DISABLED", {"source": "risk_center"})
+                    store.audit("GLOBAL_KILL_SWITCH_DISABLED", {"source": "risk_center"}, actor="streamlit_admin:panel")
                     st.success("全局总制动已解除。")
                     st.rerun()
             else:
@@ -107,7 +107,7 @@ with st.container(border=True):
                             st.error("请先勾选确认。")
                         else:
                             store.set_kill_switch(True)
-                            store.audit("GLOBAL_KILL_SWITCH_ENABLED", {"source": "risk_center"})
+                            store.audit("GLOBAL_KILL_SWITCH_ENABLED", {"source": "risk_center"}, actor="streamlit_admin:panel")
                             st.rerun()
     cancel_message = st.session_state.pop("risk_cancel_message", None)
     if cancel_message:
@@ -508,7 +508,7 @@ with capital_tab:
                             "VIRTUAL_ALLOCATION_CHANGED",
                             {"actor": "streamlit_admin", "strategy": allocation_strategy,
                              "symbol": allocation_symbol, "quantity": allocation_qty},
-                        )
+                         actor="streamlit_admin:panel")
                         st.success("虚拟持仓归属已更新。")
                         st.rerun()
             if allocation_mode == "编辑已有分配" and not allocations.empty:
@@ -518,7 +518,7 @@ with capital_tab:
                         "VIRTUAL_ALLOCATION_DELETED",
                         {"actor": "streamlit_admin", "strategy": allocation_strategy,
                          "symbol": allocation_symbol},
-                    )
+                     actor="streamlit_admin:panel")
                     st.rerun()
 
         strict = os.getenv("ENFORCE_VIRTUAL_POSITIONS", "false").lower() == "true"
@@ -528,7 +528,7 @@ with capital_tab:
             store.audit(
                 "VIRTUAL_POSITION_ENFORCEMENT_CHANGED",
                 {"actor": "streamlit_admin", "enabled": strict_enabled},
-            )
+             actor="streamlit_admin:panel")
             st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -572,9 +572,9 @@ with calibration_tab:
                 store.audit(
                     "RISK_RECOMMENDATION_APPROVED",
                     {"id": int(recommendation_id), "changes": changes},
-                )
+                 actor="streamlit_admin:panel")
                 st.rerun()
             if reject_col.button("拒绝建议"):
                 store.decide_risk_recommendation(int(recommendation_id), "REJECTED")
-                store.audit("RISK_RECOMMENDATION_REJECTED", {"id": int(recommendation_id)})
+                store.audit("RISK_RECOMMENDATION_REJECTED", {"id": int(recommendation_id)}, actor="streamlit_admin:panel")
                 st.rerun()

@@ -270,7 +270,7 @@ def apply_auto_downgrade(store, drift: pd.DataFrame) -> list[str]:
         if current != "PAPER":
             continue
         store.set_setting(f"strategy_execution_mode:{strategy}", "SHADOW")
-        store.audit("VALIDATION_AUTO_DOWNGRADE", {"strategy": strategy, "from": "PAPER", "to": "SHADOW"}, strategy)
+        store.audit("VALIDATION_AUTO_DOWNGRADE", {"strategy": strategy, "from": "PAPER", "to": "SHADOW"}, strategy, actor="service:validation")
         changed.append(strategy)
     return changed
 

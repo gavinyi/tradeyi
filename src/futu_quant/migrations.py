@@ -129,6 +129,17 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_candidate_exclusions_reason
             ON candidate_exclusions(reason);
     """),
+    # P1-C1 配置审计：audit_events 加 actor。
+    # **一列一条、索引单独一条** —— 同 Migration(8/9/10) 的理由：
+    # `apply_migrations` 只吞 "duplicate column name"，而 `executescript` 在首条失败后
+    # 会中断剩余语句。若把 ALTER 与 CREATE INDEX 合成一条，遇到「列已存在」的库时
+    # ALTER 被吞掉、**索引永远建不上**，而迁移却被记为已应用。
+    # 版本号说明：11 已被 P0-5 `candidate_exclusions`（先合入 test）占用，
+    # 故本批审计迁移顺延为 12（列）/ 13（索引）。
+    Migration(12, "audit_events_actor_column",
+              "ALTER TABLE audit_events ADD COLUMN actor TEXT NOT NULL DEFAULT '';"),
+    Migration(13, "audit_events_actor_index",
+              "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor, id DESC);"),
 )
 
 

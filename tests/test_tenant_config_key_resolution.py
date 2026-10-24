@@ -859,7 +859,7 @@ class _FakeStore:
     def delete_setting(self, key):
         self._settings.pop(key, None)
 
-    def audit(self, event_type, payload, strategy_id=None):
+    def audit(self, event_type, payload, strategy_id=None, *, actor=None):
         self.audited.append((event_type, payload))
 
     def settings_with_prefix(self, prefix):
