@@ -782,6 +782,11 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
     # task_failure_count:*）据此带租户维度。**必须在任何 due/mark_run/run_task 之前**，
     # 否则本周期仍会写无前缀键、被另一个租户的 Worker 读到。
     bind_tenant(getattr(tenant, "tenant_id", "") if tenant else "")
+    # P1-13 修复：心跳名必须带租户。两个 Worker 共用 `trading_service` 这一行时，
+    # 一方僵死、另一方仍每分钟刷新 -> 僵死永远判不出来（Reviewer 实测该行 PID 只剩模拟盘）。
+    service_heartbeat_name = (
+        f"trading_service:{tenant.tenant_id}" if tenant else "trading_service"
+    )
     now = datetime.now(NY)
     session = MARKET_CALENDAR.session(now)
     alerts = AlertManager(store)
@@ -1211,7 +1216,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
     elif "Core Satellite" in configured:
         store.heartbeat("core_satellite", "HEALTHY", core_reason, os.getpid())
     if due(store, "last_run:heartbeat:trading_service", 60, now):
-        store.heartbeat("trading_service", "HEALTHY", f"调度循环完成 · {now:%F %T %Z}", os.getpid())
+        store.heartbeat(service_heartbeat_name, "HEALTHY", f"调度循环完成 · {now:%F %T %Z}", os.getpid())
         mark_run(store, "last_run:heartbeat:trading_service", now)
     if due(store, "last_run:maintenance", 300, now):
         run_task(store, alerts, "system_health", lambda: maintenance(store, broker))

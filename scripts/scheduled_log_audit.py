@@ -57,16 +57,32 @@ def _process_cmdline(pid: int) -> str | None:
     return cmdline or None
 
 
-def _heartbeat_updated_at(store, component: str):
-    for row in store.heartbeats():
-        name = str(row.get("strategy_id") or row.get("name") or "")
-        if name != component:
-            continue
+def _heartbeat_updated_at(store, component: str, expected_pid: int | None = None):
+    """读指定组件的心跳时间。
+
+    P1-13 修复：Worker 心跳名已按租户区分（`trading_service:<tenant>`）。
+    为兼容升级前留下的旧行（`trading_service`），只在**旧行的 pid 恰好是本进程**
+    时才采用 —— 否则两个租户共用一行会把僵死掩盖掉（这正是要修的那个 bug）。
+    """
+    rows = store.heartbeats()
+
+    def _parse(row) -> "datetime | None":
         raw = str(row.get("updated_at") or "")
         try:
             return datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
             return None
+
+    for row in rows:
+        if str(row.get("strategy_id") or row.get("name") or "") == component:
+            return _parse(row)
+    if component.startswith("trading_service:"):
+        for row in rows:
+            if str(row.get("strategy_id") or row.get("name") or "") != "trading_service":
+                continue
+            row_pid = row.get("pid")
+            if expected_pid is not None and str(row_pid) == str(expected_pid):
+                return _parse(row)
     return None
 
 
@@ -88,7 +104,9 @@ def check_processes(store) -> list[str]:
             pid_present=pid is not None,
             pid_alive=cmdline is not None,
             cmdline=cmdline,
-            heartbeat_updated_at=_heartbeat_updated_at(store, target.heartbeat_component),
+            heartbeat_updated_at=_heartbeat_updated_at(
+                store, target.heartbeat_component, pid,
+            ),
         )
         if verdict is None:
             continue
@@ -150,7 +168,8 @@ def inspect_and_alert():
         critical_strategies = {"core_satellite", "volatility_long_gamma", "trading_service", "order_push"}
         for h in hb_list:
             sid = h.get("strategy_id")
-            if sid in critical_strategies and h.get("status") in {"ERROR", "DEGRADED"}:
+            is_critical = sid in critical_strategies or str(sid).startswith("trading_service:")
+            if is_critical and h.get("status") in {"ERROR", "DEGRADED"}:
                 issues.append(f"⚠️ **核心任务心跳异常**：{sid} 状态为 `{h.get('status')}` ({h.get('message')})")
     except Exception as e:
         issues.append(f"读取心跳异常: {e}")

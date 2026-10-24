@@ -11,6 +11,7 @@ from .candidate_quality import (
 from .earnings_gamma import screen_gamma_contracts
 from .gamma_risk import contract_analysis, market_number, realized_volatility
 from .option_lifecycle import parse_option_code
+from .tenant import tenant_id_of_broker
 from .option_expectancy import add_iv_history_percentiles
 from .option_ranking import rank_long_option_candidates
 from .option_signal import automatic_option_direction
@@ -252,7 +253,10 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
             message += f"；最高分候选：{top_reason}"
         return _with_diagnostics(campaign, candidates, regime, message)
     # ML 评分重排序（可选增强：AUC 0.76 的标的选择模型）
-    eligible = _apply_ml_ranking(eligible, store, tenant_id=str(campaign.get("tenant_id") or ""))
+    # 生产存量 campaign 的 JSON 里**没有 tenant_id 键**（实测），只看它会让租户级
+    # ML 开关永远回落全局；用 broker 反解兜底（共享入口 tenant_of_broker，fail-closed）。
+    _roll_tenant = str(campaign.get("tenant_id") or tenant_id_of_broker(broker) or "")
+    eligible = _apply_ml_ranking(eligible, store, tenant_id=_roll_tenant)
     selected = eligible.iloc[0]
     selected_code = str(selected.get("code", ""))
     if parse_option_code(selected_code) is None:

@@ -50,14 +50,14 @@ TARGETS: tuple[Target, ...] = (
         tenant_id="futu_real_master",
         pid_file="data/trading-service-futu_real_master.pid",
         cmd_markers=("run_service.py", "--tenant futu_real_master"),
-        heartbeat_component="trading_service",
+        heartbeat_component="trading_service:futu_real_master",
     ),
     Target(
         name="模拟 Worker",
         tenant_id="futu_paper_sandbox",
         pid_file="data/trading-service-futu_paper_sandbox.pid",
         cmd_markers=("run_service.py", "--tenant futu_paper_sandbox"),
-        heartbeat_component="trading_service",
+        heartbeat_component="trading_service:futu_paper_sandbox",
     ),
     Target(
         name="波动率雷达",

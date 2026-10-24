@@ -54,11 +54,17 @@ def _lock_owner_pid() -> int | None:
     try:
         from .store import TradingStore
         store = TradingStore()
-        for h in store.heartbeats():
-            if h.get("strategy_id") == "trading_service":
-                cand_pid = h.get("pid")
-                if cand_pid and _pid_alive(int(cand_pid)):
-                    return int(cand_pid)
+        # 心跳名已按租户区分（trading_service:<tenant>）：取**最新**的那一行，
+        # 兼容旧的全局行。只认最早一行会拿到别的租户进程，进而误判锁主。
+        candidates = [
+            h for h in store.heartbeats()
+            if str(h.get("strategy_id") or "").startswith("trading_service")
+        ]
+        candidates.sort(key=lambda h: str(h.get("updated_at") or ""), reverse=True)
+        for h in candidates:
+            cand_pid = h.get("pid")
+            if cand_pid and _pid_alive(int(cand_pid)):
+                return int(cand_pid)
     except Exception:
         pass
 
