@@ -198,23 +198,7 @@ def register_fill_to_campaign(
     )
     if owned:
         # 已有归属：标记该 campaign 已被成交登记（幂等），供界面与审计观察时效
-        try:
-            # 租户为空时**抛异常**，绝不退回无前缀全局键形态 ——
-            # 那只是「把一处静默回落换成另一处静默回落」（Reviewer 裁定，Product 红线）。
-            state_key = volatility_write_state_key(symbol, tenant_id)
-            states = store.campaign_states()
-            state = dict(states.get(state_key) or {})
-            if not state.get("fill_registered_at"):
-                state["fill_registered_at"] = datetime.now(timezone.utc).isoformat()
-                state["registered_fill_qty"] = float(qty)
-                state["registered_fill_price"] = float(price)
-                store.save_campaign_states({state_key: state})
-        except Exception as exc:
-            # C：此前是裸 `pass`（无声）。标记写失败不影响主流程，但必须可见。
-            store.operational_event(
-                "order_push", "FILL_REGISTRATION_MARK_FAILED", "WARNING",
-                {"code": symbol, "tenant_id": tenant_id, "error": str(exc)},
-            )
+        _mark_fill_registered(store, symbol, qty=qty, price=price, tenant_id=tenant_id)
         return {"action": "MARKED", "code": symbol, "tenant_id": tenant_id}
 
     # 无归属 → 当场 ADOPT。构造最小 orphan 条目；缺 broker 时仍建 exit_only campaign，
@@ -244,6 +228,9 @@ def register_fill_to_campaign(
                     reason="成交时无 campaign 归属，当场采用",
                 )
                 adopted = adopt_volatility_orphan_position(store, item, campaigns, tenant_id)
+                # P0-4 裁定：ADOPT 路径**不**写 `fill_registered_*`（保持既有语义：
+                # 该字段由 MARKED 路径登记）。这三个字段读侧无消费、属历史留痕，
+                # 严禁新逻辑依赖 —— 见 tests/test_fill_registration_is_audit_only.py。
                 return {"action": "ADOPTED", "code": symbol, "campaign": adopted}
             # 10-22 幽灵 campaign 根因：券商快照**没有**该合约时，此前仍会建一条
             # exit_only campaign —— 于是凭空多出一个合约的「持仓」，
@@ -314,6 +301,31 @@ def register_fill_to_campaign(
             {"code": symbol, "error": str(exc)},
         )
         return None
+
+
+def _mark_fill_registered(store, symbol: str, *, qty, price, tenant_id: str) -> None:
+    """把「本笔成交已登记」写进 campaign 状态（owned 与 ADOPT 两条路径共用）。
+
+    P0-4 复核结论：这三个字段**读侧当前无消费**，属审计留痕；真正的保护是成交账本
+    `store.fills()`。但只在 owned 分支写会让它变成半状态字段 —— 两条路径都写，
+    语义才一致；写入失败必须可见（不能裸 pass）。
+    """
+    try:
+        # 租户为空时**抛异常**，绝不退回无前缀全局键形态 ——
+        # 那只是「把一处静默回落换成另一处静默回落」（Reviewer 裁定，Product 红线）。
+        state_key = volatility_write_state_key(symbol, tenant_id)
+        states = store.campaign_states()
+        state = dict(states.get(state_key) or {})
+        if not state.get("fill_registered_at"):
+            state["fill_registered_at"] = datetime.now(timezone.utc).isoformat()
+            state["registered_fill_qty"] = float(qty)
+            state["registered_fill_price"] = float(price)
+            store.save_campaign_states({state_key: state})
+    except Exception as exc:
+        store.operational_event(
+            "order_push", "FILL_REGISTRATION_MARK_FAILED", "WARNING",
+            {"code": symbol, "tenant_id": tenant_id, "error": str(exc)},
+        )
 
 
 def open_order_push(broker, store):
