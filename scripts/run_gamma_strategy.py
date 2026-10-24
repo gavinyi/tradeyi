@@ -16,6 +16,7 @@ os.environ.setdefault("FUTU_LOG_ROLE", "gamma")
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_gamma_campaigns
 from futu_quant.execution import ExecutionManager
+from futu_quant.candidate_quality import resolve_candidate_quality_for_campaign
 from futu_quant.execution_mode import resolve_configured_execution_mode
 from futu_quant.combo_analytics import combo_market_snapshot
 from futu_quant.combo_execution import (

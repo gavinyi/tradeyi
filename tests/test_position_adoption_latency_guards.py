@@ -137,6 +137,8 @@ def test_adoption_does_not_write_production_config(tmp_path):
     —— 后者在 `ENV_FILE` 被别的用例改写时会读临时 `.env`，不能作为生产真值。
     """
     import json
+
+    import pytest
     import sqlite3
 
     import conftest
@@ -153,7 +155,13 @@ def test_adoption_does_not_write_production_config(tmp_path):
     adopted = [c for c in store.campaigns(tenant_id=REAL_TENANT)
                if c.get("code") == "US.AMZN261120P205000"]
     assert adopted, "采用结果未写进调用方传入的 store"
-    # 生产库不得出现该测试合约（隔离环境下 production_db_path() 指向真生产库）
+    # 生产库不得出现该测试合约（隔离环境下 production_db_path() 指向真生产库）。
+    # 诚实态下（未设 TRADEYI_PROD_DB_PATH，且本工作区没有 data/trading.db）这层
+    # 比对**无法进行**：跳过而不是把「读不到库」当成「有数据被写穿」的假红。
+    if not conftest.production_db_path().exists():
+        pytest.skip(
+            "诚实态：production_db_path() 指向的库不存在，本轮不做生产库比对"
+        )
     with sqlite3.connect(f"file:{conftest.production_db_path().as_posix()}?mode=ro", uri=True) as con:
         row = con.execute(
             "SELECT value_json FROM runtime_config WHERE config_key='VOLATILITY_CAMPAIGNS'"
