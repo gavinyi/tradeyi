@@ -264,3 +264,117 @@ st.markdown(
     "- 「显式禁用」与「静默降级」分开显示：前者是配置选择，不告警；后者必须可见，"
     "并由调度侧发 `ML_SCORING_DEGRADED` 告警。"
 )
+
+st.divider()
+st.subheader("📊 规则 vs ML 对照回测与满足度检验 (A/B Alpha 验证)")
+st.caption(
+    "唯一控制变量：同等初始资金、同等仓位、同等退出止损线（-25% / $300），"
+    "唯一变量是候选标的打分排序口径（规则分 vs ML分）。量化检验 ML 是否产生稳定正向 Alpha。"
+)
+
+col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 2, 2])
+with col_ctrl1:
+    window_choice = st.selectbox(
+        "回测历史窗口",
+        ["全部历史样本", "最近 90 天", "最近 60 天", "最近 30 天"],
+        index=0,
+        key="ml_backtest_window",
+    )
+with col_ctrl2:
+    init_cap = st.number_input(
+        "初始本金 ($)",
+        min_value=1000.0,
+        max_value=1000000.0,
+        value=10000.0,
+        step=1000.0,
+        key="ml_backtest_capital",
+    )
+with col_ctrl3:
+    top_k_val = st.number_input(
+        "每日入选标的数 (Top K)",
+        min_value=1,
+        max_value=10,
+        value=3,
+        step=1,
+        key="ml_backtest_topk",
+    )
+
+if st.button("▶️ 开始对照回测与模型满足度检验", type="primary", key="btn_run_ml_comparison"):
+    from datetime import datetime as _dt, timedelta as _td
+    from futu_quant.ml_backtest_comparator import run_ml_vs_rule_comparison
+
+    start_date_filter = None
+    if window_choice == "最近 30 天":
+        start_date_filter = (_dt.now() - _td(days=30)).strftime("%Y-%m-%d")
+    elif window_choice == "最近 60 天":
+        start_date_filter = (_dt.now() - _td(days=60)).strftime("%Y-%m-%d")
+    elif window_choice == "最近 90 天":
+        start_date_filter = (_dt.now() - _td(days=90)).strftime("%Y-%m-%d")
+
+    with st.spinner("正在并行回放规则组与 ML 组历史盘口选品逻辑..."):
+        try:
+            res = run_ml_vs_rule_comparison(
+                store=store,
+                start_date=start_date_filter,
+                initial_capital=float(init_cap),
+                top_k=int(top_k_val),
+            )
+            st.session_state["ml_comparison_result"] = res
+        except Exception as e:
+            st.error(f"回测比对执行失败: {e}")
+
+res = st.session_state.get("ml_comparison_result")
+if res is not None:
+    # 1. 自动化准入卡
+    rep = res.readiness_report
+    if rep["is_ready"]:
+        st.success(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+    else:
+        st.error(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+
+    with st.expander("🔍 生产准入硬指标核验清单 (Checklist)", expanded=True):
+        st.dataframe(pd.DataFrame(rep["checklist"]), hide_index=True, width="stretch")
+
+    # 2. 核心绩效对决矩阵
+    st.markdown("#### 🏆 核心绩效正面对决 (A/B Benchmark Matrix)")
+    r_m = res.rule_metrics
+    m_m = res.ml_metrics
+
+    metric_rows = [
+        ["总累计收益率", f"{r_m['total_return_pct']:+.2f}%", f"{m_m['total_return_pct']:+.2f}%", f"{m_m['total_return_pct'] - r_m['total_return_pct']:+.2f}%"],
+        ["交易胜率", f"{r_m['win_rate']:.1f}%", f"{m_m['win_rate']:.1f}%", f"{m_m['win_rate'] - r_m['win_rate']:+.1f}%"],
+        ["盈亏比", f"{r_m['profit_loss_ratio']:.2f}", f"{m_m['profit_loss_ratio']:.2f}", f"{m_m['profit_loss_ratio'] - r_m['profit_loss_ratio']:+.2f}"],
+        ["最大回撤", f"{r_m['max_drawdown_pct']:.2f}%", f"{m_m['max_drawdown_pct']:.2f}%", f"{m_m['max_drawdown_pct'] - r_m['max_drawdown_pct']:+.2f}%"],
+        ["夏普比率", f"{r_m['sharpe']:.2f}", f"{m_m['sharpe']:.2f}", f"{m_m['sharpe'] - r_m['sharpe']:+.2f}"],
+        ["平均单笔盈亏", f"${r_m['avg_pnl']:+,.2f}", f"${m_m['avg_pnl']:+,.2f}", f"${m_m['avg_pnl'] - r_m['avg_pnl']:+,.2f}"],
+        ["有效交易笔数", f"{r_m['trades_count']} 笔", f"{m_m['trades_count']} 笔", f"{m_m['trades_count'] - r_m['trades_count']:+d} 笔"],
+        ["评分相关系数 (Rank IC)", f"{res.rule_ic:.4f}", f"{res.rank_ic:.4f}", f"{res.rank_ic - res.rule_ic:+.4f}"],
+    ]
+    st.dataframe(
+        pd.DataFrame(metric_rows, columns=["检验维度", "基准组 (纯规则打分)", "实验组 (ML模型打分)", "ML 净超额 (Alpha)"]),
+        hide_index=True, width="stretch",
+    )
+
+    # 3. 净值走势图
+    st.markdown("#### 📈 资金净值走势叠加对比")
+    st.line_chart(res.equity_series.set_index("日期"), height=320)
+
+    # 4. 五档单调性检验
+    st.markdown("#### 🎯 ML 分数五档收益单调性检验 (Quintile Monotonicity)")
+    st.caption("将候选样本按 ML 分数切分为 5 档（Q1最高 ➔ Q5最低）。理想模型要求实际收益必须呈现单调递减（高分组赚钱、低分组亏钱），杜绝反向失效与过拟合。")
+    if not res.quintile_returns.empty:
+        q_plot_df = res.quintile_returns.copy()
+        q_plot_df["收益率($)"] = q_plot_df["avg_pnl"] * 100.0
+        st.bar_chart(q_plot_df.set_index("quintile")["收益率($)"], height=260)
+        st.dataframe(
+            res.quintile_returns.rename(columns={"quintile": "分档", "avg_pnl": "平均单笔期权盈亏($)", "win_rate": "分档胜率", "count": "样本数"}),
+            hide_index=True, width="stretch",
+        )
+
+    # 5. 选品分歧归因账本
+    st.markdown("#### 🔍 选品分歧与归因账本 (Divergence Ledger)")
+    st.caption("清晰呈现规则与 ML 判定相左的具体标的案例：ML 避雷（规则看好但被 ML 过滤）与 ML 淘金（规则落选但被 ML 提拔）。")
+    if res.divergence_records:
+        st.dataframe(pd.DataFrame(res.divergence_records), hide_index=True, width="stretch")
+    else:
+        st.info("所选窗口内两套模型选品一致性极高，未出现显著分歧标的。")
