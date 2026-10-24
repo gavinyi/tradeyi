@@ -864,7 +864,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                         "equity_loss": equity_loss, "baseline_assets": baseline_assets,
                         "limit": limit, "trading_date_ny": now.date().isoformat(),
                         "account_id": broker_acc_id,
-                    })
+                    }, actor="scheduler:main")
                     target_name = f"账户 {broker_acc_id}" if broker_acc_id else "系统"
                     alerts.send(
                         "ERROR", "DAILY_LOSS_KILL_SWITCH",
@@ -1122,7 +1122,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                     "CORE_DAILY_VALIDATION_CATCHUP",
                     {"trading_date_ny": now.date().isoformat(), "reason": core_reason},
                     "core_satellite",
-                )
+                 actor="scheduler:main")
     elif "Core Satellite" in configured:
         store.heartbeat("core_satellite", "HEALTHY", core_reason, os.getpid())
     if due(store, "last_run:heartbeat:trading_service", 60, now):
@@ -1145,7 +1145,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             if updated:
                 for campaign in campaigns:
                     upsert_campaign("GAMMA_CAMPAIGNS", campaign)
-            store.audit("EARNINGS_CALENDAR_REFRESHED", {"events": count, "campaigns_updated": updated})
+            store.audit("EARNINGS_CALENDAR_REFRESHED", {"events": count, "campaigns_updated": updated}, actor="scheduler:main")
         succeeded = run_task(store, alerts, "earnings_calendar", refresh_calendar)
         mark_run(store, "last_attempt:earnings_calendar", now)
         if succeeded:
@@ -1170,7 +1170,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 FutuMarketDataProvider(broker), symbols,
                 (now.date() - timedelta(days=14)).isoformat(), now.date().isoformat(),
             )
-            store.audit("RESEARCH_DATA_BACKFILL", result)
+            store.audit("RESEARCH_DATA_BACKFILL", result, actor="scheduler:main")
             if result["requested"] and not result["succeeded"]:
                 raise RuntimeError("研究日线补全全部失败，请检查富途历史行情权限")
         run_task(store, alerts, "research_data_backfill", backfill_research_data)

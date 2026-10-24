@@ -5,11 +5,15 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import logging
 import math
 import re
 import sqlite3
 import time
 from typing import Any, Iterator
+
+
+logger = logging.getLogger(__name__)
 
 # 标准美股期权合约代码：US.<正股><到期><C|P><行权价>
 OPTION_SYMBOL_RE = re.compile(r"^US\.[A-Z0-9.]+[0-9][CP][0-9]+$")
@@ -65,6 +69,68 @@ def _json_dumps(value) -> str:
     return json.dumps(
         _json_safe(value), separators=(",", ":"), ensure_ascii=False, default=str,
     )
+
+
+# --------------------------------------------------------------------------- #
+# 审计 actor（P1-C1）：格式 fail-closed，类型只 WARN
+# 设计：docs/config_storage_unification_design.md §3.3.2 / §3.3.3
+# --------------------------------------------------------------------------- #
+
+#: `<class>:<id>` 的 class 枚举。**每加一个 class，格式校验就多一处分支**，
+#: 所以不新增第六类：`system:radar` 这类写法按「class 不认识」→ `unclassified` → 只 WARN。
+ACTOR_CLASSES = ("streamlit_admin", "service", "scheduler", "cli", "test")
+
+#: 各 class 推导出的类型（用于"类型不符只 WARN"）。
+ACTOR_CLASS_KIND = {
+    "streamlit_admin": "human",
+    "service": "machine",
+    "scheduler": "machine",
+    "cli": "machine",
+    "test": "machine",
+}
+
+
+class AuditActorError(ValueError):
+    """`actor` 格式非法（空 / 缺失 / 无冒号）—— **fail-closed：拒写 + 抛错**。
+
+    与 `unclassified`（有冒号但 class 不认识 → 只 WARN）是**两种不同行为**，
+    判定写死在设计 §3.3.3：无冒号 = 连格式都不符合 → 拒写；
+    有冒号但语义未知 = 格式合规 → 不阻断存量与历史调用。
+    """
+
+
+def validate_actor(actor: Any) -> str:
+    """校验 `actor` 的 `<class>:<id>` 格式，返回推导出的 class（或 ``"unclassified"``）。
+
+    * **空 / 缺失 / 无冒号 / class 或 id 为空 → 抛 :class:`AuditActorError`**（拒写）；
+    * **有冒号但 class 不在枚举内 → 返回 ``"unclassified"``**（调用方只 WARN，不拒写）。
+    """
+    text = actor if isinstance(actor, str) else ""
+    stripped = text.strip()
+    if not stripped:
+        raise AuditActorError(
+            "audit 的 actor 必填且不能为空 —— 缺 actor 的审计行无法追溯是谁/什么写的"
+        )
+    if ":" not in stripped:
+        raise AuditActorError(
+            f"audit 的 actor {stripped!r} 格式非法：必须是 `<class>:<id>`"
+            f"（合法 class：{', '.join(ACTOR_CLASSES)}）—— 单段值不合法，"
+            "因为无法区分「人」与「机器」"
+        )
+    cls, _, ident = stripped.partition(":")
+    cls = cls.strip()
+    ident = ident.strip()
+    if not cls or not ident:
+        raise AuditActorError(
+            f"audit 的 actor {stripped!r} 格式非法：`<class>:<id>` 两段都不能为空"
+        )
+    return cls if cls in ACTOR_CLASSES else "unclassified"
+
+
+def actor_kind(actor: str) -> str:
+    """actor 的推导类型：``human`` / ``machine`` / ``unclassified``。"""
+    cls = validate_actor(actor)
+    return ACTOR_CLASS_KIND.get(cls, "unclassified")
 
 
 class TradingStore:
@@ -1138,11 +1204,35 @@ class TradingStore:
         from .config import load_volatility_campaigns
         return load_volatility_campaigns(tenant_id)
 
-    def audit(self, event_type: str, payload: dict, strategy_id: str | None = None) -> None:
+    def audit(
+        self,
+        event_type: str,
+        payload: dict,
+        strategy_id: str | None = None,
+        *,
+        actor: str,
+    ) -> None:
+        """写一条审计。**`actor` 必填**，格式非法直接拒写（fail-closed）。
+
+        `actor` 形如 `<class>:<id>`（`service:execution` / `streamlit_admin:admin`）。
+        判定写死（设计 §3.3.3）：空 / 缺失 / 无冒号 → **拒写 + 抛错**；
+        有冒号但 class 不在枚举内 → `unclassified` → **只 WARN，不拒写**。
+
+        **为什么必填**：`audit_events` 是唯一能回答"这条配置是谁改的"的地方。
+        允许缺省就等于允许再出现一批无法追溯的写入 —— 那正是本次要消除的形态。
+        """
+        kind = validate_actor(actor)
+        if kind == "unclassified":
+            logger.warning(
+                "audit actor=%r 的 class 不在枚举 %s 内 —— 已按 unclassified 记录（不拒写）；"
+                "机器写请用 service:<component>",
+                actor, list(ACTOR_CLASSES),
+            )
         with self.connection() as connection:
             connection.execute(
-                "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at) VALUES(?,?,?,?)",
-                (event_type, strategy_id, _json_dumps(payload), self.now()),
+                "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at,actor) "
+                "VALUES(?,?,?,?,?)",
+                (event_type, strategy_id, _json_dumps(payload), self.now(), actor),
             )
 
     def _emit_fill_overcount(
@@ -1165,8 +1255,9 @@ class TradingStore:
         )
         now = self.now()
         connection.execute(
-            "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at) VALUES(?,?,?,?)",
-            ("FILL_LEDGER_OVER_COUNT", None, _json_dumps(payload), now),
+            "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at,actor) "
+            "VALUES(?,?,?,?,?)",
+            ("FILL_LEDGER_OVER_COUNT", None, _json_dumps(payload), now, "service:store"),
         )
         connection.execute(
             "INSERT INTO alerts(severity,event_type,message,delivered,created_at) VALUES(?,?,?,?,?)",
@@ -1400,7 +1491,7 @@ class TradingStore:
         self.audit("OPTION_DISPOSITION_UPDATED", {
             "code": code, "action": action, "close_days_before": close_days_before,
             "close_window_minutes": close_window_minutes, "enabled": enabled, "actor": actor,
-        })
+        }, actor="service:store")
 
     def option_dispositions(self) -> list[dict]:
         with self.connection() as connection:
@@ -1439,7 +1530,7 @@ class TradingStore:
                   float(item["max_loss_ratio"]), float(item["option_premium_ratio"]),
                   int(item.get("enabled", True)), now) for item in budgets],
             )
-        self.audit("STRATEGY_RISK_BUDGETS_CHANGED", {"budgets": budgets})
+        self.audit("STRATEGY_RISK_BUDGETS_CHANGED", {"budgets": budgets}, actor="service:store")
 
     def strategy_risk_budgets(self) -> list[dict]:
         with self.connection() as connection:
@@ -1513,7 +1604,7 @@ class TradingStore:
                 """UPDATE strategy_experiments SET is_active=1,status='ACTIVE',promoted_at=?
                 WHERE id=?""", (self.now(), experiment_id),
             )
-        self.audit("STRATEGY_EXPERIMENT_PROMOTED", {"experiment_id": experiment_id})
+        self.audit("STRATEGY_EXPERIMENT_PROMOTED", {"experiment_id": experiment_id}, actor="service:store")
 
     def strategy_experiments(self, strategy_id: str | None = None, limit: int = 500) -> list[dict]:
         query = "SELECT * FROM strategy_experiments"
@@ -2805,7 +2896,7 @@ class TradingStore:
                 except ValueError:
                     self.audit("BATCH_EXIT_ALLOCATION_FAILED", {
                         "batch_id": batch_id, "fill_id": fill_id, "quantity": quantity,
-                    }, intent["strategy_id"])
+                    }, intent["strategy_id"], actor="service:store")
         return fill_id
 
     def record_shadow_fill(

@@ -174,7 +174,7 @@ def enable_session(
     settings: Settings,
     code: str,
     minutes: int = 30,
-    actor: str = "streamlit_admin",
+    actor: str = "streamlit_admin:panel",
     now: datetime | None = None,
 ) -> tuple[bool, str]:
     if settings.trading_env != "REAL":
@@ -195,13 +195,19 @@ def enable_session(
         "actor": actor,
     }
     store.set_setting(SESSION_KEY, json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-    store.audit("REAL_TRADING_SESSION_ENABLED", payload)
+    audit_actor = actor if ":" in str(actor) else (
+        "streamlit_admin:panel" if actor == "streamlit_admin" else f"cli:{actor}"
+    )
+    store.audit("REAL_TRADING_SESSION_ENABLED", payload, actor=audit_actor)
     return True, f"实盘确认会话已开启，到期时间 {expires.astimezone().strftime('%Y-%m-%d %H:%M:%S')}"
 
 
-def disable_session(store: TradingStore, actor: str = "streamlit_admin") -> None:
+def disable_session(store: TradingStore, actor: str = "streamlit_admin:panel") -> None:
     store.set_setting(SESSION_KEY, "{}")
-    store.audit("REAL_TRADING_SESSION_DISABLED", {"actor": actor})
+    audit_actor = actor if ":" in str(actor) else (
+        "streamlit_admin:panel" if actor == "streamlit_admin" else f"cli:{actor}"
+    )
+    store.audit("REAL_TRADING_SESSION_DISABLED", {"actor": actor}, actor=audit_actor)
 
 
 def reduction_notional_limits(

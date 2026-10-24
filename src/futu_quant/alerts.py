@@ -162,7 +162,7 @@ def update_mute_list(
                 "ALERT_MUTE_LIST_UPDATED",
                 {"mute_list": sorted(accepted), "reason": reason, "actor": actor},
                 "alerting",
-            )
+             actor="service:alerts")
         except Exception:  # noqa: BLE001 - 留痕失败不能阻断配置写入
             pass
     return accepted, []

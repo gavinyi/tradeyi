@@ -131,7 +131,7 @@ with service_tab:
                     "SERVICE_START",
                     {"actor": "streamlit_admin", "source": "automation_control_center",
                      "result": result.message},
-                )
+                 actor="streamlit_admin:panel")
                 st.toast(result.message)
                 st.rerun()
             if st.button(
@@ -143,7 +143,7 @@ with service_tab:
                     "SERVICE_STOP",
                     {"actor": "streamlit_admin", "source": "automation_control_center",
                      "result": result.message},
-                )
+                 actor="streamlit_admin:panel")
                 st.toast(result.message)
                 st.rerun()
             if st.button(
@@ -155,7 +155,7 @@ with service_tab:
                     "SERVICE_RESTART",
                     {"actor": "streamlit_admin", "source": "automation_control_center",
                      "result": result.message},
-                )
+                 actor="streamlit_admin:panel")
                 st.toast(result.message)
                 st.rerun()
 
@@ -182,7 +182,7 @@ with service_tab:
                     "RADAR_START",
                     {"actor": "streamlit_admin", "source": "automation_control_center",
                      "result": result.message},
-                )
+                 actor="streamlit_admin:panel")
                 st.toast(result.message)
                 st.rerun()
             if st.button(
@@ -194,7 +194,7 @@ with service_tab:
                     "RADAR_STOP",
                     {"actor": "streamlit_admin", "source": "automation_control_center",
                      "result": result.message},
-                )
+                 actor="streamlit_admin:panel")
                 st.toast(result.message)
                 st.rerun()
 
@@ -233,7 +233,7 @@ with service_tab:
                 "EXECUTION_MODE_CHANGED",
                 {"actor": "streamlit_admin", "source": "automation_control_center",
                  "before": mode, "after": selected_mode},
-            )
+             actor="streamlit_admin:panel")
             st.rerun()
         if st.button(
             "恢复全部策略" if paused else "暂停全部策略",
@@ -251,7 +251,7 @@ with service_tab:
                 "STRATEGIES_PAUSE_CHANGED",
                 {"actor": "streamlit_admin", "source": "automation_control_center",
                  "paused": new_paused, "scope": pause_scope, "tenant_id": pause_tenant_id},
-            )
+             actor="streamlit_admin:panel")
             st.rerun()
         st.caption(
             f"⚠️ 「暂停全部策略」= 停掉**当前租户（`{pause_tenant_id or '未识别'}`）**的**整个策略循环**："
@@ -295,7 +295,7 @@ with overview_tab:
         store.audit(
             "UNIFIED_STRATEGY_CONTROL_CHANGED",
             {"source": "automation_control_center", "changes": changes},
-        )
+         actor="streamlit_admin:panel")
         st.success("策略控制已保存，下一个调度周期生效。")
         st.rerun()
     st.dataframe(
@@ -345,7 +345,7 @@ with budget_tab:
             store.audit(
                 "STRATEGY_BUDGET_PRESET_APPLIED",
                 {"actor": "streamlit_admin", "preset": "core65_volatility25"},
-            )
+             actor="streamlit_admin:panel")
             st.success("推荐资金配置已应用：财报自动/手工策略资金已转给波动率期权。")
             st.rerun()
         edit_columns = [

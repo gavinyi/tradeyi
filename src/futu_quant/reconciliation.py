@@ -96,7 +96,7 @@ def _recover_strategy_from_reconciliation(store, strategy_id: str, prefix: str =
             "removed_keys_absent_before_pause": removed_keys,
         },
         strategy_id,
-    )
+     actor="service:reconciliation")
 
 
 def reconcile_ledgers(

@@ -58,7 +58,7 @@ def migrate() -> dict:
         if old_mode:
             store.set_setting("strategy_execution_mode:volatility_long_gamma", old_mode)
         store.set_setting("strategy_enabled:Volatility Long Gamma", "true")
-        store.audit("VOLATILITY_STRATEGY_MIGRATED", {"codes": codes}, "volatility_long_gamma")
+        store.audit("VOLATILITY_STRATEGY_MIGRATED", {"codes": codes}, "volatility_long_gamma", actor="cli:migrate_volatility_strategy")
     return {"moved": codes, "earnings_campaigns": len(earnings), "volatility_campaigns": len(volatility)}
 
 

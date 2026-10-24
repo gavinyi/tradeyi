@@ -298,7 +298,7 @@ def apply_dynamic_allocation(store, plan: dict, actor: str) -> None:
              "option_premium_ratio": item["recommended_option_premium_ratio"],
              "enabled": bool(item["enabled"])} for item in plan["recommendations"]]
     store.save_strategy_risk_budgets(rows)
-    store.audit("DYNAMIC_ALLOCATION_APPLIED", {"actor": actor, "budgets": rows})
+    store.audit("DYNAMIC_ALLOCATION_APPLIED", {"actor": actor, "budgets": rows}, actor="service:allocation")
 
 
 def operations_report(store) -> dict:

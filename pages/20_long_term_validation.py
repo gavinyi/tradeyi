@@ -106,7 +106,7 @@ with governance_tab:
     selected = st.toggle("启用 PAPER → SHADOW 自动降级", value=enabled, disabled=not admin)
     if selected != enabled and admin:
         store.set_setting("validation_auto_downgrade", str(selected).lower())
-        store.audit("VALIDATION_AUTO_DOWNGRADE_SETTING", {"enabled": selected})
+        store.audit("VALIDATION_AUTO_DOWNGRADE_SETTING", {"enabled": selected}, actor="streamlit_admin:panel")
         st.rerun()
     st.warning("自动治理永远不会把 SHADOW 升级为 PAPER。恢复必须管理员选择策略并填写原因。")
     shadow = [row["strategy_id"] for row in store.strategy_risk_budgets()

@@ -45,7 +45,7 @@ class _Store:
         self.heartbeats = []
         self.settings = {}
 
-    def audit(self, event, payload, strategy_id=None):
+    def audit(self, event, payload, strategy_id=None, *, actor=None):
         self.audits.append((event, payload))
 
     def heartbeat(self, sid, status, message, pid=None):

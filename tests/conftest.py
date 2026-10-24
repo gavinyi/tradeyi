@@ -20,7 +20,14 @@ from pathlib import Path
 
 # 统一重定向 tempfile 根目录至工作区内部，杜绝在系统 Temp 目录下创建 sqlite 数据库导致的 WinError 5 沙箱拦截
 _qa_dir = pathlib.Path("data/qa").resolve()
-_qa_dir.mkdir(parents=True, exist_ok=True)
+try:
+    _qa_dir.mkdir(parents=True, exist_ok=True)
+    _probe = _qa_dir / ".wtest"
+    _probe.write_text("x")
+    _probe.unlink(missing_ok=True)
+except Exception:
+    _qa_dir = pathlib.Path(r"E:\Thisyi\trade\data\qa").resolve()
+    _qa_dir.mkdir(parents=True, exist_ok=True)
 tempfile.tempdir = str(_qa_dir)
 os.environ["TMP"] = str(_qa_dir)
 os.environ["TEMP"] = str(_qa_dir)

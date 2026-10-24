@@ -202,4 +202,4 @@ def manually_restore_paper(store, strategy_id: str, actor: str, reason: str) -> 
         raise ValueError("只有已降级为 SHADOW 的策略可以人工恢复")
     store.set_setting(f"strategy_execution_mode:{strategy_id}", "PAPER")
     store.audit("VALIDATION_MANUAL_RESTORE", {"strategy": strategy_id, "actor": actor,
-                                               "from": "SHADOW", "to": "PAPER", "reason": reason}, strategy_id)
+                                               "from": "SHADOW", "to": "PAPER", "reason": reason}, strategy_id, actor="service:validation")

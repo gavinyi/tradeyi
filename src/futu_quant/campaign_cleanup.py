@@ -204,7 +204,7 @@ def _cleanup_one_group(
                 "details": [item for item in details if item["action"] == "REMOVED"],
             },
             strategy_id,
-        )
+         actor="service:campaign_cleanup")
     result = CleanupResult(
         config_key=config_key,
         strategy_id=strategy_id,
@@ -285,7 +285,7 @@ def reclaim_exit_only_orphans(store=None, broker=None) -> dict:
             "code": campaign.get("code"),
             "id_code_mismatch": str(campaign.get("campaign_id")) != f"orphan:{campaign.get('code')}",
             "reason": "券商持仓与挂单均已归零，退出管理已无对象，回收配置防腐化",
-        }, "volatility_long_gamma")
+        }, "volatility_long_gamma", actor="service:campaign_cleanup")
     if reclaimed:
         save_volatility_campaigns(kept, tenant_id=_tenant_id)
     return {"reclaimed": reclaimed, "kept": [c.get("code") for c in kept]}

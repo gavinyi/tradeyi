@@ -306,7 +306,7 @@ def register_fill_to_campaign(
             "intent_id": (intent or {}).get("id"), "tenant_id": tenant_id,
             "max_position_loss_usd": adopted["max_position_loss_usd"],
             "max_position_loss_ratio": adopted["max_position_loss_ratio"],
-        }, "volatility_long_gamma")
+        }, "volatility_long_gamma", actor="service:order_push")
         return {"action": "ADOPTED", "code": symbol, "campaign": adopted}
     except Exception as exc:
         store.operational_event(

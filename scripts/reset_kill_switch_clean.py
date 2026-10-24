@@ -11,7 +11,7 @@ with store.connection() as conn:
 store.set_setting("kill_switch", "false")
 store.audit("DAILY_LOSS_KILL_SWITCH_CLEARED", {
     "reason": "清除多账户历史合并基线断层导致的虚假亏损误报，恢复风控通道"
-})
+}, actor="cli:reset_kill_switch")
 
 print("Reset kill_switch to false successfully!")
 print("Current kill_switch state:", store.kill_switch())

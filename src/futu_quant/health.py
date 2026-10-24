@@ -94,5 +94,5 @@ def maintenance(store, broker) -> dict:
         # and UI must never fail a health cycle trying to rotate their live log.
         # Leave the file in place and report a deferred rotation instead.
         result["log_rotation"] = "DEFERRED_LIVE_LOG"
-    store.audit("HEALTH_CHECK", result)
+    store.audit("HEALTH_CHECK", result, actor="service:health")
     return result

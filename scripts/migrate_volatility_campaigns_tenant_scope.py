@@ -1364,7 +1364,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             "warnings": list(item.warnings),
             "legacy_key": legacy,
             "tenant_key": tenant_keys.get(item.tenant_id),
-        }, "volatility_scanner")
+        }, "volatility_scanner", actor="cli:migrate_campaign_tenant_scope")
     print(f"[迁移] WARN 审计已写入 {sum(1 for i in attributions if i.warn)} 条")
 
     final = render_report(

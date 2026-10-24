@@ -496,7 +496,7 @@ def run_campaign(
     if issues:
         executor.store.audit("GAMMA_VALIDATION_WARNING", {
             "code": code, "trigger_mode": trigger_mode, "warnings": issues,
-        }, strategy_id)
+        }, strategy_id, actor="service:gamma")
     if trigger_mode == "VOLATILITY":
         signal_started_at = signal_state.get("signal_started_at")
         event_time = (
@@ -519,7 +519,7 @@ def run_campaign(
             "underlying": campaign.get("underlying"),
             "symbols": naked_rows["code"].astype(str).tolist(),
             "quantities": pd.to_numeric(naked_rows["qty"], errors="coerce").tolist(),
-        }, strategy_id)
+        }, strategy_id, actor="service:gamma")
         executor.store.decision_if_changed(
             strategy_id, code, "BLOCKED", "检测到期权裸空残腿，禁止新开仓并继续执行风险接管",
             {"naked_short": naked_rows["code"].astype(str).tolist(), "reduce_only_takeover": True},
@@ -556,7 +556,7 @@ def run_campaign(
                 "underlying": campaign.get("underlying"),
                 "structure": campaign.get("structure"),
                 "leg_symbols": valid_leg_codes,
-            }, strategy_id)
+            }, strategy_id, actor="service:gamma")
     if combo and combo.get("status") in {"EXECUTING", "CLOSING", "ROLLBACK_PENDING"}:
         ComboExecutionManager(broker, executor.store, executor).advance(combo_id)
         combo = executor.store.option_combo(combo_id)
@@ -748,7 +748,7 @@ def run_campaign(
                     "position_quantity": quantity,
                 },
                 strategy_id,
-            )
+             actor="service:gamma")
         print(f"{code}: {decision} ({reason})")
         return
     if quantity > 0 and not quote_check["option_fresh"]:
@@ -758,7 +758,7 @@ def run_campaign(
                 "option_quote_age_seconds": quote_check["option_age_seconds"],
                 "reason": exit_bypass_reason,
                 "position_quantity": quantity,
-            }, strategy_id)
+            }, strategy_id, actor="service:gamma")
             executor.alerts.send(
                 "WARNING", "OPTION_EXIT_STALE_QUOTE_BYPASS",
                 f"期权 {code} 行情成交滞后但双边盘口健康，已放行平仓退出：{exit_bypass_reason}",
@@ -770,20 +770,20 @@ def run_campaign(
             "reason": quote_check["option_reason"],
             "book_reason": quote_check["book_reason"],
             "position_quantity": quantity,
-        }, strategy_id)
+        }, strategy_id, actor="service:gamma")
     if quantity > 0 and not quote_check["book_ok"]:
         executor.store.audit("OPTION_EXIT_BOOK_DEGRADED", {
             "strategy_id": strategy_id, "symbol": code,
             "reason": quote_check["book_reason"],
             "spread_pct": quote_check["spread_pct"],
             "position_quantity": quantity,
-        }, strategy_id)
+        }, strategy_id, actor="service:gamma")
     if quote_check["option_degraded"]:
         executor.store.audit("OPTION_QUOTE_DEGRADED_ACCEPTED", {
             "strategy_id": strategy_id, "symbol": code,
             "option_quote_age_seconds": quote_check["option_age_seconds"],
             "reason": quote_check["option_reason"],
-        }, strategy_id)
+        }, strategy_id, actor="service:gamma")
     last = float(option["last_price"] or 0)
     bid, ask = float(option["bid_price"] or 0), float(option["ask_price"] or 0)
     gamma_now = abs(market_number(option.get("option_gamma", 0)))
@@ -1394,7 +1394,7 @@ def run_campaign(
                         "symbol": code, "underlying": campaign["underlying"],
                         "check": check, "reason": block_reason, **details,
                     }, strategy_id,
-                )
+                 actor="service:gamma")
 
         if trigger_mode == "VOLATILITY" and volatility_new_entries_paused(executor.store, broker):
             paused_key = "volatility_new_entries_paused"
@@ -1466,7 +1466,7 @@ def run_campaign(
                     "structure": campaign.get("structure"),
                     "reason": combo_entry_reason,
                     "checks": combo_entry_checks,
-                }, strategy_id)
+                }, strategy_id, actor="service:gamma")
                 executor.store.decision(strategy_id, code, "BLOCKED", f"组合质量未通过，拒绝退化为单腿：{combo_entry_reason}", {
                     "combo_quality_checks": combo_entry_checks,
                 })
@@ -1626,7 +1626,7 @@ def run_campaign(
                 "combo_id": active_combo_id, "symbol": code,
                 "underlying": campaign["underlying"],
                 "structure": campaign.get("structure"), "legs": combo_legs,
-            }, strategy_id)
+            }, strategy_id, actor="service:gamma")
             executor.store.decision(
                 strategy_id, code, "BUY",
                 f"已提交定义风险组合：{campaign.get('structure_label', campaign.get('structure'))}",
@@ -1672,7 +1672,7 @@ def run_campaign(
                 "original_structure": campaign.get("structure"),
                 "original_legs": legs,
                 "reason": reason,
-            }, strategy_id)
+            }, strategy_id, actor="service:gamma")
         if len(close_legs) > 1 and execution_mode != "SHADOW":
             active_combo_id = combo_id or automatic_combo_id(
                 strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))
@@ -1688,7 +1688,7 @@ def run_campaign(
                     "missing_combo_id": active_combo_id,
                     "original_legs": legs,
                     "reason": reason,
-                }, strategy_id)
+                }, strategy_id, actor="service:gamma")
             else:
                 ComboExecutionManager(
                     broker, executor.store, executor
@@ -1696,7 +1696,7 @@ def run_campaign(
                 campaign_state["pending_exit_reason"] = reason
                 executor.store.audit("VOLATILITY_COMBO_CLOSE_REQUESTED", {
                     "combo_id": active_combo_id, "symbol": code, "reason": reason,
-                }, strategy_id)
+                }, strategy_id, actor="service:gamma")
                 return
         exit_quantity = int(planned_order_quantity or quantity)
         leg_quotes = broker.snapshots([leg["code"] for leg in close_legs]).set_index("code")
@@ -1736,7 +1736,7 @@ def run_campaign(
                     "position_quantity": quantity,
                     "planned_order_quantity": exit_quantity,
                     "exit_price_context": exit_price_context,
-                }, strategy_id)
+                }, strategy_id, actor="service:gamma")
                 print(f"{code}: HOLD ({wait_reason})")
                 return
             result = executor.submit_limit(

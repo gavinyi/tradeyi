@@ -56,7 +56,7 @@ with approval_tab:
         store.audit(
             "APPROVAL_ENFORCEMENT_CHANGED",
             {"actor": "streamlit_admin", "enabled": selected_enforcement},
-        )
+         actor="streamlit_admin:panel")
         st.rerun()
     if selected_enforcement:
         st.info("上线审批当前开启：PAPER/REAL 新增 BUY 会要求当前运行版本已批准。")
@@ -126,7 +126,7 @@ with approval_tab:
                             ],
                         },
                         "core_satellite",
-                    )
+                     actor="streamlit_admin:panel")
                     st.success(f"Core Satellite 已在租户 {_tenant_id} 启用并切换为 PAPER 模拟交易。")
                 st.rerun()
         if store.kill_switch():
@@ -286,7 +286,7 @@ with approval_tab:
                      "service_pid": selected_version["service_pid"],
                      "reason": reason.strip()},
                     strategy,
-                )
+                 actor="streamlit_admin:panel")
                 st.success("交易服务当前实际运行版本已批准；相关代码变化后必须重启并重新审批。")
                 st.rerun()
 
@@ -347,7 +347,7 @@ with reconcile_tab:
                                  "previous_ledger_quantity": float(row["ledger_quantity"]),
                                  **adjustment},
                                 strategy,
-                            )
+                             actor="streamlit_admin:panel")
                             st.success(
                                 f"已完成 {symbol} 对账：目标 {adjustment['target_quantity']:g}，"
                                 f"历史成交净量 {adjustment['net_fills']:g}，"
