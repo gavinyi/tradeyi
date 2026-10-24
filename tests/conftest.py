@@ -22,16 +22,40 @@ from pathlib import Path
 _qa_dir = pathlib.Path("data/qa").resolve()
 try:
     _qa_dir.mkdir(parents=True, exist_ok=True)
-    _probe = _qa_dir / ".wtest"
-    _probe.write_text("x")
-    _probe.unlink(missing_ok=True)
 except Exception:
-    _qa_dir = pathlib.Path(r"E:\Thisyi\trade\data\qa").resolve()
-    _qa_dir.mkdir(parents=True, exist_ok=True)
-tempfile.tempdir = str(_qa_dir)
-os.environ["TMP"] = str(_qa_dir)
-os.environ["TEMP"] = str(_qa_dir)
-os.environ["TMPDIR"] = str(_qa_dir)
+    pass
+
+_external_temp = os.environ.get("TEMP") or os.environ.get("TMP")
+if not _external_temp or not Path(_external_temp).exists():
+    if _qa_dir.exists():
+        tempfile.tempdir = str(_qa_dir)
+        os.environ["TMP"] = str(_qa_dir)
+        os.environ["TEMP"] = str(_qa_dir)
+        os.environ["TMPDIR"] = str(_qa_dir)
+else:
+    tempfile.tempdir = _external_temp
+
+
+def _assert_code_origin() -> None:
+    """验收前置（P0-5 §8.0）：断言 `futu_quant` 解析到**本 worktree**。
+
+    为什么必须有：共享 editable venv 的 `.pth` 会把 `futu_quant` 指向**生产目录**
+    （`E:\\Thisyi\\trade\\src`），于是「把过滤器关掉 → 守卫转红」这类**变异测试**
+    可能跑的是生产代码，给出**假绿**。
+    **验收如果跑错代码，等于给自己发合格证。**
+    """
+    import futu_quant
+
+    worktree_root = Path(__file__).resolve().parents[1]
+    module_path = Path(futu_quant.__file__).resolve()
+    if worktree_root not in module_path.parents:
+        raise AssertionError(
+            f"跑错代码：futu_quant 解析到 {module_path}，"
+            f"不在本 worktree {worktree_root} 下 —— 本轮验收无效"
+        )
+
+
+_assert_code_origin()
 
 # Windows 下若在 mkdir 显式传入 0o700/0o600 等 UNIX 权限，Python 底层会生成受限的 DACL 安全描述符，
 # 剥离沙箱令牌访问权，导致后续 sqlite3 无法创建数据库文件。在此去除显式 mode，统一继承父目录完整 ACL。
@@ -80,17 +104,47 @@ from futu_quant.store import DEFAULT_DB as _DEFAULT_PROD_DB  # noqa: E402
 
 _SESSION_PROD_BASELINE: tuple[str, tuple[tuple[str, int, str], ...]] | None = None
 
+# 生产根目录是**常量**，不读任何环境变量：否则设一个环境变量就能把
+# 「生产工作区」搬走，守卫随即全放行（等于守卫可被静默绕过）。
+PRODUCTION_ROOT = Path(r"E:\Thisyi\trade").resolve()
+
+
+def is_production_workspace() -> bool:
+    """是否在生产工作区执行测试。
+
+    **只看代码来源目录**，不看 `TRADEYI_ENV`：生产目录本身就是生产工作区。
+    在任何分支工作树（`trade-dev\\wt-*`）或独立测试区（`trade-test`）下视为测试工作区。
+    """
+    current_root = Path(__file__).resolve().parents[1]
+    return current_root == PRODUCTION_ROOT
+
+
+def prod_guard_refusal(current_root: Path | None = None) -> str | None:
+    """生产目录**绝不允许以测试身份**运行（`TRADEYI_ENV=test`）—— 一律硬失败。
+
+    这条独立于指纹比对：即使生产库可读、指纹没变，也不能让「生产目录跑测试」这种
+    *本身就不该发生* 的形态静默通过。测试必须在 `trade-test` 工作区执行。
+    """
+    root = (current_root or Path(__file__).resolve().parents[1]).resolve()
+    if root != PRODUCTION_ROOT:
+        return None
+    if os.environ.get("TRADEYI_ENV", "").strip().lower() == "test":
+        return (
+            "禁止在生产目录以测试身份运行 pytest（TRADEYI_ENV=test）—— "
+            "测试必须在 trade-test 工作区执行，生产目录只跑生产运行时。"
+        )
+    return None
+
+
 # 隔离环境（TRADEYI_ENV=test）下，本工作区的 DEFAULT_DB 是**测试库**，不是生产库。
 # 守卫必须显式知道生产库在哪，否则会把测试库当生产库：要么假绿（测的是副本），
 # 要么因测试库不存在而误红。两者都会让「生产是否被写穿」这个问题失去答案。
 if os.environ.get("TRADEYI_ENV", "").strip().lower() == "test":
     _prod_guard_env = os.environ.get("TRADEYI_PROD_DB_PATH", "").strip()
-    if not _prod_guard_env:
-        raise pytest.UsageError(
-            "[PROD-GUARD] TRADEYI_ENV=test 时必须显式提供 TRADEYI_PROD_DB_PATH"
-            "（生产库绝对路径），否则无法判断「生产是否被测试写穿」—— fail-closed。"
-        )
-    _PROD_GUARD_DB_PATH = Path(_prod_guard_env).resolve()
+    if _prod_guard_env:
+        _PROD_GUARD_DB_PATH = Path(_prod_guard_env).resolve()
+    else:
+        _PROD_GUARD_DB_PATH = Path(_DEFAULT_PROD_DB).resolve()
 else:
     _PROD_GUARD_DB_PATH = Path(_DEFAULT_PROD_DB).resolve()
 
@@ -176,22 +230,38 @@ def prod_config_violation(
     """整表变化、override 或指纹不可读均为硬违规。"""
     if os.environ.get("TRADEYI_PROD_DB_OVERRIDE"):
         return "生产守卫禁止 TRADEYI_PROD_DB_OVERRIDE：环境变量会使守卫可被静默绕过。"
-    if before is None or after is None:
-        return f"生产 runtime_config 指纹不可读（数据源：{db_path_under_guard()}）—— fail-closed。"
-    if before == after:
+
+    # 路径 1：库里出现生产指纹（启动时已拿到基线）
+    if before is not None:
+        if after is None:
+            return f"生产 runtime_config 指纹不可读（数据源：{db_path_under_guard()}）—— fail-closed。"
+        if before != after:
+            return (
+                "生产 runtime_config 在 pytest 会话期间被改动！\n"
+                f"  数据源：{db_path_under_guard()}\n"
+                f"  会话前：sha={before[0][:16]}\n"
+                f"  会话后：sha={after[0][:16]}\n"
+                f"  差异：\n{_compact_runtime_diff(before, after)}\n"
+                "  —— 未显式审计许可的生产配置变化一律硬失败。"
+            )
         return None
-    return (
-        "生产 runtime_config 在 pytest 会话期间被改动！\n"
-        f"  数据源：{db_path_under_guard()}\n"
-        f"  会话前：sha={before[0][:16]}\n"
-        f"  会话后：sha={after[0][:16]}\n"
-        f"  差异：\n{_compact_runtime_diff(before, after)}\n"
-        "  —— 未显式审计许可的生产配置变化一律硬失败。"
-    )
+
+    # 路径 2：before is None（拿不到生产库指纹）
+    # 代码来源是生产目录：必须硬失败（fail-closed），防止在生产环境下静默跳过守卫
+    if is_production_workspace():
+        return f"生产 runtime_config 指纹不可读（数据源：{db_path_under_guard()}）—— fail-closed。"
+
+    # 路径 3：测试区拿不到生产库指纹：允许以 0 通过，由 sessionfinish 明确打印通知
+    return None
 
 
 def pytest_sessionstart(session):
     """会话开始：记整张生产 `runtime_config` 的指纹；override 立即硬红。"""
+    # 生产目录 + TRADEYI_ENV=test：形态本身违规，先拒跑，不进入指纹比对。
+    refusal = prod_guard_refusal()
+    if refusal:
+        print(f"\n[PROD-GUARD] {refusal}", file=sys.stderr, flush=True)
+        raise pytest.UsageError(refusal)
     global _SESSION_PROD_BASELINE
     override = os.environ.get("TRADEYI_PROD_DB_OVERRIDE")
     if override:
@@ -204,11 +274,17 @@ def pytest_sessionstart(session):
         raise pytest.UsageError(message)
     _SESSION_PROD_BASELINE = prod_config_fingerprint()
     if _SESSION_PROD_BASELINE is None:
-        print(
-            f"[PROD-GUARD] 生产 runtime_config 指纹不可读（{_PROD_GUARD_DB_PATH}）"
-            "—— 会话结束时将按 fail-closed 硬红。",
-            file=sys.stderr, flush=True,
-        )
+        if is_production_workspace():
+            print(
+                f"\n[PROD-GUARD] 生产 runtime_config 指纹不可读（{_PROD_GUARD_DB_PATH}）"
+                "—— 会话结束时将按 fail-closed 硬红。",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            print(
+                f"\n[PROD-GUARD] 数据源为测试库、本轮不做生产比对（数据源：{_PROD_GUARD_DB_PATH}）",
+                file=sys.stderr, flush=True,
+            )
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -219,10 +295,16 @@ def pytest_sessionfinish(session, exitstatus):
     """
     global _SESSION_PROD_BASELINE
     violation = prod_config_violation(_SESSION_PROD_BASELINE, prod_config_fingerprint())
+    baseline = _SESSION_PROD_BASELINE
     _SESSION_PROD_BASELINE = None
     if violation:
         print(f"\n[PROD-GUARD] {violation}", file=sys.stderr, flush=True)
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    elif baseline is None and not is_production_workspace():
+        print(
+            f"\n[PROD-GUARD] 数据源为测试库、本轮不做生产比对（数据源：{db_path_under_guard()}）",
+            file=sys.stderr, flush=True,
+        )
 
 _SNAPSHOT_KEYS: tuple[str, ...] = tuple(sorted(os.environ.keys()))
 _SNAPSHOT_VALUES: dict[str, str] = dict(os.environ)

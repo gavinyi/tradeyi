@@ -166,6 +166,7 @@ TASK_TIMEOUTS = {
     "paper_e2e": 180,
     "observability": 30,
     "alert_delivery_probe": 60,
+    "candidate_exclusions_prune": 60,
     "automatic_recovery": 30,
     "idempotency_audit": 30,
     "operations_report": 60,
@@ -607,6 +608,7 @@ def run_task(
                 strategy_id, None, "HOLD",
                 f"Core Satellite 提交前持仓校验未通过，本轮不再重复提交：{message}",
                 {"backoff_until": until.isoformat(), "non_retryable": True},
+                tenant_id=_ACTIVE_TENANT_ID.get(),
             )
             store.heartbeat(strategy_id, "DEGRADED", "可卖数量不足，本轮已停止重试", os.getpid())
             alerts.send(
@@ -1062,6 +1064,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 store, alerts, plugin.strategy_id,
                 lambda item=plugin: run_strategy_once(
                     broker, item.runner_key or item.service_name, executor, item.strategy_id,
+                    tenant_id=_ACTIVE_TENANT_ID.get(),
                 ),
             )
             mark_run(store, key, now)
@@ -1092,7 +1095,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 core_executor = ExecutionManager(core_broker, store, alerts)
             succeeded = run_task(
                 store, alerts, "core_satellite",
-                lambda: run_strategy_once(core_broker, "Core Satellite", core_executor),
+                lambda: run_strategy_once(core_broker, "Core Satellite", core_executor, tenant_id=_ACTIVE_TENANT_ID.get() or "futu_real_master"),
             )
             if succeeded:
                 mark_run(store, key, now)
@@ -1111,7 +1114,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 sim_exec = ExecutionManager(sim_b, store, alerts)
                 run_task(
                     store, alerts, "core_satellite_sim",
-                    lambda: run_strategy_once(sim_b, "Core Satellite", sim_exec),
+                    lambda: run_strategy_once(sim_b, "Core Satellite", sim_exec, tenant_id="futu_paper_sandbox"),
                 )
             except Exception as exc:
                 store.operational_event("core_satellite_sim", "EXECUTION_SKIPPED", "DEGRADED", {"error": str(exc)})
@@ -1237,6 +1240,16 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
     ):
         run_task(store, alerts, "alert_delivery_probe", alerts.probe_delivery)
         mark_run(store, "last_run:alert_delivery_probe", now)
+    # P0-5 候选排除留痕的**保留策略**：按天保留 7 天。
+    # 高频写入（每轮每候选一条），无保留策略就是下一个 `reconciliation_reports`（129 万行）。
+    if due(store, "last_run:candidate_exclusions_prune", 24 * 60 * 60, now):
+        run_task(
+            store, alerts, "candidate_exclusions_prune",
+            lambda: store.prune_candidate_exclusions(
+                int(os.getenv("CANDIDATE_EXCLUSIONS_RETAIN_DAYS", "7"))
+            ),
+        )
+        mark_run(store, "last_run:candidate_exclusions_prune", now)
     if due(store, "last_run:automatic_recovery", 300, now):
         run_task(store, alerts, "automatic_recovery", lambda: automatic_recovery_cycle(store))
         mark_run(store, "last_run:automatic_recovery", now)

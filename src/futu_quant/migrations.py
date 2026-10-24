@@ -107,6 +107,28 @@ MIGRATIONS = (
               "ALTER TABLE alerts ADD COLUMN feishu_delivered INTEGER NOT NULL DEFAULT -1;"),
     Migration(10, "alerts_muted_column",
               "ALTER TABLE alerts ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;"),
+    # P0-5 候选排除/降权留痕。**走版本化迁移，不写在 `initialize()` 的建表语句里** ——
+    # 存量库在 `apply_migrations()` 之后就 `return`（`store.py:190-191`），
+    # 只写在新库分支里的表，存量库永远没有（2026-10-24 alerts 三列就是这么漏的）。
+    Migration(11, "candidate_exclusions", """
+        CREATE TABLE IF NOT EXISTS candidate_exclusions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL DEFAULT '',
+            strategy_id TEXT NOT NULL DEFAULT '',
+            underlying TEXT NOT NULL DEFAULT '',
+            code TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL,
+            age_seconds REAL,
+            spread_pct REAL,
+            volume REAL,
+            phase TEXT NOT NULL DEFAULT 'HARD_EXCLUDE',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_candidate_exclusions_tenant
+            ON candidate_exclusions(tenant_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_candidate_exclusions_reason
+            ON candidate_exclusions(reason);
+    """),
     # P1-C1 配置审计：audit_events 加 actor。
     # **一列一条、索引单独一条** —— 同 Migration(8/9/10) 的理由：
     # `apply_migrations` 只吞 "duplicate column name"，而 `executescript` 在首条失败后

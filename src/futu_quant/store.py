@@ -9,6 +9,7 @@ import logging
 import math
 import re
 import sqlite3
+import sys
 import time
 from typing import Any, Iterator
 
@@ -2239,6 +2240,109 @@ class TradingStore:
                 "SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()]
 
+    def record_candidate_exclusions(self, records: list[dict]) -> int:
+        """批量写候选排除/降权留痕（P0-5）。
+
+        **绝不写 `runtime_config`，也绝不写任何无前缀全局键** —— 本过滤器**每轮每标的**都写，
+        是最容易复现「测试写穿生产 `runtime_config`」的形态（10-23 已发生过一次）。
+        留痕必须带**实测值**（`age_seconds` / `spread_pct` / `volume`），
+        否则「被排除」和「猜被排除」分不清。
+        """
+        if not records:
+            return 0
+        rows = [
+            (
+                str(item.get("tenant_id") or ""),
+                str(item.get("strategy_id") or ""),
+                str(item.get("underlying") or ""),
+                str(item.get("code") or ""),
+                str(item.get("reason") or ""),
+                item.get("age_seconds"),
+                item.get("spread_pct"),
+                item.get("volume"),
+                str(item.get("phase") or "HARD_EXCLUDE"),
+                self.now(),
+            )
+            for item in records
+        ]
+        with self.connection() as connection:
+            connection.executemany(
+                """INSERT INTO candidate_exclusions
+                (tenant_id,strategy_id,underlying,code,reason,age_seconds,spread_pct,
+                volume,phase,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
+        return len(rows)
+
+    def prune_candidate_exclusions(self, days: int = 7) -> int:
+        """按天保留（默认 7 天）。**高频写入，无保留策略就是下一个 `reconciliation_reports`。**"""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+        ).isoformat()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM candidate_exclusions WHERE created_at < ?", (cutoff,)
+            )
+            return int(cursor.rowcount or 0)
+
+    def candidate_exclusion_summary(self, tenant_id: str = "", hours: int = 24) -> list[dict]:
+        """按原因聚合 —— 监控页「候选 N / 硬排除 M / 软降权 K」的数据源。"""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))
+        ).isoformat()
+        query = """SELECT reason, phase, COUNT(*) AS count FROM candidate_exclusions
+                   WHERE created_at >= ?"""
+        params: list = [cutoff]
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(tenant_id)
+        query += " GROUP BY reason, phase ORDER BY count DESC"
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(query, params).fetchall()]
+
+    def recent_candidate_exclusions(self, tenant_id: str = "", limit: int = 200) -> list[dict]:
+        """最近的候选排除/降权明细（监控页用，**不含 `ADMITTED` 埋点**）。"""
+        query = "SELECT * FROM candidate_exclusions WHERE phase <> 'ADMITTED'"
+        params: list = []
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(tenant_id)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(query, params).fetchall()]
+
+    def candidate_quote_age_percentiles(
+        self, tenant_id: str = "", hours: int = 24,
+    ) -> dict:
+        """`quote_age_at_submit` 的 P50 / P95 / P99（按租户）。
+
+        P0-5 §5.1 要求**用数据复审 300s**，而不是靠断言：若 P95 逼近 300s，
+        说明拦单过多，回退到 600s。取的是 `phase='ADMITTED'` 的埋点行。
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))
+        ).isoformat()
+        query = """SELECT age_seconds FROM candidate_exclusions
+                   WHERE phase = 'ADMITTED' AND age_seconds IS NOT NULL
+                   AND created_at >= ?"""
+        params: list = [cutoff]
+        if tenant_id:
+            query += " AND tenant_id = ?"
+            params.append(tenant_id)
+        with self.connection() as connection:
+            ages = sorted(
+                float(row["age_seconds"]) for row in connection.execute(query, params).fetchall()
+            )
+        if not ages:
+            return {"count": 0, "p50": None, "p95": None, "p99": None}
+
+        def _pct(ratio: float) -> float:
+            index = min(len(ages) - 1, max(0, int(round(ratio * (len(ages) - 1)))))
+            return round(ages[index], 1)
+
+        return {"count": len(ages), "p50": _pct(0.50), "p95": _pct(0.95), "p99": _pct(0.99)}
+
     def undelivered_alerts(self, limit: int = 200) -> list[dict]:
         """「未投递」视图（P0-2 设计 §3.2）。
 
@@ -2455,12 +2559,40 @@ class TradingStore:
         return deleted
 
     _DECISION_CACHE: dict[tuple[str, str | None, str], tuple[str, str, float]] = {}
+    # 缺 tenant_id 的告警**每进程每 (strategy, symbol) 只落一次**：
+    # 决策记录是热路径（雷达每轮每候选一条），不加这道闸会把 operational_events 写爆，
+    # 而「同一处调用点一直缺 tenant_id」这件事本就只需要报一次。
+    _MISSING_TENANT_WARNED: set[tuple[str, str]] = set()
 
     def decision(
         self, strategy_id: str, symbol: str | None, decision: str, reason: str,
         payload: dict | None = None, tenant_id: str | None = None,
     ) -> None:
         tenant = str(tenant_id or "")
+        if not tenant and (str(strategy_id), str(symbol)) not in self._MISSING_TENANT_WARNED:
+            self._MISSING_TENANT_WARNED.add((str(strategy_id), str(symbol)))
+            # P1-7: 解析不到时不许静默落 ""：记录 WARNING 事件说明哪条决策缺 tenant_id 及调用点
+            caller_info = "unknown"
+            try:
+                frame = sys._getframe(1)
+                if frame and frame.f_code.co_name == "decision_if_changed":
+                    frame = frame.f_back
+                if frame:
+                    caller_info = f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}"
+            except Exception:
+                pass
+            try:
+                self.operational_event(
+                    "decision_logger", "DECISION_MISSING_TENANT_ID", "WARNING",
+                    {
+                        "strategy_id": strategy_id,
+                        "symbol": symbol,
+                        "decision": decision,
+                        "caller": caller_info,
+                    },
+                )
+            except Exception:
+                pass
         self._DECISION_CACHE[(strategy_id, symbol, tenant)] = (decision, reason, time.time())
         with self.connection() as connection:
             connection.execute(

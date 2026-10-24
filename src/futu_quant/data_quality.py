@@ -30,9 +30,19 @@ def quote_freshness(row, now: datetime | None = None, max_age_seconds: int = 900
 
 def option_quote_freshness(
     row, now: datetime | None = None, fresh_seconds: int = 180,
-    maximum_seconds: int = 900, maximum_spread_pct: float = 20.0,
+    maximum_seconds: int = 300, maximum_spread_pct: float = 20.0,
 ) -> tuple[bool, str, float, bool]:
-    """Allow a quiet option quote to degrade gracefully when its book is usable."""
+    """Allow a quiet option quote to degrade gracefully when its book is usable.
+
+    `maximum_seconds` 默认 **300**（P0-5 §5.1，原为 900）—— 候选层与入场层**在时间上分离**
+    （扫描 → 建 campaign → 下一轮评估 → 选结构 → 下单），候选在扫描时新鲜**不代表下单时新鲜**。
+    调用方应从 `candidate_quality` 的**同源配置**传入，不要各写各的。
+
+    ⚠️ 本函数的 `maximum_spread_pct`（默认 20）是**盘口 sanity 检查**，
+    **不是入场价差门禁** —— 入场价差门禁由 campaign 的 `max_spread_pct`（VOLATILITY 默认 **12**）
+    与配置 `entry_max_spread_pct`（默认 **12**，与真实门禁一致）共同表达。
+    两者语义不同，**不要拿这个 20 当入场上限**（那会把真金门禁从 12% 放宽到 20%）。
+    """
     _, _, age = quote_freshness(row, now, maximum_seconds)
     if age <= fresh_seconds:
         return True, f"行情新鲜，延迟 {age:.0f} 秒", age, False

@@ -110,6 +110,7 @@ def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float
 def refreshed_trade_quotes(
     broker: FutuPaperBroker, code: str, underlying: str, now: datetime,
     maximum_spread_pct: float, retries: int = 2, wait_seconds: float = 1.5,
+    maximum_stale_seconds: int = 300,
 ) -> tuple[pd.Series, pd.Series, dict]:
     attempts: list[dict] = []
     last_option = None
@@ -119,7 +120,7 @@ def refreshed_trade_quotes(
         option = quote[quote["code"] == code].iloc[0]
         owner = quote[quote["code"] == underlying].iloc[0]
         option_fresh, option_reason, option_age, option_degraded = option_quote_freshness(
-            option, now, fresh_seconds=180, maximum_seconds=900,
+            option, now, fresh_seconds=180, maximum_seconds=maximum_stale_seconds,
             maximum_spread_pct=maximum_spread_pct,
         )
         owner_fresh, owner_reason, owner_age = quote_freshness(owner, now)
@@ -442,6 +443,7 @@ def run_campaign(
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
 ) -> None:
     code = str(campaign.get("code", ""))
+    _campaign_tenant = str(campaign.get("tenant_id") or "")
     legs = campaign.get("legs") or [{"code": code, "side": "BUY", "ratio": 1}]
     valid_leg_codes = [
         str(leg.get("code", "")).upper()
@@ -524,6 +526,7 @@ def run_campaign(
             strategy_id, code, "BLOCKED", "检测到期权裸空残腿，禁止新开仓并继续执行风险接管",
             {"naked_short": naked_rows["code"].astype(str).tolist(), "reduce_only_takeover": True},
             repeat_after_seconds=300,
+            tenant_id=_campaign_tenant,
         )
         # Do not fall through to a new entry; the combo/orphan monitor owns the
         # reduce-only BUY/SELL recovery path and must continue operating.
@@ -565,6 +568,7 @@ def run_campaign(
             f"组合订单正在执行：{combo.get('status', 'UNKNOWN')}",
             {"combo_id": combo_id, "structure": campaign.get("structure")},
             repeat_after_seconds=300,
+            tenant_id=_campaign_tenant,
         )
         return
     if combo and combo.get("status") == "OPEN":
@@ -579,7 +583,7 @@ def run_campaign(
     # 放在这里而不是函数开头，是因为**此刻 `quantity` 才是权威值**
     # （已包含 SHADOW 虚拟持仓与 OPEN combo 的 mark）。
     if hard_issues_block_action(hard_issues, quantity):
-        executor.store.decision(strategy_id, code, "BLOCKED", hard_issue_reason)
+        executor.store.decision(strategy_id, code, "BLOCKED", hard_issue_reason, tenant_id=_campaign_tenant)
         print(f"{code}: BLOCKED {hard_issue_reason}")
         return
     if trigger_mode == "VOLATILITY" and quantity <= 0:
@@ -622,6 +626,7 @@ def run_campaign(
             {"position_quantity": 0, "planned_order_quantity": 0,
              "position_source": "SHADOW_LEDGER" if execution_mode == "SHADOW" else "FUTU_ACCOUNT",
              "trigger_mode": trigger_mode, "validation_warnings": issues},
+            tenant_id=_campaign_tenant,
         )
         print(f"{code}: CLOSED (campaign exit completed)")
         return
@@ -643,6 +648,7 @@ def run_campaign(
                 f"组合仍处于{combo_state.get('status')}，禁止新的开仓或重复平仓",
                 {"combo_id": combo_state.get("combo_id"), "exit_state": combo_state.get("status"),
                  "leg_symbols": sorted(pending_codes)}, repeat_after_seconds=300,
+                tenant_id=_campaign_tenant,
             )
             return
     pending = (
@@ -668,6 +674,7 @@ def run_campaign(
                 "market_session": "OPTION_CLOSED",
                 "option_quote_time": "",
             }, repeat_after_seconds=3600,
+            tenant_id=_campaign_tenant,
         )
         print(f"{code}: HOLD ({reason})")
         return
@@ -681,16 +688,41 @@ def run_campaign(
                 "expiry_reason": expiry_reason,
                 "position_quantity": 0,
             }, repeat_after_seconds=86400,
+            tenant_id=_campaign_tenant,
         )
         print(f"{code}: CLOSED ({reason})")
         return
 
+    quality = resolve_candidate_quality_for_campaign(executor.store, campaign)
     max_quote_spread_pct = float(campaign.get(
         "max_spread_pct", 12.0 if trigger_mode == "VOLATILITY" else 20.0
     ))
     option, owner, quote_check = refreshed_trade_quotes(
         broker, code, campaign["underlying"], now, max_quote_spread_pct,
+        # 降级上限与候选层**同源**（P0-5 §5.1：900 → 300）。
+        # **价差来源保持现状**：把这里改成 `quality.entry_max_spread_pct`（默认 20）
+        # 会把 VOLATILITY 的 12% 放宽到 20% —— 那是**放松真金入场门禁**，
+        # 不在本批授权范围内，故只接管停滞上限。
+        maximum_stale_seconds=quality.entry_max_stale_seconds,
     )
+    # `quote_age_at_submit` 埋点（P0-5 §5.1）：门禁**通过**（含降级通过）时记录当次年龄。
+    # 300s 是"先上线、带埋点、一周后按数据复审" —— **不许再用"影响几乎为零"这类断言**，
+    # P95 逼近 300s 就说明拦单过多，回退 600s。
+    if quote_check["option_fresh"] and quote_check["underlying_fresh"] and quote_check["book_ok"]:
+        try:
+            executor.store.record_candidate_exclusions([{
+                "tenant_id": str(campaign.get("tenant_id") or ""),
+                "strategy_id": strategy_id,
+                "underlying": campaign["underlying"],
+                "code": code,
+                "reason": "ADMITTED",
+                "age_seconds": float(quote_check["option_age_seconds"]),
+                "spread_pct": float(quote_check["spread_pct"]),
+                "volume": None,
+                "phase": "ADMITTED",
+            }])
+        except Exception:  # noqa: BLE001 - 埋点失败绝不能阻断下单
+            pass
     # A quote between 180s and 900s old is explicitly marked degraded by the
     # data-quality layer. Permit a small, liquid entry in that window; fully
     # stale or unusable-book quotes remain blocked.
@@ -734,9 +766,10 @@ def run_campaign(
         if quantity <= 0:
             should_record = executor.store.decision_if_changed(
                 strategy_id, code, decision, reason, payload, repeat_after_seconds=900,
+                tenant_id=_campaign_tenant,
             )
         else:
-            executor.store.decision(strategy_id, code, decision, reason, payload)
+            executor.store.decision(strategy_id, code, decision, reason, payload, tenant_id=_campaign_tenant)
             should_record = True
         if should_record:
             executor.store.audit(
@@ -855,6 +888,7 @@ def run_campaign(
                 {"position_quantity": quantity, "position_pnl_amount": position_pnl_amount,
                  "pnl_ratio": pnl_ratio, "hard_stop_bypasses_cooldown": True,
                  "trigger_mode": trigger_mode},
+                tenant_id=_campaign_tenant,
             )
             print(f"{code}: SELL ({reason}) [硬止损绕过冷却]")
     regime = None
@@ -910,7 +944,7 @@ def run_campaign(
         direction_reason = f"{direction_reason}；动态状态：{regime['reason']}"
         if quantity <= 0 and campaign.get("optimizer_version") != 2:
             reason = "旧版波动率活动尚未完成动态状态和合约质量评分，请重新生成候选"
-            executor.store.decision(strategy_id, code, "HOLD", reason, {"regime": regime})
+            executor.store.decision(strategy_id, code, "HOLD", reason, {"regime": regime}, tenant_id=_campaign_tenant)
             print(f"{code}: HOLD ({reason})")
             return
         if quantity <= 0:
@@ -961,6 +995,7 @@ def run_campaign(
                         ),
                     },
                     repeat_after_seconds=300,
+                    tenant_id=_campaign_tenant,
                 )
                 print(f"{code}: HOLD ({confirmation_reason})")
                 return
@@ -986,6 +1021,7 @@ def run_campaign(
                     {"exit_state": "COOLDOWN", "signal_epoch": signal_state.get("signal_epoch"),
                      "exit_signal_epoch": signal_state.get("exit_signal_epoch")},
                     repeat_after_seconds=300,
+                    tenant_id=_campaign_tenant,
                 )
                 print(f"{code}: HOLD ({reason})")
                 return
@@ -1013,14 +1049,14 @@ def run_campaign(
                     executor.store.decision(strategy_id, code, "COOLDOWN_BYPASS", bypass_reason, {
                         "regime": regime, "cooldown_reason": cooldown_reason,
                         "remaining_cooldown_hours": remaining,
-                    })
+                    }, tenant_id=_campaign_tenant)
                     print(f"{code}: COOLDOWN_BYPASS ({bypass_reason})")
                 else:
                     reason = f"同一标的退出冷却中，剩余约 {remaining:.1f} 小时；{bypass_reason}"
                     executor.store.decision(strategy_id, code, "HOLD", reason, {
                         "regime": regime, "cooldown_reason": cooldown_reason,
                         "remaining_cooldown_hours": remaining,
-                    })
+                    }, tenant_id=_campaign_tenant)
                     print(f"{code}: HOLD ({reason})")
                     return
     if quantity <= 0 and trigger_mode == "EARNINGS" and (
@@ -1037,7 +1073,7 @@ def run_campaign(
             "expected_move_edge": campaign.get("expected_move_edge", 0),
             "score_reason": campaign.get("score_reason", ""),
             "optimizer_version": campaign.get("optimizer_version", 0),
-        })
+        }, tenant_id=_campaign_tenant)
         print(f"{code}: HOLD ({reason})")
         return
     per_stage = int(campaign["contracts_per_stage"])
@@ -1368,10 +1404,12 @@ def run_campaign(
         executor.store.decision_if_changed(
             strategy_id, code, "SIGNAL_BUY", reason, decision_payload,
             repeat_after_seconds=900,
+            tenant_id=_campaign_tenant,
         )
     else:
         executor.store.decision_if_changed(
             strategy_id, code, action, reason, decision_payload, repeat_after_seconds=900,
+            tenant_id=_campaign_tenant,
         )
     if action == "BUY":
         if trigger_mode == "VOLATILITY" and campaign.get("exit_only"):
@@ -1379,6 +1417,7 @@ def run_campaign(
             executor.store.decision(
                 strategy_id, code, "CLOSED", block_reason,
                 {**decision_payload, "exit_only": True},
+                tenant_id=_campaign_tenant,
             )
             print(f"{code}: CLOSED ({block_reason})")
             return
@@ -1387,6 +1426,7 @@ def run_campaign(
             payload = {**decision_payload, "pre_trade_check": check, **details}
             recorded = executor.store.decision_if_changed(
                 strategy_id, code, "BLOCKED", block_reason, payload, repeat_after_seconds=900,
+                tenant_id=_campaign_tenant,
             )
             if recorded:
                 executor.store.audit(
@@ -1469,7 +1509,7 @@ def run_campaign(
                 }, strategy_id, actor="service:gamma")
                 executor.store.decision(strategy_id, code, "BLOCKED", f"组合质量未通过，拒绝退化为单腿：{combo_entry_reason}", {
                     "combo_quality_checks": combo_entry_checks,
-                })
+                }, tenant_id=_campaign_tenant)
                 print(f"{code}: BLOCKED (组合质量未通过，拒绝退化为单腿)")
                 return
         entry_unit_price = (
@@ -1589,6 +1629,7 @@ def run_campaign(
                     strategy_id, code, "HOLD", "定义风险组合已经完成开仓",
                     {"combo_id": active_combo_id, "structure": campaign.get("structure")},
                     repeat_after_seconds=300,
+                    tenant_id=_campaign_tenant,
                 )
                 return
             quotes = broker.snapshots([leg["code"] for leg in order_legs]).set_index("code")
@@ -1631,6 +1672,7 @@ def run_campaign(
                 strategy_id, code, "BUY",
                 f"已提交定义风险组合：{campaign.get('structure_label', campaign.get('structure'))}",
                 {**decision_payload, "combo_id": active_combo_id, "legs": combo_legs},
+                tenant_id=_campaign_tenant,
             )
             return
         leg_quotes = broker.snapshots([leg["code"] for leg in order_legs]).set_index("code")
@@ -1729,7 +1771,7 @@ def run_campaign(
                     "book_reason": wait_reason,
                     "planned_order_quantity": exit_quantity,
                     "exit_price_context": exit_price_context,
-                })
+                }, tenant_id=_campaign_tenant)
                 executor.store.audit("OPTION_EXIT_WAITING_FOR_BID", {
                     "symbol": leg["code"], "strategy_id": strategy_id,
                     "reason": wait_reason,

@@ -191,7 +191,7 @@ class ExecutionManager:
                 },
                 strategy_id,
              actor="service:execution")
-            self.store.decision(strategy_id, symbol, "BLOCKED", reason)
+            self.store.decision(strategy_id, symbol, "BLOCKED", reason, tenant_id=tenant_id)
             return ExecutionResult(0, "APPROVAL_REQUIRED", reason)
         metadata.setdefault("reference_price", float(price))
         price = self._initial_smart_price(symbol, side, float(price), metadata)
@@ -272,7 +272,7 @@ class ExecutionManager:
                 "SHADOW_ORDER", {"intent_id": intent["id"], "price": price, "quantity": quantity},
                 strategy_id,
              actor="service:execution")
-            self.store.decision(strategy_id, symbol, side, "Shadow 模式：风控通过但未提交券商")
+            self.store.decision(strategy_id, symbol, side, "Shadow 模式：风控通过但未提交券商", tenant_id=tenant_id)
             return ExecutionResult(intent["id"], "SHADOW", "Shadow 模式：未提交富途")
         # Persist the irreversible boundary before invoking the broker. FAILED is retryable
         # in TradingStore when no order id exists; neither transport errors nor local write
@@ -327,7 +327,7 @@ class ExecutionManager:
             strategy_id,
          actor="service:execution")
         order_label = "实盘订单" if mode == "REAL" else "模拟订单"
-        self.store.decision(strategy_id, symbol, side, f"风控通过并提交{order_label}")
+        self.store.decision(strategy_id, symbol, side, f"风控通过并提交{order_label}", tenant_id=tenant_id)
         final = self.store.intent(intent["id"])
         status = final["status"] if final else "SUBMITTED"
         return ExecutionResult(intent["id"], status, f"{order_label}已提交", order_id, response)
