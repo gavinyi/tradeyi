@@ -63,6 +63,7 @@ from futu_quant.stress import monitor_portfolio_stress
 from futu_quant.stress_alerts import (
     LEGACY_INCIDENT_KEY as PORTFOLIO_STRESS_LEGACY_KEY,
     STATE_ALERTING,
+    STATE_OK,
     legacy_incident_closed,
     mark_legacy_incident_closed,
     next_stress_action,
@@ -693,6 +694,48 @@ def active_volatility_combo_ids(store: TradingStore) -> set[str]:
     return ids
 
 
+def portfolio_stress_check(broker, store, alerts, tenant_id) -> None:
+    """组合压力告警的**接线层**（P1-8）。
+
+    刻意提成模块级函数而不是 `service_cycle` 里的闭包：闭包没法被测试直接调用，
+    于是「模块函数测了、接线没测」这种形态会一直漏 —— 而接线里一个未导入的名字
+    就能让 recover 分支每轮抛错、滞回状态永远停在 ALERTING。
+    """
+    result = monitor_portfolio_stress(broker, store)
+    if result.empty:
+        return
+    # P1-8：阈值/事件键/滞回全部走单源；缓冲带内不再「告警-恢复」来回刷。
+    breach, recover = resolve_portfolio_stress_thresholds(store, tenant_id)
+    incident_key = portfolio_stress_incident_key(tenant_id)
+    # 旧全局 incident 一次性收口：改租户键后老事件会永久悬空。
+    if not legacy_incident_closed(store, tenant_id):
+        alerts.recover(
+            PORTFOLIO_STRESS_LEGACY_KEY,
+            "组合压力告警已迁移为租户级事件，旧全局事件收口",
+            incident_key=PORTFOLIO_STRESS_LEGACY_KEY,
+        )
+        mark_legacy_incident_closed(store, tenant_id)
+    worst = result.iloc[0]
+    ratio = float(worst["equity_loss_ratio"])
+    state = read_hysteresis_state(store, tenant_id)
+    action = next_stress_action(ratio, state, breach, recover)
+    if action == "alert":
+        alerts.send(
+            "ERROR", "PORTFOLIO_STRESS_BREACH",
+            f"[{tenant_id or 'global'}] 组合压力场景“{worst['scenario']}”估算损失 "
+            f"{ratio:.1%}，超过 {breach:.1%}",
+            incident_key=incident_key,
+        )
+        write_hysteresis_state(store, tenant_id, STATE_ALERTING)
+    elif action == "recover":
+        alerts.recover(
+            incident_key, "组合压力损失已回到恢复线以内",
+            incident_key=incident_key,
+        )
+        write_hysteresis_state(store, tenant_id, STATE_OK)
+    # action == "none"：缓冲带内或状态未变 —— 不重发、不误消警
+
+
 def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = None) -> None:
     # P0-8：绑定本进程服务的租户 —— 调度键（last_run:* / task_backoff_until:* /
     # task_failure_count:*）据此带租户维度。**必须在任何 due/mark_run/run_task 之前**，
@@ -953,42 +996,12 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
     elif not session.regular_open(now):
         store.heartbeat("option_history", "HEALTHY", "等待美股常规交易时段采集", os.getpid())
     if session.regular_open(now) and due(store, "last_run:portfolio_stress", 900, now):
-        def stress_check():
-            result = monitor_portfolio_stress(broker, store)
-            if result.empty:
-                return
-            tenant_id = tenant.tenant_id if tenant else None
-            # P1-8：阈值/事件键/滞回全部走单源；缓冲带内不再「告警-恢复」来回刷。
-            breach, recover = resolve_portfolio_stress_thresholds(store, tenant_id)
-            incident_key = portfolio_stress_incident_key(tenant_id)
-            # 旧全局 incident 一次性收口：改租户键后老事件会永久悬空。
-            if not legacy_incident_closed(store, tenant_id):
-                alerts.recover(
-                    PORTFOLIO_STRESS_LEGACY_KEY,
-                    "组合压力告警已迁移为租户级事件，旧全局事件收口",
-                    incident_key=PORTFOLIO_STRESS_LEGACY_KEY,
-                )
-                mark_legacy_incident_closed(store, tenant_id)
-            worst = result.iloc[0]
-            ratio = float(worst["equity_loss_ratio"])
-            state = read_hysteresis_state(store, tenant_id)
-            action = next_stress_action(ratio, state, breach, recover)
-            if action == "alert":
-                alerts.send(
-                    "ERROR", "PORTFOLIO_STRESS_BREACH",
-                    f"[{tenant_id or 'global'}] 组合压力场景“{worst['scenario']}”估算损失 "
-                    f"{ratio:.1%}，超过 {breach:.1%}",
-                    incident_key=incident_key,
-                )
-                write_hysteresis_state(store, tenant_id, STATE_ALERTING)
-            elif action == "recover":
-                alerts.recover(
-                    incident_key, "组合压力损失已回到恢复线以内",
-                    incident_key=incident_key,
-                )
-                write_hysteresis_state(store, tenant_id, STATE_OK)
-            # action == "none"：缓冲带内或状态未变 —— 不重发、不误消警
-        run_task(store, alerts, "portfolio_stress", stress_check)
+        run_task(
+            store, alerts, "portfolio_stress",
+            lambda: portfolio_stress_check(
+                broker, store, alerts, tenant.tenant_id if tenant else None,
+            ),
+        )
         mark_run(store, "last_run:portfolio_stress", now)
     elif not session.regular_open(now):
         store.heartbeat("portfolio_stress", "HEALTHY", "等待常规交易时段更新压力矩阵", os.getpid())

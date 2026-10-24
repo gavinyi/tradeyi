@@ -31,6 +31,20 @@ render_sidebar(settings)
 store = TradingStore()
 admin = render_admin_login()
 
+def current_tenant_id() -> str:
+    """当前租户（页面级单一口径）。
+
+    必须在模块级先算一次：控制页的策略表格在**页面渲染时**就要按租户解析执行模式，
+    只在 `load_control_snapshot()` 里定义局部变量会直接 `NameError`（页面打不开）。
+    """
+    try:
+        return str(get_current_tenant(settings).get("tenant_id") or "")
+    except Exception:
+        return ""
+
+
+tenant_id = current_tenant_id()
+
 st.title("策略与资金控制")
 st.caption(
     "统一管理策略启停、执行模式、资金配额和后台服务。策略页面只负责各自参数，组合风险页面只负责压力测试。"
@@ -46,11 +60,12 @@ def load_control_snapshot():
     current_store = TradingStore()
     # 暂停状态按**当前租户**读（租户键优先、全局键兜底），不再无条件读全局键 ——
     # 否则界面会把「别的租户的暂停状态」显示成当前租户的，误导操作者。
-    try:
-        tenant_id = str(get_current_tenant(settings).get("tenant_id") or "")
-    except Exception:
-        tenant_id = ""
-    tenant_paused = current_store.get_tenant_setting(tenant_id, "strategies_paused", "") if tenant_id else ""
+    # 与模块级同口径，避免「一处算一次、另一处又算一次」漂移
+    snapshot_tenant_id = tenant_id
+    tenant_paused = (
+        current_store.get_tenant_setting(snapshot_tenant_id, "strategies_paused", "")
+        if snapshot_tenant_id else ""
+    )
     return (
         current_store.heartbeats(),
         current_store.strategy_risk_budgets(),
