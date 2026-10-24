@@ -398,6 +398,16 @@ def render_sidebar_tenant_switcher(settings=None) -> dict:
             f"{status_text}</div>",
             unsafe_allow_html=True,
         )
+        is_test_env = os.getenv("TRADEYI_ENV") == "test"
+        if is_test_env:
+            st.markdown(
+                "<div style='font-size:11px;padding:4px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-weight:700;margin-top:6px;'>"
+                "🧪 当前处于测试环境 (8601)</div>",
+                unsafe_allow_html=True,
+            )
+            st.link_button("🏭 切换至生产环境 (8501)", "http://localhost:8501", use_container_width=True)
+        else:
+            st.link_button("🧪 切换至测试环境 (8601)", "http://localhost:8601", use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     return current_tenant

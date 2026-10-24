@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 PRODUCTION_ROOT = Path(r"E:\Thisyi\trade").resolve()
 TEST_ROOT = Path(r"E:\Thisyi\trade-test").resolve()
 
