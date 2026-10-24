@@ -71,6 +71,10 @@ ALERT_NEVER_MUTE = {
     # 两者都必须发得出去，否则「通道坏了」这件事本身会被通道坏掉而静默。
     "ALERT_CHANNEL_NOT_CONFIGURED",
     "ALERT_DELIVERY_FAILED",
+    # P1-13 进程失联：进程暴毙 / 僵死。显式列入不可静音清单 —— CRITICAL 现在
+    # 默认不静音，但规则一改就可能被静音，而「服务死了没人知道」比告警噪音严重得多。
+    "PROCESS_TERMINATED",
+    "PROCESS_HEARTBEAT_TIMEOUT",
 }
 
 # 探针事件名与间隔（S3）。间隔由 `ALERT_PROBE_INTERVAL_SECONDS` 覆盖。

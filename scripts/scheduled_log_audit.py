@@ -17,6 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from futu_quant.store import TradingStore  # noqa: E402
 from futu_quant.service_control import status  # noqa: E402
 from futu_quant.market_calendar import USMarketCalendar  # noqa: E402
+from futu_quant.process_watchdog import (  # noqa: E402
+    TARGETS as WATCHDOG_TARGETS,
+    evaluate_heartbeat,
+    maintenance_active,
+)
+from futu_quant.alerts import AlertManager  # noqa: E402
 
 CHINA_TZ = timezone(timedelta(hours=8))
 NY_TZ = ZoneInfo("America/New_York")
@@ -26,21 +32,99 @@ def in_us_regular_session(now_utc: datetime) -> bool:
     now_ny = now_utc.astimezone(NY_TZ)
     return USMarketCalendar().session(now_ny).regular_open(now_ny)
 
+def _pid_from_file(path: str) -> int | None:
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def _process_cmdline(pid: int) -> str | None:
+    """用 CIM 查命令行 —— PID 复用判据。查不到返回 None。"""
+    ps = (
+        "(Get-CimInstance Win32_Process -Filter 'ProcessId=" + str(pid) + "' "
+        "-ErrorAction SilentlyContinue).CommandLine"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    cmdline = (result.stdout or "").strip()
+    return cmdline or None
+
+
+def _heartbeat_updated_at(store, component: str):
+    for row in store.heartbeats():
+        name = str(row.get("strategy_id") or row.get("name") or "")
+        if name != component:
+            continue
+        raw = str(row.get("updated_at") or "")
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def check_processes(store) -> list[str]:
+    """P1-13 Layer 1：进程失联双校验（PID 身份 + 心跳时效）。
+
+    **不受交易时段限制**：服务盘外死了也必须知道。正常启停窗口由维护标记豁免。
+    """
+    if maintenance_active():
+        print("P1-13 维护标记存在：正常启停窗口，进程巡检静默。")
+        return []
+    alerts = AlertManager(store)
+    issues: list[str] = []
+    for target in WATCHDOG_TARGETS:
+        pid = _pid_from_file(target.pid_file)
+        cmdline = _process_cmdline(pid) if pid else None
+        verdict = evaluate_heartbeat(
+            target=target,
+            pid_present=pid is not None,
+            pid_alive=cmdline is not None,
+            cmdline=cmdline,
+            heartbeat_updated_at=_heartbeat_updated_at(store, target.heartbeat_component),
+        )
+        if verdict is None:
+            continue
+        event, payload = verdict
+        reason = str(payload.get("reason") or event)
+        issues.append(f"🚨 **{target.name} 失联**：{reason}")
+        incident_key = f"{event}:{target.tenant_id or target.heartbeat_component}"
+        try:
+            alerts.send("CRITICAL", event, f"[{target.name}] {reason}", incident_key=incident_key)
+        except Exception as exc:  # 告警不通不能连带把巡检打挂
+            print(f"告警发送失败({event}): {exc}")
+        try:
+            store.audit(event, payload, actor="service:watchdog")
+        except Exception as exc:
+            print(f"审计写入失败({event}): {exc}")
+    return issues
+
+
 def inspect_and_alert():
     now_utc = datetime.now(timezone.utc)
     now_china = now_utc.astimezone(CHINA_TZ)
     time_str = now_china.strftime("%Y-%m-%d %H:%M:%S")
 
-    # 巡检与推送仅在美股常规交易时段执行，盘中盘外安静跳过
+    store = TradingStore()
+    # P1-13：进程失联巡检不受交易时段限制（服务盘外死了也要知道）
+    process_issues = check_processes(store)
+
+    # 其余巡检与推送仅在美股常规交易时段执行，盘中盘外安静跳过
     if not in_us_regular_session(now_utc):
         now_ny = now_utc.astimezone(NY_TZ)
         print(f"[{time_str}] 当前非美股常规交易时段（美东 {now_ny:%Y-%m-%d %H:%M}），本轮巡检跳过，不推送。")
-        return None
+        return process_issues or None
 
-    store = TradingStore()
     svc_status = status()
-    
-    issues = []
+
+    issues = list(process_issues)
 
     # 1. 检查后台交易调度服务进程
     if not svc_status.running:
