@@ -35,6 +35,7 @@ if sys.platform == "win32":
     os.environ["APPDATA"] = str(_local_appdata)
 
 from futu_quant.alerts import ALERT_PROBE_INTERVAL_DEFAULT, AlertManager
+from futu_quant.ml_freshness import check_ml_model_health
 from futu_quant.approval import publish_approval_runtime_manifest
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings
@@ -178,6 +179,7 @@ TASK_TIMEOUTS = {
     "paper_e2e": 180,
     "observability": 30,
     "alert_delivery_probe": 60,
+    "ml_model_health": 60,
     "candidate_exclusions_prune": 60,
     "automatic_recovery": 30,
     "idempotency_audit": 30,
@@ -1281,6 +1283,26 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
     ):
         run_task(store, alerts, "alert_delivery_probe", alerts.probe_delivery)
         mark_run(store, "last_run:alert_delivery_probe", now)
+    # P2-1a：ML 模型健康巡检（**只读检测 + 告警，不改任何打分行为**）。
+    # 背景：ML 曾静默降级为规则打分 6 周没人发现 —— 必须周期体检，且告警要能在
+    # 告警投递中心看到 delivered（只写库不推送正是 P1-1 查出的形态）。
+    if due(
+        store, "last_run:ml_model_health",
+        max(600, int(os.getenv("ML_HEALTH_INTERVAL_SECONDS", str(6 * 3600)))),
+        now,
+    ):
+        def ml_model_health_cycle():
+            report = check_ml_model_health(
+                store, alerts, tenant_id=tenant.tenant_id if tenant else None,
+            )
+            store.operational_event(
+                "ml", "ML_MODEL_HEALTH",
+                "WARNING" if report.get("alerts") else "HEALTHY",
+                report,
+            )
+            return report
+        run_task(store, alerts, "ml_model_health", ml_model_health_cycle)
+        mark_run(store, "last_run:ml_model_health", now)
     # P0-5 候选排除留痕的**保留策略**：按天保留 7 天。
     # 高频写入（每轮每候选一条），无保留策略就是下一个 `reconciliation_reports`（129 万行）。
     if due(store, "last_run:candidate_exclusions_prune", 24 * 60 * 60, now):

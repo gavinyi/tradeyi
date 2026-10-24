@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 MODEL_DIR = Path("data/ml_models")
 DEFAULT_MODEL_NAME = "volatility_scorer_v3.pkl"
 
-# 新鲜度分档（天）。与产品口径一致：<35 绿 / 35-60 橙 / >60 红。
-DEFAULT_WARN_DAYS = 35
-DEFAULT_STALE_DAYS = 60
+# 新鲜度分档（天）。**与 PRD §三/§四 同一套阈值**：<30 绿 / 30-34 橙 / ≥35 红。
+# 页面与告警必须同源，否则「页面说新鲜、告警说必须重训」会互相打脸。
+DEFAULT_WARN_DAYS = 30
+DEFAULT_STALE_DAYS = 35
 
 FRESHNESS_OK = "OK"
 FRESHNESS_WARN = "WARN"
@@ -120,15 +121,6 @@ def model_age_days(model_path: Path, now: datetime | None = None) -> tuple[float
     if not reference.exists():
         return None, "unknown"
 
-    import json as _json
-    _jp = reference.with_suffix(".json")
-    if _jp.exists():
-        try:
-            _t = _as_datetime(_json.loads(_jp.read_text(encoding="utf-8")).get("trained_at"))
-            if _t is not None:
-                return (now - _t).total_seconds() / 86400.0, "metadata_json.trained_at"
-        except Exception:
-            pass
     metadata = read_model_metadata(reference)
     trained_at = _as_datetime((metadata or {}).get("trained_at"))
     if trained_at is not None:
@@ -231,8 +223,10 @@ def detect_scoring_mode(model_path: Path | None = None, enabled: bool | None = N
         result["mode"] = SCORING_RULE_FALLBACK
         result["label"] = SCORING_LABELS[SCORING_RULE_FALLBACK]
         result["reason"] = "ML 模型未能加载，已回退内置规则打分（不拦单，但评分质量下降）"
+        # PRD §四 的五种降级原因之一：缺依赖必须**明确**（此前记成 "unknown"，
+        # 页面只能显示"未知"，运维无从下手）。
         if not result["sklearn_available"]:
-            result["degradation_cause"] = "unknown"
+            result["degradation_cause"] = "sklearn_missing"
         elif not path.exists():
             result["degradation_cause"] = "model_file_missing"
         else:

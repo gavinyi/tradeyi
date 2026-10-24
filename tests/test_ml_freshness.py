@@ -20,7 +20,9 @@ from futu_quant import ml_freshness as mf
 # 草稿实现与草稿测试尚未对齐，且该功能未签字、不部署、不计完成 ——
 # 因此本文件在隔离环境的回归基线中**跳过**，避免"草稿红"污染隔离验收。
 # 解除条件：P1-A 过闸（PRD + 设计 + Chief 签字 + 计划）后去掉此 skip 并修绿。
-pytestmark = pytest.mark.skip(reason="ML 1a 草稿未过闸（P1-A 冻结）；签字启用前不计入回归基线")
+# P2-1a 已过闸（PRD+设计已有，Chief 签署见群）—— 草稿解除跳过，进入回归基线。
+# 判据必须真实跑起来：跳过过的判据等于没有判据（本文件此前整体 skip，掩盖了
+# `model_age_days` 读 json 的时间优先级错误）。
 
 
 # --------------------------------------------------------------------------
@@ -120,10 +122,10 @@ def test_missing_model_is_unknown_and_never_raises(tmp_path):
     "age,expected",
     [
         (0, mf.FRESHNESS_OK),
-        (34.9, mf.FRESHNESS_OK),
-        (35, mf.FRESHNESS_WARN),
-        (59.9, mf.FRESHNESS_WARN),
-        (60, mf.FRESHNESS_STALE),
+        (29.9, mf.FRESHNESS_OK),
+        (30, mf.FRESHNESS_WARN),
+        (34.9, mf.FRESHNESS_WARN),
+        (35, mf.FRESHNESS_STALE),
         (400, mf.FRESHNESS_STALE),
         (None, mf.FRESHNESS_UNKNOWN),
     ],
