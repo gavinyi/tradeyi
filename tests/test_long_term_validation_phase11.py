@@ -47,10 +47,25 @@ def test_manual_restore_requires_shadow_and_reason(tmp_path):
     store = TradingStore(tmp_path / "restore.db")
     store.set_setting("strategy_execution_mode:alpha", "SHADOW")
     try:
-        manually_restore_paper(store, "alpha", "admin", "")
+        manually_restore_paper(
+            store, "alpha", "admin", "", tenant_id="futu_paper_sandbox",
+        )
     except ValueError:
         pass
     else:
         raise AssertionError("empty reason must fail")
-    manually_restore_paper(store, "alpha", "admin", "人工复核通过")
-    assert store.get_setting("strategy_execution_mode:alpha") == "PAPER"
+    # P1-6：恢复必须显式给租户，禁止跨租户无差别解禁
+    try:
+        manually_restore_paper(store, "alpha", "admin", "人工复核通过")
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("缺少 tenant_id 必须报错（跨租户无差别恢复是红线）")
+    # 恢复 = 删掉覆盖键（回到原配置），不是写 PAPER：实盘账户上 PAPER 会自动提成 REAL
+    legacy_key = "strategy_execution_mode:alpha"
+    store.set_setting("strategy_execution_mode:futu_paper_sandbox:alpha", "SHADOW")
+    manually_restore_paper(
+        store, "alpha", "admin", "人工复核通过", tenant_id="futu_paper_sandbox",
+    )
+    assert store.get_setting("strategy_execution_mode:futu_paper_sandbox:alpha") == ""
+    assert store.get_setting(legacy_key) == ""

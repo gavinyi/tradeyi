@@ -16,6 +16,7 @@ os.environ.setdefault("FUTU_LOG_ROLE", "gamma")
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings, load_gamma_campaigns
 from futu_quant.execution import ExecutionManager
+from futu_quant.execution_mode import resolve_configured_execution_mode
 from futu_quant.combo_analytics import combo_market_snapshot
 from futu_quant.combo_execution import (
     ComboExecutionManager, create_combo, find_open_combo_for_campaign,
@@ -534,10 +535,13 @@ def run_campaign(
     position = positions[positions["code"] == code] if not positions.empty else positions
     quantity = int(position.iloc[0]["qty"]) if not position.empty else 0
     cost = float(position.iloc[0]["cost_price"]) if not position.empty else 0.0
-    global_mode = executor.store.get_setting("execution_mode", "PAPER")
-    strategy_mode = executor.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
+    # P1-6：读侧走单源（逐策略租户键 → 旧全局键 → 全局模式），
+    # 不再自己拼 `strategy_execution_mode:{strategy_id}` —— 那样会漏读租户键。
+    strategy_mode = resolve_configured_execution_mode(
+        executor.store, _campaign_tenant, strategy_id,
+    ) or "PAPER"
     campaign_mode = str(campaign.get("execution_mode_override") or "").strip()
-    execution_mode = (campaign_mode or strategy_mode or global_mode).upper()
+    execution_mode = (campaign_mode or strategy_mode).upper()
     combo_last = 0.0
     combo_id = automatic_combo_id(
         strategy_id, campaign, int(campaign_state.get("entry_cycle", 0))

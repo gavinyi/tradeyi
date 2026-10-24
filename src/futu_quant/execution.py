@@ -18,6 +18,15 @@ from .approval import (
 from .fee_model import estimate_fees
 from .real_trading import check_real_trade, resolve_real_account_limits
 from .risk_limits import RiskLimitsConfigError, resolve_risk_limits
+from .execution_mode import (
+    downgrade_strategy_execution_mode,
+    resolve_configured_execution_mode,
+    restore_strategy_execution_mode,
+    strategy_execution_mode_override,
+)
+
+
+
 
 
 @dataclass(frozen=True)
@@ -104,8 +113,8 @@ class ExecutionManager:
         tenant_id = getattr(self.tenant, "tenant_id", "") if self.tenant else ""
         if tenant_id:
             metadata.setdefault("tenant_id", tenant_id)
-        tenant_mode_override = self.store.get_setting(f"strategy_execution_mode:{tenant_id}:{strategy_id}", "") if tenant_id else ""
-        override_mode = tenant_mode_override or self.store.get_setting(f"strategy_execution_mode:{strategy_id}", "")
+        tenant_mode_override = strategy_execution_mode_override(self.store, tenant_id, strategy_id)
+        override_mode = tenant_mode_override
         broker_settings = getattr(self.broker, "settings", None)
         raw_env = getattr(self.broker, "trading_env", None)
         if raw_env is None or not isinstance(raw_env, (str, bytes)):

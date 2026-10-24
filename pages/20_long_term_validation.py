@@ -109,17 +109,32 @@ with governance_tab:
         store.audit("VALIDATION_AUTO_DOWNGRADE_SETTING", {"enabled": selected}, actor="streamlit_admin:panel")
         st.rerun()
     st.warning("自动治理永远不会把 SHADOW 升级为 PAPER。恢复必须管理员选择策略并填写原因。")
-    shadow = [row["strategy_id"] for row in store.strategy_risk_budgets()
-              if store.get_setting(f"strategy_execution_mode:{row['strategy_id']}", "").upper() == "SHADOW"]
-    if shadow:
+    # P1-6：降级状态是**租户级**的（`strategy_execution_mode:{tenant}:{strategy}`），
+    # 只看旧无前缀键会把「实盘已降级」显示成「没降级」，恢复也就无从点起。
+    from futu_quant.execution_mode import resolve_configured_execution_mode
+    from futu_quant.tenant import active_tenants
+
+    shadow_pairs: list[tuple[str, str]] = []
+    for profile in active_tenants():
+        for row in store.strategy_risk_budgets():
+            strategy_id = row["strategy_id"]
+            if resolve_configured_execution_mode(store, profile.tenant_id, strategy_id) == "SHADOW":
+                shadow_pairs.append((profile.tenant_id, strategy_id))
+    if shadow_pairs:
         with st.form("manual_restore", border=True):
-            strategy = st.selectbox("需要恢复的策略", shadow)
+            label = st.selectbox(
+                "需要恢复的（租户 / 策略）",
+                [f"{tenant} / {strategy}" for tenant, strategy in shadow_pairs],
+            )
+            restore_tenant, strategy = label.split(" / ", 1)
             reason = st.text_input("人工复核与恢复原因")
-            submitted = st.form_submit_button("人工恢复为 PAPER", type="primary", disabled=not admin)
+            submitted = st.form_submit_button("解除降级（回到原配置）", type="primary", disabled=not admin)
         if submitted:
             try:
-                manually_restore_paper(store, strategy, "streamlit_admin", reason)
-                st.success(f"{strategy} 已人工恢复为 PAPER。")
+                manually_restore_paper(
+                    store, strategy, "streamlit_admin", reason, tenant_id=restore_tenant,
+                )
+                st.success(f"{restore_tenant} / {strategy} 已解除降级（回到原配置）。")
                 st.rerun()
             except ValueError as exc:
                 st.error(str(exc))

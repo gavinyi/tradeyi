@@ -7,6 +7,9 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from .execution_mode import (
+    downgrade_strategy_execution_mode, resolve_configured_execution_mode,
+)
 from .combo_analytics import (
     capacity_assessment, combo_execution_quality, combo_market_snapshot, run_combo_backtest,
 )
@@ -265,12 +268,19 @@ def apply_auto_downgrade(store, drift: pd.DataFrame) -> list[str]:
         strategy = str(row["策略"])
         if row["状态"] != "显著走样":
             continue
-        global_mode = store.get_setting("execution_mode", "PAPER").upper()
-        current = (store.get_setting(f"strategy_execution_mode:{strategy}", "") or global_mode).upper()
+        # P1-6：读侧走单源（逐策略租户键 → 旧全局键 → 全局模式），否则租户键配的
+        # PAPER 在这里读成全局模式，降级判定会误判。
+        current = resolve_configured_execution_mode(store, None, strategy) or "PAPER"
         if current != "PAPER":
             continue
-        store.set_setting(f"strategy_execution_mode:{strategy}", "SHADOW")
-        store.audit("VALIDATION_AUTO_DOWNGRADE", {"strategy": strategy, "from": "PAPER", "to": "SHADOW"}, strategy, actor="service:validation")
+        # P1-6：写侧必须写到租户键（+ 旧全局键兜底）。只写旧全局键会被租户键盖过，
+        # 结果就是「降级写进去了、实盘照旧 REAL 下单」。
+        written_keys = downgrade_strategy_execution_mode(store, strategy)
+        store.audit(
+            "VALIDATION_AUTO_DOWNGRADE",
+            {"strategy": strategy, "from": "PAPER", "to": "SHADOW", "keys": written_keys},
+            strategy, actor="service:validation",
+        )
         changed.append(strategy)
     return changed
 

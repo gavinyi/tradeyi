@@ -9,6 +9,7 @@ import threading
 from zoneinfo import ZoneInfo
 
 from .alerts import AlertManager
+from .execution_mode import resolve_configured_execution_mode
 from .config import (
     load_volatility_campaigns, load_volatility_symbols,
     resolve_volatility_radar_budget, upsert_campaign,
@@ -548,10 +549,10 @@ def _maybe_create_tenant_campaign(
             store.set_setting(
                 f"strategy_enabled:{tenant_id}:volatility_long_gamma", "true",
             )
-        execution_mode = (
-            store.get_setting("strategy_execution_mode:volatility_long_gamma", "")
-            or store.get_setting("execution_mode", "PAPER")
-        )
+        # P1-6：读侧走单源，本租户键优先；写进审计的模式必须与真正下单用的口径一致。
+        execution_mode = resolve_configured_execution_mode(
+            store, tenant_id, "volatility_long_gamma",
+        ) or "PAPER"
         store.audit("VOLATILITY_AUTO_CAMPAIGN_CREATED", {
             "underlying": symbol, "code": rolled["code"], "reason": roll_reason,
             "execution_mode": execution_mode, "auto_monitor_enabled": True,
