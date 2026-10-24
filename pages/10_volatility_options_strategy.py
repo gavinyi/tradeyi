@@ -193,7 +193,7 @@ def setting_bool(key: str, default: bool) -> bool:
     return str(raw).lower() in {"1", "true", "yes", "y", "是"}
 
 
-data_tab, config_tab = st.tabs(["常用数据", "参数配置"])
+data_tab, funnel_tab, config_tab = st.tabs(["常用数据", "🔍 选品漏斗（为什么没单）", "参数配置"])
 
 with data_tab:
     st.subheader("常用数据")
@@ -257,6 +257,81 @@ with data_tab:
         )
     else:
         st.info("暂无波动率策略执行记录。")
+
+
+with funnel_tab:
+    st.subheader("🔍 候选池选品漏斗与无单归因 (Candidate Quality Funnel)")
+    st.caption(
+        f"当前操作租户：**{_page_tenant_id or '全局'}** · "
+        "全景解析雷达扫描中「为什么某些标的没有开仓」，逐笔穿透行情停滞、价差过大、流动性匮乏等硬排除原因。"
+    )
+
+    hours_choice = st.selectbox("统计时间窗口", [24, 48, 72, 168], format_func=lambda h: f"最近 {h} 小时", index=0, key="funnel_hours")
+
+    summary_rows = store.candidate_exclusion_summary(_page_tenant_id, hours=hours_choice)
+    recent_details = store.recent_candidate_exclusions(_page_tenant_id, limit=200)
+
+    hard_excludes = sum(r["count"] for r in summary_rows if r.get("phase") == "HARD_EXCLUDE")
+    soft_demotes = sum(r["count"] for r in summary_rows if r.get("phase") == "SOFT_DEMOTE")
+    admitted_count = sum(r["count"] for r in summary_rows if r.get("phase") == "ADMITTED")
+    total_candidates = hard_excludes + soft_demotes + admitted_count
+
+    with st.container(horizontal=True, border=True):
+        st.metric("扫描候选总计", f"{total_candidates} 份", border=True)
+        st.metric("硬排除过滤", f"{hard_excludes} 份", delta=f"-{hard_excludes}" if hard_excludes else None, delta_color="inverse", border=True)
+        st.metric("软降权处理", f"{soft_demotes} 份", border=True)
+        st.metric("最终入选候选池", f"{admitted_count} 份", border=True)
+
+    REASON_MAP = {
+        "QUOTE_STALE": "⏱️ 行情停滞（超180s未跳价）",
+        "SPREAD_TOO_WIDE": "↔️ 买卖价差过大（流动性差）",
+        "BOOK_MISSING": "📭 盘口买卖价缺失（无报价）",
+        "VOLUME_TOO_LOW": "📉 成交量过低（缺乏对手盘）",
+        "EXPIRED_T0": "⌛ 当日到期期权（到期排除）",
+    }
+
+    col_chart, col_reasons = st.columns([3, 2])
+    with col_chart:
+        st.markdown("**📊 排除原因分布统计**")
+        if summary_rows:
+            dist_data = []
+            for r in summary_rows:
+                dist_data.append({
+                    "排除原因": REASON_MAP.get(r["reason"], r["reason"]),
+                    "过滤阶段": "硬排除" if r["phase"] == "HARD_EXCLUDE" else ("软降权" if r["phase"] == "SOFT_DEMOTE" else "入选"),
+                    "拦截笔数": r["count"],
+                })
+            st.dataframe(pd.DataFrame(dist_data), hide_index=True, width="stretch")
+        else:
+            st.info("所选窗口内暂无候选排除流水记录（非交易时段或全量放行）。")
+
+    with col_reasons:
+        st.markdown("**💡 无单常见原因排查指引**")
+        st.markdown(
+            "- **⏱️ 行情停滞**：期权超过 180 秒未刷新盘口跳价，防范流动性枯竭冷门合约；\n"
+            "- **↔️ 价差过大**：买卖价差比超过 5%~10%，坚决不进场吃滑点；\n"
+            "- **⌛ 当日到期**：到期日当天属于 T-0 尾部高 Gamma 剧烈衰减区，系统自动禁止新买入；\n"
+            "- **📉 交易量偏低**：日内成交量不足 10 张或未平仓量 < 800 张，防范平仓踩踏。"
+        )
+
+    st.markdown("**📜 最近 200 笔候选排除与降权明细下钻流水**")
+    if recent_details:
+        detail_rows = []
+        for d in recent_details:
+            detail_rows.append({
+                "记录时间": d.get("created_at", "")[:19].replace("T", " "),
+                "标的代码": d.get("option_code", ""),
+                "正股代码": d.get("underlying", ""),
+                "排除阶段": "硬排除" if d.get("phase") == "HARD_EXCLUDE" else "软降权",
+                "中文原因": REASON_MAP.get(d.get("reason", ""), d.get("reason", "")),
+                "盘口买价": f"${float(d.get('bid', 0)):.2f}" if d.get("bid") is not None else "—",
+                "盘口卖价": f"${float(d.get('ask', 0)):.2f}" if d.get("ask") is not None else "—",
+                "价差比例": f"{float(d.get('spread_pct', 0)):.1f}%" if d.get("spread_pct") is not None else "—",
+                "行情停滞": f"{int(d.get('age_seconds', 0))} 秒" if d.get("age_seconds") is not None else "—",
+            })
+        st.dataframe(pd.DataFrame(detail_rows), hide_index=True, width="stretch")
+    else:
+        st.info("暂无最近排除明细流水。")
 
 
 with config_tab:
