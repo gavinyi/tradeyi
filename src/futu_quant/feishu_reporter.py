@@ -217,47 +217,24 @@ class FeishuReporter:
         message: str,
         is_recovered: bool = False,
     ) -> bool:
-        """向飞书群聊或 Webhook 发送紧急告警或故障恢复卡片。"""
-        from datetime import datetime
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        """向飞书群聊或 Webhook 发送人话化结构告警或故障恢复卡片。"""
+        from .feishu_humanize import humanize_alert
+
+        status_title, lines = humanize_alert(
+            event_type, severity, message, is_recovered=is_recovered,
+        )
 
         sev_upper = severity.upper()
-        h_name = human_event_type(event_type)
         if is_recovered:
             header_color = "green"
-            icon = "🟢"
-            base_name = h_name
-            for neg_suffix in ["异常", "失败", "超时", "中断", "拦截", "急停", "暂不可用", "断开连接"]:
-                if base_name.endswith(neg_suffix):
-                    base_name = base_name[:-len(neg_suffix)]
-                    break
-            status_title = "🟢 【故障自愈】三账持仓对账已恢复一致" if event_type == "LEDGER_MISMATCH" else f"{icon} 【故障恢复】{base_name}已恢复正常"
-            level_text = "🟢 **级别**: **NORMAL (已恢复正常)**"
         elif sev_upper == "CRITICAL" or event_type == "LEDGER_MISMATCH":
             header_color = "red"
-            icon = "🚨"
-            status_title = "🚨 【紧急告警】三账持仓对账异常，策略已自动暂停" if event_type == "LEDGER_MISMATCH" else f"{icon} 【紧急告警】{h_name}"
-            level_text = "🔴 **级别**: **CRITICAL (持仓不一致/已触发策略熔断)**"
         elif sev_upper == "ERROR":
             header_color = "orange"
-            icon = "⚠️"
-            status_title = f"{icon} 【系统错误】{h_name}"
-            level_text = "🟠 **级别**: **ERROR (系统错误)**"
+        elif sev_upper == "WARNING":
+            header_color = "yellow"
         else:
             header_color = "blue"
-            icon = "ℹ️"
-            status_title = f"{icon} 【系统通知】{h_name}"
-            level_text = "🔵 **级别**: **INFO (系统提醒)**"
-
-        display_type = f"{h_name} (`{event_type}`)" if h_name != event_type else f"`{event_type}`"
-        lines = [
-            level_text,
-            f"🕒 **时间**: {now_str}",
-            f"📌 **事件类型**: {display_type}",
-            f"📝 **详细情况**:\n{message}",
-        ]
-        if not is_recovered and sev_upper in {"CRITICAL", "ERROR"}:
-            lines.append("🛡️ **系统保护动作**: 已自动暂停新风险开仓，持续保持在岗对账与退出监控。")
 
         # 严格单目标发送逻辑：配了群就只发群，未配群才发个人，绝不双发重复打扰
         # 1. 优先渠道 A: 飞书群聊会话 (若配置了 group_chat_id)

@@ -399,15 +399,33 @@ def render_sidebar_tenant_switcher(settings=None) -> dict:
             unsafe_allow_html=True,
         )
         is_test_env = os.getenv("TRADEYI_ENV") == "test"
+        host = "localhost"
+        try:
+            ws_headers = {}
+            try:
+                from streamlit.web.server.websocket_headers import _get_websocket_headers
+                ws_headers = _get_websocket_headers() or {}
+            except Exception:
+                pass
+            ctx_headers = getattr(getattr(st, "context", None), "headers", None) or {}
+            all_headers = {**ws_headers, **ctx_headers}
+            fwd_host = all_headers.get("x-forwarded-host") or all_headers.get("X-Forwarded-Host")
+            raw_host = fwd_host or all_headers.get("host") or all_headers.get("Host") or ""
+            extracted = str(raw_host).split(":")[0].strip()
+            if extracted:
+                host = extracted
+        except Exception:
+            pass
+
         if is_test_env:
             st.markdown(
                 "<div style='font-size:11px;padding:4px 8px;border-radius:6px;background:#fef3c7;color:#92400e;font-weight:700;margin-top:6px;'>"
-                "🧪 当前处于测试环境 (8601)</div>",
+                "🧪 当前处于仿真实验区</div>",
                 unsafe_allow_html=True,
             )
-            st.link_button("🏭 切换至生产环境 (8501)", "http://localhost:8501", use_container_width=True)
+            st.link_button("🏭 切换至生产正式环境", f"http://{host}:8501", use_container_width=True)
         else:
-            st.link_button("🧪 切换至测试环境 (8601)", "http://localhost:8601", use_container_width=True)
+            st.link_button("🧪 切换至仿真实验区", f"http://{host}:8601", use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
     return current_tenant

@@ -187,8 +187,8 @@ with overview_tab:
 # ---------------------------------------------------------------------------
 with config_tab:
     st.caption("低频调整项，按主题分组；每组单独保存，互不影响。")
-    concentration_tab, execution_tab, greeks_tab = st.tabs(
-        ["仓位集中度", "订单与执行", "波动与 Greeks"]
+    concentration_tab, execution_tab, greeks_tab, stop_loss_tab = st.tabs(
+        ["仓位集中度", "订单与执行", "波动与 Greeks", "🎯 双层止损口径"]
     )
 
     with concentration_tab:
@@ -391,6 +391,92 @@ with config_tab:
                         "GAMMA_VOLATILITY_MAX_IV_PERCENTILE": str(volatility_max_iv_percentile),
                         "DATA_RETENTION_DAYS": str(retention),
                     })
+
+    with stop_loss_tab:
+        with st.container(border=True):
+            st.subheader("🎯 波动率策略双层止损口径（多租户独立隔离）")
+            st.caption(
+                f"当前操作租户：**{current_tenant['label']}**（`{tenant_tid}`）· "
+                "双层止损模型：相对止损比例与单笔最大亏损金额并存，任何一条触发即刻止损退出。"
+            )
+
+            # 读取当前租户生效值（租户键优先，回退全局，回退默认）
+            key_pct = f"volatility_stop_loss_pct:{tenant_tid}"
+            key_notional = f"volatility_max_loss_notional:{tenant_tid}"
+
+            cur_pct_val = store.get_setting(key_pct, "") or store.get_setting("volatility_stop_loss_pct", "-0.25")
+            cur_notional_val = store.get_setting(key_notional, "") or store.get_setting("volatility_max_loss_notional", "300.0")
+
+            try:
+                cur_pct_float = float(cur_pct_val)
+            except Exception:
+                cur_pct_float = -0.25
+
+            try:
+                cur_notional_float = float(cur_notional_val)
+            except Exception:
+                cur_notional_float = 300.0
+
+            with st.form("risk_settings_volatility_stop_loss"):
+                col_sl1, col_sl2 = st.columns(2)
+                with col_sl1:
+                    new_pct = st.number_input(
+                        "相对止损比例 (Stop Loss %)",
+                        min_value=-1.0,
+                        max_value=-0.01,
+                        value=cur_pct_float,
+                        step=0.01,
+                        format="%.2f",
+                        help="持仓浮亏达到该比例时自动触发止损，如 -0.25 代表亏损 25% 止损。",
+                    )
+                with col_sl2:
+                    new_notional = st.number_input(
+                        "单笔最大亏损绝对兜底金额 ($)",
+                        min_value=50.0,
+                        max_value=100000.0,
+                        value=cur_notional_float,
+                        step=50.0,
+                        format="%.1f",
+                        help="单笔期权无论持仓多少，累计绝对浮亏触及该金额时强制止损兜底，默认 $300。",
+                    )
+
+                if st.form_submit_button("保存当前租户止损口径", type="primary"):
+                    store.set_setting(key_pct, str(new_pct))
+                    store.set_setting(key_notional, str(new_notional))
+                    store.audit(
+                        "STOP_LOSS_CONFIG_UPDATED",
+                        {
+                            "tenant_id": tenant_tid,
+                            "account_id": tenant_acc_id,
+                            "stop_loss_pct": new_pct,
+                            "max_loss_notional": new_notional,
+                        },
+                        actor="streamlit_admin:panel",
+                    )
+                    st.success(f"已更新【{current_tenant['short_name']}】双层止损口径（相对 {new_pct:.0%} / 绝对 ${new_notional:.1f}），立即生效！")
+                    st.rerun()
+
+            st.markdown("**📜 最近 5 次止损口径调整记录**")
+            import json as _json
+            audit_rows = []
+            for ev in store.audit_events(limit=100):
+                if ev.get("event_type") == "STOP_LOSS_CONFIG_UPDATED":
+                    try:
+                        payload = _json.loads(ev.get("payload_json") or "{}")
+                    except Exception:
+                        payload = {}
+                    if not tenant_tid or payload.get("tenant_id") == tenant_tid:
+                        audit_rows.append({
+                            "时间": ev.get("created_at", ""),
+                            "操作人": ev.get("actor", ""),
+                            "租户": payload.get("tenant_id", ""),
+                            "止损比例": f"{float(payload.get('stop_loss_pct', 0)):.0%}" if payload.get("stop_loss_pct") is not None else "",
+                            "绝对金额": f"${float(payload.get('max_loss_notional', 0)):.1f}" if payload.get("max_loss_notional") is not None else "",
+                        })
+            if audit_rows:
+                st.dataframe(pd.DataFrame(audit_rows[:5]), hide_index=True)
+            else:
+                st.caption("暂无止损口径调整历史记录。")
 
 # ---------------------------------------------------------------------------
 # 资金与持仓：策略预算总览 + 虚拟持仓归属

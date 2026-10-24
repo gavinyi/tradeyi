@@ -1424,7 +1424,7 @@ def run_campaign(
             or volatility_new_entries_paused(executor.store, broker)
         ):
             block_reason = (
-                f"策略「{strategy_id}」在租户「{_campaign_tenant or 'default'}」已开启「暂停新开仓」："
+                f"策略「{strategy_id}」在租户「{_campaign_tenant or 'default'}」波动率期权新开仓已临时暂停（已开启「暂停新开仓」）："
                 f"坚决不建新仓，已有持仓继续由策略执行止盈、止损与退出管理"
             )
             record_pretrade_block("STRATEGY_NEW_ENTRY_PAUSED", block_reason, {
