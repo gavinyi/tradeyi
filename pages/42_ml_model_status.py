@@ -1,15 +1,4 @@
-"""ML 模型状态与打分开关（P2-1a 只读观测 + P2-3 租户级开关）。
-
-回答 PRD 区块① 的问题，且**不提供任何写操作**（重训/配置属 1b 之后）：
-
-① 当前生产模型是什么、**真实训练年龄**多少（来源必须是 pkl，绝不是元数据 json）；
-② 现在到底在用 **ML 打分** 还是 **规则降级**；降级原因属于 PRD 五种里的哪一种；
-③ 新鲜度指示与 §四 状态表同一套阈值（<30 绿 / 30–34 橙 / ≥35 红）；
-④ `sklearn` 是否可用 —— 这决定了"装依赖后重启会切换打分方式"这件事什么时候发生。
-
-薄视图：所有判定走 `futu_quant.ml_freshness`；开关读写走 `futu_quant.ml_config`，
-页面不读文件、不评估阈值、不拼配置键。
-"""
+"""ML 机器学习模型监控、参数配置与 A/B 对照回测检验中心。"""
 
 from __future__ import annotations
 
@@ -42,16 +31,15 @@ from futu_quant.ml_config import (
 from futu_quant.store import TradingStore
 from futu_quant.ui import get_current_tenant, render_admin_login, render_sidebar
 
-st.set_page_config(page_title="ML 模型状态", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="ML 模型与回测验证中心", page_icon="🧠", layout="wide")
 settings = Settings.load()
 render_sidebar(settings)
 store = TradingStore()
 admin = render_admin_login()
 
-st.title("ML 模型状态（只读）")
+st.title("🧠 机器学习 (ML) 监控与回测验证中心")
 st.caption(
-    "这一页只回答「现在用的是 ML 还是规则、模型有多旧、为什么降级」。"
-    "重训在后续步骤提供；本页唯一可写的是**当前租户**的 ML 打分开关。"
+    "提供模型真实年龄与降级观测、多租户打分模式与因子配置，以及纯规则 vs ML 模型的 A/B 对照回测与生产准入单调性检验。"
 )
 
 # 生效租户：ML 是否启用按租户配置解析；拿不到就诚实显示"未识别"，不猜。
@@ -70,311 +58,314 @@ _freshness_tone = {
 }.get(freshness, "⚪")
 age = health.get("age_days")
 age_text = f"{age:.1f} 天" if isinstance(age, (int, float)) else "未知"
-
 scoring_mode = str(health.get("scoring_mode") or "")
-with st.container(horizontal=True, border=True):
-    st.metric("新鲜度", f"{_freshness_tone} {FRESHNESS_LABELS.get(freshness, '未知')}", border=True)
-    st.metric("模型年龄", age_text, border=True)
-    st.metric("打分方式", SCORING_LABELS.get(scoring_mode, scoring_mode or "未知"), border=True)
-    st.metric("sklearn", "可用" if health.get("sklearn_available") else "未安装", border=True)
 
-if scoring_mode == SCORING_RULE_FALLBACK:
-    st.error("ML 评分未生效，当前为**规则降级**打分。降级不等于报错，但评分质量会下降。")
-elif scoring_mode == SCORING_DISABLED:
-    st.info("ML 评分处于**显式关闭**状态（配置选择，不是故障）。")
-elif scoring_mode == SCORING_ML:
-    st.success("ML 模型已加载并生效。")
-
-
-st.subheader("ML 打分开关（按租户）")
-st.caption(
-    "**默认 `rule`（不显式开启就不上 ML）**：装依赖与开启 ML 放在最后，先保证功能完整。"
-    f"当前租户：`{page_tenant_id or '未识别'}`。切换只影响本租户，不影响其他租户。"
+# ===========================================================================
+# 顶部全局导航页签：将状态监控、回测大屏与参数配置清晰物理分流
+# ===========================================================================
+tab_status, tab_backtest, tab_factors = st.tabs(
+    ["📌 模型状态与重训监控", "📊 规则 vs ML 对照回测大屏", "⚙️ 因子与租户参数配置"]
 )
-_configured_mode = resolve_scoring_mode(store, page_tenant_id)
-_selected_mode = st.radio(
-    "打分方式",
-    options=[MODE_RULE, MODE_ML],
-    index=0 if _configured_mode == MODE_RULE else 1,
-    format_func=lambda value: MODE_LABELS.get(value, value),
-    horizontal=True,
-    disabled=not admin,
-    key="ml_scoring_mode_switch",
-)
-if _selected_mode != _configured_mode:
-    if not admin:
-        st.warning("需要管理员权限才能修改打分开关。")
-    elif not page_tenant_id:
-        st.error("无法解析当前租户，已拒绝写全局开关（会连带切换其他租户）。")
-    else:
-        try:
-            written_key = set_scoring_mode(store, page_tenant_id, _selected_mode)
-        except ValueError as exc:
-            st.error(str(exc))
+
+# ---------------------------------------------------------------------------
+# Tab 1: 模型状态与重训监控
+# ---------------------------------------------------------------------------
+with tab_status:
+    with st.container(horizontal=True, border=True):
+        st.metric("新鲜度", f"{_freshness_tone} {FRESHNESS_LABELS.get(freshness, '未知')}", border=True)
+        st.metric("模型年龄", age_text, border=True)
+        st.metric("打分方式", SCORING_LABELS.get(scoring_mode, scoring_mode or "未知"), border=True)
+        st.metric("sklearn", "可用" if health.get("sklearn_available") else "未安装", border=True)
+
+    if scoring_mode == SCORING_RULE_FALLBACK:
+        st.error("ML 评分未生效，当前为**规则降级**打分。降级不等于报错，但评分质量会下降。")
+    elif scoring_mode == SCORING_DISABLED:
+        st.info("ML 评分处于**显式关闭**状态（配置选择，不是故障）。")
+    elif scoring_mode == SCORING_ML:
+        st.success("ML 模型已加载并生效。")
+
+    st.subheader("ML 打分开关（按租户）")
+    st.caption(
+        "**默认 `rule`（不显式开启就不上 ML）**：先跑通规则，再按需接入模型。"
+        f"当前租户：`{page_tenant_id or '未识别'}`。切换只影响本租户，不影响其他租户。"
+    )
+    _configured_mode = resolve_scoring_mode(store, page_tenant_id)
+    _selected_mode = st.radio(
+        "打分方式",
+        options=[MODE_RULE, MODE_ML],
+        index=0 if _configured_mode == MODE_RULE else 1,
+        format_func=lambda value: MODE_LABELS.get(value, value),
+        horizontal=True,
+        disabled=not admin,
+        key="ml_scoring_mode_switch",
+    )
+    if _selected_mode != _configured_mode:
+        if not admin:
+            st.warning("需要管理员权限才能修改打分开关。")
+        elif not page_tenant_id:
+            st.error("无法解析当前租户，已拒绝写全局开关（会连带切换其他租户）。")
         else:
-            store.audit(
-                "ML_SCORING_MODE_CHANGED",
-                {
-                    "tenant_id": page_tenant_id,
-                    "before": _configured_mode,
-                    "after": _selected_mode,
-                    "key": written_key,
-                },
-                actor="streamlit_admin:panel",
-            )
-            st.rerun()
-
-
-st.subheader("ML 配置（按租户）")
-st.caption(
-    "这些值全部走**租户级三层解析**（租户键 → 全局键 → 默认），改动只影响当前租户，"
-    "并写审计事件 `ML_FACTOR_CHANGED`。非法值会被拒绝，不会静默生效。"
-)
-with st.form("ml_factor_form", border=True):
-    _current_values = {
-        name: resolve_ml_factor(store, page_tenant_id, name) for name in FACTOR_SPECS
-    }
-    _inputs = {}
-    for _name, _spec in FACTOR_SPECS.items():
-        if _spec["kind"] == "str":
-            _inputs[_name] = st.text_input(
-                _spec["label"], value=str(_current_values[_name]), disabled=not admin,
-            )
-        else:
-            _inputs[_name] = st.number_input(
-                _spec["label"],
-                value=float(_current_values[_name]),
-                min_value=float(_spec["min"]), max_value=float(_spec["max"]),
-                step=1.0 if _spec["kind"] == "int" else 0.01,
-                disabled=not admin,
-            )
-    _saved = st.form_submit_button("保存 ML 配置", type="primary", disabled=not admin)
-if _saved:
-    if not page_tenant_id:
-        st.error("无法解析当前租户，已拒绝写全局配置。")
-    else:
-        _changed: list[dict] = []
-        for _name, _value in _inputs.items():
             try:
-                _key = set_ml_factor(store, page_tenant_id, _name, _value)
-            except (ValueError, KeyError) as exc:
-                st.error(f"{_name}: {exc}")
-                continue
-            _changed.append({"factor": _name, "value": _value, "key": _key})
-        if _changed:
-            store.audit(
-                "ML_FACTOR_CHANGED",
-                {"tenant_id": page_tenant_id, "changes": _changed},
-                actor="streamlit_admin:panel",
-            )
-            st.success(f"已保存 {len(_changed)} 项（仅影响租户 {page_tenant_id}）。")
+                written_key = set_scoring_mode(store, page_tenant_id, _selected_mode)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                store.audit(
+                    "ML_SCORING_MODE_CHANGED",
+                    {
+                        "tenant_id": page_tenant_id,
+                        "before": _configured_mode,
+                        "after": _selected_mode,
+                        "key": written_key,
+                    },
+                    actor="streamlit_admin:panel",
+                )
+                st.rerun()
 
+    st.divider()
 
-
-st.subheader("对照视图（按租户）")
-st.caption(
-    "PRD 区块④：**实盘跑 ML、模拟盘跑规则**（或反之），直接量出 ML 的增量。"
-    "当前 ML 默认未开启（装依赖与开启按计划放最后），所以这里先给出「谁在用什么」，"
-    "开启后同一张表就是对照结论的入口。"
-)
-from futu_quant.tenant import active_tenants as _active_tenants
-
-_rows = []
-for _profile in _active_tenants():
-    _mode = resolve_scoring_mode(store, _profile.tenant_id)
-    _rows.append(
-        {
-            "租户": _profile.tenant_id,
-            "环境": getattr(_profile, "trading_env", "?"),
-            "打分方式": MODE_LABELS.get(_mode, _mode),
-            "模型路径": resolve_ml_factor(store, _profile.tenant_id, "model_path"),
-            "打分阈值": resolve_ml_factor(store, _profile.tenant_id, "ml_threshold"),
-        }
+    st.subheader("重训控制")
+    st.caption(
+        "手动触发会在**后台子进程**中执行（不卡界面、不占服务主循环），并发触发由文件锁安全防护。"
     )
-if _rows:
-    st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
-    _ml_tenants = [r["租户"] for r in _rows if r["打分方式"] == MODE_LABELS.get(MODE_ML, MODE_ML)]
-    if not _ml_tenants:
-        st.info("目前没有任何租户启用 ML 打分 —— 对照尚未开始（这是预期状态，不是故障）。")
-    else:
-        st.success(f"已启用 ML 的租户：{', '.join(_ml_tenants)}；其余租户走规则打分，可直接对照。")
+    _confirm = st.checkbox("我确认要触发一次重训（训练满意后将自动覆盖生产模型）", disabled=not admin)
+    if st.button("手动触发重训", type="primary", disabled=not admin or not _confirm):
+        import subprocess as _sp
+        import sys as _sys
+        from pathlib import Path as _Path
 
-st.subheader("重训控制")
-st.caption(
-    "手动触发会在**后台进程**里跑（不卡界面、不占服务主循环），并发触发由文件锁挡住。"
-    "缺 `sklearn` 时结果是 `SKIP:sklearn_missing`（依赖安装按计划放最后，这是预期状态，不是错误）。"
-)
-_confirm = st.checkbox("我确认要触发一次重训（可能替换生产模型）", disabled=not admin)
-if st.button("手动触发重训", type="primary", disabled=not admin or not _confirm):
-    import subprocess as _sp
-    import sys as _sys
-    from pathlib import Path as _Path
-
-    _wrapper = _Path(__file__).resolve().parents[1] / "scripts" / "run_ml_retrain_wrapper.py"
-    try:
-        _sp.Popen(
-            [_sys.executable, str(_wrapper), "--triggered-by", "panel", "--kind", "manual"],
-            cwd=str(_wrapper.parents[1]),
-            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
-        )
-        st.success("已提交后台重训，结果会出现在下方历史表（刷新页面可见）。")
-    except Exception as exc:  # noqa: BLE001 - 触发失败要说清，不静默
-        st.error(f"触发失败：{exc}")
-
-st.subheader("重训历史")
-_runs = store.ml_retrain_runs(limit=20)
-if _runs:
-    st.dataframe(pd.DataFrame(_runs), hide_index=True, width="stretch")
-else:
-    st.info("还没有重训记录。SKIP（缺依赖/已在跑）也会记录在这里。")
-
-st.subheader("为什么是这个状态")
-detail_rows = [
-    ["模型路径", health.get("model_path") or "—"],
-    ["模型是否存在于磁盘", "是" if health.get("model_exists") else "否"],
-    ["训练时间（pkl 内）", health.get("trained_at") or "未记录"],
-    [
-        "年龄来源",
-        {
-            "pkl.trained_at": "pkl 内 trained_at（可信）",
-            "pkl.mtime": "pkl 文件修改时间（回落，可读但弱）",
-            "unknown": "未知 —— 读不到模型",
-        }.get(str(health.get("age_source") or "unknown"), str(health.get("age_source"))),
-    ],
-    ["新鲜度档位", FRESHNESS_LABELS.get(freshness, freshness or "未知")],
-    ["打分方式", SCORING_LABELS.get(scoring_mode, scoring_mode or "未知")],
-    ["判定原因", health.get("scoring_reason") or "—"],
-    ["降级原因", health.get("degradation_cause") or "—"],
-    ["元数据 json 的 trained_at", health.get("metadata_json_trained_at") or "无"],
-]
-st.dataframe(
-    pd.DataFrame(detail_rows, columns=["字段", "值"]),
-    hide_index=True, width="stretch",
-)
-st.caption(
-    "⚠️ **元数据 json 的 `trained_at` 是「元数据刷新时间」，不是训练时间** —— "
-    "历史脚本只刷它、从不训练，用它当年龄依据会让守卫永远显示新鲜。"
-    f"本页年龄一律取 pkl：{freshness_summary_line(health)}"
-)
-
-st.subheader("这一页的判据来源")
-st.markdown(
-    "- 年龄来源优先级：**pkl 内 `trained_at` → pkl mtime**（绝不读 json 的 `trained_at`）；\n"
-    "- 新鲜度阈值与告警**同源**：<30 绿 / 30–34 橙 / ≥35 红（同一套常量，页面与告警不得各写一份）；\n"
-    "- 「显式禁用」与「静默降级」分开显示：前者是配置选择，不告警；后者必须可见，"
-    "并由调度侧发 `ML_SCORING_DEGRADED` 告警。"
-)
-
-st.divider()
-st.subheader("📊 规则 vs ML 对照回测与满足度检验 (A/B Alpha 验证)")
-st.caption(
-    "唯一控制变量：同等初始资金、同等仓位、同等退出止损线（-25% / $300），"
-    "唯一变量是候选标的打分排序口径（规则分 vs ML分）。量化检验 ML 是否产生稳定正向 Alpha。"
-)
-
-col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 2, 2])
-with col_ctrl1:
-    window_choice = st.selectbox(
-        "回测历史窗口",
-        ["全部历史样本", "最近 90 天", "最近 60 天", "最近 30 天"],
-        index=0,
-        key="ml_backtest_window",
-    )
-with col_ctrl2:
-    init_cap = st.number_input(
-        "初始本金 ($)",
-        min_value=1000.0,
-        max_value=1000000.0,
-        value=10000.0,
-        step=1000.0,
-        key="ml_backtest_capital",
-    )
-with col_ctrl3:
-    top_k_val = st.number_input(
-        "每日入选标的数 (Top K)",
-        min_value=1,
-        max_value=10,
-        value=3,
-        step=1,
-        key="ml_backtest_topk",
-    )
-
-if st.button("▶️ 开始对照回测与模型满足度检验", type="primary", key="btn_run_ml_comparison"):
-    from datetime import datetime as _dt, timedelta as _td
-    from futu_quant.ml_backtest_comparator import run_ml_vs_rule_comparison
-
-    start_date_filter = None
-    if window_choice == "最近 30 天":
-        start_date_filter = (_dt.now() - _td(days=30)).strftime("%Y-%m-%d")
-    elif window_choice == "最近 60 天":
-        start_date_filter = (_dt.now() - _td(days=60)).strftime("%Y-%m-%d")
-    elif window_choice == "最近 90 天":
-        start_date_filter = (_dt.now() - _td(days=90)).strftime("%Y-%m-%d")
-
-    with st.spinner("正在并行回放规则组与 ML 组历史盘口选品逻辑..."):
+        _wrapper = _Path(__file__).resolve().parents[1] / "scripts" / "run_ml_retrain_wrapper.py"
         try:
-            res = run_ml_vs_rule_comparison(
-                store=store,
-                start_date=start_date_filter,
-                initial_capital=float(init_cap),
-                top_k=int(top_k_val),
+            _sp.Popen(
+                [_sys.executable, str(_wrapper), "--triggered-by", "panel", "--kind", "manual"],
+                cwd=str(_wrapper.parents[1]),
+                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
             )
-            st.session_state["ml_comparison_result"] = res
-        except Exception as e:
-            st.error(f"回测比对执行失败: {e}")
+            st.success("已提交后台重训，结果会实时刷新在下方历史表中。")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"触发失败：{exc}")
 
-res = st.session_state.get("ml_comparison_result")
-if res is not None:
-    # 1. 自动化准入卡
-    rep = res.readiness_report
-    if rep["is_ready"]:
-        st.success(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+    st.subheader("重训历史记录")
+    _runs = store.ml_retrain_runs(limit=20)
+    if _runs:
+        st.dataframe(pd.DataFrame(_runs), hide_index=True, width="stretch")
     else:
-        st.error(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+        st.info("还没有重训记录。SKIP（缺依赖/已在跑）也会忠实记录在此。")
 
-    with st.expander("🔍 生产准入硬指标核验清单 (Checklist)", expanded=True):
-        st.dataframe(pd.DataFrame(rep["checklist"]), hide_index=True, width="stretch")
+    with st.expander("🔍 为什么是这个状态（元数据底账与判据来源）"):
+        detail_rows = [
+            ["模型路径", health.get("model_path") or "—"],
+            ["模型是否存在于磁盘", "是" if health.get("model_exists") else "否"],
+            ["训练时间（pkl 内）", health.get("trained_at") or "未记录"],
+            [
+                "年龄来源",
+                {
+                    "pkl.trained_at": "pkl 内 trained_at（可信训练时间）",
+                    "pkl.mtime": "pkl 文件修改时间（回落）",
+                    "unknown": "未知 —— 读不到模型",
+                }.get(str(health.get("age_source") or "unknown"), str(health.get("age_source"))),
+            ],
+            ["新鲜度档位", FRESHNESS_LABELS.get(freshness, freshness or "未知")],
+            ["打分方式", SCORING_LABELS.get(scoring_mode, scoring_mode or "未知")],
+            ["判定原因", health.get("scoring_reason") or "—"],
+            ["降级原因", health.get("degradation_cause") or "—"],
+            ["元数据 json 的 trained_at", health.get("metadata_json_trained_at") or "无"],
+        ]
+        st.dataframe(
+            pd.DataFrame(detail_rows, columns=["字段", "值"]),
+            hide_index=True, width="stretch",
+        )
+        st.caption(
+            "⚠️ **元数据 json 的 `trained_at` 仅是「元数据刷新时间」，不是真实训练时间** —— "
+            f"本系统年龄一律严格取自 pkl 内部时间戳：{freshness_summary_line(health)}"
+        )
 
-    # 2. 核心绩效对决矩阵
-    st.markdown("#### 🏆 核心绩效正面对决 (A/B Benchmark Matrix)")
-    r_m = res.rule_metrics
-    m_m = res.ml_metrics
 
-    metric_rows = [
-        ["总累计收益率", f"{r_m['total_return_pct']:+.2f}%", f"{m_m['total_return_pct']:+.2f}%", f"{m_m['total_return_pct'] - r_m['total_return_pct']:+.2f}%"],
-        ["交易胜率", f"{r_m['win_rate']:.1f}%", f"{m_m['win_rate']:.1f}%", f"{m_m['win_rate'] - r_m['win_rate']:+.1f}%"],
-        ["盈亏比", f"{r_m['profit_loss_ratio']:.2f}", f"{m_m['profit_loss_ratio']:.2f}", f"{m_m['profit_loss_ratio'] - r_m['profit_loss_ratio']:+.2f}"],
-        ["最大回撤", f"{r_m['max_drawdown_pct']:.2f}%", f"{m_m['max_drawdown_pct']:.2f}%", f"{m_m['max_drawdown_pct'] - r_m['max_drawdown_pct']:+.2f}%"],
-        ["夏普比率", f"{r_m['sharpe']:.2f}", f"{m_m['sharpe']:.2f}", f"{m_m['sharpe'] - r_m['sharpe']:+.2f}"],
-        ["平均单笔盈亏", f"${r_m['avg_pnl']:+,.2f}", f"${m_m['avg_pnl']:+,.2f}", f"${m_m['avg_pnl'] - r_m['avg_pnl']:+,.2f}"],
-        ["有效交易笔数", f"{r_m['trades_count']} 笔", f"{m_m['trades_count']} 笔", f"{m_m['trades_count'] - r_m['trades_count']:+d} 笔"],
-        ["评分相关系数 (Rank IC)", f"{res.rule_ic:.4f}", f"{res.rank_ic:.4f}", f"{res.rank_ic - res.rule_ic:+.4f}"],
-    ]
-    st.dataframe(
-        pd.DataFrame(metric_rows, columns=["检验维度", "基准组 (纯规则打分)", "实验组 (ML模型打分)", "ML 净超额 (Alpha)"]),
-        hide_index=True, width="stretch",
+# ---------------------------------------------------------------------------
+# Tab 2: 规则 vs ML 对照回测大屏
+# ---------------------------------------------------------------------------
+with tab_backtest:
+    st.subheader("📊 规则 vs ML 对照回测与满足度检验 (A/B Alpha 验证)")
+    st.caption(
+        "**唯一控制变量**：同等初始资金、同等仓位、同等退出止损线（-25% / $300），"
+        "唯一变量是候选标的打分排序口径（规则分 vs ML分）。量化检验 ML 模型是否带来稳定正向 Alpha。"
     )
 
-    # 3. 净值走势图
-    st.markdown("#### 📈 资金净值走势叠加对比")
-    st.line_chart(res.equity_series.set_index("日期"), height=320)
+    col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 2, 2])
+    with col_ctrl1:
+        window_choice = st.selectbox(
+            "回测历史窗口",
+            ["全部历史样本", "最近 90 天", "最近 60 天", "最近 30 天"],
+            index=0,
+            key="ml_backtest_window",
+        )
+    with col_ctrl2:
+        init_cap = st.number_input(
+            "初始本金 ($)",
+            min_value=1000.0,
+            max_value=1000000.0,
+            value=10000.0,
+            step=1000.0,
+            key="ml_backtest_capital",
+        )
+    with col_ctrl3:
+        top_k_val = st.number_input(
+            "每日入选标的数 (Top K)",
+            min_value=1,
+            max_value=10,
+            value=3,
+            step=1,
+            key="ml_backtest_topk",
+        )
 
-    # 4. 五档单调性检验
-    st.markdown("#### 🎯 ML 分数五档收益单调性检验 (Quintile Monotonicity)")
-    st.caption("将候选样本按 ML 分数切分为 5 档（Q1最高 ➔ Q5最低）。理想模型要求实际收益必须呈现单调递减（高分组赚钱、低分组亏钱），杜绝反向失效与过拟合。")
-    if not res.quintile_returns.empty:
-        q_plot_df = res.quintile_returns.copy()
-        q_plot_df["收益率($)"] = q_plot_df["avg_pnl"] * 100.0
-        st.bar_chart(q_plot_df.set_index("quintile")["收益率($)"], height=260)
+    if st.button("▶️ 开始对照回测与模型满足度检验", type="primary", key="btn_run_ml_comparison"):
+        from datetime import datetime as _dt, timedelta as _td
+        from futu_quant.ml_backtest_comparator import run_ml_vs_rule_comparison
+
+        start_date_filter = None
+        if window_choice == "最近 30 天":
+            start_date_filter = (_dt.now() - _td(days=30)).strftime("%Y-%m-%d")
+        elif window_choice == "最近 60 天":
+            start_date_filter = (_dt.now() - _td(days=60)).strftime("%Y-%m-%d")
+        elif window_choice == "最近 90 天":
+            start_date_filter = (_dt.now() - _td(days=90)).strftime("%Y-%m-%d")
+
+        with st.spinner("正在并行回放规则组与 ML 组历史盘口选品逻辑..."):
+            try:
+                res = run_ml_vs_rule_comparison(
+                    store=store,
+                    start_date=start_date_filter,
+                    initial_capital=float(init_cap),
+                    top_k=int(top_k_val),
+                )
+                st.session_state["ml_comparison_result"] = res
+            except Exception as e:
+                st.error(f"回测比对执行失败: {e}")
+
+    res = st.session_state.get("ml_comparison_result")
+    if res is not None:
+        # 1. 自动化准入卡
+        rep = res.readiness_report
+        if rep["is_ready"]:
+            st.success(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+        else:
+            st.error(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+
+        with st.expander("🔍 生产准入硬指标核验清单 (Checklist)", expanded=True):
+            st.dataframe(pd.DataFrame(rep["checklist"]), hide_index=True, width="stretch")
+
+        # 2. 核心绩效对决矩阵
+        st.markdown("#### 🏆 核心绩效正面对决 (A/B Benchmark Matrix)")
+        r_m = res.rule_metrics
+        m_m = res.ml_metrics
+
+        metric_rows = [
+            ["总累计收益率", f"{r_m['total_return_pct']:+.2f}%", f"{m_m['total_return_pct']:+.2f}%", f"{m_m['total_return_pct'] - r_m['total_return_pct']:+.2f}%"],
+            ["交易胜率", f"{r_m['win_rate']:.1f}%", f"{m_m['win_rate']:.1f}%", f"{m_m['win_rate'] - r_m['win_rate']:+.1f}%"],
+            ["盈亏比", f"{r_m['profit_loss_ratio']:.2f}", f"{m_m['profit_loss_ratio']:.2f}", f"{m_m['profit_loss_ratio'] - r_m['profit_loss_ratio']:+.2f}"],
+            ["最大回撤", f"{r_m['max_drawdown_pct']:.2f}%", f"{m_m['max_drawdown_pct']:.2f}%", f"{m_m['max_drawdown_pct'] - r_m['max_drawdown_pct']:+.2f}%"],
+            ["夏普比率", f"{r_m['sharpe']:.2f}", f"{m_m['sharpe']:.2f}", f"{m_m['sharpe'] - r_m['sharpe']:+.2f}"],
+            ["平均单笔盈亏", f"${r_m['avg_pnl']:+,.2f}", f"${m_m['avg_pnl']:+,.2f}", f"${m_m['avg_pnl'] - r_m['avg_pnl']:+,.2f}"],
+            ["有效交易笔数", f"{r_m['trades_count']} 笔", f"{m_m['trades_count']} 笔", f"{m_m['trades_count'] - r_m['trades_count']:+d} 笔"],
+            ["评分相关系数 (Rank IC)", f"{res.rule_ic:.4f}", f"{res.rank_ic:.4f}", f"{res.rank_ic - res.rule_ic:+.4f}"],
+        ]
         st.dataframe(
-            res.quintile_returns.rename(columns={"quintile": "分档", "avg_pnl": "平均单笔期权盈亏($)", "win_rate": "分档胜率", "count": "样本数"}),
+            pd.DataFrame(metric_rows, columns=["检验维度", "基准组 (纯规则打分)", "实验组 (ML模型打分)", "ML 净超额 (Alpha)"]),
             hide_index=True, width="stretch",
         )
 
-    # 5. 选品分歧归因账本
-    st.markdown("#### 🔍 选品分歧与归因账本 (Divergence Ledger)")
-    st.caption("清晰呈现规则与 ML 判定相左的具体标的案例：ML 避雷（规则看好但被 ML 过滤）与 ML 淘金（规则落选但被 ML 提拔）。")
-    if res.divergence_records:
-        st.dataframe(pd.DataFrame(res.divergence_records), hide_index=True, width="stretch")
+        # 3. 净值走势图
+        st.markdown("#### 📈 资金净值走势叠加对比")
+        st.line_chart(res.equity_series.set_index("日期"), height=320)
+
+        # 4. 五档单调性检验
+        st.markdown("#### 🎯 ML 分数五档收益单调性检验 (Quintile Monotonicity)")
+        st.caption("将候选样本按 ML 分数切分为 5 档（Q1最高 ➔ Q5最低）。理想模型要求实际收益必须呈现单调递减（高分组赚钱、低分组亏钱），杜绝反向失效与过拟合。")
+        if not res.quintile_returns.empty:
+            q_plot_df = res.quintile_returns.copy()
+            q_plot_df["收益率($)"] = q_plot_df["avg_pnl"] * 100.0
+            st.bar_chart(q_plot_df.set_index("quintile")["收益率($)"], height=260)
+            st.dataframe(
+                res.quintile_returns.rename(columns={"quintile": "分档", "avg_pnl": "平均单笔期权盈亏($)", "win_rate": "分档胜率", "count": "样本数"}),
+                hide_index=True, width="stretch",
+            )
+
+        # 5. 选品分歧归因账本
+        st.markdown("#### 🔍 选品分歧与归因账本 (Divergence Ledger)")
+        st.caption("清晰呈现规则与 ML 判定相左的具体标的案例：ML 避雷（规则看好但被 ML 过滤）与 ML 淘金（规则落选但被 ML 提拔）。")
+        if res.divergence_records:
+            st.dataframe(pd.DataFrame(res.divergence_records), hide_index=True, width="stretch")
+        else:
+            st.info("所选窗口内两套模型选品一致性极高，未出现显著分歧标的。")
     else:
-        st.info("所选窗口内两套模型选品一致性极高，未出现显著分歧标的。")
+        st.info("点击上方「▶️ 开始对照回测与模型满足度检验」按钮，即刻在当前历史数据上并行回放两套选品逻辑。")
+
+
+# ---------------------------------------------------------------------------
+# Tab 3: 因子与租户参数配置
+# ---------------------------------------------------------------------------
+with tab_factors:
+    st.subheader("ML 因子参数配置（按租户）")
+    st.caption(
+        "这些值全部走**租户级三层解析**（租户键 → 全局键 → 默认），改动只影响当前租户，"
+        "并记录审计事件 `ML_FACTOR_CHANGED`。"
+    )
+    with st.form("ml_factor_form", border=True):
+        _current_values = {
+            name: resolve_ml_factor(store, page_tenant_id, name) for name in FACTOR_SPECS
+        }
+        _inputs = {}
+        for _name, _spec in FACTOR_SPECS.items():
+            if _spec["kind"] == "str":
+                _inputs[_name] = st.text_input(
+                    _spec["label"], value=str(_current_values[_name]), disabled=not admin,
+                )
+            else:
+                _inputs[_name] = st.number_input(
+                    _spec["label"],
+                    value=float(_current_values[_name]),
+                    min_value=float(_spec["min"]), max_value=float(_spec["max"]),
+                    step=1.0 if _spec["kind"] == "int" else 0.01,
+                    disabled=not admin,
+                )
+        _saved = st.form_submit_button("保存 ML 配置", type="primary", disabled=not admin)
+    if _saved:
+        if not page_tenant_id:
+            st.error("无法解析当前租户，已拒绝写全局配置。")
+        else:
+            _changed: list[dict] = []
+            for _name, _value in _inputs.items():
+                try:
+                    _key = set_ml_factor(store, page_tenant_id, _name, _value)
+                except (ValueError, KeyError) as exc:
+                    st.error(f"{_name}: {exc}")
+                    continue
+                _changed.append({"factor": _name, "value": _value, "key": _key})
+            if _changed:
+                store.audit(
+                    "ML_FACTOR_CHANGED",
+                    {"tenant_id": page_tenant_id, "changes": _changed},
+                    actor="streamlit_admin:panel",
+                )
+                st.success(f"已保存 {len(_changed)} 项（仅影响租户 {page_tenant_id}）。")
+
+    st.divider()
+
+    st.subheader("租户 ML 运行模式总览")
+    st.caption("直接查看所有注册租户当前分配的打分模式、模型路径与入选阈值。")
+    from futu_quant.tenant import active_tenants as _active_tenants
+
+    _rows = []
+    for _profile in _active_tenants():
+        _mode = resolve_scoring_mode(store, _profile.tenant_id)
+        _rows.append(
+            {
+                "租户": _profile.tenant_id,
+                "环境": getattr(_profile, "trading_env", "?"),
+                "打分方式": MODE_LABELS.get(_mode, _mode),
+                "模型路径": resolve_ml_factor(store, _profile.tenant_id, "model_path"),
+                "打分阈值": resolve_ml_factor(store, _profile.tenant_id, "ml_threshold"),
+            }
+        )
+    if _rows:
+        st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
