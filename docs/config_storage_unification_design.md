@@ -1,4 +1,4 @@
-# 配置存储统一与审计留痕 —— 架构项
+﻿# 配置存储统一与审计留痕 —— 架构项
 
 > 状态：设计已定稿，待实施（P1，不阻塞 ML 第 1 步）
 > 来源：Product 立的独立架构项 —— "配置存储统一 + `audit_events` 加 actor"
@@ -84,7 +84,7 @@ Product 提议"收敛到一张表、一套 API"。**我不建议物理合并**�
 
 ### 3.3 🔴 两类写入必须分开 —— `set_setting` 不是"稀有写"
 
-**实测调用点**：`set_setting` **76 处**（`src/` 内）、`store.audit` **55 处**。
+**实测调用点**：`set_setting` **76 处**（`src/` 内）、`store.audit` **124 处**（src 56 / scripts 33 / pages 35，AST 精确统计）。
 
 **但更要紧的是写入频率**：`reconciliation.py:157` 在
 `for symbol in current_symbols` 循环里写 `symbol_blocked:{symbol}` ——
@@ -273,3 +273,4 @@ CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor, id DESC);
 4. 存量 `audit_events` 行 `actor=''`，**不伪造**；
 5. **读路径行为不变**：`get_setting` 语义、性能无回归（全量回归 + 关键查询耗时对比）；
 6. **变异测试**：把 `set_setting` 的 actor 参数改回可选 → 守卫转红。
+
