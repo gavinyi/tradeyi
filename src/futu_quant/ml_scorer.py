@@ -55,8 +55,11 @@ def load_ml_model(model_path: str | None = None):
         try:
             with open(model_path, 'rb') as f:
                 model_data = pickle.load(f)
-            logger.info(f"✅ 加载ML模型: {model_path}")
-            return model_data['model'], model_data['feature_cols']
+            model = model_data['model']
+            if hasattr(model, 'n_jobs'):
+                model.n_jobs = 1
+            logger.info(f"✅ 加载ML模型: {model_path} (强制 n_jobs=1 单线程安全模式)")
+            return model, model_data['feature_cols']
         except Exception:
             logger.info("ℹ️  启用内置轻量纯 Python 标的评分引擎 (自闭环无外部依赖)")
             return BuiltinRuleModel(), default_cols

@@ -79,6 +79,8 @@ def run_ml_vs_rule_comparison(
 
     # 2. 加载两套打分模型
     ml_model, feature_cols = load_ml_model(model_path)
+    if hasattr(ml_model, "n_jobs"):
+        ml_model.n_jobs = 1
     rule_model = BuiltinRuleModel()
 
     # 准备特征
