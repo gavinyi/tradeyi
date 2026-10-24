@@ -53,3 +53,27 @@ python scripts\test_env.py stop              # 按 PID 文件停止（只动测�
 - 测试区跑完要看的是「功能通不通」，不是「策略赚不赚」；下单走 SIMULATE。
 - 与生产共用 OpenD（127.0.0.1:11111）；**Futu 客户端需要已登录 SIMULATE 账户**。
 - 生产进程只能由桌面双击 `start.bat` 启动；测试区用 `scripts/test_env.py`，互不干扰。
+
+## 5. 全量回归的口径（测试区有 DB 之后必须这么跑）
+
+测试区一旦有了自己的 `data/trading.db`，`PROD-GUARD` 的「诚实态」（拿不到生产指纹就明示不比对）
+**就不再成立** —— 不显式指生产库时会拿测试库和自己比，看起来"未改动"其实什么都没验。
+
+所以全量回归**必须显式带生产库路径**：
+
+```powershell
+cd E:\Thisyi\trade-test
+$env:TRADEYI_ENV="test"
+$env:TRADEYI_PROD_DB_PATH="E:\Thisyi\trade\data\trading.db"   # 关键：比对真生产库
+python -m pytest -q
+```
+
+全链路冒烟：
+
+```powershell
+python scripts\test_env_smoke.py            # 初始化库 -> 单轮调度 -> 下单/撤单探针 -> 生产隔离断言
+python scripts\test_env_smoke.py --skip-order
+```
+
+冒烟会打印「生产库指纹（开始/结束）」并断言一致 —— 不一致即说明测试链路写穿了生产库。
+
