@@ -54,35 +54,12 @@ from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.option_lifecycle import parse_option_code
 from futu_quant.store import TradingStore
 from futu_quant.tenant import tenant_id_of_broker
+from futu_quant.volatility_pause import volatility_new_entries_paused  # noqa: F401  单源（P1-9）
 
 
 NY = ZoneInfo("America/New_York")
 MARKET_CALENDAR = USMarketCalendar()
 LEGACY_STATE_FILE = Path("data/gamma_state.json")
-
-
-def volatility_new_entries_paused(store: TradingStore, broker=None) -> bool:
-    """波动率期权是否暂停**新开仓**（退出管理不受影响）。
-
-    **租户级优先、全局兜底**：键为 `volatility_new_entries_paused:<tenant_id>`。
-    10-23 起改为租户级 —— 此前是全局键，停实盘会连带把**模拟盘**也停掉，
-    而修复验证恰恰要用模拟盘（改的是共享代码路径）。
-
-    兜底读旧的全局键，保证既有设置仍然生效（改键名不会让已停的实盘悄悄恢复）。
-    """
-    tenant_id = ""
-    if broker is not None:
-        # P0-9：走共享入口 tenant_of_broker（显式 → 账户反解），不再裸 getattr。
-        # 生产 broker 无 tenant_id 属性 → 旧写法恒空，只剩 account_id 分支恰好兜住；
-        # 而 resolve_tenant(None) **不 fail-closed**，会静默回落到默认租户 ——
-        # 依赖它就是把"租户待定"放大成"按实盘租户处理"。
-        tenant_id = tenant_id_of_broker(broker) or ""
-    if tenant_id:
-        tenant_key = f"volatility_new_entries_paused:{tenant_id}"
-        value = store.get_setting(tenant_key, "")
-        if value.strip():
-            return value.lower() == "true"
-    return store.get_setting("volatility_new_entries_paused", "false").lower() == "true"
 
 
 def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float]:

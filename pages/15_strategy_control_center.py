@@ -15,6 +15,7 @@ from futu_quant.radar_control import (
     stop as stop_radar,
 )
 from futu_quant.service_control import restart, start, status as service_status, stop
+from futu_quant.execution_mode import resolve_configured_execution_mode
 from futu_quant.store import TradingStore
 from futu_quant.strategy_budgeting import (
     budget_group_label,
@@ -83,8 +84,10 @@ for plugin in strategy_plugins():
             f"strategy_enabled:{plugin.service_name}",
             "false" if plugin.automatically_scheduled else "true",
         ) == "true",
-        "execution_mode": store.get_setting(
-            f"strategy_execution_mode:{plugin.strategy_id}", ""
+        # P1-6：读侧走单源，且必须带上本页租户 —— 只读旧无前缀键会把
+        # 「实盘已切换 REAL」显示成 INHERIT。
+        "execution_mode": resolve_configured_execution_mode(
+            store, tenant_id, plugin.strategy_id,
         ) or "INHERIT",
         "heartbeat_status": heartbeat.get("status", "NOT_STARTED"),
         "heartbeat_message": heartbeat.get("message", "尚无心跳"),
@@ -287,10 +290,17 @@ with overview_tab:
                 f"strategy_enabled:{plugin.service_name}", str(bool(item["enabled"])).lower()
             )
             mode = item["execution_mode"]
-            store.set_setting(
-                f"strategy_execution_mode:{plugin.strategy_id}",
-                "" if mode == "INHERIT" else str(mode),
-            )
+            # P1-6：只写当前租户键；拿不到租户就拒绝写，绝不回落旧全局键 ——
+            # 旧键被租户键盖过，写它等于「保存成功但实际没生效」。
+            if not tenant_id:
+                st.error("无法解析当前租户，已拒绝保存执行模式（避免写到别的租户/无效键）")
+                st.stop()
+            if mode == "INHERIT":
+                store.delete_setting(f"strategy_execution_mode:{tenant_id}:{plugin.strategy_id}")
+            else:
+                store.set_setting(
+                    f"strategy_execution_mode:{tenant_id}:{plugin.strategy_id}", str(mode),
+                )
             changes.append(item)
         store.audit(
             "UNIFIED_STRATEGY_CONTROL_CHANGED",

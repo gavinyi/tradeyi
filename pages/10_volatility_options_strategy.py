@@ -35,6 +35,10 @@ from futu_quant.volatility_structures import build_volatility_structure_candidat
 from futu_quant.volatility_orphans import volatility_state_keys
 from futu_quant.campaign_timing import campaign_time_display
 from futu_quant.store import TradingStore
+from futu_quant.execution_mode import resolve_configured_execution_mode
+from futu_quant.volatility_pause import (
+    set_volatility_new_entries_paused, volatility_new_entries_paused,
+)
 from futu_quant.tenant import (
     campaign_belongs_to_tenant, campaigns_config_key_lenient, tenant_id_of_broker,
 )
@@ -79,13 +83,45 @@ with st.container(border=True):
         st.page_link("pages/28_options_pnl_ledger.py", label="查看期权盈亏", icon=":material/price_check:")
         st.page_link("pages/15_strategy_control_center.py", label="设置执行模式", icon=":material/tune:")
     with st.container(horizontal=True):
-        _current_mode = store.get_setting("strategy_execution_mode:volatility_long_gamma", "INHERIT") or "INHERIT"
+        # P1-6：读侧走单源（租户键 > 旧键 > 全局 > env），页面不再自己拼键。
+        _current_mode = resolve_configured_execution_mode(
+            store, _page_tenant_id, "volatility_long_gamma",
+        ) or "INHERIT"
         _current_enabled = store.get_setting("strategy_enabled:Volatility Long Gamma", "false") == "true"
         st.metric("执行模式", _current_mode, border=True)
         st.metric("自动调度", "已启用" if _current_enabled else "已关闭", border=True)
         st.metric("交易范围", "仅模拟盘", border=True)
 
 admin = render_admin_login()
+
+# P1-9「暂停新开仓」：生效值走单源；写只写当前租户键（拿不到租户就拒绝写）。
+with st.container(border=True):
+    st.subheader("暂停新开仓")
+    st.caption(
+        "只停**新开仓**，已有持仓的止盈/止损/到期退出管理照常运行；"
+        f"只作用于当前租户（`{_page_tenant_id or '未识别'}`）。"
+    )
+    _paused_now = volatility_new_entries_paused(store, broker)
+    st.metric("当前状态", "已暂停新开仓" if _paused_now else "允许新开仓", border=True)
+    _pause_toggle = st.toggle(
+        "暂停波动率新开仓", value=_paused_now, disabled=not admin,
+        key="volatility_pause_new_entries",
+    )
+    if _pause_toggle != _paused_now:
+        try:
+            _written_key = set_volatility_new_entries_paused(
+                store, _page_tenant_id, _pause_toggle,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            store.audit(
+                "VOLATILITY_NEW_ENTRIES_PAUSE_CHANGED",
+                {"tenant_id": _page_tenant_id, "paused": _pause_toggle, "key": _written_key},
+                actor="streamlit_admin:panel",
+            )
+            st.rerun()
+
 
 # 工作台：把“今天要看什么”放在页面最前面，详细参数和明细表下沉到后面。
 # 这些读取只使用本地策略账本，不触发富途行情请求，避免打开页面就产生额外调用。
