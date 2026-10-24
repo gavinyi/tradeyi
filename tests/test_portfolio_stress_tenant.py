@@ -90,3 +90,18 @@ def test_hysteresis_state_persists_per_tenant(tmp_path):
     assert read_hysteresis_state(store, PAPER) == ""
     write_hysteresis_state(store, REAL, STATE_OK)
     assert read_hysteresis_state(store, REAL) == STATE_OK
+
+
+def test_sustained_breach_does_not_realert():
+    """语义钉死：一条 incident 只发一次，恢复时发一次 recover。
+
+    ALERTING 期间持续破线不得每轮重发（否则 record_incident 的 count 每轮 +1，
+    用户看到的是"一直在报警"，反而分不清是新事故还是同一次）。
+    """
+    breach, recover = 0.10, 0.08
+    assert next_stress_action(0.15, STATE_OK, breach, recover) == "alert"
+    assert next_stress_action(0.15, STATE_ALERTING, breach, recover) == "none"
+    assert next_stress_action(0.102, STATE_ALERTING, breach, recover) == "none"
+    # 跌破恢复线仍必须消警
+    assert next_stress_action(0.05, STATE_ALERTING, breach, recover) == "recover"
+

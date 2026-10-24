@@ -161,6 +161,47 @@ MIGRATIONS = (
 )
 
 
+
+
+def _parse_add_column(sql: str) -> tuple[str, str, str | None] | None:
+    """从 `ALTER TABLE t ADD COLUMN c TYPE ... DEFAULT x` 里取出 (表, 列, 期望类型)。
+
+    只处理本仓迁移里实际使用的简单形式；解析不出就返回 None（不臆测）。
+    """
+    import re
+
+    match = re.search(
+        r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)\s+([A-Za-z]+)",
+        sql, re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1), match.group(2), match.group(3).upper()
+
+
+def _verify_existing_column(
+    connection: sqlite3.Connection, sql: str, exc: Exception,
+) -> None:
+    parsed = _parse_add_column(sql)
+    if parsed is None:
+        return
+    table, column, expected_type = parsed
+    rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    existing = {row[1]: str(row[2] or "").upper() for row in rows}
+    actual_type = existing.get(column)
+    if actual_type is None:
+        raise RuntimeError(
+            f"迁移报 duplicate column 但 {table}.{column} 并不存在：{exc}"
+        )
+    if expected_type and actual_type and expected_type != actual_type:
+        raise RuntimeError(
+            f"{table}.{column} 已存在但类型不一致：期望 {expected_type}，实际 {actual_type} "
+            f"（迁移报 duplicate column 时被吞掉，若不校验就会静默不一致）"
+        )
+
+
+
+
 def apply_migrations(connection: sqlite3.Connection) -> list[int]:
     connection.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,name TEXT NOT NULL,checksum TEXT NOT NULL,applied_at TEXT NOT NULL
@@ -178,7 +219,10 @@ def apply_migrations(connection: sqlite3.Connection) -> list[int]:
             connection.executescript(migration.sql)
         except sqlite3.OperationalError as exc:
             if "duplicate column name" in str(exc).lower():
-                pass
+                # 列已存在（例如生产事故时手工 ALTER 过）→ 继续记为已应用，
+                # 但**必须校验既有列的定义**：同名列类型/默认值不同 = 静默不一致，
+                # 那比没有列更难查（查询拿到的类型与代码假设不同）。
+                _verify_existing_column(connection, migration.sql, exc)
             else:
                 raise
         connection.execute(

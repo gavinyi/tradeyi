@@ -43,6 +43,17 @@ def _tenant_key(store: TradingStore, base_key: str, tenant_id: str | None) -> st
     try:
         return resolve_tenant_config_key(tenant, base_key)
     except TenantConfigKeyError:
+        # 未注册租户只能回落全局键 —— 两个未注册租户会共享同一份滞回状态。
+        # 生产走的是注册过的 profile，实际不会触发；但**不能静默**，否则将来真触发时
+        # 会表现为"两个租户的告警状态互相顶掉"而无从排查。
+        try:
+            store.operational_event(
+                "portfolio_stress", "STRESS_STATE_TENANT_FALLBACK", "WARNING",
+                {"tenant_id": tenant, "base_key": base_key,
+                 "message": "租户未注册：状态键回落全局，可能与其它未注册租户共享"},
+            )
+        except Exception:  # noqa: BLE001 - 留痕失败不该让告警主流程崩
+            pass
         return None
 
 
@@ -132,13 +143,18 @@ def next_stress_action(
 ) -> str:
     """滞回状态机：返回 ``alert`` / ``recover`` / ``none``。
 
-    - 未告警 且 ≥ breach → ``alert``；
+    - 未告警 且 ≥ breach → ``alert``（**只在首次越过阈值时发一次**）；
     - 已告警 且 < recover  → ``recover``；
-    - 其余（含 [recover, breach) 缓冲带）→ ``none``：**不重发告警，也不误消警**。
+    - 其余（含 [recover, breach) 缓冲带、以及 ALERTING 期间持续破线）→ ``none``：
+      **不重发告警，也不误消警**。
+
+    语义钉死（Reviewer 记录项）：持续破线期间每 15 分钟重发一条"百分比不同"的告警
+    会被当成新事故，`record_incident` 的 count 也会每轮 +1。一条 incident 只发一次，
+    恢复时发一次 recover —— 这才是一对事件。
     """
     state_upper = str(state or "").strip().upper()
     if float(current_ratio) >= float(breach):
-        return "alert"
+        return "none" if state_upper == STATE_ALERTING else "alert"
     if state_upper == STATE_ALERTING and float(current_ratio) < float(recover):
         return "recover"
     return "none"
