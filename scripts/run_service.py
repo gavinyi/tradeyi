@@ -181,6 +181,7 @@ TASK_TIMEOUTS = {
     "alert_delivery_probe": 60,
     "ml_model_health": 60,
     "candidate_exclusions_prune": 60,
+    "reconciliation_prune": 60,
     "automatic_recovery": 30,
     "idempotency_audit": 30,
     "operations_report": 60,
@@ -1313,6 +1314,17 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             ),
         )
         mark_run(store, "last_run:candidate_exclusions_prune", now)
+    # P2-14 效率：对账明细降采样。`reconciliation_reports` 实测 38 万行、其中
+    # 37.9 万是 MATCHED（正常）—— 60 秒一轮 × 每标的 × 多租户的产物。
+    # 只删「旧且正常」，MISMATCH 永久保留（那是事故证据）。
+    if due(store, "last_run:reconciliation_prune", 24 * 60 * 60, now):
+        run_task(
+            store, alerts, "reconciliation_prune",
+            lambda: store.prune_reconciliation_reports(
+                int(os.getenv("RECONCILIATION_RETAIN_DAYS", "7"))
+            ),
+        )
+        mark_run(store, "last_run:reconciliation_prune", now)
     if due(store, "last_run:automatic_recovery", 300, now):
         run_task(store, alerts, "automatic_recovery", lambda: automatic_recovery_cycle(store))
         mark_run(store, "last_run:automatic_recovery", now)

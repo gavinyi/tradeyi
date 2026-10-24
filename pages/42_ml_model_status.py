@@ -170,6 +170,35 @@ if _saved:
             st.success(f"已保存 {len(_changed)} 项（仅影响租户 {page_tenant_id}）。")
 
 
+
+st.subheader("对照视图（按租户）")
+st.caption(
+    "PRD 区块④：**实盘跑 ML、模拟盘跑规则**（或反之），直接量出 ML 的增量。"
+    "当前 ML 默认未开启（装依赖与开启按计划放最后），所以这里先给出「谁在用什么」，"
+    "开启后同一张表就是对照结论的入口。"
+)
+from futu_quant.tenant import active_tenants as _active_tenants
+
+_rows = []
+for _profile in _active_tenants():
+    _mode = resolve_scoring_mode(store, _profile.tenant_id)
+    _rows.append(
+        {
+            "租户": _profile.tenant_id,
+            "环境": getattr(_profile, "trading_env", "?"),
+            "打分方式": MODE_LABELS.get(_mode, _mode),
+            "模型路径": resolve_ml_factor(store, _profile.tenant_id, "model_path"),
+            "打分阈值": resolve_ml_factor(store, _profile.tenant_id, "ml_threshold"),
+        }
+    )
+if _rows:
+    st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
+    _ml_tenants = [r["租户"] for r in _rows if r["打分方式"] == MODE_LABELS.get(MODE_ML, MODE_ML)]
+    if not _ml_tenants:
+        st.info("目前没有任何租户启用 ML 打分 —— 对照尚未开始（这是预期状态，不是故障）。")
+    else:
+        st.success(f"已启用 ML 的租户：{', '.join(_ml_tenants)}；其余租户走规则打分，可直接对照。")
+
 st.subheader("重训控制")
 st.caption(
     "手动触发会在**后台进程**里跑（不卡界面、不占服务主循环），并发触发由文件锁挡住。"

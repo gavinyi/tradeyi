@@ -1871,6 +1871,27 @@ class TradingStore:
             )
             return cursor.rowcount > 0
 
+    def prune_reconciliation_reports(
+        self, retain_days: int = 7, *, keep_statuses: tuple[str, ...] = ("MISMATCH",),
+    ) -> int:
+        """对账明细降采样：只删**旧且正常**的行，异常行永久保留。
+
+        `reconciliation_reports` 60 秒一轮 × 每标的 × 多租户，实测 38 万行里
+        37.9 万是 MATCHED（正常）。这些行除了占空间和拖慢查询没有别的用途；
+        而 MISMATCH 是事故证据，**无论多旧都必须留**。
+        """
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(retain_days))).isoformat()
+        placeholders = ",".join("?" for _ in keep_statuses)
+        with self.connection() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM reconciliation_reports WHERE created_at < ? "
+                f"AND status NOT IN ({placeholders})",
+                (cutoff, *keep_statuses),
+            )
+            return int(cursor.rowcount or 0)
+
     def record_ml_retrain_run(
         self, *, triggered_by: str, trigger_kind: str = "manual",
         status: str = "RUNNING", reason: str = "",
