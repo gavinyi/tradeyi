@@ -203,6 +203,7 @@ def run_once(
                 "候选池已过滤：期权代码格式无效或无法解析到期日",
                 {"code": code, "underlying": item.get("underlying", "")},
                 repeat_after_seconds=3600,
+                tenant_id=str(item.get("tenant_id") or _tenant_id),
             )
             continue
         normalized = dict(item)
@@ -539,6 +540,7 @@ def run_once(
                     {"old_code": campaign.get("code"), "new_code": rolled.get("code"),
                      "roll_reason": reason,
                      "diagnostics": rolled.get("_roll_diagnostics", {})},
+                    tenant_id=str(campaign.get("tenant_id") or _tenant_id),
                 )
             else:
                 executor.store.decision_if_changed(
@@ -546,6 +548,7 @@ def run_once(
                     f"期权表达复核未替换：{replace_reason if should_review_expression else reason}",
                     {"roll_reason": reason, "diagnostics": rolled.get("_roll_diagnostics", {})},
                     repeat_after_seconds=900,
+                    tenant_id=str(campaign.get("tenant_id") or _tenant_id),
                 )
             campaign = rolled
         prepared.append(campaign)

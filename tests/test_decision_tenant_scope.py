@@ -98,3 +98,115 @@ def test_fan_out_stamps_tenant_on_decision(tmp_path, monkeypatch):
         f"扇出层的决策必须有本租户 tenant_id，实际 {tenants} —— "
         "调用点没传租户时这里会只剩空串"
     )
+
+
+def test_missing_tenant_id_records_warning_event(tmp_path):
+    """P1-7 契约：解析不到租户时不许静默落空，必须记录 WARNING 事件说明调用点。"""
+    store = TradingStore(tmp_path / "t.db")
+
+    # 1. 显式传租户：正常落库，且绝不产生缺失警告
+    store.decision("test_strat", "US.AAPL", "HOLD", "正常决策", tenant_id=REAL)
+    warnings = [e for e in store.operational_events() if e["event_type"] == "DECISION_MISSING_TENANT_ID"]
+    assert len(warnings) == 0, "传了 tenant_id 不得触发缺失警告"
+    last_log = store.decisions(limit=1)[0]
+    assert last_log["tenant_id"] == REAL
+
+    # 2. 未传租户：落库空串，同时写一条 WARNING 事件记录调用点
+    store.decision("test_strat", "US.AAPL", "HOLD", "无租户决策")
+    warnings = [e for e in store.operational_events() if e["event_type"] == "DECISION_MISSING_TENANT_ID"]
+    assert len(warnings) == 1, "未传 tenant_id 必须生成一条 WARNING 事件"
+    assert warnings[0]["status"] == "WARNING"
+    import json
+    payload = json.loads(warnings[0]["payload_json"])
+    assert payload["strategy_id"] == "test_strat"
+    assert payload["symbol"] == "US.AAPL"
+    assert "caller" in payload
+    assert "test_decision_tenant_scope.py" in payload["caller"]
+
+
+def test_decision_behavior_unchanged_with_tenant_id(tmp_path):
+    """P1-7 验收：同一决策补 tenant_id 前后行为严格一致（只增加审计维度，不改业务逻辑）。"""
+    store = TradingStore(tmp_path / "t.db")
+
+    # 未带租户 vs 带租户
+    store.decision("core_satellite", "US.SPY", "HOLD", "维持仓位", payload={"target": 0.5}, tenant_id=None)
+    store.decision("core_satellite", "US.SPY", "HOLD", "维持仓位", payload={"target": 0.5}, tenant_id=REAL)
+
+    logs = store.decisions(limit=10)
+    assert len(logs) == 2
+    assert logs[0]["decision"] == logs[1]["decision"] == "HOLD"
+    assert logs[0]["reason"] == logs[1]["reason"] == "维持仓位"
+    assert logs[0]["tenant_id"] == REAL
+    assert logs[1]["tenant_id"] == ""
+
+
+def test_worker_run_campaign_records_tenant_id(tmp_path, monkeypatch):
+    """P1-7 验收：Worker 执行 run_campaign 时，决策日志准确落入 campaign["tenant_id"]。"""
+    import pandas as pd
+    import scripts.run_gamma_strategy as rgs
+    from futu_quant.execution import ExecutionManager
+
+    store = TradingStore(tmp_path / "t.db")
+
+    code = "US.META261030P660000"
+    positions = pd.DataFrame([{"code": code, "qty": 1, "cost_price": 2.0}])
+
+    class FakeBroker:
+        def positions(self, refresh=False):
+            return positions
+
+        def orders(self, *args, **kwargs):
+            return pd.DataFrame()
+
+    executor = ExecutionManager(FakeBroker(), store=store)
+
+    monkeypatch.setattr(rgs, "diagnose_campaign", lambda campaign, events: ["财报时间未人工确认"])
+    monkeypatch.setattr(rgs, "hard_campaign_issues", lambda campaign, issues: list(issues))
+
+    campaign = {
+        "code": code,
+        "trigger_mode": "VOLATILITY",
+        "underlying": "META",
+        "legs": [{"code": code, "side": "BUY", "ratio": 1}],
+        "tenant_id": REAL,
+        "closed": True,  # 触发 CLOSED 决策
+    }
+    rgs.run_campaign(FakeBroker(), executor, campaign, {})
+
+    decisions = store.decisions(limit=10)
+    assert len(decisions) >= 1
+    assert decisions[0]["tenant_id"] == REAL, f"Worker 决策未带入 campaign 租户：{decisions[0]}"
+    # 并且不应该产生缺失租户的警告
+    warnings = [e for e in store.operational_events() if e["event_type"] == "DECISION_MISSING_TENANT_ID"]
+    assert len(warnings) == 0, f"Worker 决策触发了未传租户告警：{warnings}"
+
+
+def test_missing_tenant_warning_is_throttled_per_process(tmp_path):
+    """热路径保护（Chief 复核追加）：同一调用点缺租户只报一次。
+
+    `decision()` 是雷达热路径（每轮每候选一条）。若缺 tenant_id 就每次都写
+    `operational_events`，事件表会被瞬间写爆 —— 而「这处调用点一直缺租户」这件事
+    只需要报一次。变异：去掉 `_MISSING_TENANT_WARNED` 闸门 → 本用例红（20 条告警）。
+    """
+    store = TradingStore(tmp_path / "t.db")
+    TradingStore._MISSING_TENANT_WARNED.clear()
+
+    for _ in range(20):
+        store.decision("hot_path_strat", "US.AAPL", "HOLD", "热路径决策")
+    warnings = [
+        e for e in store.operational_events()
+        if e["event_type"] == "DECISION_MISSING_TENANT_ID"
+    ]
+    assert len(warnings) == 1, (
+        f"同一 (strategy, symbol) 缺租户应只报一次，实际 {len(warnings)} 条 —— 事件表会被写爆"
+    )
+
+    # 不能一刀切静音：换一个标的仍要各报一次
+    store.decision("hot_path_strat", "US.NVDA", "HOLD", "另一个标的")
+    warnings = [
+        e for e in store.operational_events()
+        if e["event_type"] == "DECISION_MISSING_TENANT_ID"
+    ]
+    assert len(warnings) == 2, "不同标的的缺失必须分别可见，不能连坐静音"
+
+

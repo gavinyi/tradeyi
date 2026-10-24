@@ -8,6 +8,7 @@ from pathlib import Path
 import math
 import re
 import sqlite3
+import sys
 import time
 from typing import Any, Iterator
 
@@ -2364,12 +2365,40 @@ class TradingStore:
         return deleted
 
     _DECISION_CACHE: dict[tuple[str, str | None, str], tuple[str, str, float]] = {}
+    # 缺 tenant_id 的告警**每进程每 (strategy, symbol) 只落一次**：
+    # 决策记录是热路径（雷达每轮每候选一条），不加这道闸会把 operational_events 写爆，
+    # 而「同一处调用点一直缺 tenant_id」这件事本就只需要报一次。
+    _MISSING_TENANT_WARNED: set[tuple[str, str]] = set()
 
     def decision(
         self, strategy_id: str, symbol: str | None, decision: str, reason: str,
         payload: dict | None = None, tenant_id: str | None = None,
     ) -> None:
         tenant = str(tenant_id or "")
+        if not tenant and (str(strategy_id), str(symbol)) not in self._MISSING_TENANT_WARNED:
+            self._MISSING_TENANT_WARNED.add((str(strategy_id), str(symbol)))
+            # P1-7: 解析不到时不许静默落 ""：记录 WARNING 事件说明哪条决策缺 tenant_id 及调用点
+            caller_info = "unknown"
+            try:
+                frame = sys._getframe(1)
+                if frame and frame.f_code.co_name == "decision_if_changed":
+                    frame = frame.f_back
+                if frame:
+                    caller_info = f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}"
+            except Exception:
+                pass
+            try:
+                self.operational_event(
+                    "decision_logger", "DECISION_MISSING_TENANT_ID", "WARNING",
+                    {
+                        "strategy_id": strategy_id,
+                        "symbol": symbol,
+                        "decision": decision,
+                        "caller": caller_info,
+                    },
+                )
+            except Exception:
+                pass
         self._DECISION_CACHE[(strategy_id, symbol, tenant)] = (decision, reason, time.time())
         with self.connection() as connection:
             connection.execute(

@@ -57,8 +57,9 @@ def _real_sellable_quantity(broker: FutuPaperBroker, symbol: str) -> tuple[int, 
 
 def run_once(
     broker: FutuPaperBroker, strategy_name: str, executor: ExecutionManager | None = None,
-    execution_strategy_id: str | None = None,
+    execution_strategy_id: str | None = None, tenant_id: str | None = None,
 ) -> None:
+    _tenant_id = str(tenant_id or "")
     settings = broker.settings
     executor = executor or ExecutionManager(broker)
     executor.reconcile()
@@ -92,6 +93,7 @@ def run_once(
         if core_budget and not core_budget.get("enabled"):
             executor.store.decision(
                 "core_satellite", None, "BLOCKED", "组合资金分配器已停用 Core Satellite",
+                tenant_id=_tenant_id,
             )
             return
         effective_stock_cap = min(
@@ -135,6 +137,7 @@ def run_once(
             executor.store.decision(
                 "core_satellite", None, "BLOCKED", reason,
                 {"negative_symbols": sorted(negative_symbols)},
+                tenant_id=_tenant_id,
             )
             return
         if missing_symbols:
@@ -153,7 +156,8 @@ def run_once(
             else:
                 print("Core Satellite skipped: initial orders are still pending")
                 executor.store.decision(
-                    "core_satellite", None, "HOLD", "初始订单仍待成交"
+                    "core_satellite", None, "HOLD", "初始订单仍待成交",
+                    tenant_id=_tenant_id,
                 )
                 return
         else:
@@ -174,7 +178,8 @@ def run_once(
             else:
                 print(f"Core Satellite skipped: not due ({schedule_reason})")
                 executor.store.decision(
-                    "core_satellite", None, "NOT_DUE", schedule_reason
+                    "core_satellite", None, "NOT_DUE", schedule_reason,
+                    tenant_id=_tenant_id,
                 )
                 return
         print(f"Rebalance trigger: {schedule_reason}")
@@ -238,6 +243,7 @@ def run_once(
                 "Satellite 每日扫描未发现可交易机会" if satellite_only
                 else "没有达到最低交易金额的调仓指令",
                 {"risk_on": risk_on, **validation_payload},
+                tenant_id=_tenant_id,
             )
         planned_reduction_delta = sum(
             float(order.order_notional) for order in orders if order.side == "SELL"
@@ -267,6 +273,7 @@ def run_once(
                                 "pre_submit_sellable_quantity": actual_quantity,
                                 **validation_payload,
                             },
+                            tenant_id=_tenant_id,
                         )
                         continue
                 intent_mode = (
@@ -326,6 +333,7 @@ def run_once(
         executor.store.decision(
             strategy_id, symbol, result.signal.value, result.reason,
             {"price": result.price, "quantity": order_quantity},
+            tenant_id=_tenant_id,
         )
         if result.signal == Signal.BUY and symbol not in held:
             print(executor.submit_limit(
