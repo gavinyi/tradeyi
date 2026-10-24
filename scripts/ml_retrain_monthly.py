@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import pickle
 import shutil
@@ -32,7 +33,10 @@ DEFAULT_DATA = ROOT / "data/ml_training/volatility_trades_v3_latest.csv"
 DEFAULT_MODEL = ROOT / "data/ml_models/volatility_scorer_v3.pkl"
 BACKUP_DIR = ROOT / "data/ml_models/backups"
 MIN_SAMPLES = 200  # 样本太少不训练
-AUC_GUARD = 0.50   # AUC 低于此值不替换生产模型（防退化）
+# AUC 门控默认值不变（design §3.3），但允许运维用 env 覆盖，便于按租户调。
+AUC_GUARD = float(os.getenv("ML_AUC_GUARD", "0.50"))   # AUC 低于此值不替换生产模型（防退化）
+# 相对改进边际：默认 0.01（design §2.1），样本少时防止把噪声当改进。
+MIN_IMPROVEMENT_MARGIN = float(os.getenv("ML_MIN_IMPROVEMENT_MARGIN", "0.01"))
 
 
 def run(cmd: list[str]) -> str:
@@ -92,17 +96,43 @@ def load_metrics(model_path: Path) -> dict | None:
 
 
 def load_auc(model_path: Path) -> float | None:
-    """读取模型 AUC"""
+    """读取模型 AUC；**读不到必须是 None，不能是 0.0**（design §4b）。
+
+    原实现 `float(data.get("metrics", {}).get("auc", 0))`：pkl 里没有 metrics 键时
+    返回 **0.0**，于是 `new_auc < AUC_GUARD` 恒真 —— **自动重训永远不会替换生产模型**
+    （静默失效，日志里只有一行"低于安全阈值"，没人会看到）。
+    """
     metrics = load_metrics(model_path)
-    if metrics and "auc" in metrics:
-        return float(metrics["auc"])
-    # 尝试从 pickle 读取
+    if metrics:
+        for key in ("auc", "auc_score"):
+            if key in metrics:
+                try:
+                    return float(metrics[key])
+                except (TypeError, ValueError):
+                    return None
     try:
         with open(model_path, "rb") as f:
             data = pickle.load(f)
-        return float(data.get("metrics", {}).get("auc", 0)) if isinstance(data, dict) else None
     except Exception:
         return None
+    if not isinstance(data, dict):
+        return None
+    nested = data.get("metrics")
+    if isinstance(nested, dict):
+        for key in ("auc", "auc_score"):
+            if key in nested:
+                try:
+                    return float(nested[key])
+                except (TypeError, ValueError):
+                    return None
+    for key in ("auc", "auc_score"):
+        if key in data:
+            try:
+                return float(data[key])
+            except (TypeError, ValueError):
+                return None
+    # 两种来源都没有 → None（不是 0.0）
+    return None
 
 
 def promote_if_better(new_model: Path, production: Path) -> tuple[bool, float | None, float | None]:
@@ -116,14 +146,24 @@ def promote_if_better(new_model: Path, production: Path) -> tuple[bool, float | 
     print(f"   生产模型 AUC: {old_auc if old_auc is not None else 'N/A'}")
 
     if new_auc is None:
-        print("   ⚠️  无法读取新模型 AUC，不替换生产模型")
+        print(
+            "   ⚠️  [SKIP:auc_missing] 无法读取新模型 AUC（json 与 pkl 都没有），"
+            "不替换生产模型 —— 这是可见的 SKIP，不是错误"
+        )
         return False, new_auc, old_auc
     if new_auc < AUC_GUARD:
-        print(f"   ⚠️  新模型 AUC {new_auc:.4f} 低于安全阈值 {AUC_GUARD}，不替换")
+        print(f"   ⚠️  [SKIP:below_guard] 新模型 AUC {new_auc:.4f} 低于安全阈值 {AUC_GUARD}，不替换")
         return False, new_auc, old_auc
-    if old_auc is not None and new_auc < old_auc:
-        print(f"   ⚠️  新模型 AUC {new_auc:.4f} 不如当前 {old_auc:.4f}，保留当前模型")
-        return False, new_auc, old_auc
+    if old_auc is not None:
+        # min_improvement_margin：样本 ~300 时 AUC 差 0.01 在噪声内，
+        # 没有边际就会把「统计上无法区分」的模型推上生产（design §2.1）。
+        required = old_auc + MIN_IMPROVEMENT_MARGIN
+        if new_auc + 1e-12 < required:
+            print(
+                f"   ⚠️  [SKIP:not_improved] 新模型 AUC {new_auc:.4f} "
+                f"未超过当前 {old_auc:.4f} + 边际 {MIN_IMPROVEMENT_MARGIN:.4f}，保留当前模型"
+            )
+            return False, new_auc, old_auc
 
     # 备份当前生产模型
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
