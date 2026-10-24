@@ -125,6 +125,36 @@ def test_restore_does_not_unsuppress_other_tenant(tmp_path, monkeypatch):
     )
 
 
+def test_invalid_override_value_is_rejected_not_promoted_to_real(tmp_path):
+    """红区 fail-open 守卫：非法覆盖值不得被白名单提升成 REAL 下单。
+
+    实盘提升的判据是 `override_mode != "SHADOW"`，所以 `INHERIT`/拼错的 `SHAODW`
+    都会被当成「不是 SHADOW」→ 提升 REAL → 真金单。配置错误必须拒单 + 可见。
+    变异：去掉 `submit_limit` 里的合法性校验 → 本用例转红（原因变成实盘门禁那句）。
+    """
+    broker = _RealBroker()
+    store = TradingStore(tmp_path / "t.db")
+    store.set_setting(f"strategy_execution_mode:{REAL}:core_satellite", "INHERIT")
+    executor = ExecutionManager(broker, store, tenant=SimpleNamespace(
+        tenant_id=REAL, trading_env="REAL", account_id="123456",
+    ))
+
+    result = executor.submit_limit(
+        "core_satellite", "invalid-override", "US.SPY", "BUY", 1, 100.0,
+    )
+
+    assert result.status == "REJECTED"
+    assert "执行模式配置非法" in result.message, (
+        f"非法覆盖值没有被识别出来，实际走的是：{result.message}"
+    )
+    assert broker.placed == 0
+    events = [
+        event for event in store.audit_events(limit=50)
+        if event["event_type"] == "INVALID_EXECUTION_MODE_OVERRIDE"
+    ]
+    assert events, "非法执行模式必须落审计事件，否则没人知道配置写错了"
+
+
 class _RealBroker:
     """实盘环境的极简 broker：只提供 submit_limit 解析模式所需字段。"""
 

@@ -115,6 +115,35 @@ class ExecutionManager:
             metadata.setdefault("tenant_id", tenant_id)
         tenant_mode_override = strategy_execution_mode_override(self.store, tenant_id, strategy_id)
         override_mode = tenant_mode_override
+        # 红区 fail-open 收口（Reviewer）：非法覆盖值**绝不能**参与后续提升。
+        # 实盘白名单提升的判据是 `override_mode != "SHADOW"`，所以 ``INHERIT``/拼错的
+        # ``SHAODW``/手工改库的垃圾值都会被当成「不是 SHADOW」→ 提升成 REAL → 下真金单。
+        # 配置错误必须拒单 + 可见，不得静默兜底。
+        _allowed_modes = {"SHADOW", "PAPER", "REAL"}
+        _invalid_override = next(
+            (
+                str(value).upper()
+                for value in (execution_mode_override, override_mode)
+                if value and str(value).strip().upper() not in _allowed_modes
+            ),
+            "",
+        )
+        if _invalid_override:
+            reason = (
+                f"执行模式配置非法：{_invalid_override!r}（只允许 SHADOW/PAPER/REAL）—— 已拒单"
+            )
+            self.store.audit(
+                "INVALID_EXECUTION_MODE_OVERRIDE",
+                {
+                    "tenant_id": tenant_id,
+                    "strategy_id": strategy_id,
+                    "symbol": symbol,
+                    "invalid_value": _invalid_override,
+                },
+                strategy_id, actor="service:execution",
+            )
+            self.alerts.send("ERROR", "INVALID_EXECUTION_MODE_OVERRIDE", f"{strategy_id}: {reason}")
+            return ExecutionResult(0, "REJECTED", reason)
         broker_settings = getattr(self.broker, "settings", None)
         raw_env = getattr(self.broker, "trading_env", None)
         if raw_env is None or not isinstance(raw_env, (str, bytes)):
