@@ -71,3 +71,25 @@ def test_vacuum_dry_run_stats(tmp_path):
     stats = _stats(db)
     assert stats["size_mb"] > 0
     assert "reclaimable_mb" in stats
+
+
+def test_hot_path_indexes_reach_existing_databases(tmp_path):
+    """热路径索引必须走**存量库必经之路**（版本化迁移）。
+
+    与 alerts 三列同源的问题：只写在 `initialize()` 的「新建库」分支时，存量库拿不到。
+    生产实测缺 `idx_decision_logs_lookup`，决策查询退化为全表扫。
+    """
+    store = TradingStore(tmp_path / "t.db")
+    with store.connection() as connection:
+        applied = {row[0] for row in connection.execute("SELECT version FROM schema_migrations")}
+        names = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )}
+    assert 15 in applied, "Migration(15) 未记录为已应用"
+    for required in (
+        "idx_decision_logs_lookup",
+        "idx_decision_tenant",
+        "idx_operational_events_id_desc",
+    ):
+        assert required in names, f"热路径索引缺失：{required}"
+

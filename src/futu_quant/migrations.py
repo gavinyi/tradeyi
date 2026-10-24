@@ -158,6 +158,23 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_ml_retrain_runs_started
             ON ml_retrain_runs(started_at DESC);
     """),
+    # P2-14 效率：**热路径索引补齐**。
+    # 问题形态与「alerts 三列」同源：`store.initialize()` 有两个分支，新加索引只写在
+    # 「新建库」分支时，**存量库永远拿不到**。实测生产缺 idx_decision_logs_lookup
+    # （决策查询按 strategy+symbol 走的是全表扫）。
+    # 走版本化迁移 = 存量库必经之路；IF NOT EXISTS 保证新库/已建过的库都幂等。
+    Migration(15, "hot_path_indexes", """
+        CREATE INDEX IF NOT EXISTS idx_decision_logs_lookup
+            ON decision_logs(strategy_id, symbol, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_decision_tenant
+            ON decision_logs(tenant_id, strategy_id, symbol, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_decision_created
+            ON decision_logs(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_operational_events_id_desc
+            ON operational_events(id DESC);
+        CREATE INDEX IF NOT EXISTS idx_operational_events_component
+            ON operational_events(component, id DESC);
+    """),
 )
 
 
