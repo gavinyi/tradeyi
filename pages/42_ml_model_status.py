@@ -1,4 +1,4 @@
-"""ML 模型状态（P2-1a：**只读**可观测页）。
+"""ML 模型状态与打分开关（P2-1a 只读观测 + P2-3 租户级开关）。
 
 回答 PRD 区块① 的问题，且**不提供任何写操作**（重训/配置属 1b 之后）：
 
@@ -7,7 +7,8 @@
 ③ 新鲜度指示与 §四 状态表同一套阈值（<30 绿 / 30–34 橙 / ≥35 红）；
 ④ `sklearn` 是否可用 —— 这决定了"装依赖后重启会切换打分方式"这件事什么时候发生。
 
-薄视图：所有判定走 `futu_quant.ml_freshness`，页面不读文件、不评估阈值。
+薄视图：所有判定走 `futu_quant.ml_freshness`；开关读写走 `futu_quant.ml_config`，
+页面不读文件、不评估阈值、不拼配置键。
 """
 
 from __future__ import annotations
@@ -28,19 +29,34 @@ from futu_quant.ml_freshness import (
     freshness_summary_line,
     ml_model_health,
 )
-from futu_quant.ui import render_sidebar
+from futu_quant.ml_config import (
+    MODE_LABELS,
+    MODE_ML,
+    MODE_RULE,
+    resolve_scoring_mode,
+    set_scoring_mode,
+)
+from futu_quant.store import TradingStore
+from futu_quant.ui import get_current_tenant, render_admin_login, render_sidebar
 
 st.set_page_config(page_title="ML 模型状态", page_icon="🧠", layout="wide")
 settings = Settings.load()
 render_sidebar(settings)
+store = TradingStore()
+admin = render_admin_login()
 
 st.title("ML 模型状态（只读）")
 st.caption(
     "这一页只回答「现在用的是 ML 还是规则、模型有多旧、为什么降级」。"
-    "任何重训或配置变更都在后续步骤提供，本页不做写操作。"
+    "重训在后续步骤提供；本页唯一可写的是**当前租户**的 ML 打分开关。"
 )
 
 # 生效租户：ML 是否启用按租户配置解析；拿不到就诚实显示"未识别"，不猜。
+try:
+    page_tenant_id = str(get_current_tenant(settings).get("tenant_id") or "")
+except Exception:
+    page_tenant_id = ""
+
 health = ml_model_health()
 
 freshness = str(health.get("freshness") or "")
@@ -65,6 +81,45 @@ elif scoring_mode == SCORING_DISABLED:
     st.info("ML 评分处于**显式关闭**状态（配置选择，不是故障）。")
 elif scoring_mode == SCORING_ML:
     st.success("ML 模型已加载并生效。")
+
+
+st.subheader("ML 打分开关（按租户）")
+st.caption(
+    "**默认 `rule`（不显式开启就不上 ML）**：装依赖与开启 ML 放在最后，先保证功能完整。"
+    f"当前租户：`{page_tenant_id or '未识别'}`。切换只影响本租户，不影响其他租户。"
+)
+_configured_mode = resolve_scoring_mode(store, page_tenant_id)
+_selected_mode = st.radio(
+    "打分方式",
+    options=[MODE_RULE, MODE_ML],
+    index=0 if _configured_mode == MODE_RULE else 1,
+    format_func=lambda value: MODE_LABELS.get(value, value),
+    horizontal=True,
+    disabled=not admin,
+    key="ml_scoring_mode_switch",
+)
+if _selected_mode != _configured_mode:
+    if not admin:
+        st.warning("需要管理员权限才能修改打分开关。")
+    elif not page_tenant_id:
+        st.error("无法解析当前租户，已拒绝写全局开关（会连带切换其他租户）。")
+    else:
+        try:
+            written_key = set_scoring_mode(store, page_tenant_id, _selected_mode)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            store.audit(
+                "ML_SCORING_MODE_CHANGED",
+                {
+                    "tenant_id": page_tenant_id,
+                    "before": _configured_mode,
+                    "after": _selected_mode,
+                    "key": written_key,
+                },
+                actor="streamlit_admin:panel",
+            )
+            st.rerun()
 
 st.subheader("为什么是这个状态")
 detail_rows = [

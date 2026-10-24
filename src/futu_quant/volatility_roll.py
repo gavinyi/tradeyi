@@ -252,7 +252,7 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
             message += f"；最高分候选：{top_reason}"
         return _with_diagnostics(campaign, candidates, regime, message)
     # ML 评分重排序（可选增强：AUC 0.76 的标的选择模型）
-    eligible = _apply_ml_ranking(eligible, store)
+    eligible = _apply_ml_ranking(eligible, store, tenant_id=str(campaign.get("tenant_id") or ""))
     selected = eligible.iloc[0]
     selected_code = str(selected.get("code", ""))
     if parse_option_code(selected_code) is None:
@@ -359,7 +359,9 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     )
 
 
-def _apply_ml_ranking(structures: pd.DataFrame, store) -> pd.DataFrame:
+def _apply_ml_ranking(
+    structures: pd.DataFrame, store, tenant_id: str | None = None,
+) -> pd.DataFrame:
     """
     用ML模型对合格结构做评分加权排序（可选增强）。
     
@@ -373,8 +375,14 @@ def _apply_ml_ranking(structures: pd.DataFrame, store) -> pd.DataFrame:
     if structures is None or structures.empty:
         return structures
     try:
+        # P2-3：打分方式是**租户级开关**，不是全局 env。未显式开启（默认 rule）时
+        # 连模型都不加载 —— 否则「没开 ML」也会因为 env 遗留值静默生效。
+        from .ml_config import MODE_ML, resolve_scoring_mode
+
+        if resolve_scoring_mode(store, tenant_id) != MODE_ML:
+            return structures
         from .ml_symbol_scorer import MLSymbolScorer
-        scorer = MLSymbolScorer()
+        scorer = MLSymbolScorer(enabled=True)
         if not scorer.enabled:
             return structures
     except Exception as e:  # noqa: BLE001
