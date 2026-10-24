@@ -256,6 +256,17 @@ def run_once(
                 f"batch {order.execution_slice}/{order.total_slices})"
             )
             if settings.enable_paper_orders:
+                if order.side == "BUY":
+                    from futu_quant.strategy_pause import is_strategy_entries_paused
+                    if is_strategy_entries_paused(executor.store, "core_satellite", _tenant_id):
+                        reason = f"策略 Core Satellite 在租户「{_tenant_id or 'default'}」已开启「暂停新开仓」：跳过买入"
+                        print(f"{order.symbol} BUY skipped ({reason})")
+                        executor.store.decision(
+                            "core_satellite", order.symbol, "HOLD", reason,
+                            {"skipped_buy": True, **validation_payload},
+                            tenant_id=_tenant_id,
+                        )
+                        continue
                 actual_quantity = int(order.quantity)
                 sellable_reason = ""
                 if order.side == "SELL":
@@ -336,10 +347,14 @@ def run_once(
             tenant_id=_tenant_id,
         )
         if result.signal == Signal.BUY and symbol not in held:
-            print(executor.submit_limit(
-                strategy_id, f"{signal_date}:{symbol}:BUY", symbol, "BUY",
-                order_quantity, result.price, {"reason": result.reason},
-            ))
+            from futu_quant.strategy_pause import is_strategy_entries_paused
+            if is_strategy_entries_paused(executor.store, strategy_id, _tenant_id):
+                print(f"{symbol} BUY blocked: 策略「{strategy_id}」已开启暂停新开仓")
+            else:
+                print(executor.submit_limit(
+                    strategy_id, f"{signal_date}:{symbol}:BUY", symbol, "BUY",
+                    order_quantity, result.price, {"reason": result.reason},
+                ))
         elif result.signal == Signal.SELL and symbol in held:
             owned = int(positions.loc[positions["code"] == symbol, "qty"].iloc[0])
             print(executor.submit_limit(

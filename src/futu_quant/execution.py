@@ -18,12 +18,8 @@ from .approval import (
 from .fee_model import estimate_fees
 from .real_trading import check_real_trade, resolve_real_account_limits
 from .risk_limits import RiskLimitsConfigError, resolve_risk_limits
-from .execution_mode import (
-    downgrade_strategy_execution_mode,
-    resolve_configured_execution_mode,
-    restore_strategy_execution_mode,
-    strategy_execution_mode_override,
-)
+from .strategy_pause import is_strategy_entries_paused
+from .execution_mode import strategy_execution_mode_override
 
 
 
@@ -110,7 +106,9 @@ class ExecutionManager:
                 self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id}, actor="service:execution")
                 return ExecutionResult(0, "REJECTED", reason)
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
-        tenant_id = getattr(self.tenant, "tenant_id", "") if self.tenant else ""
+        tenant_id = (
+            getattr(self.tenant, "tenant_id", "") if self.tenant else ""
+        ) or getattr(self.broker, "tenant_id", "") or str(metadata.get("tenant_id") or "")
         if tenant_id:
             metadata.setdefault("tenant_id", tenant_id)
         tenant_mode_override = strategy_execution_mode_override(self.store, tenant_id, strategy_id)
@@ -206,6 +204,24 @@ class ExecutionManager:
                         self.store.audit("REAL_PROTECTED_STOCK_SELL_FORBIDDEN", {"symbol": symbol, "strategy_id": strategy_id, "quantity": quantity, "retained_floor": 5.0}, actor="service:execution")
                         self.alerts.send("CRITICAL", "REAL_PROTECTED_STOCK_SELL_FORBIDDEN", reason)
                         return ExecutionResult(0, "REJECTED", reason)
+        # --- Reduce-Only / 暂停新开仓门禁（L2 终极闸门）---
+        # 铁律：拦截严格仅作用于 BUY 开仓/增仓；SELL 退出/平仓必须 100% 绝对放行
+        if side.upper() == "BUY":
+            effective_tenant = tenant_id or (getattr(self.tenant, "tenant_id", "") if self.tenant else "")
+            if is_strategy_entries_paused(self.store, strategy_id, effective_tenant):
+                reason = (
+                    f"策略「{strategy_id}」在租户「{effective_tenant or 'default'}」已开启「暂停新开仓」："
+                    f"坚决不建新仓，已有持仓继续由策略执行止盈、止损与退出管理"
+                )
+                self.store.audit("STRATEGY_NEW_ENTRY_BLOCKED", {
+                    "strategy_id": strategy_id,
+                    "tenant_id": effective_tenant,
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": quantity,
+                }, strategy_id=strategy_id, actor="service:execution")
+                self.store.decision(strategy_id, symbol, "BLOCKED", reason, tenant_id=effective_tenant)
+                return ExecutionResult(0, "REJECTED", reason)
         fingerprint = runtime_strategy_fingerprint(strategy_id, self.store)
         current_source_fingerprint = strategy_fingerprint(strategy_id, self.store)
         require_approval = approval_enforcement_enabled(self.store)

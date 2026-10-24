@@ -1418,15 +1418,18 @@ def run_campaign(
                     }, strategy_id,
                  actor="service:gamma")
 
-        if trigger_mode == "VOLATILITY" and volatility_new_entries_paused(executor.store, broker):
-            paused_key = "volatility_new_entries_paused"
-            _paused_tenant = tenant_id_of_broker(broker) or ""
-            if _paused_tenant:
-                paused_key = f"volatility_new_entries_paused:{_paused_tenant}"
-            block_reason = "波动率期权新开仓已临时暂停：只保留已有持仓止盈、止损和组合平仓管理"
-            record_pretrade_block("VOLATILITY_ENTRY_PAUSED", block_reason, {
+        from futu_quant.strategy_pause import is_strategy_entries_paused
+        if trigger_mode == "VOLATILITY" and (
+            is_strategy_entries_paused(executor.store, strategy_id, _campaign_tenant)
+            or volatility_new_entries_paused(executor.store, broker)
+        ):
+            block_reason = (
+                f"策略「{strategy_id}」在租户「{_campaign_tenant or 'default'}」已开启「暂停新开仓」："
+                f"坚决不建新仓，已有持仓继续由策略执行止盈、止损与退出管理"
+            )
+            record_pretrade_block("STRATEGY_NEW_ENTRY_PAUSED", block_reason, {
                 "entry_paused": True,
-                "setting_key": paused_key,
+                "tenant_id": _campaign_tenant,
             })
             print(f"{code}: BLOCKED ({block_reason})")
             return

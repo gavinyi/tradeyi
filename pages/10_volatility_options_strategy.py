@@ -36,9 +36,7 @@ from futu_quant.volatility_orphans import volatility_state_keys
 from futu_quant.campaign_timing import campaign_time_display
 from futu_quant.store import TradingStore
 from futu_quant.execution_mode import resolve_configured_execution_mode
-from futu_quant.volatility_pause import (
-    set_volatility_new_entries_paused, volatility_new_entries_paused,
-)
+from futu_quant.volatility_pause import set_volatility_new_entries_paused
 from futu_quant.tenant import (
     campaign_belongs_to_tenant, campaigns_config_key_lenient, tenant_id_of_broker,
 )
@@ -101,7 +99,8 @@ with st.container(border=True):
         "只停**新开仓**，已有持仓的止盈/止损/到期退出管理照常运行；"
         f"只作用于当前租户（`{_page_tenant_id or '未识别'}`）。"
     )
-    _paused_now = volatility_new_entries_paused(store, broker)
+    from futu_quant.strategy_pause import is_strategy_entries_paused
+    _paused_now = is_strategy_entries_paused(store, "volatility_long_gamma", _page_tenant_id)
     st.metric("当前状态", "已暂停新开仓" if _paused_now else "允许新开仓", border=True)
     _pause_toggle = st.toggle(
         "暂停波动率新开仓", value=_paused_now, disabled=not admin,

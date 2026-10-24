@@ -16,6 +16,7 @@ from futu_quant.radar_control import (
 )
 from futu_quant.service_control import restart, start, status as service_status, stop
 from futu_quant.execution_mode import resolve_configured_execution_mode
+from futu_quant.strategy_pause import is_strategy_entries_paused, set_strategy_entries_paused
 from futu_quant.store import TradingStore
 from futu_quant.strategy_budgeting import (
     budget_group_label,
@@ -104,6 +105,8 @@ for plugin in strategy_plugins():
         "execution_mode": resolve_configured_execution_mode(
             store, tenant_id, plugin.strategy_id,
         ) or "INHERIT",
+        # P1-9：单策略暂停新开仓 (Reduce-Only 只减仓)
+        "entries_paused": is_strategy_entries_paused(store, plugin.strategy_id, tenant_id),
         "heartbeat_status": heartbeat.get("status", "NOT_STARTED"),
         "heartbeat_message": heartbeat.get("message", "尚无心跳"),
         "capital_ratio": float(budget.get("capital_ratio", 0)),
@@ -283,7 +286,7 @@ with overview_tab:
         "这里管策略是否运行、运行到 SHADOW 还是 PAPER；资金比例请到右侧“策略资金”Tab 调整。",
         icon=":material/info:",
     )
-    editable = control[["strategy_id", "display_name", "enabled", "execution_mode"]].copy()
+    editable = control[["strategy_id", "display_name", "enabled", "execution_mode", "entries_paused"]].copy()
     edited = st.data_editor(
         editable, hide_index=True, width="stretch",
         disabled=["strategy_id", "display_name"],
@@ -293,6 +296,10 @@ with overview_tab:
             "enabled": st.column_config.CheckboxColumn("启用自动调度"),
             "execution_mode": st.column_config.SelectboxColumn(
                 "执行模式", options=["INHERIT", "SHADOW", "PAPER"]
+            ),
+            "entries_paused": st.column_config.CheckboxColumn(
+                "⏸️ 暂停新开仓 (只减仓)",
+                help="开启后该策略坚决不建新仓；已有持仓继续由策略执行止盈、止损与退出管理",
             ),
         }, key="unified_strategy_control",
     )
@@ -316,6 +323,9 @@ with overview_tab:
                 store.set_setting(
                     f"strategy_execution_mode:{tenant_id}:{plugin.strategy_id}", str(mode),
                 )
+            # P1-9：单策略暂停新开仓 (Reduce-Only) 多租户保存
+            paused = bool(item.get("entries_paused", False))
+            set_strategy_entries_paused(store, plugin.strategy_id, paused, tenant_id=tenant_id)
             changes.append(item)
         store.audit(
             "UNIFIED_STRATEGY_CONTROL_CHANGED",
@@ -324,13 +334,25 @@ with overview_tab:
         st.success("策略控制已保存，下一个调度周期生效。")
         st.rerun()
     st.dataframe(
-        control.drop(columns=["enabled", "execution_mode"], errors="ignore"),
+        control.drop(columns=["enabled", "execution_mode", "entries_paused"], errors="ignore"),
         hide_index=True, width="stretch",
         column_config={
             "capital_ratio": st.column_config.NumberColumn("资金配额", format="percent"),
             "version_drift": st.column_config.CheckboxColumn("版本漂移"),
         },
     )
+
+    with st.container(border=True):
+        st.subheader("💡 交易控制三大开关机制对比")
+        st.markdown(
+            """
+| 控制开关 | 作用范围 | 拦截行为 | 影响平仓与退出吗？ | 适用场景 |
+| :--- | :--- | :--- | :---: | :--- |
+| **⏸️ 暂停新开仓 (只减仓)** | 单个策略独立 | **只拦截 BUY (开仓/加仓)** | ❌ **绝对不影响** (止盈止损正常运行) | 标的波动剧烈，需暂停新开仓并继续管理既有持仓 |
+| **🚨 账户急停 (Kill Switch)** | 当前账户全部策略 | **只拦截 BUY (开仓/加仓)** | ❌ **不影响** (平仓减仓不受限) | 账户整体风控熔断，需紧急按住全账户开仓 |
+| **⏹️ 暂停策略调度** | 单个策略或全局调度 | **完全终止策略循环** | ⚠️ **连带平仓一起暂停** | 策略代码升级、紧急维护检修 |
+            """
+        )
 
 with budget_tab:
     st.subheader("策略资金")
