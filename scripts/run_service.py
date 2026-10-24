@@ -60,6 +60,17 @@ from futu_quant.option_lifecycle import execute_disposition_plans, monitor_optio
 from futu_quant.option_history import collect_option_snapshots
 from futu_quant.portfolio_allocator import ensure_default_budgets
 from futu_quant.stress import monitor_portfolio_stress
+from futu_quant.stress_alerts import (
+    LEGACY_INCIDENT_KEY as PORTFOLIO_STRESS_LEGACY_KEY,
+    STATE_ALERTING,
+    legacy_incident_closed,
+    mark_legacy_incident_closed,
+    next_stress_action,
+    portfolio_stress_incident_key,
+    read_hysteresis_state,
+    resolve_portfolio_stress_thresholds,
+    write_hysteresis_state,
+)
 from futu_quant.strategy_plugins import BY_SERVICE_NAME, strategy_plugins
 from futu_quant.experiments import sync_strategy_experiments
 from futu_quant.combo_execution import ComboExecutionManager
@@ -946,20 +957,37 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             result = monitor_portfolio_stress(broker, store)
             if result.empty:
                 return
+            tenant_id = tenant.tenant_id if tenant else None
+            # P1-8：阈值/事件键/滞回全部走单源；缓冲带内不再「告警-恢复」来回刷。
+            breach, recover = resolve_portfolio_stress_thresholds(store, tenant_id)
+            incident_key = portfolio_stress_incident_key(tenant_id)
+            # 旧全局 incident 一次性收口：改租户键后老事件会永久悬空。
+            if not legacy_incident_closed(store, tenant_id):
+                alerts.recover(
+                    PORTFOLIO_STRESS_LEGACY_KEY,
+                    "组合压力告警已迁移为租户级事件，旧全局事件收口",
+                    incident_key=PORTFOLIO_STRESS_LEGACY_KEY,
+                )
+                mark_legacy_incident_closed(store, tenant_id)
             worst = result.iloc[0]
-            threshold = float(os.getenv("PORTFOLIO_STRESS_ALERT_PCT", "0.10"))
-            if float(worst["equity_loss_ratio"]) >= threshold:
+            ratio = float(worst["equity_loss_ratio"])
+            state = read_hysteresis_state(store, tenant_id)
+            action = next_stress_action(ratio, state, breach, recover)
+            if action == "alert":
                 alerts.send(
                     "ERROR", "PORTFOLIO_STRESS_BREACH",
-                    f"组合压力场景“{worst['scenario']}”估算损失 "
-                    f"{float(worst['equity_loss_ratio']):.1%}，超过 {threshold:.1%}",
-                    incident_key="PORTFOLIO_STRESS_BREACH",
+                    f"[{tenant_id or 'global'}] 组合压力场景“{worst['scenario']}”估算损失 "
+                    f"{ratio:.1%}，超过 {breach:.1%}",
+                    incident_key=incident_key,
                 )
-            else:
+                write_hysteresis_state(store, tenant_id, STATE_ALERTING)
+            elif action == "recover":
                 alerts.recover(
-                    "PORTFOLIO_STRESS_BREACH", "组合压力损失已回到警戒线以内",
-                    incident_key="PORTFOLIO_STRESS_BREACH",
+                    incident_key, "组合压力损失已回到恢复线以内",
+                    incident_key=incident_key,
                 )
+                write_hysteresis_state(store, tenant_id, STATE_OK)
+            # action == "none"：缓冲带内或状态未变 —— 不重发、不误消警
         run_task(store, alerts, "portfolio_stress", stress_check)
         mark_run(store, "last_run:portfolio_stress", now)
     elif not session.regular_open(now):
