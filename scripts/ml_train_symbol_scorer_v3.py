@@ -47,18 +47,18 @@ except (ImportError, OSError) as e:
         print("    解决: brew install libomp 或继续使用RandomForest")
 
 
-def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[pd.DataFrame, pd.Series, list[str]]:
+def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[pd.DataFrame, pd.Series, list[str], pd.Series]:
     """
-    准备训练特征和标签
+    准备训练特征、标签和样本收益凸性权重
     
     Args:
         df: 原始数据
         feature_selection: 是否进行特征选择
         
     Returns:
-        (特征DataFrame, 标签Series, 特征列表)
+        (特征DataFrame, 标签Series, 特征列表, 样本权重Series)
     """
-    print("\n🔧 准备训练特征...")
+    print("\n🔧 准备训练特征与凸性收益加权...")
     
     # 特征列（排除ID、标签、元数据列、结果特征）
     exclude_cols = [
@@ -77,6 +77,27 @@ def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[
     # 提取特征和标签
     X = df[feature_cols].copy()
     y = df['is_profitable'].copy()
+    
+    # 样本收益对数加权：彻底解决期权 Long Gamma 场景下的胜率陷阱
+    # 使得捕捉到大肉单的样本权重显著提升，强迫模型重视非对称爆发性标的
+    pnl = df['window_net_pnl'].fillna(0).abs() if 'window_net_pnl' in df.columns else pd.Series(0.0, index=df.index)
+    sample_weights = pd.Series(1.0 + np.log1p(pnl.values * 10.0), index=df.index)
+
+    # 特征工程 v3.2（凸性与无量纲化）：
+    # 1. 虚实值偏离度 Moneyness = S/K - 1（彻底剔除绝对行权价的量纲污染）
+    if 'strike_price' in X.columns:
+        if 'underlying_price' in df.columns:
+            X['moneyness'] = (df['underlying_price'] / (X['strike_price'] + 1e-6)) - 1.0
+        else:
+            underlying_medians = df.groupby('underlying_symbol')['strike_price'].transform('median')
+            X['moneyness'] = (df['strike_price'] / (underlying_medians + 1e-6)) - 1.0
+        X = X.drop(columns=['strike_price'], errors='ignore')
+
+    # 2. 注入期权做多波动率凸性性价比因子 gamma_to_theta
+    if 'days_to_expiry' in X.columns:
+        dte = X['days_to_expiry'].clip(lower=1)
+        vix = X.get('vix_level', pd.Series(20.0, index=X.index))
+        X['gamma_to_theta'] = (1.0 / (dte * (vix / 20.0) + 1e-6)).clip(0, 10)
     
     # 处理缺失值
     X = X.fillna(0)
@@ -114,16 +135,18 @@ def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[
     print(f"\n  最终特征数量: {len(feature_cols)}")
     print(f"  样本数量: {len(X)}")
     print(f"  正样本比例: {y.mean():.2%}")
+    print(f"  样本权重均值: {sample_weights.mean():.2f} (最大权重: {sample_weights.max():.2f})")
     
-    return X, y, feature_cols
+    return X, y, feature_cols, sample_weights
 
 
-def train_model(X_train, y_train, X_valid, y_valid, model_type='auto'):
+def train_model(X_train, y_train, X_valid, y_valid, model_type='auto', sample_weight_train=None):
     """
     训练模型
     
     Args:
         model_type: 'lgb', 'rf', 或 'auto'（自动选择）
+        sample_weight_train: 样本收益凸性权重
     """
     print(f"\n🚀 开始训练模型 (type={model_type})...")
     
@@ -147,12 +170,14 @@ def train_model(X_train, y_train, X_valid, y_valid, model_type='auto'):
             colsample_bytree=0.8,
             scale_pos_weight=pos_weight,
             random_state=42,
+            n_jobs=1,
             verbose=-1
         )
         
         # 训练
         model.fit(
             X_train, y_train,
+            sample_weight=sample_weight_train,
             eval_set=[(X_valid, y_valid)],
             eval_metric='auc',
             callbacks=[lgb.early_stopping(stopping_rounds=20, verbose=False)]
@@ -178,10 +203,13 @@ def train_model(X_train, y_train, X_valid, y_valid, model_type='auto'):
             max_features='sqrt',
             class_weight=class_weight,
             random_state=42,
-            n_jobs=-1
+            n_jobs=1
         )
         
-        model.fit(X_train, y_train)
+        if sample_weight_train is not None:
+            model.fit(X_train, y_train, sample_weight=sample_weight_train)
+        else:
+            model.fit(X_train, y_train)
     
     return model
 
@@ -246,7 +274,7 @@ def save_model(model, feature_cols, metrics, output_path):
         pickle.dump({
             'model': model,
             'feature_cols': feature_cols,
-            'version': 'v3',
+            'version': 'v3.2',
             'trained_at': pd.Timestamp.now().isoformat()
         }, f)
     
@@ -293,29 +321,34 @@ def main():
     df = pd.read_csv(data_path)
     print(f"  原始数据: {len(df)} 条记录, {len(df.columns)} 列")
     
-    # 2. 准备特征
-    X, y, feature_cols = prepare_features(
+    # 2. 准备特征与凸性收益加权
+    X, y, feature_cols, sample_weights = prepare_features(
         df, 
         feature_selection=not args.no_feature_selection
     )
     
-    # 3. 划分数据集
+    # 3. 划分数据集 (包含收益加权权重划分)
     print("\n📊 划分数据集...")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=args.test_size, random_state=42, stratify=y
+    indices = np.arange(len(X))
+    train_idx, test_idx = train_test_split(
+        indices, test_size=args.test_size, random_state=42, stratify=y
     )
     
     # 进一步划分验证集
-    X_train, X_valid, y_train, y_valid = train_test_split(
-        X_train, y_train, test_size=0.15, random_state=42, stratify=y_train
+    train_idx, valid_idx = train_test_split(
+        train_idx, test_size=0.15, random_state=42, stratify=y.iloc[train_idx]
     )
+    
+    X_train, y_train, sw_train = X.iloc[train_idx], y.iloc[train_idx], sample_weights.iloc[train_idx]
+    X_valid, y_valid, sw_valid = X.iloc[valid_idx], y.iloc[valid_idx], sample_weights.iloc[valid_idx]
+    X_test, y_test, sw_test = X.iloc[test_idx], y.iloc[test_idx], sample_weights.iloc[test_idx]
     
     print(f"  训练集: {len(X_train)} 条")
     print(f"  验证集: {len(X_valid)} 条")
     print(f"  测试集: {len(X_test)} 条")
     
-    # 4. 训练模型
-    model = train_model(X_train, y_train, X_valid, y_valid, args.model_type)
+    # 4. 训练模型（传入样本凸性收益加权）
+    model = train_model(X_train, y_train, X_valid, y_valid, args.model_type, sample_weight_train=sw_train)
     
     # 5. 评估模型
     auc, y_proba = evaluate_model(model, X_test, y_test, feature_cols)
