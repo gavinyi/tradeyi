@@ -149,6 +149,8 @@ def start() -> ServiceStatus:
     # service log locked across UI/service control operations.
     env = os.environ.copy()
     env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
+    if os.getenv("TRADEYI_ENV") == "test":
+        env.setdefault("ENABLE_PAPER_ORDERS", "true")
     flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if sys.platform == "win32" else 0
     service_out = open(LOG_FILE, "a", encoding="utf-8")
     process = subprocess.Popen(  # noqa: S603

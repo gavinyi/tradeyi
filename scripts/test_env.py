@@ -68,6 +68,7 @@ def child_env(root: Path | None = None) -> dict[str, str]:
     env["TEMP"] = str(qa)
     env["TMP"] = str(qa)
     env["PYTHONPATH"] = str(base / "src")
+    env["ENABLE_PAPER_ORDERS"] = "true"
     return env
 
 
@@ -77,7 +78,9 @@ def initialize_database(root: Path | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     from futu_quant.store import TradingStore
 
-    TradingStore(path)  # initialize() + apply_migrations()
+    store = TradingStore(path)  # initialize() + apply_migrations()
+    store.set_setting("ENABLE_PAPER_ORDERS", "true")
+    store.set_setting("enable_paper_orders", "true")
     return path
 
 
