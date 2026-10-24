@@ -169,6 +169,36 @@ if _saved:
             )
             st.success(f"已保存 {len(_changed)} 项（仅影响租户 {page_tenant_id}）。")
 
+
+st.subheader("重训控制")
+st.caption(
+    "手动触发会在**后台进程**里跑（不卡界面、不占服务主循环），并发触发由文件锁挡住。"
+    "缺 `sklearn` 时结果是 `SKIP:sklearn_missing`（依赖安装按计划放最后，这是预期状态，不是错误）。"
+)
+_confirm = st.checkbox("我确认要触发一次重训（可能替换生产模型）", disabled=not admin)
+if st.button("手动触发重训", type="primary", disabled=not admin or not _confirm):
+    import subprocess as _sp
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _wrapper = _Path(__file__).resolve().parents[1] / "scripts" / "run_ml_retrain_wrapper.py"
+    try:
+        _sp.Popen(
+            [_sys.executable, str(_wrapper), "--triggered-by", "panel", "--kind", "manual"],
+            cwd=str(_wrapper.parents[1]),
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+        st.success("已提交后台重训，结果会出现在下方历史表（刷新页面可见）。")
+    except Exception as exc:  # noqa: BLE001 - 触发失败要说清，不静默
+        st.error(f"触发失败：{exc}")
+
+st.subheader("重训历史")
+_runs = store.ml_retrain_runs(limit=20)
+if _runs:
+    st.dataframe(pd.DataFrame(_runs), hide_index=True, width="stretch")
+else:
+    st.info("还没有重训记录。SKIP（缺依赖/已在跑）也会记录在这里。")
+
 st.subheader("为什么是这个状态")
 detail_rows = [
     ["模型路径", health.get("model_path") or "—"],

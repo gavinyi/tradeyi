@@ -1871,6 +1871,46 @@ class TradingStore:
             )
             return cursor.rowcount > 0
 
+    def record_ml_retrain_run(
+        self, *, triggered_by: str, trigger_kind: str = "manual",
+        status: str = "RUNNING", reason: str = "",
+        new_auc: float | None = None, old_auc: float | None = None,
+        report_path: str = "",
+    ) -> int:
+        """插入一行重训记录（P2 重训历史）。SKIP 也必须留痕。"""
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "INSERT INTO ml_retrain_runs (triggered_by, trigger_kind, status, reason,"
+                " new_auc, old_auc, report_path, started_at) VALUES (?,?,?,?,?,?,?,?)",
+                (triggered_by, trigger_kind, status, reason, new_auc, old_auc,
+                 report_path, now),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def finish_ml_retrain_run(
+        self, run_id: int, *, status: str, reason: str = "",
+        new_auc: float | None = None, old_auc: float | None = None,
+        report_path: str = "",
+    ) -> None:
+        from datetime import datetime, timezone
+
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE ml_retrain_runs SET status=?, reason=?, new_auc=?, old_auc=?,"
+                " report_path=?, finished_at=? WHERE id=?",
+                (status, reason, new_auc, old_auc, report_path,
+                 datetime.now(timezone.utc).isoformat(), run_id),
+            )
+
+    def ml_retrain_runs(self, limit: int = 20) -> list[dict]:
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM ml_retrain_runs ORDER BY id DESC LIMIT ?", (int(limit),)
+            ).fetchall()]
+
     def heartbeats(self) -> list[dict]:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(

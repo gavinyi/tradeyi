@@ -140,6 +140,24 @@ MIGRATIONS = (
               "ALTER TABLE audit_events ADD COLUMN actor TEXT NOT NULL DEFAULT '';"),
     Migration(13, "audit_events_actor_index",
               "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_events(actor, id DESC);"),
+    # P2：ML 重训历史（PRD 区块②）。每次触发一行，SKIP 也要留痕 ——
+    # 「重训了但没换模型」和「重训根本没跑起来」必须能从数据上区分。
+    Migration(14, "ml_retrain_runs", """
+        CREATE TABLE IF NOT EXISTS ml_retrain_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            triggered_by TEXT NOT NULL,
+            trigger_kind TEXT NOT NULL DEFAULT 'manual',
+            status TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            new_auc REAL,
+            old_auc REAL,
+            report_path TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ml_retrain_runs_started
+            ON ml_retrain_runs(started_at DESC);
+    """),
 )
 
 
