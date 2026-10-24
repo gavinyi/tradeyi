@@ -91,3 +91,25 @@
 - **全量 989 绿没抓到**：守卫测试 `test_existing_db_gains_tristate_columns` 建库时没有 `order_intents`，于是走了新建库分支才通过 —— **测试没走真实存量库路径**
 - 处置：紧急手工 `ALTER TABLE` 补列（`quick_check ok`，`INSERT_OK` 验证），服务恢复；代码修复 + 测试升级（造含 `order_intents` 的旧库 + 负向变异）已派 Coder
 - **规则升级**：① **任何 `ALTER TABLE` 迁移必须写在「存量库必经之路」**（优先 `migrations.py`），并在新建库路径也能补齐；② **迁移守卫测试必须用「含核心表的旧库」构造**，否则等于没测；③ **部署后必须做一次真实写入探针**（本次正是靠它发现）。
+
+## 发版前置（2026-10-24 批 A 教训，硬性）
+
+2026-10-24 批 A 差点把两个 `NameError` 发上生产（`run_service` 缺 `STATE_OK`、
+`pages/15` 模块级 `tenant_id` 未定义）。全量 1068 条**全绿**却没抓到它们，因为：
+
+- 一个藏在「真实压力事件才走到的 recover 分支」，模块单测没测**接线**；
+- 一个藏在页面渲染路径，页面静态巡检**不做名字解析**。
+
+**因此发版前置增加两条，缺一不可：**
+
+1. `ruff check --no-cache --select F821,F811 src scripts pages tests` **必须 0 错**
+   （秒级，作为跑全量之前的门，不是之后）；
+2. **全量必须在「要发出去的那个 commit」上跑绿** —— 绿在 A、发的是 B 等于没验；
+   先 `git rev-parse HEAD` 记下 commit，跑完再比对一次。
+
+**配套规则**：`test` 分支全绿 ≠ 可以立刻 ff `master`；ff 前要确认
+「`test` 的 HEAD == 跑绿的那个 commit == 你准备发的那个 commit」。
+
+**接线缺陷的另一条教训**：共享执行入口（如 `run_gamma_strategy` / `run_service`）
+的改动必须连带跑端到端用例；只跑「本批新增用例」会把跨文件 `NameError` 留到全量，
+甚至留到生产（批 A 第一轮全量才抓到 `resolve_candidate_quality_for_campaign` 漏 import）。
