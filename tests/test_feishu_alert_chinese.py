@@ -35,11 +35,11 @@ def test_send_alert_card_uses_chinese_title(monkeypatch):
     reporter.send_alert_card("ERROR", "ML_MODEL_STALE", "模型过旧")
     assert len(captured_cmds) == 1
     markdown_text = captured_cmds[0][captured_cmds[0].index("--markdown") + 1]
-    assert "【系统错误】ML 模型需重训（模型过旧）" in markdown_text
-    assert "ML 模型需重训（模型过旧） (`ML_MODEL_STALE`)" in markdown_text
+    assert "【系统异常】ML 模型需重训（模型过旧）" in markdown_text
+    assert "📌 **业务事实**: 模型过旧" in markdown_text
 
     # 2. 验证恢复卡片标题包含中文
     reporter.send_alert_card("INFO", "STRATEGY_ERROR", "策略恢复正常", is_recovered=True)
     markdown_text2 = captured_cmds[1][captured_cmds[1].index("--markdown") + 1]
-    assert "【故障恢复】策略执行已恢复正常" in markdown_text2
-    assert "策略执行异常 (`STRATEGY_ERROR`)" in markdown_text2
+    assert "【故障自愈】策略运行异常已恢复正常" in markdown_text2
+    assert "📌 **业务事实**: 策略恢复正常" in markdown_text2

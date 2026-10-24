@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from futu_quant.feishu_humanize import EVENT_METAS, humanize_alert
+from futu_quant.feishu_humanize import humanize_alert
 
 
 def test_humanize_alert_structured_four_elements():
