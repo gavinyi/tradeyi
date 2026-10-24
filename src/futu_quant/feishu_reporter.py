@@ -25,6 +25,61 @@ FEISHU_DELIVERY_CHAT_ID = "oc_880837ba7546cdf0b75834ef88eff5b4"  # 默认统一�
 FEISHU_REVIEW_FOLDER_TOKEN = "IKiVf2vtTlvnswdhke5ctLhtntd"
 LARK_RUN_JS = r"C:\Users\Administrator\AppData\Roaming\npm\node_modules\@larksuite\cli\scripts\run.js"
 
+EVENT_TYPE_NAMES: dict[str, str] = {
+    # 核心风控与安全门禁
+    "DAILY_LOSS_KILL_SWITCH": "日内亏损熔断急停",
+    "KILL_SWITCH_ENGAGED": "紧急急停开关触发",
+    "REAL_TRADE_REJECTED": "实盘下单门禁拦截",
+    "ORDER_ENV_MISMATCH": "下单环境不匹配",
+    "LEDGER_MISMATCH": "三账持仓对账异常",
+    "RISK_REJECTED": "风控限额拦截",
+    "HARD_STOP_LIMIT_INVALID": "硬止损限额配置异常",
+    "REAL_STOCK_SELL_UNAUTHORIZED": "未经授权的实盘股票卖出",
+    "REAL_PROTECTED_STOCK_SELL_FORBIDDEN": "底仓保护股票禁止卖出",
+    "INVALID_EXECUTION_MODE_OVERRIDE": "非法执行模式覆盖",
+
+    # 进程与高可用 (P1-13)
+    "PROCESS_TERMINATED": "服务进程异常退出",
+    "PROCESS_HEARTBEAT_TIMEOUT": "服务心跳超时（疑似僵死）",
+
+    # 对账与券商连接
+    "RECONCILIATION_MISMATCH": "券商与本地流水对账不一致",
+    "OPEND_DISCONNECTED": "富途 OpenD 网关断开连接",
+    "OPEND_UNAVAILABLE": "富途 OpenD 网关暂不可用",
+    "OPEND_API_TIMED_OUT": "富途 OpenD 接口响应超时",
+
+    # 策略与订单执行
+    "STRATEGY_ERROR": "策略执行异常",
+    "STRATEGY_ERROR_RECOVERED": "策略执行恢复正常",
+    "REPRICE_FAILED": "订单智能追价失败",
+    "CANCEL_FAILED": "超时撤单失败",
+    "OPTION_LIFECYCLE_RISK": "期权生命周期风险预警",
+    "PORTFOLIO_STRESS_ALERT": "投资组合压力预警",
+    "STRESS_STATE_TENANT_FALLBACK": "组合压力状态租户回落",
+    "EQUITY_SNAPSHOT_FAILED": "资产净值快照记录失败",
+
+    # 机器学习 (P2)
+    "ML_MODEL_STALE": "ML 模型需重训（模型过旧）",
+    "ML_SCORING_DEGRADED": "ML 评分降级（回退内置规则）",
+    "ML_RETRAIN_FAILED": "ML 模型重训执行失败",
+
+    # 告警与通道自身
+    "ALERT_DELIVERY_PROBE": "告警通道心跳探针",
+    "ALERT_CHANNEL_NOT_CONFIGURED": "告警通道未配置",
+    "ALERT_DELIVERY_FAILED": "告警消息投递失败",
+}
+
+
+def human_event_type(event_type: str) -> str:
+    """将英文事件代码转为通俗易懂的中文名称；未登记的 RECONCILIATION_* 前缀按对账异常处理。"""
+    name = EVENT_TYPE_NAMES.get(event_type)
+    if name:
+        return name
+    if event_type.startswith("RECONCILIATION_"):
+        suffix = event_type.replace("RECONCILIATION_", "").lower()
+        return f"对账差异（{suffix}）"
+    return event_type
+
 
 def _lark_node_exe() -> str | None:
     for cand in [r"C:\Program Files\nodejs\node.exe", r"C:\Users\Administrator\AppData\Roaming\npm\node.exe"]:
@@ -167,31 +222,33 @@ class FeishuReporter:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         sev_upper = severity.upper()
+        h_name = human_event_type(event_type)
         if is_recovered:
             header_color = "green"
             icon = "🟢"
-            status_title = "🟢 【故障自愈】三账对账已恢复一致" if event_type == "LEDGER_MISMATCH" else f"{icon} 【故障恢复】{event_type} 已恢复正常"
+            status_title = "🟢 【故障自愈】三账对账已恢复一致" if event_type == "LEDGER_MISMATCH" else f"{icon} 【故障恢复】{h_name} 已恢复正常"
             level_text = "🟢 **级别**: **NORMAL (已恢复正常)**"
         elif sev_upper == "CRITICAL" or event_type == "LEDGER_MISMATCH":
             header_color = "red"
             icon = "🚨"
-            status_title = "🚨 【紧急告警】三账对账异常，策略已自动暂停" if event_type == "LEDGER_MISMATCH" else f"{icon} 【紧急告警】{event_type}"
+            status_title = "🚨 【紧急告警】三账持仓对账异常，策略已自动暂停" if event_type == "LEDGER_MISMATCH" else f"{icon} 【紧急告警】{h_name}"
             level_text = "🔴 **级别**: **CRITICAL (持仓不一致/已触发策略熔断)**"
         elif sev_upper == "ERROR":
             header_color = "orange"
             icon = "⚠️"
-            status_title = f"{icon} 【系统错误】{event_type}"
+            status_title = f"{icon} 【系统错误】{h_name}"
             level_text = "🟠 **级别**: **ERROR (系统错误)**"
         else:
             header_color = "blue"
             icon = "ℹ️"
-            status_title = f"{icon} 【系统通知】{event_type}"
+            status_title = f"{icon} 【系统通知】{h_name}"
             level_text = "🔵 **级别**: **INFO (系统提醒)**"
 
+        display_type = f"{h_name} (`{event_type}`)" if h_name != event_type else f"`{event_type}`"
         lines = [
             level_text,
             f"🕒 **时间**: {now_str}",
-            f"📌 **事件类型**: `{event_type}`",
+            f"📌 **事件类型**: {display_type}",
             f"📝 **详细情况**:\n{message}",
         ]
         if not is_recovered and sev_upper in {"CRITICAL", "ERROR"}:
