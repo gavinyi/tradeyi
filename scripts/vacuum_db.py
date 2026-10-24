@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sqlite3
 import sys
@@ -25,11 +26,18 @@ LOCK_MARKERS = ("trading-service.lock", "volatility-radar.lock")
 
 
 def _service_running(root: Path) -> list[str]:
-    """服务是否还在跑：看锁文件是否存在（含租户级锁）。"""
+    """服务是否还在跑：看 PID 文件与实际持锁状态。"""
     running = []
     data_dir = root / "data"
+    for p in data_dir.glob("*.pid"):
+        running.append(p.name)
     for pattern in ("trading-service*.lock", "volatility-radar.lock"):
-        running.extend(str(p.name) for p in data_dir.glob(pattern))
+        for p in data_dir.glob(pattern):
+            try:
+                with open(p, "a"):
+                    pass
+            except (OSError, PermissionError):
+                running.append(p.name)
     return running
 
 
@@ -79,6 +87,11 @@ def main() -> int:
     if free_disk < stats["size_mb"] * 1024 * 1024 * 1.2:
         print(f"❌ 磁盘余量不足（剩余 {free_disk / 1024 / 1024 / 1024:.1f} GB），VACUUM 需约 1.2 倍库大小")
         return 4
+
+    qa_dir = ROOT / "data" / "qa"
+    qa_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["TEMP"] = str(qa_dir)
+    os.environ["TMP"] = str(qa_dir)
 
     connection = sqlite3.connect(str(db))
     try:
