@@ -180,6 +180,7 @@ TASK_TIMEOUTS = {
     "observability": 30,
     "alert_delivery_probe": 60,
     "ml_model_health": 60,
+    "ml_auto_retrain": 60,
     "candidate_exclusions_prune": 60,
     "reconciliation_prune": 60,
     "automatic_recovery": 30,
@@ -737,6 +738,43 @@ def portfolio_stress_check(broker, store, alerts, tenant_id) -> None:
         )
         write_hysteresis_state(store, tenant_id, STATE_OK)
     # action == "none"：缓冲带内或状态未变 —— 不重发、不误消警
+
+
+def maybe_trigger_auto_retrain(store) -> bool:
+    """P2-4：自动月度重训（**默认关闭**，需用户明确开启后才生效）。
+
+    设计要点：
+    - 交给**独立子进程**（wrapper）执行，绝不阻塞交易主循环 —— 训练可能跑几十分钟；
+    - 默认 `ml_auto_retrain_enabled=false`：这一步会改变策略行为，必须用户拍板；
+    - 间隔按天配置（`ml_auto_retrain_interval_days`，默认 30）。
+    """
+    enabled = str(store.get_setting("ml_auto_retrain_enabled", "false")).strip().lower() == "true"
+    if not enabled:
+        return False
+    wrapper = Path(__file__).resolve().parent / "run_ml_retrain_wrapper.py"
+    if not wrapper.exists():
+        store.operational_event(
+            "ml_retrain", "ML_AUTO_RETRAIN_WRAPPER_MISSING", "ERROR",
+            {"wrapper": str(wrapper)},
+        )
+        return False
+    try:
+        subprocess.Popen(
+            [sys.executable, str(wrapper), "--triggered-by", "scheduler", "--kind", "auto"],
+            cwd=str(wrapper.parents[1]),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:  # noqa: BLE001 - 触发失败要可见，但不能带崩调度循环
+        store.operational_event(
+            "ml_retrain", "ML_AUTO_RETRAIN_SPAWN_FAILED", "ERROR", {"error": str(exc)},
+        )
+        return False
+    store.audit(
+        "ML_AUTO_RETRAIN_TRIGGERED",
+        {"triggered_by": "scheduler", "wrapper": str(wrapper)},
+        actor="scheduler:main",
+    )
+    return True
 
 
 def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = None) -> None:
@@ -1304,6 +1342,14 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             return report
         run_task(store, alerts, "ml_model_health", ml_model_health_cycle)
         mark_run(store, "last_run:ml_model_health", now)
+    # P2-4 自动月度重训：**默认关闭**（改策略行为，需用户拍板后才开启）。
+    # 开启后按天判定、交独立子进程跑，不阻塞主循环。
+    if due(store, "last_run:ml_auto_retrain", 24 * 60 * 60, now):
+        if maybe_trigger_auto_retrain(store):
+            store.operational_event(
+                "ml_retrain", "ML_AUTO_RETRAIN_DISPATCHED", "HEALTHY", {},
+            )
+        mark_run(store, "last_run:ml_auto_retrain", now)
     # P0-5 候选排除留痕的**保留策略**：按天保留 7 天。
     # 高频写入（每轮每候选一条），无保留策略就是下一个 `reconciliation_reports`（129 万行）。
     if due(store, "last_run:candidate_exclusions_prune", 24 * 60 * 60, now):
