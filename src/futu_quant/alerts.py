@@ -81,7 +81,12 @@ ALERT_NEVER_MUTE = {
 ALERT_PROBE_EVENT = "ALERT_DELIVERY_PROBE"
 ALERT_CHANNEL_NOT_CONFIGURED = "ALERT_CHANNEL_NOT_CONFIGURED"
 ALERT_DELIVERY_FAILED = "ALERT_DELIVERY_FAILED"
-ALERT_PROBE_INTERVAL_DEFAULT = 1800
+# 投递探针间隔。**原 30 分钟太吵**：探针必须真实投递（否则验不到通道），
+# 但每 30 分钟往飞书群里推一张"投递正常"的卡片，用户会以为是真告警
+# （2026-10-24 实测 17 条/天，用户直接来问"推了好多告警"）。
+# 改为 6 小时：仍是真实投递校验，噪音降到每天 4 条；失败路径另有独立告警，
+# 不会因为间隔变长而漏掉"通道坏了"。
+ALERT_PROBE_INTERVAL_DEFAULT = 6 * 3600
 # 通道级上报「每天最多一次」的窗口（设计 §3.3：不刷屏）
 ALERT_CHANNEL_REPORT_WINDOW_SECONDS = 86400
 
@@ -333,7 +338,10 @@ class AlertManager:
         """
         result: dict = {"webhook": -1, "feishu": -1, "escalations": []}
         try:
-            self.send("ERROR", ALERT_PROBE_EVENT, "告警通道投递探针（必须真实投递）")
+            self.send(
+            "ERROR", ALERT_PROBE_EVENT,
+            "【投递探针·可忽略】告警通道自检（此条用于验证飞书通道真的能送达，不是业务异常）",
+        )
         except Exception as exc:  # noqa: BLE001
             result["escalations"].append(f"SEND_FAILED:{exc}")
             return result
