@@ -431,7 +431,7 @@ def manage_volatility_orphans(
             reason = "未接管仓位已自动接管：后续纳入波动率策略止盈、止损、盈利保护和方向退出"
             store.decision("volatility_long_gamma", item.code, "HOLD", reason, {
                 **base, "adopted_campaign": adopted,
-            })
+            }, tenant_id=tenant_id)
             results.append({
                 **base,
                 "action": "ADOPTED",
@@ -441,17 +441,17 @@ def manage_volatility_orphans(
             continue
         if policy == "BLOCK":
             reason = "发现未接管仓位；当前策略配置为只提示不处置，等待人工处理"
-            store.decision("volatility_long_gamma", item.code, "BLOCKED", reason, base)
+            store.decision("volatility_long_gamma", item.code, "BLOCKED", reason, base, tenant_id=tenant_id)
             results.append({**base, "action": "BLOCKED", "result": reason})
             continue
         if item.pending_order_count:
             reason = "未接管仓位已有待成交退出订单，等待成交回报"
-            store.decision("volatility_long_gamma", item.code, "HOLD", reason, base)
+            store.decision("volatility_long_gamma", item.code, "HOLD", reason, base, tenant_id=tenant_id)
             results.append({**base, "action": "WAIT_PENDING", "result": reason})
             continue
         if item.can_sell_quantity <= 0:
             reason = "发现未接管仓位，但当前可卖数量为 0，等待券商解锁"
-            store.decision("volatility_long_gamma", item.code, "BLOCKED", reason, base)
+            store.decision("volatility_long_gamma", item.code, "BLOCKED", reason, base, tenant_id=tenant_id)
             results.append({**base, "action": "LOCKED", "result": reason})
             continue
         quote = quote_map.get(item.code, {})
@@ -459,7 +459,7 @@ def manage_volatility_orphans(
         reference = bid if bid > 0 else item.nominal_price
         if reference <= 0:
             reason = "发现未接管仓位，但盘口和现价均不可用，无法安全提交退出单"
-            store.decision("volatility_long_gamma", item.code, "BLOCKED", reason, base)
+            store.decision("volatility_long_gamma", item.code, "BLOCKED", reason, base, tenant_id=tenant_id)
             results.append({**base, "action": "NO_PRICE", "result": reason})
             continue
         price = max(0.01, round(reference * (0.98 if bid > 0 else 0.90), 2))
@@ -485,7 +485,7 @@ def manage_volatility_orphans(
         store.decision("volatility_long_gamma", item.code, "SELL", reason, {
             **base, "exit_price": price, "execution_status": result.status,
             "broker_order_id": result.broker_order_id,
-        })
+        }, tenant_id=tenant_id)
         results.append({
             **base,
             "action": "SELL_SUBMITTED",

@@ -608,6 +608,7 @@ def run_task(
                 strategy_id, None, "HOLD",
                 f"Core Satellite 提交前持仓校验未通过，本轮不再重复提交：{message}",
                 {"backoff_until": until.isoformat(), "non_retryable": True},
+                tenant_id=_ACTIVE_TENANT_ID.get(),
             )
             store.heartbeat(strategy_id, "DEGRADED", "可卖数量不足，本轮已停止重试", os.getpid())
             alerts.send(
@@ -1063,6 +1064,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 store, alerts, plugin.strategy_id,
                 lambda item=plugin: run_strategy_once(
                     broker, item.runner_key or item.service_name, executor, item.strategy_id,
+                    tenant_id=_ACTIVE_TENANT_ID.get(),
                 ),
             )
             mark_run(store, key, now)
@@ -1093,7 +1095,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 core_executor = ExecutionManager(core_broker, store, alerts)
             succeeded = run_task(
                 store, alerts, "core_satellite",
-                lambda: run_strategy_once(core_broker, "Core Satellite", core_executor),
+                lambda: run_strategy_once(core_broker, "Core Satellite", core_executor, tenant_id=_ACTIVE_TENANT_ID.get() or "futu_real_master"),
             )
             if succeeded:
                 mark_run(store, key, now)
@@ -1112,7 +1114,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 sim_exec = ExecutionManager(sim_b, store, alerts)
                 run_task(
                     store, alerts, "core_satellite_sim",
-                    lambda: run_strategy_once(sim_b, "Core Satellite", sim_exec),
+                    lambda: run_strategy_once(sim_b, "Core Satellite", sim_exec, tenant_id="futu_paper_sandbox"),
                 )
             except Exception as exc:
                 store.operational_event("core_satellite_sim", "EXECUTION_SKIPPED", "DEGRADED", {"error": str(exc)})
