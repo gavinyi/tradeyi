@@ -21,7 +21,7 @@
 | 1 | 配置留痕 C1（`audit_events.actor` 列+索引、`store.audit` 必填、55 处）→ C2（`setting_versions` + 登记表）→ C3（`set_setting(actor,reason)` + 值相同跳过 + 写入量对比） | Coder → Reviewer → Tester | 恢复实盘交易的硬前提（Product 红线） | **先冻结，等用户单独放行** |
 | 2 | 告警推送断链修复（PRD + 设计**已签字**；实施计划已出 `docs/alert_delivery_fix_plan.md`） | Coder → Reviewer → Tester | **待 P0-0 完成 + 收盘后** | **已过闸，等开工** |
 | 3 | 「暂停新开仓」生效口径核实 | Ops / Chief | — | ✅ 已核实（见下方口径） |
-| 4 | BUY 路径是否写 `registered_fill_*`、读侧缺口 | Reviewer（只读） | — | 进行中 |
+| 4 | BUY 路径是否写 `registered_fill_*`、读侧缺口 | Reviewer（只读） | — | ✅ **Reviewer 结论 2026-10-24 08:5x：有缺口，但实盘安全未破** —— 读侧 0 处业务消费（真保护是 `store.fills()` / `has_recorded_fill()`，`run_volatility_strategy.py:370-388`）；写侧 `order_push.py:195-211` 仅 `owned=True` 时写，ADOPT 分支（`:220+`）漏写。**Chief 裁定：批 A 不改代码**，见「已确认口径」第 3 条 |
 | 5 | **候选合约质量过滤（P0-5）**：低流动性 / 宽价差 / 当日到期合约在**候选池阶段**排除；`exclusion_reason` 审计 + 监控页可见；降级放行只对未排除候选生效；降级上限 900s→300s（需用户拍板） | Product（PRD）→ Architect（设计）→ Reviewer（红区审）→ **用户拍板** → Coder | 根因①已由 Ops 探针确认（低流动性报价冻结，非订阅故障） | **PRD 进行中**；门禁维持现状 |
 
 ## P1
@@ -44,6 +44,7 @@
 |---|---|---|
 | 13 | ML 板块整体（A→B→C 串行 + 自动月度重训规划） | 用户 2026-10-23 决定：自动月度重训统一并入 ML 板块后再做；当前批次未放行 |
 | 14 | 效率优化（停机 VACUUM 回收约 663MB、缓存/索引写进 `initialize()`、对账日志降采样） | 用户明确：所有功能事项完结后再做 |
+| 15 | `registered_fill_*` 半状态字段统一清理（Reviewer P0-4）：要么 ADOPT 分支补齐写入并接监控，要么整体降级为 audit 事件；批 A 不动，先出方案 | 批 B，与 P1 收口后一起 |
 
 ## 移出范围（用户 2026-10-24 裁定）
 
@@ -65,6 +66,11 @@
 2. **告警投递**：`alerts.py:60` 读取 `ALERT_WEBHOOK_URL`（当前为空）；
    `:92-105` 仅白名单事件 / CRITICAL 才推飞书卡片，其余 ERROR 只落库 → `delivered=0`。
    截至 2026-10-24 00:00，未投递告警 **20 条**。
+3. **`registered_fill_*` 不是保护机制（Chief 裁定 2026-10-24，Reviewer P0-4 结论）**：
+   读侧全仓 0 处消费；写侧只在 `owned=True` 时写，ADOPT 分支漏写 →
+   它是「写了没人读、ADOPT 还漏写」的半状态字段。**严禁任何新逻辑依赖它**；
+   实盘安全由成交账本兜底（`store.fills()` / `has_recorded_fill()`）。
+   **不在批 A 补写**——补齐只会让"假保护"更像真的；方向是**消除该字段或降级为 audit 审计事件**，并入批 B 清理项（统一改，先出方案）。
 
 ## 测试策略（用户 2026-10-24 定）
 
