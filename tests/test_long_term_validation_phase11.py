@@ -64,6 +64,14 @@ def test_manual_restore_requires_shadow_and_reason(tmp_path):
     # 恢复 = 删掉覆盖键（回到原配置），不是写 PAPER：实盘账户上 PAPER 会自动提成 REAL
     legacy_key = "strategy_execution_mode:alpha"
     store.set_setting("strategy_execution_mode:futu_paper_sandbox:alpha", "SHADOW")
+    # 其余活跃租户也各有自己的覆盖键 → 旧全局键可以安全删除（否则按保守口径保留）
+    from futu_quant.tenant import active_tenants
+
+    for profile in active_tenants():
+        if profile.tenant_id != "futu_paper_sandbox":
+            store.set_setting(
+                f"strategy_execution_mode:{profile.tenant_id}:alpha", "SHADOW",
+            )
     manually_restore_paper(
         store, "alpha", "admin", "人工复核通过", tenant_id="futu_paper_sandbox",
     )

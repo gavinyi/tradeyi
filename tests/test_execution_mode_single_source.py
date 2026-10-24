@@ -92,6 +92,39 @@ def test_restore_deletes_override_keys_instead_of_writing_paper(tmp_path, monkey
     assert store.get_setting(f"strategy_execution_mode:{PAPER}:core_satellite") == "SHADOW"
 
 
+def test_restore_keeps_legacy_key_when_other_tenant_relies_on_it(tmp_path, monkeypatch):
+    """过渡期安全：旧全局键可能是别的租户**唯一**的压制来源，恢复单个租户时不能删。
+
+    链路：升级前的自动降级只写旧键 → 生产里有「只有旧键 SHADOW、无租户键」的状态。
+    若恢复 A 时无条件删旧键，B 会直接回到 REAL 下单，而没人点过恢复 B。
+    变异：去掉「其余租户都有覆盖键才删旧键」判断（无条件删）→ 本用例转红。
+    """
+    store = TradingStore(tmp_path / "t.db")
+    monkeypatch.setattr(mode_mod, "active_tenants", lambda *a, **k: _fake_tenants())
+    # 过渡期形态：只有旧键 SHADOW，没有任何租户键
+    store.set_setting("strategy_execution_mode:core_satellite", "SHADOW")
+
+    removed = restore_strategy_execution_mode(store, "core_satellite", REAL)
+
+    assert removed == [], "A 本来就没有租户键，不该删到任何东西"
+    # 旧键必须保留：它是 B 唯一的压制来源
+    assert store.get_setting("strategy_execution_mode:core_satellite") == "SHADOW"
+    assert resolve_configured_execution_mode(store, PAPER, "core_satellite") == "SHADOW"
+
+
+def test_restore_does_not_unsuppress_other_tenant(tmp_path, monkeypatch):
+    """降级两个租户后只恢复 A，B 必须仍然 SHADOW。"""
+    store = TradingStore(tmp_path / "t.db")
+    monkeypatch.setattr(mode_mod, "active_tenants", lambda *a, **k: _fake_tenants())
+    downgrade_strategy_execution_mode(store, "core_satellite")
+
+    restore_strategy_execution_mode(store, "core_satellite", REAL)
+
+    assert resolve_configured_execution_mode(store, PAPER, "core_satellite") == "SHADOW", (
+        "恢复 A 把 B 的压制也解除了 —— 误解禁是危险方向"
+    )
+
+
 class _RealBroker:
     """实盘环境的极简 broker：只提供 submit_limit 解析模式所需字段。"""
 

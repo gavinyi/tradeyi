@@ -61,7 +61,18 @@ def downgrade_strategy_execution_mode(store, strategy_id: str) -> list[str]:
     解析不到策略归属租户时，宁可按全部活跃租户降级（多降不漏降）。
     """
     keys: list[str] = []
-    for profile in active_tenants():
+    profiles = active_tenants()
+    if not profiles:
+        # 活跃租户为空时只剩旧键，而旧键会被任何既有租户键盖过 —— 必须可见，
+        # 否则「降级了但没降住」没有任何痕迹。
+        store.operational_event(
+            "execution_mode", "DOWNGRADE_SCOPE_EMPTY", "WARNING",
+            {
+                "strategy_id": strategy_id,
+                "message": "活跃租户为空：降级只写了旧全局键，可能被既有租户键盖过",
+            },
+        )
+    for profile in profiles:
         key = f"strategy_execution_mode:{profile.tenant_id}:{strategy_id}"
         store.set_setting(key, "SHADOW")
         keys.append(key)
@@ -72,11 +83,16 @@ def downgrade_strategy_execution_mode(store, strategy_id: str) -> list[str]:
 
 
 def restore_strategy_execution_mode(store, strategy_id: str, tenant_id: str) -> list[str]:
-    """解除某租户的降级：**删除**该租户键与旧全局键（不是写 PAPER）。
+    """解除某租户的降级：**删除**该租户键（旧全局键只在安全时删）。
 
     为什么不是写 PAPER：实盘账户上 `PAPER` 会被 `submit_limit()` 的白名单自动
     提升成 `REAL`，写 PAPER 既没恢复「未降级」，又制造「以为在 PAPER、其实在
     REAL」的假象。删掉覆盖键才是真正的「回到原配置」。
+
+    **旧全局键只在「其余活跃租户都有自己的覆盖键」时才删**：升级前的自动降级只写
+    旧键，生产里可能存在「只有旧键 SHADOW、没有租户键」的降级状态。若无条件删，
+    恢复 A 租户会把 B 租户唯一的压制来源删掉 —— B 直接回到 REAL 下单，却没人
+    点过恢复 B。漏恢复（还压着 SHADOW）是安全方向，误解禁不是。
     """
     removed: list[str] = []
     tenant_key = f"strategy_execution_mode:{tenant_id}:{strategy_id}"
@@ -85,6 +101,18 @@ def restore_strategy_execution_mode(store, strategy_id: str, tenant_id: str) -> 
         removed.append(tenant_key)
     legacy_key = f"strategy_execution_mode:{strategy_id}"
     if str(store.get_setting(legacy_key, "") or "").strip().upper() == "SHADOW":
-        store.delete_setting(legacy_key)
-        removed.append(legacy_key)
+        other_tenants = [
+            profile.tenant_id
+            for profile in active_tenants()
+            if profile.tenant_id != tenant_id
+        ]
+        has_own_override = all(
+            str(store.get_setting(
+                f"strategy_execution_mode:{other}:{strategy_id}", "",
+            ) or "").strip()
+            for other in other_tenants
+        )
+        if has_own_override:
+            store.delete_setting(legacy_key)
+            removed.append(legacy_key)
     return removed
