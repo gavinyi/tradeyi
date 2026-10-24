@@ -6,6 +6,9 @@ import json
 
 import pandas as pd
 
+from .execution_mode import (
+    resolve_configured_execution_mode, restore_strategy_execution_mode,
+)
 from .validation_loop import (
     apply_auto_downgrade, calibrate_capacity, capacity_observations,
     closed_combo_observations, calibrate_scores, regime_performance, strategy_drift,
@@ -194,12 +197,31 @@ def long_term_validation_cycle(store) -> dict:
     return result
 
 
-def manually_restore_paper(store, strategy_id: str, actor: str, reason: str) -> None:
+def manually_restore_paper(
+    store, strategy_id: str, actor: str, reason: str, *, tenant_id: str,
+) -> None:
+    """解除某租户的自动降级：**删除覆盖键**回到原配置。
+
+    两个刻意的行为（P1-6）：
+    1. `tenant_id` **必填**：跨租户无差别恢复会让实盘跟着模拟盘一起解禁；
+    2. 恢复 = **删键**，不是写 `PAPER`：实盘账户上 `PAPER` 会被
+       `submit_limit()` 的白名单自动提升成 `REAL`，写 PAPER 既没恢复原状，
+       又制造「以为在 PAPER、其实在 REAL」的假象。
+    """
     if not reason.strip():
         raise ValueError("人工恢复必须填写原因")
-    current = store.get_setting(f"strategy_execution_mode:{strategy_id}", "").upper()
+    if not str(tenant_id or "").strip():
+        raise ValueError("人工恢复必须显式指定租户（tenant_id）")
+    current = resolve_configured_execution_mode(store, tenant_id, strategy_id)
     if current != "SHADOW":
         raise ValueError("只有已降级为 SHADOW 的策略可以人工恢复")
-    store.set_setting(f"strategy_execution_mode:{strategy_id}", "PAPER")
-    store.audit("VALIDATION_MANUAL_RESTORE", {"strategy": strategy_id, "actor": actor,
-                                               "from": "SHADOW", "to": "PAPER", "reason": reason}, strategy_id, actor="service:validation")
+    removed_keys = restore_strategy_execution_mode(store, strategy_id, tenant_id)
+    store.audit(
+        "VALIDATION_MANUAL_RESTORE",
+        {
+            "strategy": strategy_id, "tenant_id": tenant_id, "actor": actor,
+            "from": "SHADOW", "to": "inherited", "reason": reason,
+            "removed_keys": removed_keys,
+        },
+        strategy_id, actor="service:validation",
+    )

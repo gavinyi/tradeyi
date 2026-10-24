@@ -21,6 +21,10 @@ if "!ELEVATED!"=="elevated" (
 echo  本脚本逐个停止所有处于运行状态的租户 Worker，每一个都会复查；
 echo  任一未停掉将红字报错并退出码 1，绝不静默失败。
 echo.
+rem P1-13 维护标记：写本文件期间，守护脚本（scripts\scheduled_log_audit.py）静默，
+rem 避免把正常启停误报成进程暴毙。start.bat 启动时删除；本脚本失败退出路径也删除，
+rem 否则一次失败停止就会永久静默。
+echo %DATE% %TIME% > "data\.maintenance"
 
 echo  [1/4] 停止所有活跃租户 Worker 与交易服务...
 set "FOUND_WORKER=0"
@@ -56,6 +60,10 @@ if defined LEFT_OVER if not "!ELEVATED!"=="elevated" (
     echo  ============================================
     echo.
     powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList 'elevated' -Verb RunAs"
+    rem P1-13: 提权重试退出前必须清标记 —— 此刻 Worker 可能仍在运行，
+    rem 标记留着会让守护一直静默（暴毙/心跳超时都不告警），比不告警更糟。
+    del "data\.maintenance" >nul 2>&1
+    rem 提权副本启动时会自己重写标记，所以这里删掉不丢「维护中」语义。
     exit /b 1
 )
 
@@ -97,6 +105,8 @@ if defined STILL_ALIVE (
     echo  ============================================
     echo.
     pause
+    rem P1-13: 停止失败必须清标记，否则守护会一直静默（看不见异常）
+    del "data\.maintenance" >nul 2>&1
     exit /b 1
 )
 echo    [OK] 所有租户 Worker 已确认停止

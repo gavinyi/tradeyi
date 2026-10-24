@@ -19,6 +19,10 @@ set "RADAR_LOG=%DATA%\volatility-radar.log"
 if not exist "%PY%" (echo ERROR: project Python not found & exit /b 1)
 if not exist "%STREAMLIT%" (echo ERROR: project Streamlit not found & exit /b 1)
 if not exist "%DATA%" mkdir "%DATA%"
+rem P1-13: Çå³ıÎ¬»¤±ê¼Ç¡£stop.bat ÔÚÉ±½ø³ÌÇ°Ğ´Èë data\.maintenance£¬
+rem ÊØ»¤½Å±¾£¨scripts\scheduled_log_audit.py£©¼ûµ½¸Ã±ê¼Ç¼´¾²Ä¬£¬±ÜÃâ°ÑÕı³£ÆôÍ£
+rem Îó±¨³É½ø³Ì±©±Ğ¡£»Ö¸´ÔËĞĞ = ÓÃ»§ÔÚÆô¶¯£¬¹Ê´Ë´¦±ØĞë×îÏÈÉ¾µô±ê¼Ç¡£
+del /q "%DATA%\.maintenance" 2>nul
 cd /d "%ROOT%"
 echo [1/3] Checking OpenD at 127.0.0.1:11111 ...
 netstat -ano | findstr /R /C:":11111 .*LISTENING" >nul
@@ -38,10 +42,10 @@ rem SDK log and the console output land in two different files, and "where did
 rem the radar log go" becomes unanswerable. The directory is created here
 rem because the batch redirect opens the file before the radar's own handler
 rem exists.
-rem é›·è¾¾ stdout å¿…é¡»ä¸ Futu SDK æ—¥å¿—**åˆ†æˆä¸¤ä¸ªæ–‡ä»¶**ï¼šSDK çš„ file_logger æ‰“å¼€
-rem data/futu-logs/futu-radar.logï¼ˆbroker.py:72-80ï¼‰ï¼Œè€Œè¿™é‡Œè‹¥ä¹Ÿé‡å®šå‘åˆ°åŒä¸€ä¸ªæ–‡ä»¶ï¼Œ
-rem cmd ä¼šå…ˆå ä½å†™å¥æŸ„ â†’ é›·è¾¾é¦–æ¬¡è¿æ¥ OpenD æ—¶ SDK æ‰“æ—¥å¿—è¢«æ‹’ï¼ˆErrno 13 Permission
-rem deniedï¼‰ï¼Œæ•´è½®æ‰«æå¤±è´¥å¹¶é€€é¿ã€‚2026-10-23 21:36 å®ç›˜å¼€ç›˜é¦–è½®å°±æ˜¯è¿™ä¸ªå½¢æ€ã€‚
+rem À×´ï stdout ±ØĞëÓë Futu SDK ÈÕÖ¾**·Ö³ÉÁ½¸öÎÄ¼ş**£ºSDK µÄ file_logger ´ò¿ª
+rem data/futu-logs/futu-radar.log£¨broker.py:72-80£©£¬¶øÕâÀïÈôÒ²ÖØ¶¨Ïòµ½Í¬Ò»¸öÎÄ¼ş£¬
+rem cmd »áÏÈÕ¼×¡Ğ´¾ä±ú ¡ú À×´ïÊ×´ÎÁ¬½Ó OpenD Ê± SDK ´òÈÕÖ¾±»¾Ü£¨Errno 13 Permission
+rem denied£©£¬ÕûÂÖÉ¨ÃèÊ§°Ü²¢ÍË±Ü¡£2026-10-23 21:36 ÊµÅÌ¿ªÅÌÊ×ÂÖ¾ÍÊÇÕâ¸öĞÎÌ¬¡£
 if not exist "%DATA%\futu-logs" mkdir "%DATA%\futu-logs"
 start "TradeFuto Volatility Radar" /b "%PY%" -u scripts\run_radar_service.py >> "%DATA%\futu-logs\futu-radar-stdout.log" 2>&1
 :radar_done
