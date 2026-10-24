@@ -65,12 +65,16 @@ def test_production_config_unchanged_during_session(tmp_path, monkeypatch):
     它不看"调用点有没有传 store"，只看**生产库变没变** → 能抓住任何路径，
     包括绕过 `TradingStore` 的裸 sqlite3 写。
     """
+    import pytest
     from conftest import (
         _SESSION_PROD_BASELINE,
+        is_production_workspace,
         prod_config_fingerprint,
         prod_config_violation,
     )
 
+    if _SESSION_PROD_BASELINE is None and not is_production_workspace():
+        pytest.skip("测试区拿不到生产库指纹，跳过生产会话基线比对")
     assert _SESSION_PROD_BASELINE is not None, "会话基线未记录（sessionstart 没跑）"
     assert prod_config_violation(
         _SESSION_PROD_BASELINE, prod_config_fingerprint()
@@ -123,7 +127,12 @@ def test_guard_source_is_fixed_to_real_production(tmp_path, monkeypatch):
 
     expected = Path(DEFAULT_DB).resolve()
     if os.environ.get("TRADEYI_ENV", "").strip().lower() == "test":
-        expected = Path(os.environ["TRADEYI_PROD_DB_PATH"]).resolve()
+        # 隔离测试区：显式给了 TRADEYI_PROD_DB_PATH 就必须用它（真生产库）；
+        # 没给则按 conftest 的口径回落本工作区 DEFAULT_DB（测试库），并在会话开始/
+        # 结束明确打印「数据源为测试库、本轮不做生产比对」—— 不静默。
+        guard_env = os.environ.get("TRADEYI_PROD_DB_PATH", "").strip()
+        if guard_env:
+            expected = Path(guard_env).resolve()
     assert conftest._PROD_GUARD_DB_PATH == expected, (
         f"守卫数据源不是生产库：{conftest._PROD_GUARD_DB_PATH} != {expected}"
     )
@@ -199,3 +208,58 @@ def test_session_guard_fails_closed_when_fingerprint_unreadable(tmp_path, monkey
     assert conftest.prod_config_fingerprint() is None
     violation = conftest.prod_config_violation(("known", ()), None)
     assert violation and "不可读" in violation
+
+
+def test_prod_guard_test_workspace_allows_without_production_db(monkeypatch):
+    """PROD-GUARD 测试区口径：
+
+    1. 测试区拿不到生产库指纹时：明确放行（violation is None），不做生产比对；
+    2. 代码来源是生产目录时：拿不到指纹必须硬失败（fail-closed）；
+    3. 库里出现生产指纹（before is not None）时：数据被改动或读不到仍必须硬失败。
+    """
+    import conftest
+
+    # 路 1：测试区拿不到生产库指纹 -> violation 为 None（以 0 通过）
+    monkeypatch.setattr(conftest, "is_production_workspace", lambda: False)
+    assert conftest.prod_config_violation(None, None) is None
+
+    # 路 2：代码来源是生产目录 -> 拿不到指纹硬失败（fail-closed）
+    monkeypatch.setattr(conftest, "is_production_workspace", lambda: True)
+    v_prod = conftest.prod_config_violation(None, None)
+    assert v_prod and "fail-closed" in v_prod
+
+    # 路 3：库里出现生产指纹 -> 变动或损坏仍硬失败
+    v_diff = conftest.prod_config_violation(("sha1", ()), ("sha2", ()))
+    assert v_diff and "被改动" in v_diff
+
+    v_lost = conftest.prod_config_violation(("sha1", ()), None)
+    assert v_lost and "fail-closed" in v_lost
+
+
+def test_prod_guard_refuses_test_env_in_production_root(monkeypatch):
+    """生产目录**不许**以测试身份运行：即使生产库可读、指纹没变也必须拒跑。
+
+    变异：删掉 `prod_guard_refusal` 的 TRADEYI_ENV 分支（或让它恒返回 None）→ 本用例转红。
+    """
+    import conftest
+
+    monkeypatch.setenv("TRADEYI_ENV", "test")
+    refusal = conftest.prod_guard_refusal(conftest.PRODUCTION_ROOT)
+    assert refusal is not None, "生产目录 + TRADEYI_ENV=test 必须拒跑，不得静默放行"
+    assert "禁止在生产目录以测试身份运行" in refusal
+    # 测试区同样设 TRADEYI_ENV=test 是**正常形态**，不得误杀
+    assert conftest.prod_guard_refusal(conftest.PRODUCTION_ROOT.parent / "trade-test") is None
+
+
+def test_production_root_is_not_env_configurable():
+    """生产根目录是常量：不许用 `TRADEYI_PROD_ROOT` 之类的环境变量把它搬走。
+
+    搬走生产根的后果是「守卫认为自己在测试区」→ 生产库被写穿也静默变绿，
+    所以这里用**源码级**判据（行为判据无法表达"某条读取分支不存在"）。
+    变异：把 `PRODUCTION_ROOT` 改回 `os.environ.get("TRADEYI_PROD_ROOT", ...)` → 本用例转红。
+    """
+    import conftest
+
+    assert conftest.PRODUCTION_ROOT == Path(r"E:\Thisyi\trade").resolve()
+    source = Path(conftest.__file__).read_text(encoding="utf-8")
+    assert "TRADEYI_PROD_ROOT" not in source, "生产根不允许被环境变量接管（守卫可被静默绕过）"
