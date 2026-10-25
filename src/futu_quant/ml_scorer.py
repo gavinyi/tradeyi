@@ -229,6 +229,18 @@ _RULE_TIE_PROBE_SALTS = tuple(
 # 既不靠挑「好盐」，也不引入任何数据依赖。盐从上面预注册池前 K 个取，K 变也必须改守卫。
 _RULE_TIE_FUSION_K = 8
 _RULE_TIE_FUSION_SALTS = _RULE_TIE_PROBE_SALTS[:_RULE_TIE_FUSION_K]
+# Layer C（合约级判别，Chief 2026-10-25 裁定「A 变体」）：
+# - 只上 **moneyness 单特征**：Analyst block bootstrap 0.5526 [0.510, 0.623] 显著；
+#   `gamma_to_theta` 0.5048（无信号）、DTE 0.5946（CI 含 0.5，组合层幸运排列）都不上；
+#   设计 §3.2 原方向组合 AUC 0.4882 < 0.5 → 直接判无正信号，不救也不挑方向。
+# - **默认关闭**：方向（moneyness 高者优先）是 **in-sample 选出来的**，不能当验收证据。
+#   开门条件（写死）：OOS 并列组 AUC ≥ `_LAYER_C_GATE_AUC` 且交易日 block bootstrap 下界 > 0.5。
+# - 作用域只到 **L2 破并列组**（score_A 并列的进一步子集）：旧可分辨对结构上不受影响，
+#   Layer B 的排序也不会被覆盖。
+_LAYER_C_ENABLED = False
+_LAYER_C_FEATURE = "moneyness"
+_LAYER_C_GATE_AUC = 0.52
+_LAYER_C_STATUS = "disabled_pending_oos: in-sample direction (moneyness desc) is NOT evidence"
 
 
 def _row_number(row, key: str, default: float) -> float:
@@ -373,6 +385,48 @@ def _fused_tie_order(rows, indices: list[int]) -> list[int]:
     return sorted(
         indices,
         key=lambda i: (totals[i], baseline[i], _neutral_tie_rank(rows[i])),
+    )
+
+
+def _layer_c_order(rows, indices: list[int]) -> list[int] | None:
+    """Layer C：**只在 L2 破并列组内**用 `moneyness` 排组内次序（默认关闭）。
+
+    ⚠️ **flag 默认关闭**（`_LAYER_C_ENABLED = False`，Chief 2026-10-25 裁定）：
+    - 方向（`moneyness` 高者优先）是 **in-sample 选出来的**，**不能当验收证据**；
+    - 只有 OOS 上「并列组 AUC ≥ 0.52 且交易日 block bootstrap 下界 > 0.5」才允许打开；
+    - 打开前生产行为与中立 tie-break 完全一致。
+
+    只用 **CSV/上下文里已导出的 `moneyness` 派生列**（P0-A 快照单源）：**不自己再算**
+    （不许读 `last_price`、不许调 `moneyness_ratio`），否则又是一次 train/serve skew。
+    组内任一行缺该列/NaN → 返回 ``None``，由调用方回退中立 tie-break（不伪造、不整批失败）。
+    """
+    feature = _LAYER_C_FEATURE
+    values: dict[int, float] = {}
+    for index in indices:
+        row = rows[index]
+        try:
+            raw = row.get(feature, None)
+        except AttributeError:
+            return None
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if value != value:  # NaN
+            return None
+        values[index] = value
+    # 排序语义与 L2 一致：**名次越大 → 最终分数越高**（`rank * _RULE_TIE_STEP` 累加），
+    # 所以此处的次序是「分数从低到高」：moneyness 低者在前、高者拿更大名次/更高分。
+    # 同 moneyness 时用中立融合次序做二级键，保证确定性。
+    fused_position = {
+        index: rank
+        for rank, index in enumerate(_fused_tie_order(rows, indices))
+    }
+    return sorted(
+        indices,
+        key=lambda i: (values[i], fused_position[i]),
     )
 
 
@@ -642,17 +696,34 @@ class BuiltinRuleModel:
 
         # L2：仅在 base 完全相等的分组内追加 **K 盐融合**偏移（步长 << A/B 层任何间隔）。
         # 次序只依赖合约身份 + 交易日，不依赖行序 / strike / DTE 的升降方向 → 组内判别力期望 0.5。
+        # Layer C（默认关闭）：在本组内改用 `moneyness` 排序；缺特征 → 回退中立并计原因。
         groups: dict[float, list[int]] = {}
         for index, value in enumerate(base_scores):
             groups.setdefault(value, []).append(index)
         final_scores = list(base_scores)
         row_values = [row for _, row in rows]
+        diagnostics = {
+            "layer_c_enabled": bool(_LAYER_C_ENABLED),
+            "tie_groups": 0,
+            "layer_c_groups": 0,
+            "fallback_missing_feature": 0,
+        }
         for value, indices in groups.items():
             if len(indices) < 2:
                 continue
-            ordered = _fused_tie_order(row_values, indices)
+            diagnostics["tie_groups"] += 1
+            ordered = None
+            if _LAYER_C_ENABLED:
+                ordered = _layer_c_order(row_values, indices)
+                if ordered is None:
+                    diagnostics["fallback_missing_feature"] += 1
+                else:
+                    diagnostics["layer_c_groups"] += 1
+            if ordered is None:
+                ordered = _fused_tie_order(row_values, indices)
             for rank, index in enumerate(ordered):
                 final_scores[index] = value + rank * _RULE_TIE_STEP
+        self.last_layer_c_diagnostics = diagnostics
 
         probs = np.array(
             [max(0.05, min(0.95, score)) for score in final_scores], dtype=float
