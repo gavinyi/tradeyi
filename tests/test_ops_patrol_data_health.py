@@ -99,8 +99,9 @@ def test_csv_healthy_silent(tmp_path):
 
 def test_csv_required_columns_constant_covers_true_market_columns():
     audit = _import_audit()
-    # P1-09：**必需列契约**用集合全等锁定（少一列必红）；「多列」不在这里判红，
-    # 而是要求显式登记到 ML_CSV_REGISTERED_EXTRA_COLUMNS（见下两个用例）。
+    # Chief 2026-10-25 定稿：这里用「常量集合全等」做自检，防的是有人**删掉必填列**；
+    # 运行期只判「缺列」（`missing = [c for c in REQUIRED if c not in header]`），
+    # CSV 多列不会导致失败 —— 加特征列是常态，不为此设白名单摩擦。
     assert set(audit.ML_CSV_REQUIRED_COLUMNS) == {
         "moneyness",
         "gamma_to_theta",
@@ -110,23 +111,8 @@ def test_csv_required_columns_constant_covers_true_market_columns():
     }
 
 
-def test_csv_registered_extra_column_silent(tmp_path):
-    """多列本身不是错误：已登记的新列必须保持静默（否则每加一列就要改断言）。"""
-    audit = _import_audit()
-    path = tmp_path / "data" / "ml_training" / "volatility_trades_v3_latest.csv"
-    today = datetime.now(timezone.utc).date().isoformat()
-    row = {
-        "trade_date": today, "moneyness": "0.01", "gamma_to_theta": "1.2",
-        "moneyness_missing_reason": "OK", "gamma_to_theta_missing_reason": "OK",
-        "moneyness_lag_minutes": "0.7", "market_regime": "risk_on",
-    }
-    _write_csv(path, ["trade_date", "market_regime", *REQUIRED], [row])
-
-    assert audit.check_csv_freshness(tmp_path) == [], "已登记的多列不得产生假告警"
-
-
-def test_csv_unregistered_extra_column_alerts(tmp_path):
-    """未登记的新列必须告警并提示去白名单登记——让列契约变化成为显式动作。"""
+def test_csv_extra_columns_do_not_alert(tmp_path):
+    """多列不是错误：加特征列时巡检必须保持静默（Chief 已撤回白名单方案）。"""
     audit = _import_audit()
     path = tmp_path / "data" / "ml_training" / "volatility_trades_v3_latest.csv"
     today = datetime.now(timezone.utc).date().isoformat()
@@ -137,11 +123,7 @@ def test_csv_unregistered_extra_column_alerts(tmp_path):
     }
     _write_csv(path, ["trade_date", "brand_new_feature", *REQUIRED], [row])
 
-    issues = audit.check_csv_freshness(tmp_path)
-    assert issues, "未登记的新列必须告警，不许静默通过"
-    assert "未登记" in issues[0]
-    assert "brand_new_feature" in issues[0]
-    assert "ML_CSV_REGISTERED_EXTRA_COLUMNS" in issues[0], "必须给出登记位置"
+    assert audit.check_csv_freshness(tmp_path) == [], "多列不得产生告警"
 
 
 def test_csv_staleness_fail_closed_when_date_unparsable():

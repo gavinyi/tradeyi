@@ -133,20 +133,6 @@ ML_CSV_REQUIRED_COLUMNS = (
     "gamma_to_theta_missing_reason",
     "moneyness_lag_minutes",
 )
-# 已登记的非必需列（P1-09）：列契约 = 必需列**必须存在**；新增列**必须显式登记**。
-# 为什么不做「集合全等」：加特征列是常态（P0-A、⑥ 都加过），全等会让每加一列就必须改
-# 断言，最后一定有人把守卫偷偷放宽。这里让「多列」成为显式动作，而不是静默通过。
-ML_CSV_REGISTERED_EXTRA_COLUMNS = (
-    "created_at", "strategy_id", "symbol", "side", "quantity", "filled_quantity",
-    "average_fill_price", "status", "metadata_json", "trade_date", "days_to_expiry",
-    "is_call", "strike_price", "underlying_symbol", "expiry_bucket", "forward_days",
-    "window_trades", "window_buy_amount", "window_sell_amount", "window_net_pnl",
-    "is_profitable", "symbol_avg_pnl", "symbol_std_pnl", "symbol_max_pnl",
-    "symbol_min_pnl", "symbol_win_rate", "symbol_3d_avg_pnl", "symbol_7d_avg_pnl",
-    "symbol_trade_count", "symbol_pnl_trend", "day_of_week", "hour_of_day",
-    "is_market_close", "month", "quarter", "underlying_price", "option_gamma",
-    "option_theta", "vix_level", "spy_return_1d", "spy_return_5d", "market_regime",
-)
 # 新鲜度容差：按**交易日**算，不是自然日（非交易日不累加）
 ML_CSV_MAX_STALE_TRADING_DAYS = 5
 ML_CSV_MIN_COVERAGE = 0.99
@@ -185,16 +171,6 @@ def check_csv_freshness(root: Path | None = None) -> list[str]:
             f"回测会 fail-closed 或拿旧口径出结论。请重导。"
         )
         return issues  # 缺列时覆盖率/新鲜度已无意义
-
-    # P1-09：多列本身不是错误（加特征列是常态），**未登记**才是 —— 让新增列成为显式动作。
-    registered = set(ML_CSV_REQUIRED_COLUMNS) | set(ML_CSV_REGISTERED_EXTRA_COLUMNS)
-    unregistered = [col for col in header if col not in registered]
-    if unregistered:
-        issues.append(
-            f"⚠️ **训练 CSV 出现未登记的新列**：{unregistered}；"
-            "新增列是允许的，但需先在 `ML_CSV_REGISTERED_EXTRA_COLUMNS` 白名单登记，"
-            "否则列契约会在无人察觉时漂移。"
-        )
 
     total = len(rows)
     if total:
