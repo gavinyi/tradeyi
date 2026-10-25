@@ -116,21 +116,36 @@ def test_breaker_unsupported_never_escapes_aggregation():
         assert reasons == () and unsupported, f"env={env!r} 未被聚合层显式记录"
 
 
+FORBIDDEN_TOKENS = (
+    "equity_snapshot",
+    "total_assets",
+    "get_account",
+    "account_info",
+    "broker.",
+    "store.",
+    "sqlite3",
+    "connection.execute",
+)
+
+
+def _forbidden_hits(source: str) -> list[str]:
+    return [token for token in FORBIDDEN_TOKENS if token in source]
+
+
 def test_v21_entry_gate_has_no_equity_or_broker_access():
     """V21 静态守卫：聚合层出现权益/快照/券商查询即判红（第二处取快照 = 方案 1 失效）。"""
-    source = SOURCE.read_text(encoding="utf-8")
-    forbidden = (
-        "equity_snapshot",
-        "total_assets",
-        "get_account",
-        "account_info",
-        "broker.",
-        "store.",
-        "sqlite3",
-        "connection.execute",
-    )
-    found = [token for token in forbidden if token in source]
+    found = _forbidden_hits(SOURCE.read_text(encoding="utf-8"))
     assert not found, f"entry_gate 出现禁止的取数/判定入口：{found}"
+
+
+def test_v21_guard_self_check_catches_fake_source():
+    """Reviewer 小项 2：守卫自检——含 `store.` / 取快照的假源码必须被判红。"""
+    fake_store = "def leak(store):\n    return store.load_risk_state('x')\n"
+    assert _forbidden_hits(fake_store), "守卫自检失败：含 store. 的假源码未被判红"
+    fake_snapshot = "def leak():\n    return equity_snapshots()\n"
+    assert _forbidden_hits(fake_snapshot), "守卫自检失败：取快照的假源码未被判红"
+    clean = "def resolve_entry_block_reasons(signals):\n    return []\n"
+    assert _forbidden_hits(clean) == []
 
 
 def test_v21_entry_gate_signature_only_takes_signals():

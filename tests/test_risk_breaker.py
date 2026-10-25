@@ -275,6 +275,21 @@ def test_manual_reset_allowed_after_window_and_counter_back_to_one():
     assert again.reset_count_30d == 1
 
 
+def test_unparsable_last_reset_is_fail_closed(caplog):
+    """Reviewer 小项 1：`last_reset_at` 有值但解析失败 → 视为窗口未过、拒绝 + WARN。"""
+    import logging
+
+    state = _state(breaker_level=2, reset_count_30d=1,
+                   last_reset_at="not-a-timestamp")
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(rb.ManualResetError, match="无法解析"):
+            rb.manual_reset(state, current_equity=89_000.0, dd_vs_peak=0.11,
+                            now="2026-10-25T15:00:00+00:00", authorized=True)
+    assert any("无法解析" in record.message for record in caplog.records)
+    assert rb.unparsable_last_reset(state) is True
+    assert rb.unparsable_last_reset(_state()) is False
+
+
 def test_reset_retry_after_none_when_window_expired_or_never_reset():
     assert rb.reset_retry_after(_state(), now="2026-11-01T00:00:00+00:00") is None
     expired = _state(last_reset_at="2026-10-01T10:00:00+00:00")

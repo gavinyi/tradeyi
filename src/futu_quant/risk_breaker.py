@@ -17,7 +17,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ 原因码
 
@@ -477,7 +480,11 @@ def _parse_timestamp(value: str | None) -> datetime | None:
 
 
 def reset_retry_after(state: RiskState, *, now: str | None = None) -> str | None:
-    """窗口内返回下次可解除时间（ISO8601）；窗口已过或从未重置返回 None。"""
+    """窗口内返回下次可解除时间（ISO8601）；窗口已过或从未重置返回 None。
+
+    ⚠️ `last_reset_at` **有值但解析失败**时返回 None 只是"算不出"，**不代表可解除**：
+    `manual_reset` 会在此基础上做 fail-closed 拒绝（见 `unparsable_last_reset`）。
+    """
     previous = _parse_timestamp(state.last_reset_at)
     if previous is None:
         return None
@@ -490,6 +497,11 @@ def reset_retry_after(state: RiskState, *, now: str | None = None) -> str | None
     elif current.tzinfo is not None and deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=current.tzinfo)
     return deadline.isoformat() if current < deadline else None
+
+
+def unparsable_last_reset(state: RiskState) -> bool:
+    """`last_reset_at` 有值但无法解析 → 窗口状态未知，人工解除必须 fail-closed。"""
+    return bool(state.last_reset_at) and _parse_timestamp(state.last_reset_at) is None
 
 
 def manual_reset(
@@ -513,6 +525,17 @@ def manual_reset(
     if not (0 < reset_scale <= 1):
         raise ManualResetError(f"解除后预算系数非法：{reset_scale}")
     retry_after = reset_retry_after(state, now=now)
+    if unparsable_last_reset(state):
+        # fail-closed：时间戳坏了不能当成"窗口已过"，否则绕过 30 天频率限制
+        logger.warning(
+            "risk_state.last_reset_at 无法解析（%r），人工解除按窗口未过处理（fail-closed）",
+            state.last_reset_at,
+        )
+        raise ManualResetError(
+            f"last_reset_at 无法解析（{state.last_reset_at!r}），无法确认 {RESET_WINDOW_DAYS} 天窗口，"
+            "按窗口未过拒绝；请先核对/修复 risk_state",
+            retry_after=None,
+        )
     if retry_after is not None:
         raise ManualResetError(
             f"人工解除窗口内（{RESET_WINDOW_DAYS} 天 ≤1 次），下次可解除：{retry_after}",
