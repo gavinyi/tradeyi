@@ -306,9 +306,19 @@ def _fee_placeholder_counts(store, window_days: int) -> dict:
             "SELECT COUNT(*) FROM fill_ledger"
             " WHERE filled_at IS NULL OR TRIM(filled_at) = ''"
         ).fetchone()[0]
+        if has_state:
+            # 迁移 19 标记过的历史占位：数值不改、不回填，但**必须始终可见**
+            # （否则迁移一落地，「历史 689/743」就变 0，看起来像历史已被修好）。
+            legacy = connection.execute(
+                "SELECT COUNT(*) FROM fill_ledger"
+                " WHERE fee_unavailable_reason = 'legacy_placeholder_1usd'"
+            ).fetchone()[0]
+        else:
+            legacy = all_ph
     return {
         "all": (all_ph, all_total),
         "window": (win_ph, win_total),
+        "legacy": (legacy, all_total),
         "null_filled_at": null_filled,
         "three_state": has_state,
     }
@@ -357,14 +367,25 @@ def fee_ledger_summary_line(
         return f"• **费用账本状态**：无法统计（{exc!r}）"
     all_ph, all_total = counts["all"]
     win_ph, win_total = counts["window"]
+    legacy_ph, legacy_total = counts["legacy"]
     all_pct = f"{all_ph / all_total:.1%}" if all_total else "-"
     win_pct = f"{win_ph / win_total:.1%}" if win_total else "-"
-    judge = "未标注 1.0" if counts.get("three_state") else "1.0（三态列未迁移，旧判据）"
-    line = (
-        f"• **费用账本状态**：全表占位 **{all_ph}/{all_total} = {all_pct}**"
-        f"（判据：{judge}；历史行不回填，仅提示）"
-        f"；最近 {int(window_days)} 天占位 **{win_ph}/{win_total} = {win_pct}**"
-    )
+    legacy_pct = f"{legacy_ph / legacy_total:.1%}" if legacy_total else "-"
+    if counts.get("three_state"):
+        # 历史占位（迁移 19 标记）+ 未标注 1.0（回归哨兵）分开显示：
+        # 迁移一落地，若只留新判据，历史 689 行会显示成 0，看起来像「历史已修好」。
+        line = (
+            f"• **费用账本状态**：历史占位 `legacy_placeholder_1usd` "
+            f"**{legacy_ph}/{legacy_total} = {legacy_pct}**（不回填，仅展示）"
+            f"；未标注 1.0（回归哨兵）全表 **{all_ph}/{all_total}**、"
+            f"最近 {int(window_days)} 天 **{win_ph}/{win_total} = {win_pct}**"
+        )
+    else:
+        line = (
+            f"• **费用账本状态**：占位 1.0（三态列未迁移，旧判据）"
+            f"**{all_ph}/{all_total} = {all_pct}**（历史不回填，仅展示）"
+            f"；最近 {int(window_days)} 天 **{win_ph}/{win_total} = {win_pct}**"
+        )
     null_filled = counts.get("null_filled_at") or 0
     if null_filled:
         line += f"；另有 `filled_at` 为空 **{null_filled} 行**（无法归窗，未计入分母）"

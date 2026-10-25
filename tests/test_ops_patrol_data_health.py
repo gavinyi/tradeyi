@@ -257,9 +257,8 @@ def test_fee_ledger_summary_line_shows_both_scopes(tmp_path):
 
     line = audit.fee_ledger_summary_line(store)
     assert "费用账本状态" in line
-    assert "全表占位" in line and "5/10" in line
+    assert "占位 1.0" in line and "5/10" in line
     assert "最近 7 天" in line and "0/5" in line
-    assert "不回填" in line
 
 
 def _add_fee_state_columns(store) -> None:
@@ -333,3 +332,23 @@ def test_fee_summary_counts_null_filled_at_separately(tmp_path):
     line = audit.fee_ledger_summary_line(store)
     assert "filled_at` 为空" in line
     assert "1 行" in line
+
+
+def test_fee_summary_keeps_legacy_visible_after_migration(tmp_path):
+    """迁移 19 之后：历史 689 行仍必须显式可见，且与「未标注 1.0」分开显示。
+
+    否则新判据会把它们过滤掉，全表显示成 0，看起来像「历史已经修好」。
+    """
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _add_fee_state_columns(store)
+    _seed_fees(store, [1.0] * 10, days_ago=1)
+    with store.connection() as connection:
+        ids = [r[0] for r in connection.execute("SELECT id FROM fill_ledger").fetchall()]
+    for row_id in ids:
+        _set_fee_state(store, row_id, reason="legacy_placeholder_1usd")
+
+    line = audit.fee_ledger_summary_line(store)
+    assert "legacy_placeholder_1usd" in line, "历史占位标记必须可见"
+    assert "10/10" in line, "历史占位计数不能被新判据过滤成 0"
+    assert "未标注 1.0" in line and "0/10" in line, "回归哨兵单独显示"
