@@ -8,6 +8,18 @@ import json
 from pathlib import Path
 import pandas as pd
 
+
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
 def load_model(path):
     """加载模型"""
     with open(path, 'rb') as f:
@@ -20,7 +32,7 @@ def load_metrics(path):
 
 def main():
     print("=" * 70)
-    print("📊 ML模型版本对比")
+    _print_safe("📊 ML模型版本对比")
     print("=" * 70)
     
     models_dir = Path('data/ml_models')
@@ -34,19 +46,19 @@ def main():
     v3_metrics_path = models_dir / 'volatility_scorer_v3.json'
     
     if not v2_path.exists():
-        print("⚠️  v2_clean模型不存在，跳过对比")
+        _print_safe("⚠️  v2_clean模型不存在，跳过对比")
         v2_metrics = None
     else:
         v2_metrics = load_metrics(v2_metrics_path)
     
     if not v3_path.exists():
-        print("❌ v3模型不存在")
+        _print_safe("❌ v3模型不存在")
         return
     
     v3_metrics = load_metrics(v3_metrics_path)
     
     # 对比表格
-    print("\n📈 性能对比:")
+    _print_safe("\n📈 性能对比:")
     print("-" * 70)
     print(f"{'指标':<20} {'v2_clean':<15} {'v3':<15} {'提升':<15}")
     print("-" * 70)
@@ -74,7 +86,7 @@ def main():
     print("-" * 70)
     
     # v3特征列表
-    print("\n🔧 v3模型特征 ({}个):".format(v3_metrics['n_features']))
+    _print_safe("\n🔧 v3模型特征 ({}个):".format(v3_metrics['n_features']))
     for i, feat in enumerate(v3_metrics['feature_cols'], 1):
         print(f"  {i:2d}. {feat}")
     
@@ -87,40 +99,40 @@ def main():
         removed_features = v2_features_set - v3_features_set
         
         if new_features:
-            print(f"\n✅ v3新增特征 ({len(new_features)}个):")
+            _print_safe(f"\n✅ v3新增特征 ({len(new_features)}个):")
             for feat in sorted(new_features):
                 print(f"  + {feat}")
         
         if removed_features:
-            print(f"\n❌ v3移除特征 ({len(removed_features)}个):")
+            _print_safe(f"\n❌ v3移除特征 ({len(removed_features)}个):")
             for feat in sorted(removed_features):
                 print(f"  - {feat}")
     
     # 总结
     print("\n" + "=" * 70)
-    print("📝 总结:")
+    _print_safe("📝 总结:")
     print("=" * 70)
     
     if v2_metrics:
         if v3_auc > 0.75:
-            print("🎉 v3模型表现优秀！AUC > 0.75")
+            _print_safe("🎉 v3模型表现优秀！AUC > 0.75")
             print("   - 可作为主要筛选依据")
             print("   - 推荐ML权重: 50-70%")
         elif v3_auc > 0.65:
-            print("✅ v3模型表现良好！AUC > 0.65")
+            _print_safe("✅ v3模型表现良好！AUC > 0.65")
             print("   - 可用于初筛")
             print("   - 推荐ML权重: 30-50%")
         else:
-            print("⚠️  v3模型仍需改进")
+            _print_safe("⚠️  v3模型仍需改进")
             print("   - 建议作为辅助参考")
             print("   - 推荐ML权重: 20-30%")
         
         print(f"\n   v2→v3提升: {auc_improvement:+.1f}%")
     else:
-        print("✅ v3模型已生成")
+        _print_safe("✅ v3模型已生成")
         print(f"   AUC: {v3_metrics['auc']:.4f}")
     
-    print(f"\n📁 模型文件:")
+    _print_safe(f"\n📁 模型文件:")
     print(f"   v3: {v3_path}")
     print(f"   指标: {v3_metrics_path}")
 

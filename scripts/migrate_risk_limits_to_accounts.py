@@ -64,6 +64,18 @@ from futu_quant.risk_limits import (  # noqa: E402
     ACCOUNT_RISK_FIELDS,
 )
 
+
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
 DEFAULT_DB = ROOT / "data" / "trading.db"
 DEFAULT_BACKUP_DIR = ROOT / "data" / "qa"
 DEFAULT_MIN_FREE_GB = 4.0
@@ -583,7 +595,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"合计：{len(plans)} 个对象，{len(writes)} 个将写入，{len(plans) - len(writes)} 个跳过。")
     print("env 的 RISK_* 值**原样保留**，继续作为兜底默认（本脚本不改 .env）。")
     if writes:
-        print("⚠️  迁移只做显式化、**不改变数值**：请按账户资金量分别调整，")
+        _print_safe("⚠️  迁移只做显式化、**不改变数值**：请按账户资金量分别调整，")
         print("    尤其是模拟账户的 max_daily_loss（10-22 误杀的根因）——")
         print("    第 ② 层种子只是把 env 的值显式化，**逐账户调参是下一步**。")
     print()
@@ -613,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
               f"page_count={manifest['page_count']}，quick_check={manifest['quick_check']}")
         print(f"  SHA256 {manifest['sha256']}")
     else:
-        print("⚠️ 已跳过备份（--skip-backup）—— 请确认已有可用备份")
+        _print_safe("⚠️ 已跳过备份（--skip-backup）—— 请确认已有可用备份")
 
     # 写入前抓原值，供回读失败时回滚（键随层不同）
     before_raw = {
@@ -670,7 +682,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"APPLY 报告已覆盖落盘：{report_path}")
     print()
-    print("⚠️ 立刻用新代码 start（中间不得留旧 Worker）")
+    _print_safe("⚠️ 立刻用新代码 start（中间不得留旧 Worker）")
     return 0
 
 

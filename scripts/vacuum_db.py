@@ -21,6 +21,18 @@ from pathlib import Path
 
 from futu_quant.filelock import FileLockError, lock_exclusive, unlock_exclusive
 
+
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "data" / "trading.db"
 
@@ -96,7 +108,7 @@ def main() -> int:
     print(f"数据库：{db}")
     print(f"当前大小：{stats['size_mb']} MB，可回收约 {stats['reclaimable_mb']} MB")
     if running:
-        print(f"❌ 检测到服务锁文件，服务可能仍在运行：{running}")
+        _print_safe(f"❌ 检测到服务锁文件，服务可能仍在运行：{running}")
         print("   请先双击 stop.bat，确认进程全部退出后再执行。")
         return 3
     if args.dry_run:
@@ -108,7 +120,7 @@ def main() -> int:
 
     free_disk = shutil.disk_usage(db.parent).free
     if free_disk < stats["size_mb"] * 1024 * 1024 * 1.2:
-        print(f"❌ 磁盘余量不足（剩余 {free_disk / 1024 / 1024 / 1024:.1f} GB），VACUUM 需约 1.2 倍库大小")
+        _print_safe(f"❌ 磁盘余量不足（剩余 {free_disk / 1024 / 1024 / 1024:.1f} GB），VACUUM 需约 1.2 倍库大小")
         return 4
 
     qa_dir = ROOT / "data" / "qa"
@@ -122,7 +134,7 @@ def main() -> int:
     finally:
         connection.close()
     after = _stats(db)
-    print(f"✅ VACUUM 完成：{stats['size_mb']} MB -> {after['size_mb']} MB")
+    _print_safe(f"✅ VACUUM 完成：{stats['size_mb']} MB -> {after['size_mb']} MB")
     return 0
 
 

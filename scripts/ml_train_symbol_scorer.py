@@ -18,6 +18,18 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
 try:
     from sklearn.model_selection import train_test_split, cross_val_score
     from sklearn.preprocessing import StandardScaler
@@ -29,7 +41,7 @@ try:
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
-    print("❌ scikit-learn未安装")
+    _print_safe("❌ scikit-learn未安装")
     print("请运行: uv pip install scikit-learn")
     import sys
     sys.exit(1)
@@ -39,7 +51,7 @@ try:
     HAS_LIGHTGBM = True
 except (ImportError, OSError) as e:
     HAS_LIGHTGBM = False
-    print("⚠️  lightgbm不可用，将使用sklearn的RandomForest作为替代")
+    _print_safe("⚠️  lightgbm不可用，将使用sklearn的RandomForest作为替代")
     if isinstance(e, OSError) and 'libomp' in str(e):
         print("    原因: 缺少OpenMP库（libomp.dylib）")
         print("    解决: brew install libomp 或继续使用RandomForest")
@@ -52,7 +64,7 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, list[st
     Returns:
         (特征DataFrame, 标签Series, 特征列表)
     """
-    print("\n🔧 准备训练特征...")
+    _print_safe("\n🔧 准备训练特征...")
     
     # 特征列（排除ID、标签、元数据列、结果特征）
     exclude_cols = [
@@ -90,7 +102,7 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, list[st
 
 def train_model(X_train, y_train, X_valid, y_valid):
     """训练模型"""
-    print("\n🚀 开始训练模型...")
+    _print_safe("\n🚀 开始训练模型...")
     
     if HAS_LIGHTGBM:
         print("  使用模型: LightGBM")
@@ -133,14 +145,14 @@ def train_model(X_train, y_train, X_valid, y_valid):
         
         model.fit(X_train, y_train)
     
-    print("✅ 模型训练完成")
+    _print_safe("✅ 模型训练完成")
     
     return model
 
 
 def evaluate_model(model, X_test, y_test, feature_names):
     """评估模型性能"""
-    print("\n📊 模型评估:")
+    _print_safe("\n📊 模型评估:")
     
     # 预测
     y_pred = model.predict(X_test)
@@ -205,14 +217,14 @@ def save_model(model, scaler, feature_names, output_path, metrics):
     with open(output_path, 'wb') as f:
         pickle.dump(checkpoint, f)
     
-    print(f"\n✅ 模型已保存到: {output_path}")
+    _print_safe(f"\n✅ 模型已保存到: {output_path}")
     
     # 保存metrics到JSON
     metrics_path = output_path.with_suffix('.json')
     with open(metrics_path, 'w') as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
     
-    print(f"✅ 指标已保存到: {metrics_path}")
+    _print_safe(f"✅ 指标已保存到: {metrics_path}")
 
 
 def main():
@@ -225,11 +237,11 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("🎯 波动率标的筛选模型训练")
+    _print_safe("🎯 波动率标的筛选模型训练")
     print("=" * 60)
     
     # 1. 加载数据
-    print(f"\n📂 加载数据: {args.data}")
+    _print_safe(f"\n📂 加载数据: {args.data}")
     df = pd.read_csv(args.data)
     print(f"  样本数: {len(df)}")
     print(f"  时间范围: {df['trade_date'].min()} 至 {df['trade_date'].max()}")
@@ -238,7 +250,7 @@ def main():
     X, y, feature_names = prepare_features(df)
     
     # 3. 划分数据集（按时间划分）
-    print("\n✂️  划分数据集...")
+    _print_safe("\n✂️  划分数据集...")
     df_sorted = df.sort_values('created_at').reset_index(drop=True)
     split_idx = int(len(df_sorted) * (1 - args.test_size))
     
@@ -258,7 +270,7 @@ def main():
     print(f"  测试集: {len(X_test)} 样本")
     
     # 4. 特征标准化
-    print("\n🔄 特征标准化...")
+    _print_safe("\n🔄 特征标准化...")
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_valid_scaled = scaler.transform(X_valid)
@@ -274,7 +286,7 @@ def main():
     save_model(model, scaler, feature_names, args.model_output, metrics)
     
     print("\n" + "=" * 60)
-    print("✅ 训练完成！")
+    _print_safe("✅ 训练完成！")
     print("=" * 60)
 
 

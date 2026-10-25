@@ -30,6 +30,18 @@ sys.path.insert(0, str(ROOT / "src"))
 import test_env  # noqa: E402
 
 
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
+
 def _child_env() -> dict[str, str]:
     env = test_env.child_env(ROOT)
     env.update(
@@ -147,10 +159,10 @@ def main() -> int:
         print(f"  {key}: {value}")
     print(f"生产库指纹（结束）：{(after or '未读取')[:16]}")
     isolated = before == after
-    print(f"隔离断言（生产库未被写）：{'✅ 一致' if isolated else '❌ 指纹变化'}")
+    _print_safe(f"隔离断言（生产库未被写）：{'✅ 一致' if isolated else '❌ 指纹变化'}")
 
     ok = cycle_ok and order_ok and isolated and stats["task_success"] > 0
-    print("\n结论：", "✅ 全链路通过" if ok else "❌ 有环节未通过（见上）")
+    _print_safe("\n结论：", "✅ 全链路通过" if ok else "❌ 有环节未通过（见上）")
     return 0 if ok else 1
 
 

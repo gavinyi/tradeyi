@@ -118,16 +118,16 @@ def export_trades(db_path: str, start_date: str | None = None) -> pd.DataFrame:
     df['created_at'] = pd.to_datetime(df['created_at'])
     df['trade_date'] = df['created_at'].dt.date
     
-    print(f"✅ 导出了 {len(df)} 条交易记录")
-    print(f"📅 时间范围: {df['trade_date'].min()} 至 {df['trade_date'].max()}")
-    print(f"📊 标的数量: {df['symbol'].nunique()}")
+    _print_safe(f"✅ 导出了 {len(df)} 条交易记录")
+    _print_safe(f"📅 时间范围: {df['trade_date'].min()} 至 {df['trade_date'].max()}")
+    _print_safe(f"📊 标的数量: {df['symbol'].nunique()}")
     
     return df
 
 
 def add_option_features(df: pd.DataFrame) -> pd.DataFrame:
     """添加期权特征"""
-    print("\n🔧 解析期权特征...")
+    _print_safe("\n🔧 解析期权特征...")
     
     option_features = []
     
@@ -178,7 +178,7 @@ def add_option_features(df: pd.DataFrame) -> pd.DataFrame:
     option_df = pd.DataFrame(option_features)
     result = pd.concat([df.reset_index(drop=True), option_df], axis=1)
     
-    print(f"✅ 解析了 {len(result)} 个期权特征")
+    _print_safe(f"✅ 解析了 {len(result)} 个期权特征")
     print(f"   平均到期天数: {result['days_to_expiry'].mean():.1f}")
     print(f"   Call比例: {result['is_call'].mean()*100:.1f}%")
     
@@ -382,7 +382,7 @@ def calculate_pnl_labels(df: pd.DataFrame, forward_days: int = 7) -> pd.DataFram
     pos_count = (result_df['is_profitable'] == 1).sum()
     neg_count = (result_df['is_profitable'] == 0).sum()
     
-    print(f"\n📈 标签统计 (未来{forward_days}天):")
+    _print_safe(f"\n📈 标签统计 (未来{forward_days}天):")
     print(f"  盈利样本: {pos_count} ({pos_count/len(result_df)*100:.1f}%)")
     print(f"  亏损样本: {neg_count} ({neg_count/len(result_df)*100:.1f}%)")
     
@@ -391,7 +391,7 @@ def calculate_pnl_labels(df: pd.DataFrame, forward_days: int = 7) -> pd.DataFram
 
 def calculate_historical_features(df: pd.DataFrame) -> pd.DataFrame:
     """计算每条记录的历史统计特征"""
-    print("\n🔧 计算历史特征...")
+    _print_safe("\n🔧 计算历史特征...")
     
     # 按标的和时间排序
     df = df.sort_values(['symbol', 'created_at']).reset_index(drop=True)
@@ -460,7 +460,7 @@ def calculate_historical_features(df: pd.DataFrame) -> pd.DataFrame:
     
     result_df = pd.DataFrame(features)
     
-    print(f"✅ 计算完成，共 {len(result_df)} 条特征记录")
+    _print_safe(f"✅ 计算完成，共 {len(result_df)} 条特征记录")
     
     return result_df
 
@@ -470,7 +470,7 @@ def add_market_environment_features(df: pd.DataFrame) -> pd.DataFrame:
     添加市场环境特征
     注意: 这需要外部市场数据，当前版本使用占位符
     """
-    print("\n🔧 添加市场环境特征...")
+    _print_safe("\n🔧 添加市场环境特征...")
     
     # TODO: 从broker或Yahoo Finance获取真实数据
     # 当前使用占位符特征
@@ -480,7 +480,7 @@ def add_market_environment_features(df: pd.DataFrame) -> pd.DataFrame:
     df['spy_return_5d'] = 0.0  # SPY 5日涨跌幅
     df['market_regime'] = 1  # 市场状态: 1=正常, 2=高波动, 3=危机
     
-    print("⚠️  市场特征当前使用占位符，需要接入真实数据源")
+    _print_safe("⚠️  市场特征当前使用占位符，需要接入真实数据源")
     
     return df
 
@@ -499,7 +499,7 @@ def _load_bar_warehouse(warehouse: Path) -> dict:
         try:
             frame = pd.read_parquet(path, columns=["session_date", "close"])
         except Exception as exc:  # noqa: BLE001
-            print(f"   ⚠️  跳过 {path.name}（{symbol}）：{exc}")
+            _print_safe(f"   ⚠️  跳过 {path.name}（{symbol}）：{exc}")
             continue
         frame["session_date"] = pd.to_datetime(frame["session_date"], errors="coerce")
         frame = frame.dropna(subset=["session_date", "close"]).sort_values("session_date")
@@ -524,7 +524,7 @@ def _load_option_history_daily_closes(db_path: str | Path) -> dict:
     try:
         conn = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
     except sqlite3.Error as exc:
-        print(f"   ⚠️  option_history fallback 不可用：{exc}")
+        _print_safe(f"   ⚠️  option_history fallback 不可用：{exc}")
         return frames
     try:
         query = """
@@ -540,7 +540,7 @@ def _load_option_history_daily_closes(db_path: str | Path) -> dict:
         """
         frame = pd.read_sql_query(query, conn)
     except Exception as exc:  # noqa: BLE001
-        print(f"   ⚠️  option_history fallback 查询失败：{exc}")
+        _print_safe(f"   ⚠️  option_history fallback 查询失败：{exc}")
         return frames
     finally:
         conn.close()
@@ -567,7 +567,7 @@ def add_symbol_level_features(
     """
     from futu_quant.ml_scorer import momentum_20d_from_bars, regime_label_from_spy
 
-    print("\n🔧 添加标的级新特征（动量 / 大盘方向 / regime 标签）...")
+    _print_safe("\n🔧 添加标的级新特征（动量 / 大盘方向 / regime 标签）...")
     frames = _load_bar_warehouse(Path(warehouse))
     print(f"   日线仓库符号数: {len(frames)}（{'含 SPY' if 'US.SPY' in frames else '缺 SPY'}）")
     fallback = _load_option_history_daily_closes(db_path) if db_path else {}
@@ -641,7 +641,7 @@ def add_symbol_level_features(
     if ratio < MOMENTUM_MIN_COVERAGE:
         # 缺失非随机：硬灌会把「哪些标的没有日线」学成信号 → 本轮只留观测，不纳入训练。
         df = df.rename(columns={"symbol_momentum_20d": "symbol_momentum_20d_observation"})
-        print(
+        _print_safe(
             f"   ⚠️  动量覆盖率 {ratio:.1%} < {MOMENTUM_MIN_COVERAGE:.0%}："
             "改列名 symbol_momentum_20d_observation（只留观测，不纳入训练）"
         )
@@ -662,7 +662,7 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    print("📂 导出波动率策略训练数据 V3")
+    _print_safe("📂 导出波动率策略训练数据 V3")
     print(f"数据库: {args.db}")
     print(f"输出路径: {args.output}")
     print(f"预测窗口: {args.forward_days}天\n")
@@ -671,7 +671,7 @@ def main():
     df = export_trades(args.db, args.start_date)
     
     if df.empty:
-        print("❌ 没有找到交易数据")
+        _print_safe("❌ 没有找到交易数据")
         return
     
     # 2. 添加期权特征
@@ -694,17 +694,17 @@ def main():
     
     # 6. 保存结果
     featured_df.to_csv(args.output, index=False)
-    print(f"\n✅ 数据已保存到: {args.output}")
+    _print_safe(f"\n✅ 数据已保存到: {args.output}")
     
     # 7. 数据质量报告
-    print("\n📊 数据质量报告:")
+    _print_safe("\n📊 数据质量报告:")
     print(f"  总样本数: {len(featured_df)}")
     print(f"  特征列数: {len(featured_df.columns)}")
     print(f"  缺失值比例: {featured_df.isnull().sum().sum() / featured_df.size * 100:.2f}%")
     print(f"  正样本比例: {(featured_df['is_profitable'] == 1).mean() * 100:.1f}%")
     
     # 新特征统计
-    print("\n📈 新特征统计:")
+    _print_safe("\n📈 新特征统计:")
     print(f"  平均到期天数: {featured_df['days_to_expiry'].mean():.1f}")
     print(f"  Call期权占比: {featured_df['is_call'].mean()*100:.1f}%")
     print(f"  收盘前交易占比: {featured_df['is_market_close'].mean()*100:.1f}%")
@@ -716,10 +716,10 @@ def main():
     }).round(3)
     symbol_stats.columns = ['样本数', '胜率', '平均盈亏']
     
-    print("\n📈 TOP 10 最佳标的:")
+    _print_safe("\n📈 TOP 10 最佳标的:")
     print(symbol_stats.sort_values('平均盈亏', ascending=False).head(10))
     
-    print("\n📉 TOP 10 最差标的:")
+    _print_safe("\n📉 TOP 10 最差标的:")
     print(symbol_stats.sort_values('平均盈亏', ascending=True).head(10))
 
 

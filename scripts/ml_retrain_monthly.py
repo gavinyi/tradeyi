@@ -28,6 +28,18 @@ from pathlib import Path
 
 import pandas as pd
 
+
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = ROOT / "data/ml_training/volatility_trades_v3_latest.csv"
 DEFAULT_MODEL = ROOT / "data/ml_models/volatility_scorer_v3.pkl"
@@ -162,7 +174,7 @@ def load_auc(model_path: Path) -> float | None:
 def promote_if_better(new_model: Path, production: Path) -> tuple[bool, float | None, float | None]:
     """若新模型 AUC 更优则替换生产模型"""
     print("=" * 60)
-    print("🧪 [3/4] 对比新旧模型")
+    _print_safe("🧪 [3/4] 对比新旧模型")
     print("=" * 60)
     new_auc = load_auc(new_model)
     old_auc = load_auc(production)
@@ -170,20 +182,20 @@ def promote_if_better(new_model: Path, production: Path) -> tuple[bool, float | 
     print(f"   生产模型 AUC: {old_auc if old_auc is not None else 'N/A'}")
 
     if new_auc is None:
-        print(
+        _print_safe(
             "   ⚠️  [SKIP:auc_missing] 无法读取新模型 AUC（json 与 pkl 都没有），"
             "不替换生产模型 —— 这是可见的 SKIP，不是错误"
         )
         return False, new_auc, old_auc
     if new_auc < AUC_GUARD:
-        print(f"   ⚠️  [SKIP:below_guard] 新模型 AUC {new_auc:.4f} 低于安全阈值 {AUC_GUARD}，不替换")
+        _print_safe(f"   ⚠️  [SKIP:below_guard] 新模型 AUC {new_auc:.4f} 低于安全阈值 {AUC_GUARD}，不替换")
         return False, new_auc, old_auc
     if old_auc is not None:
         # min_improvement_margin：样本 ~300 时 AUC 差 0.01 在噪声内，
         # 没有边际就会把「统计上无法区分」的模型推上生产（design §2.1）。
         required = old_auc + MIN_IMPROVEMENT_MARGIN
         if new_auc + 1e-12 < required:
-            print(
+            _print_safe(
                 f"   ⚠️  [SKIP:not_improved] 新模型 AUC {new_auc:.4f} "
                 f"未超过当前 {old_auc:.4f} + 边际 {MIN_IMPROVEMENT_MARGIN:.4f}，保留当前模型"
             )
@@ -238,9 +250,9 @@ def main() -> int:
         df = pd.read_csv(data_path)
         n_samples = len(df)
         report["samples"] = n_samples
-        print(f"\n📊 训练样本数: {n_samples}")
+        _print_safe(f"\n📊 训练样本数: {n_samples}")
         if n_samples < MIN_SAMPLES:
-            print(f"   ⚠️  样本数 {n_samples} < {MIN_SAMPLES}，跳过训练")
+            _print_safe(f"   ⚠️  样本数 {n_samples} < {MIN_SAMPLES}，跳过训练")
             report["status"] = "SKIPPED_TOO_FEW_SAMPLES"
             write_report(report)
             return 0

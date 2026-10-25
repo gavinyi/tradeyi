@@ -23,6 +23,18 @@ from futu_quant.store import TradingStore
 from futu_quant.tenant import resolve_tenant
 
 
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
+
 IMPOSSIBLE_PRICE = 0.01  # 安全铁律：绝对写死 0.01 美元，绝不溢价
 QUANTITY = 1             # 数量 1 股
 
@@ -35,7 +47,7 @@ def run_probe(
     settings = Settings.load()
     tenant = resolve_tenant(tenant_id, strict=True)
     if not tenant:
-        print(f"[✗] 错误：无法解析租户标识 '{tenant_id}'")
+        _print_safe(f"[✗] 错误：无法解析租户标识 '{tenant_id}'")
         return 1
 
     is_real = (tenant.trading_env == "REAL")
@@ -100,11 +112,11 @@ def run_probe(
     t_submit = time.perf_counter() - t0
 
     if res.status != "SUBMITTED" or not res.broker_order_id:
-        print(f"[✗] 下单未被券商接受：status={res.status}, reason={res.message}")
+        _print_safe(f"[✗] 下单未被券商接受：status={res.status}, reason={res.message}")
         return 3
 
     order_id = res.broker_order_id
-    print(f"    [✓] 订单提交成功！券商订单号: {order_id} (耗时: {t_submit * 1000:.1f} ms)")
+    _print_safe(f"    [✓] 订单提交成功！券商订单号: {order_id} (耗时: {t_submit * 1000:.1f} ms)")
 
     # 2. 立即发起撤单，并启动 5 秒超时强撤自愈循环
     t1 = time.perf_counter()
@@ -128,7 +140,7 @@ def run_probe(
 
     t_cancel = time.perf_counter() - t1
     if cancelled_confirmed:
-        print(f"    [✓] 撤单已确认成功闭环！(总耗时: {t_cancel * 1000:.1f} ms)")
+        _print_safe(f"    [✓] 撤单已确认成功闭环！(总耗时: {t_cancel * 1000:.1f} ms)")
     else:
         print("    [!] 警告：5秒内未完成对账闭环，已触发强撤重试")
 
@@ -143,16 +155,16 @@ def run_probe(
 
     print("\n" + "-" * 60)
     print("  探针执行总结报告：")
-    print(f"  • 订单号: {order_id}")
-    print(f"  • 最终状态: {final_status}")
-    print(f"  • 成交数量: {filled_qty} 股 (预期: 0 股)")
-    print(f"  • 下单响应延迟: {t_submit * 1000:.1f} ms")
-    print(f"  • 撤单响应延迟: {t_cancel * 1000:.1f} ms")
-    print(f"  • 全链路总耗时: {(t_submit + t_cancel) * 1000:.1f} ms")
+    _print_safe(f"  • 订单号: {order_id}")
+    _print_safe(f"  • 最终状态: {final_status}")
+    _print_safe(f"  • 成交数量: {filled_qty} 股 (预期: 0 股)")
+    _print_safe(f"  • 下单响应延迟: {t_submit * 1000:.1f} ms")
+    _print_safe(f"  • 撤单响应延迟: {t_cancel * 1000:.1f} ms")
+    _print_safe(f"  • 全链路总耗时: {(t_submit + t_cancel) * 1000:.1f} ms")
     print("-" * 60)
 
     if final_status in {"CANCELLED", "CANCELLED_ALL", "CANCEL_REQUESTED", "SUBMITTED"} and filled_qty == 0:
-        print("\n[🎉] 端到端下单与撤单链路健康！测试圆满完成。\n")
+        _print_safe("\n[🎉] 端到端下单与撤单链路健康！测试圆满完成。\n")
         return 0
     else:
         print(f"\n[!] 提示：订单状态尚未完全确认 (状态={final_status})，请稍后查验。\n")

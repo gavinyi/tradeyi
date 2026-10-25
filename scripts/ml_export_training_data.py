@@ -18,6 +18,18 @@ from pathlib import Path
 import pandas as pd
 
 
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
+
 def export_trades(db_path: str, start_date: str | None = None) -> pd.DataFrame:
     """
     从trading.db导出历史交易数据
@@ -63,9 +75,9 @@ def export_trades(db_path: str, start_date: str | None = None) -> pd.DataFrame:
     df['created_at'] = pd.to_datetime(df['created_at'])
     df['trade_date'] = df['created_at'].dt.date
     
-    print(f"✅ 导出了 {len(df)} 条交易记录")
-    print(f"📅 时间范围: {df['trade_date'].min()} 至 {df['trade_date'].max()}")
-    print(f"📊 标的数量: {df['symbol'].nunique()}")
+    _print_safe(f"✅ 导出了 {len(df)} 条交易记录")
+    _print_safe(f"📅 时间范围: {df['trade_date'].min()} 至 {df['trade_date'].max()}")
+    _print_safe(f"📊 标的数量: {df['symbol'].nunique()}")
     
     return df
 
@@ -121,7 +133,7 @@ def calculate_pnl_labels(df: pd.DataFrame, forward_days: int = 7) -> pd.DataFram
     pos_count = (result_df['is_profitable'] == 1).sum()
     neg_count = (result_df['is_profitable'] == 0).sum()
     
-    print(f"\n📈 标签统计 (未来{forward_days}天):")
+    _print_safe(f"\n📈 标签统计 (未来{forward_days}天):")
     print(f"  盈利样本: {pos_count} ({pos_count/len(result_df)*100:.1f}%)")
     print(f"  亏损样本: {neg_count} ({neg_count/len(result_df)*100:.1f}%)")
     
@@ -138,7 +150,7 @@ def calculate_historical_features(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         添加了特征的DataFrame
     """
-    print("\n🔧 计算历史特征...")
+    _print_safe("\n🔧 计算历史特征...")
     
     # 按标的和时间排序
     df = df.sort_values(['symbol', 'created_at']).reset_index(drop=True)
@@ -188,7 +200,7 @@ def calculate_historical_features(df: pd.DataFrame) -> pd.DataFrame:
     
     result_df = pd.DataFrame(features)
     
-    print(f"✅ 计算完成，共 {len(result_df)} 条特征记录")
+    _print_safe(f"✅ 计算完成，共 {len(result_df)} 条特征记录")
     
     return result_df
 
@@ -206,7 +218,7 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    print("📂 导出波动率策略训练数据")
+    _print_safe("📂 导出波动率策略训练数据")
     print(f"数据库: {args.db}")
     print(f"输出路径: {args.output}")
     print(f"预测窗口: {args.forward_days}天\n")
@@ -215,7 +227,7 @@ def main():
     df = export_trades(args.db, args.start_date)
     
     if df.empty:
-        print("❌ 没有找到交易数据")
+        _print_safe("❌ 没有找到交易数据")
         return
     
     # 2. 计算盈亏标签
@@ -226,10 +238,10 @@ def main():
     
     # 4. 保存结果
     featured_df.to_csv(args.output, index=False)
-    print(f"\n✅ 数据已保存到: {args.output}")
+    _print_safe(f"\n✅ 数据已保存到: {args.output}")
     
     # 5. 数据质量报告
-    print("\n📊 数据质量报告:")
+    _print_safe("\n📊 数据质量报告:")
     print(f"  总样本数: {len(featured_df)}")
     print(f"  特征列数: {len(featured_df.columns)}")
     print(f"  缺失值比例: {featured_df.isnull().sum().sum() / featured_df.size * 100:.2f}%")
@@ -242,10 +254,10 @@ def main():
     }).round(3)
     symbol_stats.columns = ['样本数', '胜率', '平均盈亏']
     
-    print("\n📈 TOP 10 最佳标的:")
+    _print_safe("\n📈 TOP 10 最佳标的:")
     print(symbol_stats.sort_values('平均盈亏', ascending=False).head(10))
     
-    print("\n📉 TOP 10 最差标的:")
+    _print_safe("\n📉 TOP 10 最差标的:")
     print(symbol_stats.sort_values('平均盈亏', ascending=True).head(10))
 
 

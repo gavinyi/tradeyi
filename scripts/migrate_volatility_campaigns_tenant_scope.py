@@ -52,6 +52,18 @@ from futu_quant.tenant import (  # noqa: E402
     legacy_config_key,
 )
 
+
+def _print_safe(*args, **kwargs) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK 双击/命令行会踩）。
+
+    emoji 在 GBK 流上抛 `UnicodeEncodeError`：手工跑脚本会直接崩，`pytest -s` 也会假红。
+    """
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
+
 DEFAULT_DB = ROOT / "data" / "trading.db"
 DEFAULT_BACKUP_DIR = ROOT / "data" / "qa"
 DEFAULT_MIN_FREE_GB = 4.0
@@ -1151,7 +1163,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     print(f"[迁移] 无前缀旧键 {legacy}：{len(campaigns)} 条 campaign")
     if len(campaigns) != DESIGN_DOC_EXPECTED_CAMPAIGNS:
         diff = DESIGN_DOC_EXPECTED_CAMPAIGNS - len(campaigns)
-        print(
+        _print_safe(
             f"[迁移] ⚠️ 口径差异：设计 {DESIGN_DOC_EXPECTED_CAMPAIGNS} 条 / 实测 {len(campaigns)} 条"
             f"（相差 {abs(diff)} 条，设计 - 实测 = {diff}），待 Architect 核对，"
             "**不得默默用实测值抹掉设计口径**"
@@ -1174,7 +1186,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             print(f"  {tid}: {n} 个非零持仓 code")
         print()
     elif args.apply:
-        print("[迁移] ⚠️ 未提供 --positions-file —— apply 将只靠 broker_snapshots / 成交流水佐证。")
+        _print_safe("[迁移] ⚠️ 未提供 --positions-file —— apply 将只靠 broker_snapshots / 成交流水佐证。")
         print("       快照可能未覆盖真实持仓（10-23 实测：模拟的 QQQ +1 不在快照里）。")
         print("       强烈建议由 Ops 产出快照后带 --positions-file 重跑。")
         print()
@@ -1216,19 +1228,19 @@ def run(argv: Sequence[str] | None = None) -> int:
         print(f"[迁移] 计划写入 {tenant_keys[tid]} ← {n} 条")
     pending_items = [i for i in attributions if i.pending]
     if pending_items:
-        print(f"[迁移] ⛔ {len(pending_items)} 条**待人工确认**（未分配，apply 会被拒绝）："
+        _print_safe(f"[迁移] ⛔ {len(pending_items)} 条**待人工确认**（未分配，apply 会被拒绝）："
               + ", ".join(f"`{i.code}`" for i in pending_items))
     print()
 
     print("[迁移] 模拟租户残留核查：")
     print(f"  状态键（campaign_state）命中 {len(residual['campaign_state'])} 条（全局键，无租户维度）："
           f" 引用 code {len(residual['state_keys_code'])} 条 / 引用标的 {len(residual['state_keys_underlying'])} 条")
-    print(f"  → 孤儿状态：{'⚠️ 会（本迁移只搬配置键、不搬状态键，处置交 P0-9）' if residual['orphan_state'] else '无'}")
+    _print_safe(f"  → 孤儿状态：{'⚠️ 会（本迁移只搬配置键、不搬状态键，处置交 P0-9）' if residual['orphan_state'] else '无'}")
     print(f"  虚拟持仓命中 {len(residual['virtual_positions'])} 行"
           f"（非零 {sum(1 for p in residual['virtual_positions'] if abs(float(p['quantity'] or 0)) > 0)} 行）")
     print(f"  未平批次 {len(residual['open_batches'])} 行")
     print(f"  退出分配 {len(residual['exit_allocations'])} 行")
-    print(f"  → {'⛔ 存在未平风险，禁止 --apply' if residual['has_open_risk'] else '✅ 无未平风险'}")
+    _print_safe(f"  → {'⛔ 存在未平风险，禁止 --apply' if residual['has_open_risk'] else '✅ 无未平风险'}")
     print()
 
     if residual["has_open_risk"] and args.apply:
@@ -1262,7 +1274,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     if not args.apply:
         if pending_items:
             print()
-            print(f"[迁移] ⛔ {len(pending_items)} 条待人工确认 —— 用 --assign CODE=TENANT_ID 指定后重跑。")
+            _print_safe(f"[迁移] ⛔ {len(pending_items)} 条待人工确认 —— 用 --assign CODE=TENANT_ID 指定后重跑。")
         print()
         print("[迁移] DRY-RUN 结束，未写库。复核报告后：停 Worker → --apply → 立刻 start。")
         return 0
@@ -1312,7 +1324,7 @@ def run(argv: Sequence[str] | None = None) -> int:
               f"page_count={manifest['page_count']}，quick_check={manifest['quick_check']}")
         print(f"       SHA256 {manifest['sha256']}")
     else:
-        print("[迁移] ⚠️ 已跳过备份（--skip-backup）—— 请确认已有可用备份")
+        _print_safe("[迁移] ⚠️ 已跳过备份（--skip-backup）—— 请确认已有可用备份")
 
     store = TradingStore(db_path)
 
@@ -1382,7 +1394,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     report_path.write_text(final, encoding="utf-8")
     print(f"[迁移] APPLY 报告已覆盖落盘：{report_path}")
     print()
-    print("[迁移] ⚠️ 立刻用新代码 start（中间不得留旧 Worker，否则旧代码会再写无前缀键）")
+    _print_safe("[迁移] ⚠️ 立刻用新代码 start（中间不得留旧 Worker，否则旧代码会再写无前缀键）")
     return 0
 
 
