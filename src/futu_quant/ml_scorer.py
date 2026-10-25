@@ -564,8 +564,9 @@ def rule_tiebreak_realised_quality(
 def summarise_tiebreak_history(entries, *, last_n: int = 30) -> dict:
     """聚合已入库的 realised 分位记录（Chief 2026-10-25 裁定 ②：按采样条数，不按自然日）。
 
-    数据来源目前**只有手动运行对照回测**（`pages/42` 按钮）——没有调度任务，
+    数据来源二：页面手动运行对照回测 + 收盘后调度审计（`scripts/ml_tiebreak_audit.py`），
     所以口径必须是「最近 N 条采样」，不能写成「最近 30 个自然日」（否则是假监控）。
+    **采样率 = 训练 CSV 导出频率，不是每日**：CSV 不重导时每日运行只会 skipped_duplicate。
     `entries` 为按时间**由旧到新**排列的 audit payload 列表；非 ok 记录直接跳过。
     """
     samples = [item for item in entries if isinstance(item, dict) and item.get("status") == "ok"]
@@ -575,7 +576,10 @@ def summarise_tiebreak_history(entries, *, last_n: int = 30) -> dict:
             "reason": "no_ok_samples",
             "window": "last_n_samples",
             "last_n": last_n,
-            "note": "暂无已入库 realised 分位：数据来自手动运行对照回测，未点按钮就不会产生",
+            "note": (
+                "暂无已入库 realised 分位：来源=手动运行对照回测/收盘后调度审计；"
+                "采样率与训练 CSV 导出频率一致，不保证每日一条"
+            ),
         }
     recent = samples[-last_n:]
     fused = [float(item["fused_percentile"]) for item in recent if "fused_percentile" in item]
@@ -594,7 +598,10 @@ def summarise_tiebreak_history(entries, *, last_n: int = 30) -> dict:
         "fused_max_percentile": round(max(fused), 2) if fused else None,
         "single_mean_percentile": round(sum(single) / len(single), 2) if single else None,
         "source": "manual_or_scheduled_samples",
-        "note": "口径=最近 N 条采样（不是最近 30 个自然日）；数据来自手动运行对照回测，除非有调度任务",
+        "note": (
+            "口径=最近 N 条采样（不是最近 30 个自然日）；采样率与训练 CSV 导出频率一致、"
+            "不保证每日一条；来源=手动运行对照回测/收盘后调度审计"
+        ),
     }
 
 

@@ -42,6 +42,7 @@ from futu_quant.ml_scorer import (
     _tie_identity_text,
     BuiltinRuleModel,
     rule_tiebreak_realised_quality,
+    summarise_tiebreak_history,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -621,3 +622,34 @@ def test_B6d_realised_quality_is_explicit_when_unavailable():
     quality = rule_tiebreak_realised_quality(tiny)
     assert quality["status"] == "unavailable"
     assert quality["reason"] in {"insufficient_sample", "missing_columns"}
+
+
+# ------------------------------------------------- B7 滚动统计口径（裁定 ②）
+def test_B7_tiebreak_history_is_last_n_samples_and_labels_manual_source():
+    """滚动口径必须是「最近 N 条采样」而不是「最近 30 个自然日」。
+
+    当前唯一数据源是页面手动点「开始对照回测」；没挂调度任务，所以：
+    - 窗口按**条数**截取（last_n），不是按日期；
+    - 结果必须显式标注「数据来自手动运行」，否则就是假监控（Chief 2026-10-25 裁定 ②）。
+    """
+    entries = [
+        {"status": "ok", "fused_percentile": float(value),
+         "single_salt_percentile": float(value)}
+        for value in (0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+    ]
+    summary = summarise_tiebreak_history(entries, last_n=5)
+    assert summary["status"] == "ok"
+    assert summary["window"] == "last_n_samples"
+    assert summary["samples"] == 5
+    assert summary["fused_mean_percentile"] == 80.0  # 最后 5 条: 60/70/80/90/100
+    assert summary["fused_min_percentile"] == 60.0
+    assert summary["fused_max_percentile"] == 100.0
+    assert "手动" in summary["note"]
+
+    # 不可用记录不参与统计，也不占窗口
+    with_unavailable = [{"status": "unavailable"}] + entries
+    assert summarise_tiebreak_history(with_unavailable, last_n=5)["samples"] == 5
+
+    empty = summarise_tiebreak_history([])
+    assert empty["status"] == "empty"
+    assert "手动" in empty["note"], "空数据也必须说明来源是手动运行，不能装作每日监控"

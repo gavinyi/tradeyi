@@ -93,6 +93,7 @@ from futu_quant.research_backfill import backfill_research_history
 from run_gamma_strategy import run_once as run_gamma_once
 from run_volatility_strategy import run_once as run_volatility_once
 from run_strategies import run_once as run_strategy_once
+from ml_tiebreak_audit import run_ml_tiebreak_audit
 from futu_quant.filelock import FileLockError, lock_exclusive
 from futu_quant.scheduled_tasks import (
     DAILY_STRATEGY_REVIEW_TASK, SHUTDOWN_TASK, DAILY_UNIVERSE_RANKING_TASK,
@@ -181,6 +182,7 @@ TASK_TIMEOUTS = {
     "alert_delivery_probe": 60,
     "ml_model_health": 60,
     "ml_auto_retrain": 60,
+    "ml_tiebreak_audit": 120,
     "candidate_exclusions_prune": 60,
     "reconciliation_prune": 60,
     "automatic_recovery": 30,
@@ -1347,6 +1349,18 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             return report
         run_task(store, alerts, "ml_model_health", ml_model_health_cycle)
         mark_run(store, "last_run:ml_model_health", now)
+    # 兜底 rule tie-break 落地审计：**收盘后**每天一次（Chief 2026-10-25 裁定）。
+    # 只算 rule 分数 + 实际盈亏（几毫秒），**不加载模型、不跑 run_ml_vs_rule_comparison**
+    # —— 那条要读 CSV + 打分，塞进主循环会阻塞调度。同一天重复运行按 (交易日, 口径版本)
+    # 幂等跳过（保留首条），不写重复行污染滚动统计。
+    if not session.regular_open(now) and due(
+        store, "last_run:ml_tiebreak_audit", 20 * 60 * 60, now
+    ):
+        run_task(
+            store, alerts, "ml_tiebreak_audit",
+            lambda: run_ml_tiebreak_audit(store),
+        )
+        mark_run(store, "last_run:ml_tiebreak_audit", now)
     # P2-4 自动月度重训：**默认关闭**（改策略行为，需用户拍板后才开启）。
     # 开启后按天判定、交独立子进程跑，不阻塞主循环。
     if due(store, "last_run:ml_auto_retrain", 24 * 60 * 60, now):
