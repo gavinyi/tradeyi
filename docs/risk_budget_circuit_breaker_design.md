@@ -148,13 +148,61 @@ if dd_since_reset < 8%:  de_risk_scale 恢复 1.0
 > **两个方向都必须防**：① 不锁存 → 解除无效（Product 指出）；② 只锁存不清除 → 10% 绝对底线被永久放宽（我的补充）。上面两条同时写死。
 > `de_risk_scale` 是**参数**不是架构常量（默认 0.5，可配 `risk_budget_post_release_scale:{tenant_id}`）。**✅ 已拍板 2026-10-25（用户回复「都采纳」）**：三件套原子解除、`ack` 双向清除、解除后预算减半 $535/$1,070 → **$268/$535** 全部生效，`MANUAL_RESET` 仍 30 天 ≤1 次。
 
+### D2.4 「30 天 ≤1 次」的窗口语义（Reviewer 指出实现缺陷，设计侧补齐）
+
+**Reviewer 实测到的实现缺陷**：`risk_breaker.py:425` 只判 `reset_count_30d >= 1`，**全模块没有按 `last_reset_at` 回溯窗口的衰减逻辑** → 「30 天 ≤1 次」退化成「**终身 ≤1 次**」；几个月后第二次撞 2 档，现场只能改库。测试也只测了 `count=1` 被拒，**没测窗口外可再重置**。
+
+**这是设计稿的漏洞（我只写了规则、没定义窗口机制），不是实现者理解错**。裁定：**采用「懒清零」滑动窗口，不新增列**（现有 DDL 的 `last_reset_at` + `reset_count_30d` 足够）：
+
+```python
+WINDOW = timedelta(days=30)
+
+def evaluate_reset_window(state, now) -> tuple[bool, int, str | None]:
+    """返回 (是否允许, 新的窗口内计数, retry_after_iso)。"""
+    if state.last_reset_at is None:
+        return True, 1, None
+    last = parse(state.last_reset_at)
+    if now - last >= WINDOW:            # 窗口已过期 → 计数视为 0（懒清零，无需后台任务）
+        return True, 1, None
+    if state.reset_count_30d >= 1:      # 窗口内已用过一次
+        return False, state.reset_count_30d, (last + WINDOW).isoformat()
+    return True, state.reset_count_30d + 1, None
+```
+
+- **列语义写死**：`reset_count_30d` = **当前窗口内的重置次数**（不是累计次数），`last_reset_at` = 窗口锚点（最近一次重置时间）；
+- **拒绝时必须回传 `retry_after`**（下次可解除的时间点），写进 audit 与页面提示 —— **杜绝"现场只能改库"**；
+- 语义效果：**两次人工解除的最小间隔 = 30 天**（不是"30 天内只能一次、然后永远不行"）；
+- 顺带一条运维提示：同一租户**第 2 次**进入 2 档并解除时，推一条 `RISK_BREAKER_RESET_REPEATED` 告警（说明熔断反复触发，策略层面要复核），**这不改变任何拦截逻辑**；解除次数是否进一步递减 `de_risk_scale`（0.5 → 0.25）属风险参数，**需 👤@itsyi 拍板，本设计不预设**。
+
 ### D3 门禁仲裁器：不新增第 5 套拦截，改为统一出口
 
 新增 `src/futu_quant/entry_gate.py`：
 
 ```python
-def resolve_entry_block_reasons(store, broker, strategy_id, tenant_id) -> list[BlockReason]:
-    """返回**全部**阻止开新仓的原因（空列表=放行）。ExecutionManager 只调这一个函数。"""
+@dataclass(frozen=True)
+class EntrySignals:
+    """由 RiskEngine / 调用方**算好并传入**的只读信号快照。
+
+    聚合层**只读**这些字段：它没有 store、没有 broker、不能查库、不能取快照。
+    """
+    strategy_id: str
+    tenant_id: str
+    reconciliation_locked: bool
+    kill_switch_active: bool
+    entries_paused: bool
+    breaker_level: int          # RiskEngine 侧算好的档位
+    breaker_blocked_by: str     # 闸门标识，写进 audit（V23）
+    intraday_dd: float          # 既有日内回撤（只读，不重算）
+    daily_loss: float
+    budget_exhausted: bool
+
+def resolve_entry_block_reasons(signals: EntrySignals) -> list[BlockReason]:
+    """纯函数：返回**全部**阻止开新仓的原因（空列表=放行）。ExecutionManager 只调这一个函数。
+
+    🔴 v2 修正（Coder 指出）：初稿签名是 ``(store, broker, strategy_id, tenant_id)``，
+    与 §D3.1「`entry_gate` 禁止取数」**自相矛盾** —— 那个签名会诱导下个实现者
+    在聚合层里写查询。**以本签名（只吃 signals）为准。**
+    """
 ```
 内部按固定顺序聚合现有 4 套 + 新增回撤熔断：
 `对账锁 → 租户/账户急停 → 策略只减仓 → 回撤熔断(1/2档) → 日亏损 → 风险预算`。
@@ -290,6 +338,9 @@ def resolve_entry_block_reasons(store, broker, strategy_id, tenant_id) -> list[B
 - **V12**（三件套完整性）**只做其中一件 → 必须仍被拦**：① 只锁存 ack、不重置 baseline → 1 档仍拦（变异必红）；② 只重置 baseline、不锁存 ack → 2 档仍拦（变异必红）；③ 两者都做但 `de_risk_scale` 未生效 → 预算未缩半（必红）。
 - **V13**（重新武装）`ack=11.2%` 时：`dd_vs_peak=12.9%` 不拦；`13.3%` **必须再拦**；且 `dd_vs_peak` 连续 1 个交易日 `<10%` 后 ack 被清除、`floor_effective` 回到 10%。
 - **V14**（解除频率）30 天内第 2 次 `MANUAL_RESET` 被拒；`de_risk_scale` 在 `dd_since_reset < 8%` 后自动恢复 1.0。
+- **V24**（窗口衰减，Reviewer 补）**31 天后必须可再重置**：构造 `last_reset_at = now - 31d`、`reset_count_30d = 1` → `evaluate_reset_window` 返回 `(True, 1, None)`，重置成功。**变异：去掉窗口衰减（保留 `count>=1` 全拒）→ 此用例必红。**
+- **V25**（拒绝要可操作）窗口内第 2 次被拒时，返回值必须带 `retry_after`（= `last_reset_at + 30d`），且该值写入 audit 与页面提示；`retry_after` 为 `None` 或被省略 → 判失败。
+- **V26**（列语义）`reset_count_30d` 在窗口过期后再重置必须回到 **1**（不是 2、不是保留旧值）→ 断言「列语义 = 窗口内计数」。
 - **V15**（B4 冻结边界）2 档冻结期间：**纯开仓任务被跳过**，但**止盈/硬止损/临期平仓任务必须照常执行**，且其 `side=="SELL"` 订单正常提交（变异：把冻结扩到全调度 → 此用例必红）。
 - **V16**（C2 行为冻结）迁移到仲裁器**前**先钉现状：用例断言「对账锁当前只拦 BUY、不拦 SELL」（实测 `risk.py:297-326`）。若断言不成立则**先修描述再动手**；**本批不改变对账锁语义**（CLAUDE.md 写的 "locks SELL" 与实现不一致，登记为待澄清项，不在本批改行为）。
 - **V17**（限额层单源）UI 显示的「单笔/单日限额」必须等于 `resolve_risk_limits()` 解析结果，且 **S1 生效后 BUY 按 535 被拦、SELL 不受影响**；变异：只改 `.env` 不改 `risk_limits:{tenant}` → 必须出现"界面 535、实际仍按旧值放行"的失败，从而证明该用例能抓到 B1 那类错层。
