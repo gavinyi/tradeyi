@@ -264,6 +264,34 @@ with tab_backtest:
         elif dq:
             st.caption(f"数据质量：{dq['total_rows']} 条全部可用（无行级缺值）")
 
+        # 兜底 rule 的 tie-break 落地质量（Chief 2026-10-25 裁定 ②）：
+        # 模型加载失败时由它接管选品，realised 分位必须可见；但它是**单次抽样**，
+        # 只作监控、不作「模型是否可用」的判据，更不许据此调盐（见 data/qa 报告）。
+        tq = getattr(res, "tiebreak_quality", {}) or {}
+        if tq.get("status") == "ok":
+            segments = tq.get("segments") or []
+            ok_segments = [s for s in segments if s.get("status") == "ok"]
+            segment_text = ""
+            if ok_segments:
+                fused_values = [s["fused_percentile"] for s in ok_segments]
+                segment_text = (
+                    f"；按交易日 5 段实测 {len(ok_segments)}/{len(segments)} 段可用，"
+                    f"融合分位 {min(fused_values):.0f}%~{max(fused_values):.0f}%"
+                )
+            st.caption(
+                f"兜底 rule tie-break（K={tq.get('fusion_k')} 盐融合）："
+                f"realised 分位 {tq.get('fused_percentile'):.1f}%"
+                f"（单盐 {tq.get('single_salt_percentile'):.1f}%，"
+                f"{tq.get('groups')} 组 / {tq.get('pairs')} 对）"
+                f"{segment_text} —— 单份数据抽样值，仅监控不作判据"
+            )
+        elif tq:
+            st.caption(
+                f"兜底 rule tie-break 监控不可用：{tq.get('reason')}"
+                f"（缺失列 {tq.get('missing')}）"
+                " —— 已显式记录，不静默"
+            )
+
         with st.expander("🔍 生产准入硬指标核验清单 (Checklist)", expanded=True):
             st.dataframe(pd.DataFrame(rep["checklist"]), hide_index=True, width="stretch")
 

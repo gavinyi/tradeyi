@@ -12,7 +12,6 @@ ML 增强打分 vs 纯规则打分 对照回测与满足度检验引擎
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .ml_scorer import BuiltinRuleModel, MissingFeatureError, load_ml_model
+from .ml_scorer import (
+    BuiltinRuleModel,
+    MissingFeatureError,
+    load_ml_model,
+    rule_tiebreak_realised_quality,
+)
 from .store import TradingStore
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,7 @@ class BacktestComparisonResult:
     divergence_records: list[dict[str, Any]]
     readiness_report: dict[str, Any]
     data_quality: dict[str, Any] = field(default_factory=dict)
+    tiebreak_quality: dict[str, Any] = field(default_factory=dict)
 
 
 def run_ml_vs_rule_comparison(
@@ -134,6 +139,33 @@ def run_ml_vs_rule_comparison(
         ) from exc
 
     df["rule_score"] = rule_model.predict_proba(X)[:, 1]
+
+    # 3.5 兜底 rule 的 tie-break 落地质量监控（Chief 2026-10-25 裁定 ②，双保险）：
+    # realised 分位是**单份数据的抽样值**，只入库观察、不作判据；单盐 → K 盐融合后
+    # 分散度收窄，但不保证单次落在中位（不允许据此调盐）。
+    tiebreak_quality = rule_tiebreak_realised_quality(df)
+    if tiebreak_quality.get("status") == "ok":
+        logger.info(
+            "rule tie-break 落地监控：K=%s 融合 realised 分位 %.1f%%（单盐 %.1f%%）、"
+            "%s 组 / %s 对",
+            tiebreak_quality.get("fusion_k"),
+            tiebreak_quality.get("fused_percentile", float("nan")),
+            tiebreak_quality.get("single_salt_percentile", float("nan")),
+            tiebreak_quality.get("groups"),
+            tiebreak_quality.get("pairs"),
+        )
+    else:
+        logger.warning("rule tie-break 落地监控不可用：%s", tiebreak_quality)
+    if store is not None:
+        try:
+            store.audit(
+                "RULE_TIEBREAK_REALISED_QUALITY",
+                tiebreak_quality,
+                actor="service:ml_comparator",
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 监控写入失败不阻断对照回测（DB 锁等），但必须留痕，不许静默
+            logger.warning("rule tie-break 监控审计写入失败（%s）：%s", type(exc).__name__, exc)
 
     # 实际后验盈亏
     pnl_series = df["window_net_pnl"] if "window_net_pnl" in df.columns else pd.Series(0.0, index=df.index)
@@ -350,4 +382,5 @@ def run_ml_vs_rule_comparison(
         divergence_records=divergence_records[:30],
         readiness_report=readiness_report,
         data_quality=data_quality,
+        tiebreak_quality=tiebreak_quality,
     )
