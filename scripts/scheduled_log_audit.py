@@ -206,8 +206,13 @@ def _csv_staleness_issue(last_trade_date: str, max_stale: int) -> list[str]:
                 f"⚠️ **训练 CSV 已陈旧**：最后成交日 {last_trade_date}，"
                 f"距今 {elapsed} 个交易日（阈值 {max_stale}）。回测结论基于旧样本，需重导。"
             ]
-    except Exception:
-        return []  # 日历不可用时宁可静默，不产生假告警
+    except Exception as exc:
+        # P1-09：日历/日期解析失败**不得静默**（fail-closed）——
+        # 以前这里 `return []`，等于「算不出来就当没问题」，检查会永久失明。
+        return [
+            f"⚠️ **训练 CSV 陈旧度无法判定（fail-closed）**：{exc!r}。"
+            "本轮按异常处理并告警，请排查 XNYS 日历/交易日期取值。"
+        ]
     return []
 
 
@@ -244,6 +249,147 @@ def check_snapshot_gaps(store, max_days: int = 10) -> list[str]:
             f"零快照 —— 这批成交无法进入训练样本且不可回溯。请检查 option_history 采集任务。"
         )
     return issues
+
+
+#: `fill_ledger.fee_total` 的历史占位值：当年拿不到券商真实佣金时统一写 1.0
+FEE_PLACEHOLDER_VALUE = 1.0
+#: 占位值占比告警阈值（P1-14）
+FEE_PLACEHOLDER_ALERT_RATIO = 0.05
+#: 只看最近 N 天的成交：历史占位行**不回填**（真值不可知），
+#: 若按全表算占比会永久 >90%，变成天天响的假告警（告警疲劳）。
+FEE_PLACEHOLDER_WINDOW_DAYS = 7
+
+
+def _fill_ledger_has_fee_state_columns(connection) -> bool:
+    """迁移 17/18 之后才有三态列；巡检要能在迁移前/后两种库上都跑。"""
+    cols = {row[1] for row in connection.execute("pragma table_info(fill_ledger)")}
+    return {"fee_is_estimate", "fee_unavailable_reason"} <= cols
+
+
+def _fee_placeholder_counts(store, window_days: int) -> dict:
+    """返回占位值统计，供告警与信息项共用。
+
+    占位值判据（Reviewer 2026-10-25）：
+    - 有迁移 17/18 三态列时：`fee_total≈1.0` **且 `fee_unavailable_reason IS NULL` 且
+      `fee_is_estimate=0`** —— 即「未标注的 1.0」。否则某笔估算值恰好 1.00 会误报，
+      而迁移 19 已把历史行标成 `legacy_placeholder_1usd`，不该再算进新告警。
+    - 三态列尚未迁移时：退回 `fee_total≈1.0`（旧库兼容，行为与发布前一致）。
+
+    `filled_at IS NULL` 的行走不了窗口比较，单独计数返回，不混进分母。
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(1, int(window_days)))
+    ).isoformat()
+    with store.connection() as connection:
+        has_state = _fill_ledger_has_fee_state_columns(connection)
+        if has_state:
+            predicate = (
+                "ABS(fee_total - ?) < 1e-9"
+                " AND fee_unavailable_reason IS NULL"
+                " AND COALESCE(fee_is_estimate, 0) = 0"
+            )
+        else:
+            predicate = "ABS(fee_total - ?) < 1e-9"
+        all_total = connection.execute("SELECT COUNT(*) FROM fill_ledger").fetchone()[0]
+        all_ph = connection.execute(
+            f"SELECT COUNT(*) FROM fill_ledger WHERE {predicate}",  # noqa: S608 - 固定片段
+            (FEE_PLACEHOLDER_VALUE,),
+        ).fetchone()[0]
+        win_total = connection.execute(
+            "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?", (cutoff,)
+        ).fetchone()[0]
+        win_ph = connection.execute(
+            f"SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ? AND {predicate}",  # noqa: S608
+            (cutoff, FEE_PLACEHOLDER_VALUE),
+        ).fetchone()[0]
+        null_filled = connection.execute(
+            "SELECT COUNT(*) FROM fill_ledger"
+            " WHERE filled_at IS NULL OR TRIM(filled_at) = ''"
+        ).fetchone()[0]
+        if has_state:
+            # 迁移 19 标记过的历史占位：数值不改、不回填，但**必须始终可见**
+            # （否则迁移一落地，「历史 689/743」就变 0，看起来像历史已被修好）。
+            legacy = connection.execute(
+                "SELECT COUNT(*) FROM fill_ledger"
+                " WHERE fee_unavailable_reason = 'legacy_placeholder_1usd'"
+            ).fetchone()[0]
+        else:
+            legacy = all_ph
+    return {
+        "all": (all_ph, all_total),
+        "window": (win_ph, win_total),
+        "legacy": (legacy, all_total),
+        "null_filled_at": null_filled,
+        "three_state": has_state,
+    }
+
+
+def check_fee_placeholder_ratio(
+    store,
+    threshold: float = FEE_PLACEHOLDER_ALERT_RATIO,
+    window_days: int = FEE_PLACEHOLDER_WINDOW_DAYS,
+) -> list[str]:
+    """P1-14：最近 N 天 `fill_ledger.fee_total` 占位值（$1.0）占比超阈值即告警。
+
+    为什么：历史回填有 689/743 行写死 1.0 占位，按账本算成本会严重低估
+    （账本合计 $787.99 vs 真实全费用估算 $1,815.34）。P1-13 修完写入路径后
+    新数据应为 `estimate_fees` 估算值，这条巡检验证「占位值已停止增长」。
+
+    **只看窗口内新成交**：历史行不回填，按全表算占比会永久 >90% → 天天假告警。
+    全表数字仍在巡检报告的「费用账本状态」信息行里展示（不触发告警）。
+    权威成本口径仍是 `order_intents.fees`（估算 ≠ 实付），账本合计不可引用。
+    """
+    try:
+        counts = _fee_placeholder_counts(store, window_days)
+    except Exception as exc:
+        return [f"⚠️ **fill_ledger 费用占位值巡检失败（fail-closed）**：{exc!r}"]
+    placeholders, total = counts["window"]
+    if not total:
+        return []
+    ratio = placeholders / total
+    if ratio <= threshold:
+        return []
+    return [
+        f"⚠️ **近 {int(window_days)} 天 fill_ledger 费用占位值占比 {ratio:.1%}**"
+        f"（{placeholders}/{total} 行为 ${FEE_PLACEHOLDER_VALUE:.2f} 占位，"
+        f"阈值 {threshold:.0%}）：写入路径仍在写占位值，账本成本被低估；"
+        "成本口径请继续用 order_intents.fees 的估算值。"
+    ]
+
+
+def fee_ledger_summary_line(
+    store, window_days: int = FEE_PLACEHOLDER_WINDOW_DAYS,
+) -> str:
+    """巡检报告里的**信息项**（不触发告警）：历史占位不回填，但也不能让它消失。"""
+    try:
+        counts = _fee_placeholder_counts(store, window_days)
+    except Exception as exc:
+        return f"• **费用账本状态**：无法统计（{exc!r}）"
+    all_ph, all_total = counts["all"]
+    win_ph, win_total = counts["window"]
+    legacy_ph, legacy_total = counts["legacy"]
+    all_pct = f"{all_ph / all_total:.1%}" if all_total else "-"
+    win_pct = f"{win_ph / win_total:.1%}" if win_total else "-"
+    legacy_pct = f"{legacy_ph / legacy_total:.1%}" if legacy_total else "-"
+    if counts.get("three_state"):
+        # 历史占位（迁移 19 标记）+ 未标注 1.0（回归哨兵）分开显示：
+        # 迁移一落地，若只留新判据，历史 689 行会显示成 0，看起来像「历史已修好」。
+        line = (
+            f"• **费用账本状态**：历史占位 `legacy_placeholder_1usd` "
+            f"**{legacy_ph}/{legacy_total} = {legacy_pct}**（不回填，仅展示）"
+            f"；未标注 1.0（回归哨兵）全表 **{all_ph}/{all_total}**、"
+            f"最近 {int(window_days)} 天 **{win_ph}/{win_total} = {win_pct}**"
+        )
+    else:
+        line = (
+            f"• **费用账本状态**：占位 1.0（三态列未迁移，旧判据）"
+            f"**{all_ph}/{all_total} = {all_pct}**（历史不回填，仅展示）"
+            f"；最近 {int(window_days)} 天 **{win_ph}/{win_total} = {win_pct}**"
+        )
+    null_filled = counts.get("null_filled_at") or 0
+    if null_filled:
+        line += f"；另有 `filled_at` 为空 **{null_filled} 行**（无法归窗，未计入分母）"
+    return line
 
 
 def inspect_and_alert():
@@ -479,6 +625,11 @@ def inspect_and_alert():
     # 成交数必须取 order_intents：fill_ledger 只有 30 个交易日、会静默漏掉 8 月那批。
     issues.extend(check_snapshot_gaps(store))
 
+    # 5.3 fill_ledger 费用占位值占比（P1-14；P1-13 修写入路径后的回归守卫）
+    # 历史 689/743 行 fee_total 写死 1.0，账本成本因此低估 2.3 倍；
+    # 这条只告警、不碰交易，用来确认占位值不再增长。
+    issues.extend(check_fee_placeholder_ratio(store))
+
     print(f"[{time_str}] 系统巡检完成，发现问题数: {len(issues)}")
     for iss in issues:
         print("  - " + iss)
@@ -543,6 +694,9 @@ def inspect_and_alert():
         )
     if positions_summary:
         msg_body += "  - 当前持仓: " + "，".join(positions_summary) + "\n"
+
+    # 费用账本三态可见性（P1-14）：历史占位不回填，但必须让它可见（信息项，不告警）
+    msg_body += "\n" + fee_ledger_summary_line(store) + "\n"
 
     full_msg = msg_header + msg_body
     print(f"[{time_str}] 系统巡检完成，推送消息到飞书...")
