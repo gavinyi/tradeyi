@@ -18,11 +18,30 @@ import argparse
 import json
 import re
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import numpy as np
+
+
+def _force_utf8_stdio() -> None:
+    """把 stdout/stderr 换成 UTF-8 包装（Windows 控制台默认 GBK，emoji 会直接崩）。
+
+    **只能在 `__main__` 里调用**，绝不能在 import 期执行：import 期替换
+    `sys.stdout`/`sys.stderr` 会把 pytest 的 capture 对象顶掉，teardown 去读已关闭
+    的文件 → `ValueError: I/O operation on closed file`（`ml_retrain_monthly.py`
+    2026-10-25 已踩过同一个坑）。
+    """
+    if sys.platform != "win32":
+        return
+    import io
+
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 
 def parse_option_symbol(symbol: str) -> dict | None:
@@ -167,6 +186,11 @@ def add_option_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 MARKET_TIMEZONE = "America/New_York"
+# 行情快照与成交时刻的最大允许时差。原为 1 天是错的：跨夜匹配会把 24 小时前的
+# gamma/theta 当成成交时刻行情（Reviewer/Ops 2026-10-25），3a 三组对比就全建在
+# 假对齐上。收窄到 45 分钟（覆盖扫描→下单的正常延迟），超容差样本直接丢弃并计数：
+# 丢掉的样本本来就无法代表入场时点，宁缺毋滥。
+MARKET_TOLERANCE_MINUTES = 45
 
 
 def _market_stamp_to_utc(raw) -> pd.Timestamp:
@@ -195,6 +219,18 @@ def _market_times_to_utc(values: pd.Series) -> pd.Series:
     )
 
 
+def _print_safe(message: str) -> None:
+    """打印时容忍非 UTF-8 控制台（Windows GBK、`pytest -s` 都会踩）。
+
+    emoji 在 GBK 流上会抛 `UnicodeEncodeError`：手工跑导出会崩，`-s` 跑守卫会
+    变成 6 条假红。入口已经接管 stdio，但**被测试直接调用的函数**仍需自带兜底。
+    """
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        print(message.encode("ascii", "replace").decode("ascii"))
+
+
 def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
     """合并``option_history`` 里**成交时刻的真实行情**：正股价 + 期权希腊字母。
 
@@ -203,8 +239,11 @@ def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
     ``strike / median(同标的 strike) - 1``（随当天候选池漂移、同一合约换一天就变）
     和 ``1/(dte·vix)``（与 gamma/theta 毫无关系）顶替，推理侧永远复现不出来，
     训练出的重要性也是伪特征的成绩。缺行情就**丢样本并告警**，绝不补 0 或补伪值。
+
+    时差上限见 :data:`MARKET_TOLERANCE_MINUTES`：只用成交时刻**之前**、且相距不超过
+    45 分钟的快照；跨夜 24 小时前的快照会被丢弃（丢多少会打印出来）。
     """
-    print("\n🔧 合并成交时刻真实行情（option_history）...")
+    _print_safe("\n🔧 合并成交时刻真实行情（option_history）...")
     market_cols = ["underlying_price", "option_gamma", "option_theta"]
     conn = sqlite3.connect(db_path)
     try:
@@ -234,19 +273,22 @@ def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
         frame,
         history[["code", "time_key", *market_cols]],
         left_on="created_at", right_on="time_key", by="code",
-        direction="backward", tolerance=pd.Timedelta(days=1),
+        direction="backward",
+        tolerance=pd.Timedelta(minutes=MARKET_TOLERANCE_MINUTES),
     )
     merged = merged.drop(columns=["time_key", "code"])
 
     covered = merged.dropna(subset=market_cols)
     dropped = len(merged) - len(covered)
     if dropped:
-        print(f"   ⚠️  {dropped}/{len(merged)} 条样本没有成交时刻的真实行情 → 丢弃（不补伪值）")
+        _print_safe(
+            f"   ⚠️  {dropped}/{len(merged)} 条样本没有成交时刻的真实行情 → 丢弃（不补伪值）"
+        )
     if covered.empty:
         raise RuntimeError(
             "没有任何样本能匹配到 option_history 的真实行情：v3.2 特征无法构造，拒绝训练"
         )
-    print(f"   ✅ 真实行情样本: {len(covered)}/{len(merged)}")
+    _print_safe(f"   ✅ 真实行情样本: {len(covered)}/{len(merged)}")
     return covered.reset_index(drop=True)
 
 
@@ -467,4 +509,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # 只在作为脚本运行时接管 stdio：Step 2 是手工跑导出，GBK 控制台下 emoji 会
+    # 直接 UnicodeEncodeError；import 期做这件事会顶掉 pytest capture（见函数注释）。
+    _force_utf8_stdio()
     main()
