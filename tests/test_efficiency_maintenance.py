@@ -14,11 +14,19 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from futu_quant.store import TradingStore
+
+# 仓库根兜底：`pytest <file>` 直接跑单文件时不会把 CWD 加进 sys.path，
+# `import scripts.vacuum_db` 会 ModuleNotFoundError（假红）。整仓运行不受影响。
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _insert_recon(store, *, status: str, age_days: int) -> None:
@@ -50,14 +58,32 @@ def test_prune_deletes_old_matched_but_keeps_mismatch(tmp_path):
     assert counts.get("MISMATCH") == 1, "MISMATCH 无论多旧都必须保留（事故证据）"
 
 
-def test_vacuum_refuses_when_service_lock_present(tmp_path):
+def test_vacuum_refuses_when_service_holds_lock(tmp_path):
+    """锁被**真实持有**时必须拒绝 VACUUM。
+
+    只造一个空的 .lock 文件不够：Windows 字节锁不阻止 open，
+    用「能 open 就算在跑」会漏报；用「文件存在就算在跑」会把正常停机
+    （stop.bat/进程退出都不删 .lock）误判成在跑。判据只能是**抢锁失败**。
+    """
+    from futu_quant.filelock import exclusive_lock
     from scripts.vacuum_db import _service_running
 
-    root = tmp_path
-    (root / "data").mkdir()
-    (root / "data" / "trading-service-futu_paper_sandbox.lock").write_text("1", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    lock = tmp_path / "data" / "trading-service-futu_paper_sandbox.lock"
+    lock.write_text("1", encoding="utf-8")
 
-    assert _service_running(root) == ["trading-service-futu_paper_sandbox.lock"]
+    with exclusive_lock(lock):
+        assert _service_running(tmp_path) == [lock.name]
+
+
+def test_vacuum_allows_stale_lock_file(tmp_path):
+    """陈旧锁文件（无人持有）不得阻塞停机维护。"""
+    from scripts.vacuum_db import _service_running
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "trading-service.lock").write_text("123\n", encoding="utf-8")
+
+    assert _service_running(tmp_path) == []
 
 
 def test_vacuum_dry_run_stats(tmp_path):

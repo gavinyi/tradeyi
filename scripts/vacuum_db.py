@@ -19,10 +19,36 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from futu_quant.filelock import FileLockError, lock_exclusive, unlock_exclusive
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "data" / "trading.db"
 
 LOCK_MARKERS = ("trading-service.lock", "volatility-radar.lock")
+
+
+def _lock_held(path: Path) -> bool:
+    """锁文件是否被服务真实持有：非阻塞抢同一把建议锁。
+
+    只看文件存在不行（stop.bat/进程退出都不删 .lock）；
+    用 ``open(path, "a")`` 试开也不行：Windows 字节锁（``msvcrt.locking``）
+    不阻止别人 open，服务真在跑也会成功打开（2026-10-25 实测 LockFile 持锁 +
+    open 仍成功），等于把守卫改成 fail-open —— 那会让 ``--yes`` 在服务运行中放行
+    VACUUM，直接破坏 1 GB 生产库。
+    """
+    try:
+        handle = path.open("a+b")
+    except OSError:
+        return True
+    try:
+        lock_exclusive(handle, blocking=False)
+    except FileLockError:
+        return True
+    else:
+        unlock_exclusive(handle)
+        return False
+    finally:
+        handle.close()
 
 
 def _service_running(root: Path) -> list[str]:
@@ -33,10 +59,7 @@ def _service_running(root: Path) -> list[str]:
         running.append(p.name)
     for pattern in ("trading-service*.lock", "volatility-radar.lock"):
         for p in data_dir.glob(pattern):
-            try:
-                with open(p, "a"):
-                    pass
-            except (OSError, PermissionError):
+            if _lock_held(p):
                 running.append(p.name)
     return running
 
