@@ -485,12 +485,176 @@ def add_market_environment_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _load_bar_warehouse(warehouse: Path) -> dict:
+    """读取日线仓库 ``bars/symbol=*/year=*/part.parquet`` → {symbol: DataFrame}。
+
+    零新增采集：数据本来就在 `data/market-data`（`run_service.py` 每 20h 回补）。
+    """
+    frames: dict = {}
+    for path in warehouse.glob("bars/symbol=*/year=*/part.parquet"):
+        raw = path.parent.parent.name
+        raw = raw[len("symbol="):] if raw.startswith("symbol=") else raw
+        head, _, tail = raw.partition("_")
+        symbol = f"{head}.{tail.replace('_', '.')}" if tail else head
+        try:
+            frame = pd.read_parquet(path, columns=["session_date", "close"])
+        except Exception as exc:  # noqa: BLE001
+            print(f"   ⚠️  跳过 {path.name}（{symbol}）：{exc}")
+            continue
+        frame["session_date"] = pd.to_datetime(frame["session_date"], errors="coerce")
+        frame = frame.dropna(subset=["session_date", "close"]).sort_values("session_date")
+        if frames.get(symbol) is not None:
+            frame = pd.concat([frames[symbol], frame]).drop_duplicates("session_date")
+            frame = frame.sort_values("session_date")
+        frames[symbol] = frame
+    return frames
+
+
+MOMENTUM_MIN_COVERAGE = 0.60
+
+
+def _load_option_history_daily_closes(db_path: str | Path) -> dict:
+    """从 ``option_history.underlying_price`` 派生标的日收盘（日线仓库的 fallback）。
+
+    日线仓库只回补配置里的符号（实测 29 个，真实交易标的仅覆盖 9/19），
+    而 `option_history` 有 20 个标的的盘中快照。这里按 (underlying, day) 取当日
+    最后一条 `underlying_price` 作为收盘，**只用于补齐喂不进的标的**，不新增采集。
+    """
+    frames: dict = {}
+    try:
+        conn = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        print(f"   ⚠️  option_history fallback 不可用：{exc}")
+        return frames
+    try:
+        query = """
+        SELECT underlying, day, underlying_price FROM (
+            SELECT underlying, substr(time_key,1,10) AS day, underlying_price,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY underlying, substr(time_key,1,10)
+                       ORDER BY time_key DESC
+                   ) AS rn
+            FROM option_history
+            WHERE underlying_price > 0
+        ) WHERE rn = 1
+        """
+        frame = pd.read_sql_query(query, conn)
+    except Exception as exc:  # noqa: BLE001
+        print(f"   ⚠️  option_history fallback 查询失败：{exc}")
+        return frames
+    finally:
+        conn.close()
+    if frame.empty:
+        return frames
+    for underlying, group in frame.groupby("underlying"):
+        group = group.copy()
+        group["session_date"] = pd.to_datetime(group["day"], errors="coerce")
+        group = group.dropna(subset=["session_date"]).sort_values("session_date")
+        frames[str(underlying)] = group[["session_date", "underlying_price"]].rename(
+            columns={"underlying_price": "close"}
+        )
+    return frames
+
+
+def add_symbol_level_features(
+    df: pd.DataFrame, warehouse: Path | str, db_path: str | Path | None = None,
+) -> pd.DataFrame:
+    """标的级新特征（零采集）：20 日动量 / SPY 5 日收益 / 大盘趋势标签。
+
+    防 look-ahead：只用**成交日之前**的日线（`session_date < trade_date`，严格小于）。
+    动量优先用日线仓库，缺符号时用 `option_history.underlying_price` 派生日线兜底；
+    仍无数据保持 NaN（训练侧 fillna(0)，但覆盖率 <60% 时本特征不纳入训练、只留观测）。
+    """
+    from futu_quant.ml_scorer import momentum_20d_from_bars, regime_label_from_spy
+
+    print("\n🔧 添加标的级新特征（动量 / 大盘方向 / regime 标签）...")
+    frames = _load_bar_warehouse(Path(warehouse))
+    print(f"   日线仓库符号数: {len(frames)}（{'含 SPY' if 'US.SPY' in frames else '缺 SPY'}）")
+    fallback = _load_option_history_daily_closes(db_path) if db_path else {}
+    if fallback:
+        added = [symbol for symbol in fallback if symbol not in frames]
+        print(f"   option_history fallback 补充符号: {len(added)}")
+
+    momentum: list[float] = []
+    spy_return_5d: list[float] = []
+    regime_label: list[float] = []
+    missing_reason: list[str] = []
+    used_fallback = 0
+    for _, row in df.iterrows():
+        parsed = parse_option_symbol(str(row.get("symbol", "")))
+        underlying = f"US.{parsed['underlying']}" if parsed else ""
+        trade_day = pd.to_datetime(row.get("trade_date"), errors="coerce")
+
+        mom_value = None
+        reason = "no_bars_symbol"
+        underlying_bars = frames.get(underlying)
+        if underlying_bars is not None and not pd.isna(trade_day):
+            prior = underlying_bars[underlying_bars["session_date"] < trade_day]
+            mom_value = momentum_20d_from_bars(prior, include_last=True)
+            if mom_value is None:
+                reason = "insufficient_history"
+        if mom_value is None and fallback:
+            fallback_bars = fallback.get(underlying)
+            if fallback_bars is not None and not pd.isna(trade_day):
+                prior = fallback_bars[fallback_bars["session_date"] < trade_day]
+                mom_value = momentum_20d_from_bars(prior, include_last=True)
+                if mom_value is not None:
+                    used_fallback += 1
+                    reason = "OK_FALLBACK"
+                elif reason == "no_bars_symbol":
+                    reason = "insufficient_history"
+        if mom_value is not None and reason not in ("OK_FALLBACK",):
+            reason = "OK"
+
+        spy_value = None
+        spy_bars = frames.get("US.SPY")
+        if spy_bars is not None and not pd.isna(trade_day):
+            prior = spy_bars[spy_bars["session_date"] < trade_day]["close"].tolist()
+            if len(prior) >= 6 and float(prior[-6]) > 0:
+                spy_value = float(prior[-1]) / float(prior[-6]) - 1.0
+
+        momentum.append(float("nan") if mom_value is None else float(mom_value))
+        missing_reason.append(reason)
+        spy_return_5d.append(float("nan") if spy_value is None else float(spy_value))
+        label = regime_label_from_spy(spy_value)
+        regime_label.append(float("nan") if label is None else float(label))
+
+    df = df.copy()
+    df["symbol_momentum_20d"] = momentum
+    # 缺失原因落列（缺失非随机：将来判断能否入训全靠它，不能只打日志）
+    df["symbol_momentum_missing_reason"] = missing_reason
+    # 覆盖占位常量：同一语义列改用真实 SPY 收益（拿不到则保留原占位值）
+    if "spy_return_5d" in df.columns:
+        df["spy_return_5d"] = np.where(np.isnan(spy_return_5d), df["spy_return_5d"], spy_return_5d)
+    else:
+        df["spy_return_5d"] = spy_return_5d
+    df["regime_label"] = regime_label
+
+    total = len(df)
+    mom_cover = int(pd.Series(momentum).notna().sum())
+    spy_cover = int(pd.Series(spy_return_5d).notna().sum())
+    ratio = mom_cover / total if total else 0.0
+    print(
+        f"   覆盖率: symbol_momentum_20d {mom_cover}/{total}（{ratio:.1%}，"
+        f"其中 option_history fallback 补 {used_fallback} 条），spy_return_5d {spy_cover}/{total}"
+    )
+    if ratio < MOMENTUM_MIN_COVERAGE:
+        # 缺失非随机：硬灌会把「哪些标的没有日线」学成信号 → 本轮只留观测，不纳入训练。
+        df = df.rename(columns={"symbol_momentum_20d": "symbol_momentum_20d_observation"})
+        print(
+            f"   ⚠️  动量覆盖率 {ratio:.1%} < {MOMENTUM_MIN_COVERAGE:.0%}："
+            "改列名 symbol_momentum_20d_observation（只留观测，不纳入训练）"
+        )
+    return df
+
+
 def main():
     parser = argparse.ArgumentParser(description='导出波动率策略训练数据 V3')
     parser.add_argument('--output', required=True, help='输出CSV文件路径')
     parser.add_argument('--db', default='data/trading.db', help='数据库路径')
     parser.add_argument('--start-date', help='起始日期 (YYYY-MM-DD)')
     parser.add_argument('--forward-days', type=int, default=7, help='向前预测天数')
+    parser.add_argument('--warehouse', default='data/market-data', help='日线仓库目录（零采集特征来源）')
     
     args = parser.parse_args()
     
@@ -524,6 +688,9 @@ def main():
     
     # 5. 添加市场环境特征
     featured_df = add_market_environment_features(featured_df)
+
+    # 5b. 标的级新特征（零采集：日线仓库 + option_history 兜底 → 动量 / SPY 5 日 / 趋势标签）
+    featured_df = add_symbol_level_features(featured_df, args.warehouse, args.db)
     
     # 6. 保存结果
     featured_df.to_csv(args.output, index=False)

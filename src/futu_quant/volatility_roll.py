@@ -256,7 +256,9 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     # 生产存量 campaign 的 JSON 里**没有 tenant_id 键**（实测），只看它会让租户级
     # ML 开关永远回落全局；用 broker 反解兜底（共享入口 tenant_of_broker，fail-closed）。
     _roll_tenant = str(campaign.get("tenant_id") or tenant_id_of_broker(broker) or "")
-    eligible = _apply_ml_ranking(eligible, store, tenant_id=_roll_tenant, spot=spot)
+    eligible = _apply_ml_ranking(
+        eligible, store, tenant_id=_roll_tenant, spot=spot, broker=broker, bars=bars
+    )
     selected = eligible.iloc[0]
     selected_code = str(selected.get("code", ""))
     if parse_option_code(selected_code) is None:
@@ -363,13 +365,15 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     )
 
 
-def _row_market_context(row, spot: float | None) -> dict:
-    """把结构行自带的希腊字母 + 当日正股价组装成 v3.2 特征所需的行情上下文。
+def _row_market_context(row, spot: float | None, bars=None) -> dict:
+    """把结构行自带的希腊字母 + 当日正股价 + 标的 20 日动量组装成特征上下文。
 
     以前这里是 `score_symbol(code, None, store)`：连 broker 都没传，vix 恒为常量占位，
-    v3.2 的 moneyness / gamma_to_theta 更是**无源可造**。缺数据时返回不完整上下文，
-    由评分层显式报 NA（绝不编 0）。
+    v3.2 的 moneyness / gamma_to_theta 更是**无源可造**；现在补上标的动量（零采集，
+    直接用本轮已取到的 120 根日线），缺数据仍不编 0，由评分层显式报 NA。
     """
+    from .ml_scorer import momentum_20d_from_bars
+
     source = row
     primary = row.get("primary_row") if hasattr(row, "get") else None
     if isinstance(primary, dict):
@@ -394,12 +398,15 @@ def _row_market_context(row, spot: float | None) -> dict:
         context["option_gamma"] = gamma
     if theta is not None:
         context["option_theta"] = theta
+    momentum = momentum_20d_from_bars(bars)
+    if momentum is not None:
+        context["symbol_momentum_20d"] = momentum
     return context
 
 
 def _apply_ml_ranking(
     structures: pd.DataFrame, store, tenant_id: str | None = None,
-    spot: float | None = None,
+    spot: float | None = None, broker=None, bars=None,
 ) -> pd.DataFrame:
     """
     用ML模型对合格结构做评分加权排序（可选增强）。
@@ -468,7 +475,8 @@ def _apply_ml_ranking(
             continue
         try:
             s = scorer.score_symbol(
-                code, None, store, market_context=_row_market_context(row, spot)
+                code, broker, store,
+                market_context=_row_market_context(row, spot, bars),
             )
             scores.append(s)
         except Exception:  # noqa: BLE001
