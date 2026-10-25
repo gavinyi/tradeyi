@@ -276,6 +276,10 @@ def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
         direction="backward",
         tolerance=pd.Timedelta(minutes=MARKET_TOLERANCE_MINUTES),
     )
+    # 统一口径审计：快照相对成交时刻的实际滞后（分钟），与推理侧同一判定上限。
+    merged["moneyness_lag_minutes"] = (
+        merged["created_at"] - merged["time_key"]
+    ).dt.total_seconds() / 60.0
     merged = merged.drop(columns=["time_key", "code"])
 
     covered = merged.dropna(subset=market_cols)
@@ -289,7 +293,51 @@ def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
             "没有任何样本能匹配到 option_history 的真实行情：v3.2 特征无法构造，拒绝训练"
         )
     _print_safe(f"   ✅ 真实行情样本: {len(covered)}/{len(merged)}")
-    return covered.reset_index(drop=True)
+
+    # P0-A：把合约级派生特征**真正写进 CSV**（以前只在训练脚本里临时算，
+    # 回测比较器拿不到 → 大屏 ML 臂少特征打分）。与训练/推理同一出处（同一个 helper）。
+    # 缺值写 NaN + 原因列，**绝不填 0**。
+    from futu_quant.ml_scorer import gamma_to_theta_ratio, moneyness_ratio
+
+    moneyness_values: list[float] = []
+    moneyness_reasons: list[str] = []
+    gamma_theta_values: list[float] = []
+    gamma_theta_reasons: list[str] = []
+    for _, row in covered.iterrows():
+        lag_minutes = row.get("moneyness_lag_minutes")
+        stale = False
+        try:
+            stale = float(lag_minutes) > MARKET_TOLERANCE_MINUTES
+        except (TypeError, ValueError):
+            stale = True
+        if stale:
+            # 与推理侧同一判定：滞后 >45 分钟 → 置空 + 原因，**不许回落 last_price**
+            moneyness_values.append(float("nan"))
+            moneyness_reasons.append("snapshot_missing_or_stale")
+        else:
+            moneyness = moneyness_ratio(row.get("underlying_price"), row.get("strike_price"))
+            moneyness_values.append(float("nan") if moneyness is None else float(moneyness))
+            moneyness_reasons.append("OK" if moneyness is not None else "invalid_spot_or_strike")
+
+        gamma_theta = gamma_to_theta_ratio(row.get("option_gamma"), row.get("option_theta"))
+        gamma_theta_values.append(
+            float("nan") if gamma_theta is None else float(gamma_theta)
+        )
+        gamma_theta_reasons.append(
+            "OK" if gamma_theta is not None else "zero_or_invalid_greeks"
+        )
+
+    covered = covered.reset_index(drop=True)
+    covered["moneyness"] = moneyness_values
+    covered["moneyness_missing_reason"] = moneyness_reasons
+    covered["gamma_to_theta"] = gamma_theta_values
+    covered["gamma_to_theta_missing_reason"] = gamma_theta_reasons
+    _print_safe(
+        "   合约级列: moneyness "
+        f"{int(pd.Series(moneyness_values).notna().sum())}/{len(covered)}，"
+        f"gamma_to_theta {int(pd.Series(gamma_theta_values).notna().sum())}/{len(covered)}"
+    )
+    return covered
 
 
 def calculate_pnl_labels(df: pd.DataFrame, forward_days: int = 7) -> pd.DataFrame:

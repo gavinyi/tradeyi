@@ -76,15 +76,20 @@ def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[
         'underlying_price', 'option_gamma', 'option_theta',
         # 「只观测」列与缺失原因：覆盖率不足时只留观测，绝不入训
         'symbol_momentum_20d_observation', 'symbol_momentum_missing_reason',
+        # P0-A 新增的缺失原因/滞后审计列（字符串/审计值，绝不能当特征喂给模型）
+        'moneyness_missing_reason', 'gamma_to_theta_missing_reason', 'moneyness_lag_minutes',
     ]
 
     feature_cols = [col for col in df.columns if col not in exclude_cols]
-    # 「只观测」列一律不得入训（否则"只观测"会悄悄变成"多学一列"，且不报错）。
-    # 用后缀规则兜住未来新增的 *_observation 列，别依赖人手逐个加白名单。
-    dropped_observations = [col for col in feature_cols if col.endswith('_observation')]
-    if dropped_observations:
-        print(f"  排除只观测列（不入训）: {dropped_observations}")
-        feature_cols = [col for col in feature_cols if col not in dropped_observations]
+    # 任何 `*_missing_reason` / `*_observation` / `*_lag_minutes` 列一律不入训
+    # （后缀规则兜住未来新增列；`*_lag_minutes` 不在 INFERENCE_FEATURE_KEYS，
+    #  一旦混进训练集，训出的模型会被 load_ml_model fail-closed 拒载；
+    #  `*_observation` 若不排除，会悄悄"多学一列"且不报错）
+    meta_suffixes = ('_missing_reason', '_observation', '_lag_minutes')
+    dropped_meta = [col for col in feature_cols if col.endswith(meta_suffixes)]
+    if dropped_meta:
+        print(f"  排除元数据列（不入训）: {dropped_meta}")
+        feature_cols = [col for col in feature_cols if col not in dropped_meta]
     
     # 提取特征和标签
     X = df[feature_cols].copy()

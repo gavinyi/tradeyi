@@ -244,12 +244,98 @@ with tab_backtest:
 
     res = st.session_state.get("ml_comparison_result")
     if res is not None:
-        # 1. 自动化准入卡
+        # 1. 本次回测结果（**不是**准入卡）：中性展示，不得用绿勾/红叉替页面背书，
+        # 也不得写成「可实盘接入」这类准入结论（Chief 2026-10-25 裁定）。
+        # 守卫 `tests/test_readiness_wording.py` 咬住「verdict 不得用 st.success/st.error」。
         rep = res.readiness_report
-        if rep["is_ready"]:
-            st.success(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
-        else:
-            st.error(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+        st.info(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+        if rep.get("sample_trades") is not None:
+            st.caption(
+                f"样本量：{rep['sample_trades']} 笔 / {rep['sample_days']} 个交易日"
+                "（交易日=去重后的日期数）；"
+                f"准入参考：{rep.get('admission_reference')}"
+            )
+
+        # 数据质量必须可见（P0-B：行级缺值不抛，但丢弃数/原因不许静默）
+        dq = getattr(res, "data_quality", {}) or {}
+        if dq.get("unusable_rows"):
+            detail = "、".join(
+                f"{name}:{count}" for name, count in dq.get("missing_by_column", {}).items()
+            )
+            st.warning(
+                f"⚠️ 数据质量：共 {dq['total_rows']} 条，行级缺值丢弃 "
+                f"{dq['unusable_rows']} 条（可用 {dq['usable_rows']} 条）；缺值列：{detail}"
+            )
+        elif dq:
+            st.caption(f"数据质量：{dq['total_rows']} 条全部可用（无行级缺值）")
+
+        # 兜底 rule 的 tie-break 落地质量（Chief 2026-10-25 裁定 ②）：
+        # 模型加载失败时由它接管选品，realised 分位必须可见；但它是**单次抽样**，
+        # 只作监控、不作「模型是否可用」的判据，更不许据此调盐（见 data/qa 报告）。
+        tq = getattr(res, "tiebreak_quality", {}) or {}
+        if tq.get("status") == "ok":
+            segments = tq.get("segments") or []
+            ok_segments = [s for s in segments if s.get("status") == "ok"]
+            segment_text = ""
+            if ok_segments:
+                fused_values = [s["fused_percentile"] for s in ok_segments]
+                segment_text = (
+                    f"；按交易日 5 段实测 {len(ok_segments)}/{len(segments)} 段可用，"
+                    f"融合分位 {min(fused_values):.0f}%~{max(fused_values):.0f}%"
+                )
+            st.caption(
+                f"兜底 rule tie-break（K={tq.get('fusion_k')} 盐融合）："
+                f"realised 分位 {tq.get('fused_percentile'):.1f}%"
+                f"（单盐 {tq.get('single_salt_percentile'):.1f}%，"
+                f"{tq.get('groups')} 组 / {tq.get('pairs')} 对）"
+                f"{segment_text} —— 单份数据抽样值，仅监控不作判据"
+            )
+        elif tq:
+            st.caption(
+                f"兜底 rule tie-break 监控不可用：{tq.get('reason')}"
+                f"（缺失列 {tq.get('missing')}）"
+                " —— 已显式记录，不静默"
+            )
+
+        # 滚动统计（Chief 2026-10-25 裁定 ②）：口径必须是「最近 N 条采样」而非
+        # 「最近 30 个自然日」。数据来源二：本页手动点按钮 + 收盘后调度审计
+        # （`scripts/ml_tiebreak_audit.py`，两者同一 event_type，此处自动合并）。
+        # Reviewer 口径：**采样率 = 训练 CSV 导出频率，不是每日**——CSV 不重导时每天只
+        # 会 skipped_duplicate，不产生新行，所以不许按「每天 1 条」核查。
+        try:
+            import json as _json
+
+            from futu_quant.ml_scorer import summarise_tiebreak_history
+
+            history_payloads = []
+            for row in reversed(store.audit_events(500) or []):
+                if row.get("event_type") != "RULE_TIEBREAK_REALISED_QUALITY":
+                    continue
+                try:
+                    history_payloads.append(_json.loads(row.get("payload_json") or "{}"))
+                except (TypeError, ValueError):
+                    continue
+            summary = summarise_tiebreak_history(history_payloads)
+            if summary["status"] == "ok":
+                st.caption(
+                    f"滚动统计（口径=最近 {summary['last_n']} 条采样，**不是**最近 30 个自然日）："
+                    f"融合分位均值 {summary['fused_mean_percentile']:.1f}%"
+                    f"（区间 {summary['fused_min_percentile']:.0f}%~"
+                    f"{summary['fused_max_percentile']:.0f}%）；"
+                    f"单盐均值 {summary['single_mean_percentile']:.1f}%；"
+                    f"样本 {summary['samples']} 条。"
+                    "来源：**手动运行**对照回测 + 收盘后调度审计；"
+                    "**采样率与训练 CSV 导出频率一致**（CSV 不重导时每日只记 skipped_duplicate，"
+                    "不产生新行，故不能按「每天 1 条」核查）。"
+                )
+            else:
+                st.caption(
+                    "滚动统计：暂无已入库的 realised 分位记录 —— "
+                    "来源为**手动运行**对照回测与收盘后调度审计；"
+                    "**采样率与训练 CSV 导出频率一致**，未重导训练数据就不会有新行。"
+                )
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"滚动统计读取失败（已显式显示，不静默）：{type(exc).__name__}: {exc}")
 
         with st.expander("🔍 生产准入硬指标核验清单 (Checklist)", expanded=True):
             st.dataframe(pd.DataFrame(rep["checklist"]), hide_index=True, width="stretch")

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 import pickle
 import re
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -74,6 +78,588 @@ INFERENCE_FEATURE_KEYS = frozenset({
     'symbol_momentum_20d', 'regime_label',
 })
 
+# moneyness 的 spot 来源**唯一**：最近一条 `option_history` 快照（Chief 2026-10-25 裁定）。
+# 不允许回落到 `owner["last_price"]`（扫描实时价）——那是另一套口径，等于 train/serve skew。
+SNAPSHOT_MAX_LAG_MINUTES = 45
+_SNAPSHOT_CACHE_TTL_SECONDS = 60.0
+_SNAPSHOT_CACHE: dict[tuple[str, str, str], tuple[float, dict]] = {}
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+def _snapshot_time(raw) -> datetime | None:
+    """option_history.time_key 的口径与 `data_quality.quote_freshness` 一致：naive=ET。"""
+    try:
+        stamp = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=_NEW_YORK)
+    return stamp
+
+
+def _clear_snapshot_cache() -> None:
+    """清空快照缓存（测试隔离用：模块级 TTL 缓存会跨 tmp DB 串味）。"""
+    _SNAPSHOT_CACHE.clear()
+
+
+def latest_underlying_snapshot(
+    store,
+    symbol: str,
+    trade_time: datetime,
+    max_lag_minutes: int = SNAPSHOT_MAX_LAG_MINUTES,
+) -> dict:
+    """最近一条 `option_history` 快照（spot / lag / 希腊字母），推理侧唯一行情来源。
+
+    返回 ``{"spot", "lag_minutes", "gamma", "theta"}``；快照缺失或滞后 > ``max_lag_minutes``
+    → ``spot=None``：**只置空，绝不回落 `owner["last_price"]` 或实时链希腊字母**。
+
+    缓存：key 含 **(库路径, underlying, 分钟)** + 60s TTL —— 不带库标识会让不同
+    tmp DB 互相命中（Reviewer 2026-10-25 指出）。
+    """
+    empty = {"spot": None, "lag_minutes": None, "gamma": None, "theta": None}
+    info = parse_option_symbol(symbol)
+    if info is None or store is None:
+        return empty
+    underlying = str(info.get("underlying") or "").upper()
+    if not underlying:
+        return empty
+    if not underlying.startswith("US."):
+        underlying = f"US.{underlying}"
+
+    moment = trade_time if trade_time.tzinfo is not None else trade_time.replace(tzinfo=_NEW_YORK)
+    moment_utc = moment.astimezone(timezone.utc)
+    store_key = str(getattr(store, "path", "")) or str(id(store))
+    cache_key = (store_key, underlying, moment.strftime("%Y%m%d%H%M"))
+    cached = _SNAPSHOT_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] <= _SNAPSHOT_CACHE_TTL_SECONDS:
+        return dict(cached[1])
+
+    start_key = (moment - timedelta(minutes=max_lag_minutes)).astimezone(_NEW_YORK)
+    end_key = moment.astimezone(_NEW_YORK)
+    try:
+        rows = store.option_history_for_underlying(
+            underlying,
+            start=start_key.strftime("%Y-%m-%d %H:%M:%S"),
+            end=end_key.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 %s 快照失败: %s", underlying, exc)
+        _SNAPSHOT_CACHE[cache_key] = (now, dict(empty))
+        return empty
+
+    result = dict(empty)
+    for row in reversed(rows or []):
+        stamp = _snapshot_time(row.get("time_key"))
+        spot = _safe_float(row.get("underlying_price"))
+        if stamp is None or spot is None or spot <= 0:
+            continue
+        delta_minutes = (moment_utc - stamp.astimezone(timezone.utc)).total_seconds() / 60.0
+        if delta_minutes < 0:
+            continue
+        result["lag_minutes"] = round(delta_minutes, 3)
+        if delta_minutes <= max_lag_minutes:
+            result["spot"] = float(spot)
+            result["gamma"] = _safe_float(row.get("gamma"))
+            result["theta"] = _safe_float(row.get("theta"))
+        break
+
+    _SNAPSHOT_CACHE[cache_key] = (now, dict(result))
+    return result
+
+
+def _safe_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if number != number else number
+
+
+# ---------------------------------------------------------------------------
+# rule scorer v2（连续化）常量与纯函数
+#
+# 常量**冻结**在此处、不允许运行时从配置读取：对照组口径必须稳定可复现，
+# 可配会造成「每次对比基线都不一样」（设计 §4）。
+# ---------------------------------------------------------------------------
+RULE_SCORER_VERSION = "rule scorer v2（连续化 + 中立 tie-break）"
+_RULE_EPS = 1e-6
+# Layer A（承载方向，权重结构对齐旧公式）
+_RULE_W_WIN = 0.175        # 等价旧 0.35*(w-0.5)
+_RULE_W_TREND = 0.05       # 等价旧 ±0.05 的幅值上限
+_RULE_W_PNL = 0.05
+# Layer B（只在 Layer A 完全等分时起作用，合计上界 0.035 < A 层最小间隔）
+_RULE_W_MOM = 0.020
+_RULE_W_PAYOFF = 0.010
+_RULE_W_SHRINK = 0.005
+_RULE_SATURATION = 2.0     # tanh 饱和常数
+_RULE_SHRINK_K = 5.0       # 交易笔数置信度平滑
+# L2 破并列：同 raw 分组内每级偏移；1e-9 << 任何两层分的可分辨间隔。
+# **常量本身没问题**（A1「同日 Top3 不并列」就是靠它过的）；
+# 禁止的是**按有语义的键（行序 / 合约号 / strike / DTE / 盈亏）算偏移**——
+# 旧实现按 (DTE, bucket, call, strike, 行号) 升序赋偏移，实测并列组内判别 AUC
+# 0.4121（分位 0.1%，比随机还差，Analyst 2026-10-25）。破并列必须对称、无方向。
+_RULE_TIE_STEP = 1e-9
+# tie-break 哈希盐：只影响实现细节，不携带任何业务语义；改动它等于换一个
+# 「同样中立但次序不同」的排列（用于回归/变异时区分「中立」与「按语义」）。
+_RULE_TIE_SALT = b"rule-scorer-neutral-tiebreak-v1"
+# 参与哈希的**合约身份**字段（入场时点即可知，与盈亏/方向无关）。
+# 顺序固定，缺失走中性占位，避免同一合约在不同字段缺失下算出不同哈希。
+_TIE_IDENTITY_KEYS = (
+    "underlying_symbol",
+    "strike_price",
+    "is_call",
+    "days_to_expiry",
+    "expiry_bucket",
+)
+# 交易日单独进哈希：**不是**排序语义，而是让每个交易日的组内排列彼此独立。
+# 不带日期时是「一张全历史的合约→名次映射」，同一合约在各日名次相同，
+# 偏差会跨日累积（实测单盐在旧并列组内 AUC 0.4483，分位 0.0%，2.6σ）；
+# 带上日期后与零分布「按日独立置换」的假设一致（实测 0.4914 / 分位 36.7%）。
+# 次序只在**同一交易日的横截面**内有意义（rule 打分本来就只用于当日选品）。
+_TIE_BUCKET_KEY = "trade_date"
+# 预注册盐池（**仅验收守卫使用，不参与生产**）：24 个与数据无关的固定常量。
+# 铁律：禁止按历史样本表现挑选/调整 `_RULE_TIE_SALT` 或任何盐——那等于用结果反选
+# 随机排列，把 look-ahead 塞进 rule 对照组（Chief 2026-10-25 裁定 A）。盐池与出厂盐的
+# 哈希指纹由 `tests/test_rule_neutral_tiebreak.py::test_B5_salt_pool_is_preregistered` 冻结。
+_RULE_TIE_PROBE_SALTS = tuple(
+    f"rule-neutral-tiebreak-probe-{i:02d}".encode() for i in range(24)
+)
+# 生产侧 **K 盐融合**：组内每个盐给一次名次，按平均名次排序（Chief 2026-10-25 裁定）。
+# 为什么不是单盐：单盐的 realised 分位本身就是一次抽签（实测出厂单盐 2.9σ 不利），
+# 机制级验收无法保证「落地无偏」；K 个预注册盐取平均后， realised 按大数定律收敛到中位，
+# 既不靠挑「好盐」，也不引入任何数据依赖。盐从上面预注册池前 K 个取，K 变也必须改守卫。
+_RULE_TIE_FUSION_K = 8
+_RULE_TIE_FUSION_SALTS = _RULE_TIE_PROBE_SALTS[:_RULE_TIE_FUSION_K]
+# Layer C（合约级判别，Chief 2026-10-25 裁定「A 变体」）：
+# - 只上 **moneyness 单特征**：Analyst block bootstrap 0.5526 [0.510, 0.623] 显著；
+#   `gamma_to_theta` 0.5048（无信号）、DTE 0.5946（CI 含 0.5，组合层幸运排列）都不上；
+#   设计 §3.2 原方向组合 AUC 0.4882 < 0.5 → 直接判无正信号，不救也不挑方向。
+# - **默认关闭**：方向（moneyness 高者优先）是 **in-sample 选出来的**，不能当验收证据。
+#   开门条件（写死）：OOS 并列组 AUC ≥ `_LAYER_C_GATE_AUC` 且交易日 block bootstrap 下界 > 0.5。
+# - 作用域只到 **L2 破并列组**（score_A 并列的进一步子集）：旧可分辨对结构上不受影响，
+#   Layer B 的排序也不会被覆盖。
+_LAYER_C_ENABLED = False
+_LAYER_C_FEATURE = "moneyness"
+_LAYER_C_GATE_AUC = 0.52
+_LAYER_C_STATUS = "disabled_pending_oos: in-sample direction (moneyness desc) is NOT evidence"
+
+
+def _row_number(row, key: str, default: float) -> float:
+    """从 Series/dict 安全取数：缺失、None、NaN、非数值一律回默认值（绝不抛异常）。"""
+    try:
+        value = row.get(key, default)
+    except AttributeError:  # 非 dict-like
+        return float(default)
+    if value is None:
+        return float(default)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if number != number:  # NaN
+        return float(default)
+    return number
+
+
+def _continuous_components(row) -> dict:
+    """逐行独立的连续化分量（不依赖其他样本，不做横截面归一化）。
+
+    美元量全部除以标的自身 ``symbol_std_pnl``（量纲相消 → 账户规模/标的波动放大时不漂移），
+    再经 ``tanh`` 有界压缩；缺字段走中性值，绝不抛异常。
+    """
+    win_rate = _row_number(row, "symbol_win_rate", 0.5)
+    avg_pnl = _row_number(row, "symbol_avg_pnl", 0.0)
+    pnl_trend = _row_number(row, "symbol_pnl_trend", 0.0)
+    max_pnl = _row_number(row, "symbol_max_pnl", 0.0)
+    min_pnl = _row_number(row, "symbol_min_pnl", 0.0)
+    avg_3d = _row_number(row, "symbol_3d_avg_pnl", 0.0)
+    avg_7d = _row_number(row, "symbol_7d_avg_pnl", 0.0)
+    trade_count = max(0.0, _row_number(row, "symbol_trade_count", 0.0))
+
+    sigma = abs(_row_number(row, "symbol_std_pnl", 0.0))
+    if sigma <= _RULE_EPS:
+        # 缺/零波动兜底：用自身平均盈亏量级或 1.0，仍保持无量纲
+        sigma = max(abs(avg_pnl), 1.0)
+
+    c_win = 2.0 * (win_rate - 0.5)  # ∈[-1,1]，与旧口径同向
+    c_pnl = math.tanh((avg_pnl / sigma) / _RULE_SATURATION)
+    c_trend = math.tanh((pnl_trend / sigma) / _RULE_SATURATION)
+    c_mom = math.tanh(((avg_3d - avg_7d) / sigma) / _RULE_SATURATION)
+    payoff = max_pnl / (abs(min_pnl) + _RULE_EPS)
+    c_payoff = math.tanh(math.log(max(payoff, _RULE_EPS)) / _RULE_SATURATION)
+    shrink_gap = trade_count / (trade_count + _RULE_SHRINK_K) if trade_count > 0 else 0.0
+
+    # u_* 落在 ±[0.5,1]，贡献 ±[0.025,0.05]：与旧实现同号、同量级、仅细化
+    u_trend = c_trend * (0.5 + 0.5 * abs(c_trend))
+    u_pnl = c_pnl * (0.5 + 0.5 * abs(c_pnl))
+
+    score_a = (
+        0.5
+        + _RULE_W_WIN * c_win
+        + _RULE_W_TREND * u_trend
+        + _RULE_W_PNL * u_pnl
+    )
+    score_b = (
+        _RULE_W_MOM * c_mom
+        + _RULE_W_PAYOFF * c_payoff
+        + _RULE_W_SHRINK * shrink_gap
+    )
+    return {
+        "c_win": c_win,
+        "c_pnl": c_pnl,
+        "c_trend": c_trend,
+        "c_mom": c_mom,
+        "c_payoff": c_payoff,
+        "shrink_gap": shrink_gap,
+        "score_a": score_a,
+        "score_b": score_b,
+        "raw": score_a + score_b,
+    }
+
+
+def _tie_identity_text(row, key: str) -> str:
+    """把合约身份字段规整成稳定文本（同一合约在任何环境下都必须得到同一字符串）。"""
+    try:
+        value = row.get(key, None)
+    except AttributeError:  # 非 dict-like
+        return "-"
+    if value is None:
+        return "-"
+    if isinstance(value, str):
+        return value.strip().upper() or "-"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value).strip() or "-"
+    if number != number:  # NaN
+        return "-"
+    # 定点格式避免 100 vs 100.0 vs 1e2 这类表示差异造出不同哈希
+    return f"{number:.10g}"
+
+
+def _neutral_tie_rank(row, salt: bytes | None = None) -> int:
+    """L2 并列组内的**对称**哈希次序（无方向、无经济含义，仅消除任意性）。
+
+    为什么必须是哈希而不是排序键：并列样本之间没有任何**可用且有因果依据**的
+    先后信息，任何按语义字段（行序 / 合约号 / strike / DTE / 盈亏）排序都会把
+    一个偶然相关的方向偷偷变成选品信号。旧实现正是按
+    ``(DTE, expiry_bucket, -is_call, strike, 行号)`` 升序赋偏移，实测并列组内
+    配对 AUC = 0.4121（随机 0.5，分位 0.1%）—— 兜底打分器一旦接管，选品方向被
+    反过来。哈希把「能区分」和「方向信息」分开：次序可复现，但与任何语义字段
+    的秩相关期望为 0。
+
+    哈希只吃**合约身份**（标的 / strike / call-put / DTE / expiry_bucket）
+    + 交易日桶，输入相同则次序完全相同（跨进程、跨机器可复现）；身份完全相同的
+    重复行交给 Python ``sorted`` 的稳定性兜底（这种行之间先后无经济含义）。
+    """
+    effective_salt = _RULE_TIE_SALT if salt is None else salt
+    identity = "|".join(
+        [_tie_identity_text(row, _TIE_BUCKET_KEY)]
+        + [_tie_identity_text(row, key) for key in _TIE_IDENTITY_KEYS]
+    )
+    digest = hashlib.blake2b(
+        effective_salt + identity.encode("utf-8"), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big")
+
+
+def _fused_tie_order(rows, indices: list[int]) -> list[int]:
+    """K 盐融合次序：每个预注册盐给组内一次名次，按**平均名次**升序。
+
+    单盐 realised 分位是一次抽签；平均 K 个独立哈希后，组内名次趋向均匀，
+    分散度收窄（sd 32.4 → 27.5），但对「单个排序的一次落地值」**不会**收敛到中位
+    （LLN 只适用于 K 个统计量的平均，不适用单个排序的 realised 分位）。
+
+    实现上只用**整数秩求和**：绝不把 64 位哈希整数转 float 再平均（float 只有 53 位尾数，
+    平均后会产生伪相等/次序不稳）。同分时先按第一支盐的名次、再按出厂盐哈希，保证确定性。
+    """
+    if len(indices) < 2:
+        return list(indices)
+    totals = {index: 0 for index in indices}
+    baseline: dict[int, int] = {}
+    for position, salt in enumerate(_RULE_TIE_FUSION_SALTS):
+        ordered = sorted(indices, key=lambda i: _neutral_tie_rank(rows[i], salt))
+        for rank, index in enumerate(ordered):
+            totals[index] += rank
+            if position == 0:
+                baseline[index] = rank
+    return sorted(
+        indices,
+        key=lambda i: (totals[i], baseline[i], _neutral_tie_rank(rows[i])),
+    )
+
+
+def _layer_c_order(rows, indices: list[int]) -> list[int] | None:
+    """Layer C：**只在 L2 破并列组内**用 `moneyness` 排组内次序（默认关闭）。
+
+    ⚠️ **flag 默认关闭**（`_LAYER_C_ENABLED = False`，Chief 2026-10-25 裁定）：
+    - 方向（`moneyness` 高者优先）是 **in-sample 选出来的**，**不能当验收证据**；
+    - 只有 OOS 上「并列组 AUC ≥ 0.52 且交易日 block bootstrap 下界 > 0.5」才允许打开；
+    - 打开前生产行为与中立 tie-break 完全一致。
+
+    只用 **CSV/上下文里已导出的 `moneyness` 派生列**（P0-A 快照单源）：**不自己再算**
+    （不许读 `last_price`、不许调 `moneyness_ratio`），否则又是一次 train/serve skew。
+    组内任一行缺该列/NaN → 返回 ``None``，由调用方回退中立 tie-break（不伪造、不整批失败）。
+    """
+    feature = _LAYER_C_FEATURE
+    values: dict[int, float] = {}
+    for index in indices:
+        row = rows[index]
+        try:
+            raw = row.get(feature, None)
+        except AttributeError:
+            return None
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if value != value:  # NaN
+            return None
+        values[index] = value
+    # 排序语义与 L2 一致：**名次越大 → 最终分数越高**（`rank * _RULE_TIE_STEP` 累加），
+    # 所以此处的次序是「分数从低到高」：moneyness 低者在前、高者拿更大名次/更高分。
+    # 同 moneyness 时用中立融合次序做二级键，保证确定性。
+    fused_position = {
+        index: rank
+        for rank, index in enumerate(_fused_tie_order(rows, indices))
+    }
+    return sorted(
+        indices,
+        key=lambda i: (values[i], fused_position[i]),
+    )
+
+
+def _legacy_discrete_score(row) -> float:
+    """**仅审计用**：旧离散打分公式，用来划分「旧实现并列组」这一评估总体。"""
+    win_rate = _row_number(row, "symbol_win_rate", 0.50)
+    score = 0.50 + (win_rate - 0.50) * 0.35
+    trend = _row_number(row, "symbol_pnl_trend", 0.0)
+    score += 0.05 if trend > 0 else (-0.05 if trend < 0 else 0.0)
+    if _row_number(row, "symbol_avg_pnl", 0.0) > 0:
+        score += 0.05
+    return max(0.05, min(0.95, score))
+
+
+_TIEBREAK_AUDIT_COLUMNS = (
+    "trade_date",
+    "window_net_pnl",
+    "symbol_win_rate",
+    "symbol_pnl_trend",
+    "symbol_avg_pnl",
+) + _TIE_IDENTITY_KEYS
+
+
+def rule_tiebreak_realised_quality(
+    df: pd.DataFrame,
+    *,
+    n_perm: int = 500,
+    seed: int = 20261025,
+    include_segments: bool = True,
+) -> dict:
+    """兜底 rule 的 tie-break **落地质量监控**（Chief 2026-10-25 裁定 ②，双保险）。
+
+    度量（Chief/Analyst 口径）：旧离散热分值并列组内（size≥2 且组内
+    ``window_net_pnl`` 有差异）的配对 AUC = 赢家排在输家之前的比例；分位 = 该 AUC 在
+    ``n_perm`` 次**组内随机排列** AUC 分布中的 midrank 位置。
+
+    这是**监控指标，不是判据**：realised 分位是「一个排序的一次落地值」，对任何确定性
+    中立排序都近似均匀分布（K 盐融合只把分散度从 sd≈32 收到 ≈27，**不会**收敛到中位，
+    LLN 不适用于单个排序）。写进 ``audit_events`` 长期观察即可，**禁止据此调盐**。
+
+    同时给出「K 盐融合」与「出厂单盐」两个分位，便于判断融合是否失效；并按交易日
+    **顺序**切 5 段给出分段诊断（不随机切，避免跨段泄漏）——分段只作监控粒度，
+    不作 [40,60] 之类门槛（那会给中立实现假红）。
+
+    缺列 / 样本不足时返回 ``status="unavailable"`` 并点名缺什么（不静默给 0）。
+    """
+    import numpy as np
+
+    missing = [column for column in _TIEBREAK_AUDIT_COLUMNS if column not in df.columns]
+    if missing:
+        return {"status": "unavailable", "reason": "missing_columns", "missing": missing}
+    if df.empty:
+        return {"status": "unavailable", "reason": "empty_dataframe"}
+
+    # 先把「组」拍平成可复用的记录：分段统计时不必重算哈希与配对。
+    records: list[dict] = []
+    for trade_date, day in df.groupby("trade_date"):
+        day = day.reset_index(drop=True)
+        if day.empty:
+            continue
+        legacy = day.apply(_legacy_discrete_score, axis=1).to_numpy()
+        buckets: dict[float, list[int]] = {}
+        for index, value in enumerate(legacy):
+            buckets.setdefault(value, []).append(index)
+        rows = list(day.iterrows())
+        pnl = day["window_net_pnl"].to_numpy(dtype=float)
+        for indices in buckets.values():
+            if len(indices) < 2:
+                continue
+            group_rows = [rows[i][1] for i in indices]
+            fused_order = _fused_tie_order(group_rows, list(range(len(indices))))
+            fused_pos = {local: rank for rank, local in enumerate(fused_order)}
+            single_order = sorted(
+                range(len(indices)), key=lambda i: _neutral_tie_rank(group_rows[i])
+            )
+            single_pos = {local: rank for rank, local in enumerate(single_order)}
+            winners: list[int] = []
+            losers: list[int] = []
+            for first in range(len(indices)):
+                for second in range(first + 1, len(indices)):
+                    left, right = indices[first], indices[second]
+                    if abs(pnl[left] - pnl[right]) < 1e-12:
+                        continue
+                    winner, loser = (left, right) if pnl[left] > pnl[right] else (right, left)
+                    winners.append(indices.index(winner))
+                    losers.append(indices.index(loser))
+            if not winners:
+                continue
+            records.append({
+                "day": str(trade_date),
+                "size": len(indices),
+                "winners": np.array(winners),
+                "losers": np.array(losers),
+                "fused_ok": int(sum(
+                    fused_pos[winner] < fused_pos[loser]
+                    for winner, loser in zip(winners, losers)
+                )),
+                "single_ok": int(sum(
+                    single_pos[winner] < single_pos[loser]
+                    for winner, loser in zip(winners, losers)
+                )),
+            })
+
+    def _stats(
+        subset: list[dict], perms: int, seed_offset: int,
+        *, min_groups: int = 10, min_pairs: int = 200,
+    ) -> dict | None:
+        pairs_total = sum(len(item["winners"]) for item in subset)
+        if len(subset) < min_groups or pairs_total < min_pairs:
+            return None
+        local_rng = np.random.default_rng(seed + seed_offset)
+        null_counts = np.zeros(perms, dtype=np.int64)
+        fused_ok = sum(item["fused_ok"] for item in subset)
+        single_ok = sum(item["single_ok"] for item in subset)
+        for item in subset:
+            draws = np.argsort(
+                local_rng.random((perms, item["size"])), axis=1
+            )
+            null_counts += (
+                draws[:, item["winners"]] < draws[:, item["losers"]]
+            ).sum(axis=1)
+        null_auc = null_counts / pairs_total
+
+        def _percentile(value: float) -> float:
+            less = int(np.sum(null_auc < value - 1e-15))
+            equal = int(np.sum(np.abs(null_auc - value) <= 1e-15))
+            return round((less + 0.5 * equal) / len(null_auc) * 100.0, 2)
+
+        fused_auc = fused_ok / pairs_total
+        single_auc = single_ok / pairs_total
+        return {
+            "groups": len(subset),
+            "pairs": pairs_total,
+            "fused_auc": round(fused_auc, 6),
+            "fused_percentile": _percentile(fused_auc),
+            "single_salt_auc": round(single_auc, 6),
+            "single_salt_percentile": _percentile(single_auc),
+            "sample_sd": round(float(null_auc.std()), 6),
+        }
+
+    overall = _stats(records, n_perm, seed_offset=0)
+    if overall is None:
+        return {
+            "status": "unavailable",
+            "reason": "insufficient_sample",
+            "groups": len(records),
+            "pairs": sum(len(item["winners"]) for item in records),
+        }
+
+    result: dict = {
+        "status": "ok",
+        **overall,
+        "fusion_k": _RULE_TIE_FUSION_K,
+        "note": (
+            "realised 分位为单份数据的抽样值（近似均匀分布），仅监控、不作判据，"
+            "禁止据此挑盐；分段为按交易日顺序切 5 段，只作监控粒度"
+        ),
+    }
+    if include_segments:
+        days = [item["day"] for item in records]
+        unique_days = sorted(set(days))
+        result["days"] = len(unique_days)
+        chunks = np.array_split(np.array(unique_days, dtype=object), 5)
+        segments: list[dict] = []
+        for position, chunk in enumerate(chunks, start=1):
+            members = set(str(day) for day in chunk)
+            subset = [item for item in records if item["day"] in members]
+            # 分段是监控粒度：样本门槛放宽（分量小），但仍要求至少 3 组/50 对并在
+            # payload 里带 groups/pairs，读者据此判断该段分位可信度。
+            stats = _stats(
+                subset, max(100, n_perm // 2), seed_offset=position,
+                min_groups=3, min_pairs=50,
+            )
+            if stats is None:
+                segments.append({
+                    "segment": position,
+                    "days": len(members),
+                    "status": "unavailable",
+                    "reason": "insufficient_sample",
+                    "groups": len(subset),
+                    "pairs": sum(len(item["winners"]) for item in subset),
+                })
+            else:
+                segments.append({"segment": position, "days": len(members), "status": "ok", **stats})
+        result["segments"] = segments
+    return result
+
+
+def summarise_tiebreak_history(entries, *, last_n: int = 30) -> dict:
+    """聚合已入库的 realised 分位记录（Chief 2026-10-25 裁定 ②：按采样条数，不按自然日）。
+
+    数据来源二：页面手动运行对照回测 + 收盘后调度审计（`scripts/ml_tiebreak_audit.py`），
+    所以口径必须是「最近 N 条采样」，不能写成「最近 30 个自然日」（否则是假监控）。
+    **采样率 = 训练 CSV 导出频率，不是每日**：CSV 不重导时每日运行只会 skipped_duplicate。
+    `entries` 为按时间**由旧到新**排列的 audit payload 列表；非 ok 记录直接跳过。
+    """
+    samples = [item for item in entries if isinstance(item, dict) and item.get("status") == "ok"]
+    if not samples:
+        return {
+            "status": "empty",
+            "reason": "no_ok_samples",
+            "window": "last_n_samples",
+            "last_n": last_n,
+            "note": (
+                "暂无已入库 realised 分位：来源=手动运行对照回测/收盘后调度审计；"
+                "采样率与训练 CSV 导出频率一致，不保证每日一条"
+            ),
+        }
+    recent = samples[-last_n:]
+    fused = [float(item["fused_percentile"]) for item in recent if "fused_percentile" in item]
+    single = [
+        float(item["single_salt_percentile"])
+        for item in recent
+        if "single_salt_percentile" in item
+    ]
+    return {
+        "status": "ok",
+        "window": "last_n_samples",
+        "last_n": last_n,
+        "samples": len(recent),
+        "fused_mean_percentile": round(sum(fused) / len(fused), 2) if fused else None,
+        "fused_min_percentile": round(min(fused), 2) if fused else None,
+        "fused_max_percentile": round(max(fused), 2) if fused else None,
+        "single_mean_percentile": round(sum(single) / len(single), 2) if single else None,
+        "source": "manual_or_scheduled_samples",
+        "note": (
+            "口径=最近 N 条采样（不是最近 30 个自然日）；采样率与训练 CSV 导出频率一致、"
+            "不保证每日一条；来源=手动运行对照回测/收盘后调度审计"
+        ),
+    }
+
 
 def momentum_20d_from_bars(bars, *, include_last: bool = False) -> float | None:
     """标的 20 日动量（严格用**已收**K 线，防 look-ahead）。
@@ -118,20 +704,78 @@ def regime_label_from_spy(spy_return_5d: float | None, threshold: float = 0.01) 
 
 
 class BuiltinRuleModel:
-    """内置轻量纯 Python 打分器，无需 sklearn，完全通过核心动量、胜率与波动率特征进行标准化打分。"""
+    """内置轻量纯 Python 打分器（`rule scorer v2` 连续化版）。
+
+    设计见 `data/qa/rule_continuous_score_design.md`（Chief 已签字）。与原实现相比：
+    - **L1 连续化**：`sign(trend)`、`(avg_pnl>0)` 这类阶跃换成同号连续梯度，
+      美元量先除以标的自身 `symbol_std_pnl`（量纲相消，账户规模变化不漂移），再 tanh 有界压缩；
+    - **L2 破并列**：`symbol_*` 全是标的级字段，同标的多个合约分数恒等，仅靠 L1 不够；
+      在`raw`完全相等时用**对称哈希（blake2b）+ 合约身份**做 tie-break（**无方向、无经济含义**，
+      只消除任意性；禁止改用行序 / 合约号 / strike / DTE 的方向序——旧实现那样做实测
+      并列组内 AUC 0.4121，比随机还差）；不得解读为选品能力提升，也不得进准入卡；
+    - 不做横截面归一化（推理侧逐标的调用拿不到当日候选池，池依赖会造成标度漂移）。
+    """
+
     def predict_proba(self, X: pd.DataFrame):
         import numpy as np
-        probs = []
-        for _, row in X.iterrows():
-            win_rate = float(row.get("symbol_win_rate", 0.50))
-            pnl_trend = float(row.get("symbol_pnl_trend", 0.0))
-            avg_pnl = float(row.get("symbol_avg_pnl", 0.0))
-            score = 0.50 + (win_rate - 0.50) * 0.35 + (0.05 if pnl_trend > 0 else (-0.05 if pnl_trend < 0 else 0))
-            if avg_pnl > 0:
-                score += 0.05
-            prob = max(0.05, min(0.95, score))
-            probs.append([1.0 - prob, prob])
-        return np.array(probs)
+
+        if X is None or len(X) == 0:
+            return np.empty((0, 2))
+
+        rows = list(X.iterrows())
+        components = [_continuous_components(row) for _, row in rows]
+
+        # Layer B **只在 Layer A 完全等分时启用**（设计 §1.2 正文）：
+        # 若对所有权重都加 B，B 的合计上界 0.035 会盖过 A 层的小间隔，
+        # 造成方向翻转 —— 实测 A4 会从 99.4% 掉到 97.8%（低于「变向」红线）。
+        base_scores = [item["score_a"] for item in components]
+        groups_a: dict[float, list[int]] = {}
+        for index, value in enumerate(base_scores):
+            groups_a.setdefault(value, []).append(index)
+        for value, indices in groups_a.items():
+            if len(indices) < 2:
+                continue
+            for index in indices:
+                base_scores[index] = value + components[index]["score_b"]
+
+        # L2：仅在 base 完全相等的分组内追加 **K 盐融合**偏移（步长 << A/B 层任何间隔）。
+        # 次序只依赖合约身份 + 交易日，不依赖行序 / strike / DTE 的升降方向 → 组内判别力期望 0.5。
+        # Layer C（默认关闭）：在本组内改用 `moneyness` 排序；缺特征 → 回退中立并计原因。
+        groups: dict[float, list[int]] = {}
+        for index, value in enumerate(base_scores):
+            groups.setdefault(value, []).append(index)
+        final_scores = list(base_scores)
+        row_values = [row for _, row in rows]
+        diagnostics = {
+            "layer_c_enabled": bool(_LAYER_C_ENABLED),
+            "tie_groups": 0,
+            "layer_c_groups": 0,
+            "fallback_missing_feature": 0,
+        }
+        for value, indices in groups.items():
+            if len(indices) < 2:
+                continue
+            diagnostics["tie_groups"] += 1
+            ordered = None
+            if _LAYER_C_ENABLED:
+                ordered = _layer_c_order(row_values, indices)
+                if ordered is None:
+                    diagnostics["fallback_missing_feature"] += 1
+                else:
+                    diagnostics["layer_c_groups"] += 1
+            if ordered is None:
+                ordered = _fused_tie_order(row_values, indices)
+            for rank, index in enumerate(ordered):
+                final_scores[index] = value + rank * _RULE_TIE_STEP
+        self.last_layer_c_diagnostics = diagnostics
+
+        probs = np.array(
+            [max(0.05, min(0.95, score)) for score in final_scores], dtype=float
+        )
+        return np.column_stack([1.0 - probs, probs])
+
+    def scorer_version(self) -> str:
+        return RULE_SCORER_VERSION
 
 
 def load_ml_model(model_path: str | None = None):
@@ -168,15 +812,27 @@ def load_ml_model(model_path: str | None = None):
                     "继续加载会导致预测 KeyError→0.0（静默降级）。已回退内置规则模型。",
                     model_path, unsupported,
                 )
+                logger.warning(
+                    "%s 已被启用：model=%s reason=特征签名不符 unsupported=%s",
+                    RULE_SCORER_VERSION, model_path, unsupported,
+                )
                 return BuiltinRuleModel(), default_cols
             if hasattr(model, 'n_jobs'):
                 model.n_jobs = 1
             logger.info(f"✅ 加载ML模型: {model_path} (强制 n_jobs=1 单线程安全模式)")
             return model, feature_cols
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             logger.info("ℹ️  启用内置轻量纯 Python 标的评分引擎 (自闭环无外部依赖)")
+            logger.warning(
+                "%s 已被启用：model=%s reason=加载异常 %s",
+                RULE_SCORER_VERSION, model_path, exc,
+            )
             return BuiltinRuleModel(), default_cols
 
+    logger.warning(
+        "%s 已被启用：model=%s reason=模型文件不存在",
+        RULE_SCORER_VERSION, model_path,
+    )
     return BuiltinRuleModel(), default_cols
 
 
@@ -411,18 +1067,35 @@ def prepare_symbol_features(
     # 5. v3.2 凸性/无量纲特征：只认真实行情。
     # 缺 spot / 希腊字母时**不写这两个键**，由 predict_symbol_score 报 MissingFeatureError；
     # 编一个 0 出去比报错危险得多（模型会把「没数据」学成「低赔率」）。
-    context = market_context or {}
-    moneyness = moneyness_ratio(context.get('spot'), features.get('strike_price'))
-    if moneyness is not None:
-        features['moneyness'] = moneyness
-    gamma_to_theta = gamma_to_theta_ratio(
-        context.get('option_gamma'), context.get('option_theta')
-    )
+
+    # moneyness + gamma_to_theta **统一口径**（Chief 2026-10-25 裁定）：两侧都用
+    # 「最近一条 option_history 快照」的 underlying_price 与 gamma/theta，
+    # **不再用** `owner["last_price"]` 或实时链上下文里的希腊字母——后者是扫描时实时值，
+    # 与导出侧成交前 ≤45 分钟的快照不同源，等于把 train/serve skew 养在系统里。
+    snapshot = latest_underlying_snapshot(store, symbol, trade_time)
+    spot = snapshot.get("spot")
+    lag_minutes = snapshot.get("lag_minutes")
+    if spot is not None:
+        moneyness = moneyness_ratio(spot, features.get('strike_price'))
+        if moneyness is not None:
+            features['moneyness'] = moneyness
+            features['moneyness_lag_minutes'] = lag_minutes
+        else:
+            features['moneyness_missing_reason'] = "invalid_spot_or_strike"
+    else:
+        features['moneyness_missing_reason'] = "snapshot_missing_or_stale"
+
+    gamma_to_theta = gamma_to_theta_ratio(snapshot.get("gamma"), snapshot.get("theta"))
     if gamma_to_theta is not None:
         features['gamma_to_theta'] = gamma_to_theta
+    else:
+        # 实时链上下文（context）不再作为兜底来源：双源就是 skew
+        features['gamma_to_theta_missing_reason'] = "snapshot_missing_or_invalid_greeks"
 
     # 6. 标的级新信息（零采集）：优先用调用方已取到的行情（避免逐标的重复拉 K 线）
-    momentum = context.get('symbol_momentum_20d')
+    # 合并注意：本函数形参名为 `market_context`（test 分支 P0-A 收口后的命名），
+    # 不是 `context`——2026-10-25 合并 symbol-feat 时这里曾残留旧名，直接 NameError。
+    momentum = (market_context or {}).get('symbol_momentum_20d')
     if momentum is None and broker is not None and opt_info is not None:
         try:
             momentum = momentum_20d_from_bars(
