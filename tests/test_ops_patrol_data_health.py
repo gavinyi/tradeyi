@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import csv
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -99,8 +99,24 @@ def test_csv_healthy_silent(tmp_path):
 
 def test_csv_required_columns_constant_covers_true_market_columns():
     audit = _import_audit()
-    for col in ("moneyness", "gamma_to_theta", "moneyness_lag_minutes"):
-        assert col in audit.ML_CSV_REQUIRED_COLUMNS
+    # P1-09：必须**全量**断言（集合相等），只查「包含某些列」的话，
+    # 常量里少一列或有人悄悄加列都不会红，缺列检测就形同虚设。
+    assert set(audit.ML_CSV_REQUIRED_COLUMNS) == {
+        "moneyness",
+        "gamma_to_theta",
+        "moneyness_missing_reason",
+        "gamma_to_theta_missing_reason",
+        "moneyness_lag_minutes",
+    }
+
+
+def test_csv_staleness_fail_closed_when_date_unparsable():
+    """P1-09：陈旧度算不出来时必须告警（fail-closed），不得 return [] 静默。"""
+    audit = _import_audit()
+    issues = audit._csv_staleness_issue("not-a-date", 5)
+    assert issues, "日期解析失败必须告警，不许静默当作『不陈旧』"
+    assert "fail-closed" in issues[0]
+    assert "无法判定" in issues[0]
 
 
 # ------------------------------------------------------- 快照断采
@@ -161,3 +177,56 @@ def test_snapshot_gap_no_gap_silent(tmp_path):
     )
 
     assert audit.check_snapshot_gaps(store) == []
+
+
+# ------------------------------------------------------- P1-14 费用占位值
+
+
+def _seed_fees(store, fees: list[float], days_ago: int = 1) -> None:
+    """往 fill_ledger 写 N 行，`fee_total` 依次取给定值，`filled_at` 设为 N 天前。"""
+    filled_at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+    with store.connection() as connection:
+        for idx, fee in enumerate(fees):
+            connection.execute(
+                "INSERT INTO fill_ledger"
+                " (intent_id,strategy_id,symbol,side,quantity,price,fee_total,source,filled_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (idx + 1, "volatility_long_gamma", "US.SPY", "BUY", 1, 1.0,
+                 fee, "futu_push", filled_at),
+            )
+
+
+def test_fee_placeholder_ratio_alerts_when_high(tmp_path):
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _seed_fees(store, [1.0] * 9 + [2.4] * 1)  # 窗口内 90% 占位
+
+    issues = audit.check_fee_placeholder_ratio(store)
+    assert len(issues) == 1
+    assert "占位值占比" in issues[0]
+    assert "9/10" in issues[0]
+    assert "order_intents.fees" in issues[0], "必须指向权威口径，避免被当成成本真值"
+
+
+def test_fee_placeholder_ratio_silent_when_low(tmp_path):
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _seed_fees(store, [2.4] * 20 + [1.0] * 1)  # 窗口内约 4.8%，低于 5% 阈值
+
+    assert audit.check_fee_placeholder_ratio(store) == []
+
+
+def test_fee_placeholder_ratio_silent_when_empty(tmp_path):
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    assert audit.check_fee_placeholder_ratio(store) == []
+
+
+def test_fee_placeholder_ratio_ignores_legacy_rows(tmp_path):
+    """历史 689 行占位不回填：不能因为它们按全表占比 90% 就天天告警。"""
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _seed_fees(store, [1.0] * 50, days_ago=60)  # 全是 60 天前的历史行
+    _seed_fees(store, [2.4] * 10, days_ago=1)   # 最近的都已是估算值
+
+    assert audit.check_fee_placeholder_ratio(store) == [], "窗口外历史占位不得触发告警"

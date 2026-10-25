@@ -206,8 +206,13 @@ def _csv_staleness_issue(last_trade_date: str, max_stale: int) -> list[str]:
                 f"⚠️ **训练 CSV 已陈旧**：最后成交日 {last_trade_date}，"
                 f"距今 {elapsed} 个交易日（阈值 {max_stale}）。回测结论基于旧样本，需重导。"
             ]
-    except Exception:
-        return []  # 日历不可用时宁可静默，不产生假告警
+    except Exception as exc:
+        # P1-09：日历/日期解析失败**不得静默**（fail-closed）——
+        # 以前这里 `return []`，等于「算不出来就当没问题」，检查会永久失明。
+        return [
+            f"⚠️ **训练 CSV 陈旧度无法判定（fail-closed）**：{exc!r}。"
+            "本轮按异常处理并告警，请排查 XNYS 日历/交易日期取值。"
+        ]
     return []
 
 
@@ -244,6 +249,57 @@ def check_snapshot_gaps(store, max_days: int = 10) -> list[str]:
             f"零快照 —— 这批成交无法进入训练样本且不可回溯。请检查 option_history 采集任务。"
         )
     return issues
+
+
+#: `fill_ledger.fee_total` 的历史占位值：当年拿不到券商真实佣金时统一写 1.0
+FEE_PLACEHOLDER_VALUE = 1.0
+#: 占位值占比告警阈值（P1-14）
+FEE_PLACEHOLDER_ALERT_RATIO = 0.05
+#: 只看最近 N 天的成交：历史占位行**不回填**（真值不可知），
+#: 若按全表算占比会永久 >90%，变成天天响的假告警（告警疲劳）。
+FEE_PLACEHOLDER_WINDOW_DAYS = 7
+
+
+def check_fee_placeholder_ratio(
+    store,
+    threshold: float = FEE_PLACEHOLDER_ALERT_RATIO,
+    window_days: int = FEE_PLACEHOLDER_WINDOW_DAYS,
+) -> list[str]:
+    """P1-14：最近 N 天 `fill_ledger.fee_total` 占位值（$1.0）占比超阈值即告警。
+
+    为什么：历史回填有 689/743 行写死 1.0 占位，按账本算成本会严重低估
+    （账本合计 $787.99 vs 真实全费用估算 $1,815.34）。P1-13 修完写入路径后
+    新数据应为 `estimate_fees` 估算值，这条巡检验证「占位值已停止增长」。
+
+    **只看窗口内新成交**：历史行不回填，按全表算占比会永久 >90% → 天天假告警。
+    权威成本口径仍是 `order_intents.fees`（估算 ≠ 实付），账本合计不可引用。
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(1, int(window_days)))
+    ).isoformat()
+    try:
+        with store.connection() as connection:
+            total = connection.execute(
+                "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?", (cutoff,)
+            ).fetchone()[0]
+            if not total:
+                return []
+            placeholders = connection.execute(
+                "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?"
+                " AND ABS(fee_total - ?) < 1e-9",
+                (cutoff, FEE_PLACEHOLDER_VALUE),
+            ).fetchone()[0]
+    except Exception as exc:
+        return [f"⚠️ **fill_ledger 费用占位值巡检失败（fail-closed）**：{exc!r}"]
+    ratio = placeholders / total
+    if ratio <= threshold:
+        return []
+    return [
+        f"⚠️ **近 {int(window_days)} 天 fill_ledger 费用占位值占比 {ratio:.1%}**"
+        f"（{placeholders}/{total} 行为 ${FEE_PLACEHOLDER_VALUE:.2f} 占位，"
+        f"阈值 {threshold:.0%}）：写入路径仍在写占位值，账本成本被低估；"
+        "成本口径请继续用 order_intents.fees 的估算值。"
+    ]
 
 
 def inspect_and_alert():
@@ -478,6 +534,11 @@ def inspect_and_alert():
     # 有 FILLED 成交但当天 option_history 零快照 → 那批成交永远无法入训且不可回溯。
     # 成交数必须取 order_intents：fill_ledger 只有 30 个交易日、会静默漏掉 8 月那批。
     issues.extend(check_snapshot_gaps(store))
+
+    # 5.3 fill_ledger 费用占位值占比（P1-14；P1-13 修写入路径后的回归守卫）
+    # 历史 689/743 行 fee_total 写死 1.0，账本成本因此低估 2.3 倍；
+    # 这条只告警、不碰交易，用来确认占位值不再增长。
+    issues.extend(check_fee_placeholder_ratio(store))
 
     print(f"[{time_str}] 系统巡检完成，发现问题数: {len(issues)}")
     for iss in issues:
