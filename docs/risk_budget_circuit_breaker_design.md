@@ -161,6 +161,18 @@ def resolve_entry_block_reasons(store, broker, strategy_id, tenant_id) -> list[B
 - `ExecutionManager.submit_limit` 里 `side=="BUY"` 分支**只读这个函数的结果**，有多条原因时**全量落 audit**（不是只报第一条）；
 - 好处：以后再加拦截点只改这个文件，`submit_limit` 的门禁顺序不再被反复改动（红区稳定性）。
 
+#### D3.1 方案 1 裁定（Chief 2026-10-25）：`entry_gate` **只聚合、不判定**
+
+> G4 走**方案 1**：只统一「原因汇总 + audit」层，判定仍留在 `RiskEngine`。**必须写死到实现边界**：
+
+| 层 | 谁做 | 允许做什么 | 禁止 |
+|---|---|---|---|
+| **判定** | `RiskEngine.check()` | 既有日亏损 `risk.py:463-471`、日内回撤 `:499-537` 的判定与副作用**原地一字不改** | — |
+| **聚合** | `entry_gate.resolve_entry_block_reasons()` | **纯聚合**：读 `RiskEngine` 已暴露的结构化 `blocked_by`，合并新熔断原因，写 audit | **禁止**查询权益/快照、**禁止**任何新判定、**禁止**改判定顺序与返回值 |
+
+> 🔴 **由此推出的硬约束（容易走错，必须现在说清）**：新熔断的 `dd_since_reset` / `dd_vs_peak` **取数与计算也必须留在 `RiskEngine` 侧**（复用其已有快照与峰值逻辑），`entry_gate` 只**接收数值**。
+> 否则 Coder 会在 `entry_gate` 里写第二处取快照 → 直接违反本条与 V21。**这一条不改，方案 1 就名不副实。**
+
 ### D4 生效值统一解析（**拆两层，不新建第 4 个限额源**）
 
 > 🔴 Reviewer B1/B2 修正：初稿新建 `risk_max_order_notional:{tenant}` 是**第 4 个限额源**，且"默认 535"与"缺键 fail-closed"自相矛盾。改为 **复用** + **分层**。
