@@ -296,7 +296,7 @@ def test_exclusions_never_touch_runtime_config():
 # --------------------------------------------------------------------------
 
 
-def test_candidate_exclusions_table_exists_on_existing_db(tmp_path):
+def test_candidate_exclusions_table_exists_on_existing_db(tmp_path, monkeypatch):
     """存量库必须也能拿到 `candidate_exclusions`。
 
     今天刚栽过「迁移写在 `initialize()` 的新建库分支」—— 存量库走
@@ -317,6 +317,8 @@ def test_candidate_exclusions_table_exists_on_existing_db(tmp_path):
     ).fetchone() is not None, "夹具失效：没有 order_intents，会走新建库分支"
     raw.close()
 
+    # 存量库升级必须显式授权（与 run_service 启动路径同口径），未授权时 __init__ 会拒绝
+    monkeypatch.setenv("TRADEYI_ALLOW_MIGRATION", "1")
     store = TradingStore(db)
     with store.connection() as connection:
         exists = connection.execute(

@@ -234,7 +234,7 @@ def test_rejected_mute_entry_is_reported_once(fake_feishu):
 # --------------------------------------------------------------------------
 
 
-def test_existing_db_gains_tristate_columns(tmp_path):
+def test_existing_db_gains_tristate_columns(tmp_path, monkeypatch):
     """**存量库**打开后必须自动补上三列 —— 而且必须走**存量库路径**。
 
     这是 S1 的核心判据。`initialize()` 对存量库在 `apply_migrations()` 之后就 `return`
@@ -269,6 +269,8 @@ def test_existing_db_gains_tristate_columns(tmp_path):
     ).fetchone() is not None, "夹具失效：没有 order_intents，会走新建库分支"
     raw.close()
 
+    # 存量库升级必须显式授权（与 run_service 启动路径同口径），未授权时 __init__ 会拒绝
+    monkeypatch.setenv("TRADEYI_ALLOW_MIGRATION", "1")
     store = TradingStore(db)  # 必须走存量库路径
     with store.connection() as connection:
         columns = {

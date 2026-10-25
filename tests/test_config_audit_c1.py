@@ -110,7 +110,7 @@ def test_store_audit_rejects_invalid_actor_value(tmp_path):
     assert after_count == before_count, "拒写失败：非法 actor 产生了脏写入"
 
 
-def test_existing_db_migration_adds_column_and_index_via_migrations(tmp_path):
+def test_existing_db_migration_adds_column_and_index_via_migrations(tmp_path, monkeypatch):
     """存量库（有 order_intents、走 initialize() 存量分支）必须通过版本化迁移补齐 actor 列与索引。
 
     做法（对齐 test_alert_delivery_policy）：
@@ -140,6 +140,8 @@ def test_existing_db_migration_adds_column_and_index_via_migrations(tmp_path):
     ).fetchone() is not None, "夹具失效：没有 order_intents，会走新建库分支"
     raw.close()
 
+    # 存量库升级必须显式授权（与 run_service 启动路径同口径），未授权时 __init__ 会拒绝
+    monkeypatch.setenv("TRADEYI_ALLOW_MIGRATION", "1")
     # 重新打开 TradingStore -> 必须走 initialize() 存量分支中的 apply_migrations
     store = TradingStore(db_path)
 
@@ -159,11 +161,13 @@ def test_existing_db_migration_adds_column_and_index_via_migrations(tmp_path):
         idx_names = {row[1] for row in indexes}
         assert "idx_audit_actor" in idx_names, "缺少 idx_audit_actor 索引"
 
-        # 4. 存量行必须为 actor=''（不伪造历史）
-        legacy_rows = conn.execute("SELECT id, event_type, actor FROM audit_events ORDER BY id ASC").fetchall()
-        assert legacy_rows[0][1] == "LEGACY_EVENT_1"
+        # 4. 存量行必须为 actor=''（不伪造历史）；按业务事件过滤，避免把迁移审计行算进来
+        legacy_rows = conn.execute(
+            "SELECT id, event_type, actor FROM audit_events"
+            " WHERE event_type IN ('LEGACY_EVENT_1','LEGACY_EVENT_2') ORDER BY id ASC"
+        ).fetchall()
+        assert [row[1] for row in legacy_rows] == ["LEGACY_EVENT_1", "LEGACY_EVENT_2"]
         assert legacy_rows[0][2] == "", "存量行被非法改写伪造了 actor"
-        assert legacy_rows[1][1] == "LEGACY_EVENT_2"
         assert legacy_rows[1][2] == "", "存量行被非法改写伪造了 actor"
 
     # 5. 迁移后新写一行，正常写入 actor
