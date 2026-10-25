@@ -141,3 +141,73 @@ def test_performance_three_states_and_excludes_unavailable(tmp_path):
     assert row["手续费"] == pytest.approx(2.5 + 2.44), "不可用态必须排除在成本聚合之外"
     assert int(row["估算费用笔数"]) == 1
     assert int(row["不可用费用笔数"]) == 1
+def test_minimal_intent_push_never_raises_and_records_fill(tmp_path, monkeypatch):
+    """Chief 守卫：极简 intent（只有 id + metadata_json）跑推送 → 不抛异常且成交落库。
+
+    生产库 intent 是全字段，但测试/接口演进中拿到的可能是极简行；推送是旁路，
+    任何字段缺失都不允许打断成交落账（2026-10-25 全量 8 连红之一就是 KeyError: symbol）。
+    """
+    import pandas as pd
+    from futu import RET_OK
+
+    from futu_quant import order_push as op
+
+    store = TradingStore(tmp_path / "push-min.db")
+    intent, _ = store.create_intent(
+        "core_satellite", "push-min", "US.QQQ", "BUY", 1, 100.0
+    )
+    store.update_intent(intent["id"], "SUBMITTED", broker_order_id="brk-min")
+    monkeypatch.setattr(
+        store, "intent_by_broker_order",
+        lambda _oid: {"id": intent["id"], "metadata_json": "{}"},  # 极简：无 symbol/side
+    )
+    monkeypatch.setattr(
+        op.TradeDealHandlerBase, "on_recv_rsp",
+        lambda self, _rsp: (RET_OK, pd.DataFrame([{
+            "order_id": "brk-min", "deal_id": "d-min", "code": "US.QQQ",
+            "trd_side": "BUY", "dealt_qty": 1.0, "dealt_avg_price": 100.0,
+            "commission": 0.0,
+        }])),
+    )
+    op.DealPushHandler(store, None).on_recv_rsp(object())  # 不得抛异常
+
+    with store.connection() as connection:
+        row = dict(connection.execute(
+            "SELECT symbol, fee_total, fee_is_estimate, fee_unavailable_reason "
+            "FROM fill_ledger WHERE broker_deal_id='d-min'"
+        ).fetchone())
+    assert row["symbol"] == "US.QQQ", "symbol 必须回退到成交行的 code"
+    assert row["fee_is_estimate"] == 1, "缺 commission 必须写估算态"
+    assert row["fee_unavailable_reason"] is None
+
+
+def test_push_exception_is_contained_and_audited(tmp_path, monkeypatch):
+    """推送旁路兜底：单行处理异常不得冒出循环，必须留 ERROR 审计。"""
+    import pandas as pd
+    from futu import RET_OK
+
+    from futu_quant import order_push as op
+
+    store = TradingStore(tmp_path / "push-err.db")
+    monkeypatch.setattr(
+        store, "intent_by_broker_order",
+        lambda _oid: {"id": 1, "metadata_json": "{}", "symbol": "US.QQQ"},
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("record_fill exploded")
+
+    monkeypatch.setattr(store, "record_fill", _boom)
+    monkeypatch.setattr(
+        op.TradeDealHandlerBase, "on_recv_rsp",
+        lambda self, _rsp: (RET_OK, pd.DataFrame([{
+            "order_id": "brk-err", "deal_id": "d-err", "code": "US.QQQ",
+            "trd_side": "BUY", "dealt_qty": 1.0, "dealt_avg_price": 100.0,
+            "commission": 0.0,
+        }])),
+    )
+    code, _ = op.DealPushHandler(store, None).on_recv_rsp(object())
+    assert code == RET_OK
+    events = [e for e in store.operational_events(limit=50)
+              if e["event_type"] == "DEAL_PUSH_FAILED"]
+    assert events and events[0]["status"] == "ERROR"

@@ -141,32 +141,48 @@ class DealPushHandler(TradeDealHandlerBase):
                 # intent 反查只会命中本租户订单，无需再用环境字段兜底过滤。
                 payload = row.to_dict()
                 order_id = str(row.get("order_id", ""))
-                intent = self.store.intent_by_broker_order(order_id)
-                if intent:
-                    qty = float(row.get("dealt_qty", row.get("qty", 0)) or 0)
-                    price = float(row.get("dealt_avg_price", row.get("price", 0)) or 0)
-                    deal_id = row.get("deal_id", row.get("dealId"))
-                    if qty > 0 and price > 0:
-                        # P1-13 铁律：**费用计算绝不允许影响成交落账**（见 safe_resolve_fill_fee）。
-                        fee_total, fee_is_estimate, fee_reason = safe_resolve_fill_fee(
-                            self.store, intent["symbol"], intent["side"], qty, price,
-                            row.get("commission", 0),
-                        )
-                        self.store.record_fill(
-                            intent["id"], qty, price,
-                            fee_total,
-                            source="BROKER_DEAL", broker_deal_id=str(deal_id) if deal_id else None,
-                            reference_price=json.loads(intent["metadata_json"] or "{}").get("reference_price"),
-                            multiplier=float(json.loads(intent["metadata_json"] or "{}").get("multiplier", 1)),
-                            fee_is_estimate=fee_is_estimate,
-                            fee_unavailable_reason=fee_reason,
-                        )
-                        # 成交即登记归属：有 campaign → 标记；无归属 → 当场 ADOPT（不等下一周期）
-                        # 传 tenant_id —— 跨租户隔离（产品红线，10-23）
-                        register_fill_to_campaign(
-                            self.store, self.broker, intent, qty, price, self._tenant_id(),
-                        )
-                self.store.operational_event("order_push", "DEAL_UPDATE", "HEALTHY", payload)
+                try:
+                    intent = self.store.intent_by_broker_order(order_id)
+                    if intent:
+                        qty = float(row.get("dealt_qty", row.get("qty", 0)) or 0)
+                        price = float(row.get("dealt_avg_price", row.get("price", 0)) or 0)
+                        deal_id = row.get("deal_id", row.get("dealId"))
+                        if qty > 0 and price > 0:
+                            # 推送是**旁路**：任何一行处理异常都不允许打断成交落库。
+                            # symbol 优先取 intent，缺失时回退成交行的 code（测试/极简 intent
+                            # 只有 id + metadata_json，硬取 intent["symbol"] 会 KeyError）。
+                            symbol = str(intent.get("symbol") or row.get("code") or "")
+                            side = str(intent.get("side") or row.get("trd_side") or "")
+                            # P1-13 铁律：费用计算绝不允许影响成交落账（见 safe_resolve_fill_fee）。
+                            fee_total, fee_is_estimate, fee_reason = safe_resolve_fill_fee(
+                                self.store, symbol, side, qty, price,
+                                row.get("commission", 0),
+                            )
+                            metadata = json.loads(intent.get("metadata_json") or "{}")
+                            self.store.record_fill(
+                                intent["id"], qty, price,
+                                fee_total,
+                                source="BROKER_DEAL",
+                                broker_deal_id=str(deal_id) if deal_id else None,
+                                reference_price=metadata.get("reference_price"),
+                                multiplier=float(metadata.get("multiplier", 1)),
+                                fee_is_estimate=fee_is_estimate,
+                                fee_unavailable_reason=fee_reason,
+                            )
+                            # 成交即登记归属：有 campaign → 标记；无归属 → 当场 ADOPT（不等下一周期）
+                            # 传 tenant_id —— 跨租户隔离（产品红线，10-23）
+                            register_fill_to_campaign(
+                                self.store, self.broker, intent, qty, price,
+                                self._tenant_id(),
+                            )
+                    self.store.operational_event(
+                        "order_push", "DEAL_UPDATE", "HEALTHY", payload
+                    )
+                except Exception as exc:  # noqa: BLE001 - 推送旁路不得打断后续成交
+                    self.store.operational_event(
+                        "order_push", "DEAL_PUSH_FAILED", "ERROR",
+                        {"order_id": order_id, "error": str(exc), "payload": payload},
+                    )
         return code, data
 
 
