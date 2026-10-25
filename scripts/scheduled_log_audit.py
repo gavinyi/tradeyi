@@ -260,26 +260,58 @@ FEE_PLACEHOLDER_ALERT_RATIO = 0.05
 FEE_PLACEHOLDER_WINDOW_DAYS = 7
 
 
-def _fee_placeholder_counts(store, window_days: int) -> dict[str, tuple[int, int]]:
-    """返回 `{"all": (占位行, 总行), "window": (占位行, 总行)}`，供告警与信息项共用。"""
+def _fill_ledger_has_fee_state_columns(connection) -> bool:
+    """迁移 17/18 之后才有三态列；巡检要能在迁移前/后两种库上都跑。"""
+    cols = {row[1] for row in connection.execute("pragma table_info(fill_ledger)")}
+    return {"fee_is_estimate", "fee_unavailable_reason"} <= cols
+
+
+def _fee_placeholder_counts(store, window_days: int) -> dict:
+    """返回占位值统计，供告警与信息项共用。
+
+    占位值判据（Reviewer 2026-10-25）：
+    - 有迁移 17/18 三态列时：`fee_total≈1.0` **且 `fee_unavailable_reason IS NULL` 且
+      `fee_is_estimate=0`** —— 即「未标注的 1.0」。否则某笔估算值恰好 1.00 会误报，
+      而迁移 19 已把历史行标成 `legacy_placeholder_1usd`，不该再算进新告警。
+    - 三态列尚未迁移时：退回 `fee_total≈1.0`（旧库兼容，行为与发布前一致）。
+
+    `filled_at IS NULL` 的行走不了窗口比较，单独计数返回，不混进分母。
+    """
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=max(1, int(window_days)))
     ).isoformat()
     with store.connection() as connection:
+        has_state = _fill_ledger_has_fee_state_columns(connection)
+        if has_state:
+            predicate = (
+                "ABS(fee_total - ?) < 1e-9"
+                " AND fee_unavailable_reason IS NULL"
+                " AND COALESCE(fee_is_estimate, 0) = 0"
+            )
+        else:
+            predicate = "ABS(fee_total - ?) < 1e-9"
         all_total = connection.execute("SELECT COUNT(*) FROM fill_ledger").fetchone()[0]
         all_ph = connection.execute(
-            "SELECT COUNT(*) FROM fill_ledger WHERE ABS(fee_total - ?) < 1e-9",
+            f"SELECT COUNT(*) FROM fill_ledger WHERE {predicate}",  # noqa: S608 - 固定片段
             (FEE_PLACEHOLDER_VALUE,),
         ).fetchone()[0]
         win_total = connection.execute(
             "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?", (cutoff,)
         ).fetchone()[0]
         win_ph = connection.execute(
-            "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?"
-            " AND ABS(fee_total - ?) < 1e-9",
+            f"SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ? AND {predicate}",  # noqa: S608
             (cutoff, FEE_PLACEHOLDER_VALUE),
         ).fetchone()[0]
-    return {"all": (all_ph, all_total), "window": (win_ph, win_total)}
+        null_filled = connection.execute(
+            "SELECT COUNT(*) FROM fill_ledger"
+            " WHERE filled_at IS NULL OR TRIM(filled_at) = ''"
+        ).fetchone()[0]
+    return {
+        "all": (all_ph, all_total),
+        "window": (win_ph, win_total),
+        "null_filled_at": null_filled,
+        "three_state": has_state,
+    }
 
 
 def check_fee_placeholder_ratio(
@@ -327,11 +359,16 @@ def fee_ledger_summary_line(
     win_ph, win_total = counts["window"]
     all_pct = f"{all_ph / all_total:.1%}" if all_total else "-"
     win_pct = f"{win_ph / win_total:.1%}" if win_total else "-"
-    return (
+    judge = "未标注 1.0" if counts.get("three_state") else "1.0（三态列未迁移，旧判据）"
+    line = (
         f"• **费用账本状态**：全表占位 **{all_ph}/{all_total} = {all_pct}**"
-        "（历史行不回填，仅提示）"
+        f"（判据：{judge}；历史行不回填，仅提示）"
         f"；最近 {int(window_days)} 天占位 **{win_ph}/{win_total} = {win_pct}**"
     )
+    null_filled = counts.get("null_filled_at") or 0
+    if null_filled:
+        line += f"；另有 `filled_at` 为空 **{null_filled} 行**（无法归窗，未计入分母）"
+    return line
 
 
 def inspect_and_alert():

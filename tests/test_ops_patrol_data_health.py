@@ -260,3 +260,76 @@ def test_fee_ledger_summary_line_shows_both_scopes(tmp_path):
     assert "全表占位" in line and "5/10" in line
     assert "最近 7 天" in line and "0/5" in line
     assert "不回填" in line
+
+
+def _add_fee_state_columns(store) -> None:
+    """模拟迁移 17/18：给 fill_ledger 补三态两列（真实迁移落地前测试用）。"""
+    with store.connection() as connection:
+        connection.execute(
+            "ALTER TABLE fill_ledger ADD COLUMN fee_is_estimate INTEGER NOT NULL DEFAULT 0"
+        )
+        connection.execute(
+            "ALTER TABLE fill_ledger ADD COLUMN fee_unavailable_reason TEXT"
+        )
+
+
+def _set_fee_state(store, row_id: int, *, estimate: int = 0, reason: str | None = None) -> None:
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE fill_ledger SET fee_is_estimate=?, fee_unavailable_reason=?"
+            " WHERE id=?",
+            (estimate, reason, row_id),
+        )
+
+
+def test_fee_placeholder_judge_ignores_estimated_one_dollar(tmp_path):
+    """三态列就位后：估算值恰好 1.00（fee_is_estimate=1）不得算作占位误报。"""
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _add_fee_state_columns(store)
+    _seed_fees(store, [1.0] * 10, days_ago=1)  # 10 行 1.0，需逐行标注
+    with store.connection() as connection:
+        ids = [r[0] for r in connection.execute("SELECT id FROM fill_ledger").fetchall()]
+    for row_id in ids:
+        _set_fee_state(store, row_id, estimate=1)  # 全部是「估算值恰好 1.00」
+
+    assert audit.check_fee_placeholder_ratio(store) == [], "估算态的 1.0 不是占位值"
+
+
+def test_fee_placeholder_judge_ignores_marked_legacy_rows(tmp_path):
+    """迁移 19 已把历史行标 legacy_placeholder_1usd：不算进新告警。"""
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _add_fee_state_columns(store)
+    _seed_fees(store, [1.0] * 10, days_ago=1)
+    with store.connection() as connection:
+        ids = [r[0] for r in connection.execute("SELECT id FROM fill_ledger").fetchall()]
+    for row_id in ids:
+        _set_fee_state(store, row_id, reason="legacy_placeholder_1usd")
+
+    assert audit.check_fee_placeholder_ratio(store) == []
+
+
+def test_fee_placeholder_judge_alerts_on_unlabelled_one_dollar(tmp_path):
+    """「未标注的 1.0」才是真占位：三态列就位后仍必须告警。"""
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _add_fee_state_columns(store)
+    _seed_fees(store, [1.0] * 10, days_ago=1)  # 全部未标注
+
+    issues = audit.check_fee_placeholder_ratio(store)
+    assert issues and "占位值占比" in issues[0]
+
+
+def test_fee_summary_counts_null_filled_at_separately(tmp_path):
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _add_fee_state_columns(store)
+    _seed_fees(store, [1.0, 2.4], days_ago=1)
+    # 表定义是 `filled_at TEXT NOT NULL`，实际只能是空串（NULL 写不进去）
+    with store.connection() as connection:
+        connection.execute("UPDATE fill_ledger SET filled_at='' WHERE id=1")
+
+    line = audit.fee_ledger_summary_line(store)
+    assert "filled_at` 为空" in line
+    assert "1 行" in line
