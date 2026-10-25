@@ -28,13 +28,6 @@ from pathlib import Path
 
 import pandas as pd
 
-if sys.platform == "win32":
-    import io
-    if hasattr(sys.stdout, "buffer"):
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "buffer"):
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA = ROOT / "data/ml_training/volatility_trades_v3_latest.csv"
 DEFAULT_MODEL = ROOT / "data/ml_models/volatility_scorer_v3.pkl"
@@ -44,6 +37,24 @@ MIN_SAMPLES = 200  # 样本太少不训练
 AUC_GUARD = float(os.getenv("ML_AUC_GUARD", "0.50"))   # AUC 低于此值不替换生产模型（防退化）
 # 相对改进边际：默认 0.01（design §2.1），样本少时防止把噪声当改进。
 MIN_IMPROVEMENT_MARGIN = float(os.getenv("ML_MIN_IMPROVEMENT_MARGIN", "0.01"))
+
+
+def _force_utf8_stdio() -> None:
+    """把 stdout/stderr 换成 UTF-8 包装（Windows 中文不乱码）。
+
+    **只能在 `__main__` 里调用**，绝不能在 import 期执行：import 期替换
+    `sys.stdout`/`sys.stderr` 会把 pytest 的 capture 对象顶掉，teardown 去读已关闭
+    的文件 → `ValueError: I/O operation on closed file`，全量收集会崩在 393 条、
+    退出码不可信（2026-10-25 实测，默认 `pytest` 根本跑不起来）。
+    """
+    if sys.platform != "win32":
+        return
+    import io
+
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 
 def run(cmd: list[str]) -> str:
@@ -274,4 +285,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # 只在作为脚本运行时接管 stdio；import 期执行会顶掉 pytest capture（见函数注释）。
+    _force_utf8_stdio()
     sys.exit(main())
