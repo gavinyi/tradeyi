@@ -254,8 +254,15 @@ def test_buy_branch_rejects_even_if_aggregation_returns_empty(tmp_path, monkeypa
             self.placed.append((symbol, side, quantity, price))
             return pd.DataFrame([{"order_id": "ord-1"}])
 
+    # P1-20 桩自证：桩必须证明「聚合层真的被调用过」，否则用例可能因桩未生效而假绿
+    calls: list[int] = []
+
+    def _empty_aggregation(*args, **kwargs):
+        calls.append(1)
+        return []
+
     monkeypatch.setattr(
-        "futu_quant.execution.resolve_entry_block_reasons", lambda *args, **kwargs: []
+        "futu_quant.execution.resolve_entry_block_reasons", _empty_aggregation
     )
     store = TradingStore(tmp_path / "link-layer1.db")
     store.set_setting("execution_mode", "PAPER")
@@ -264,6 +271,7 @@ def test_buy_branch_rejects_even_if_aggregation_returns_empty(tmp_path, monkeypa
     result = executor.submit_limit(
         "core_satellite", "g4-link-layer1", "US.QQQ", "BUY", 1, 500_000.0,
     )
+    assert calls, "聚合层桩未被调用 → 用例没测到独立拒绝分支（假绿）"
     assert result.status == "REJECTED", "独立拒绝分支被删 → 聚合层为空时订单被放行"
     assert broker.placed == []
 

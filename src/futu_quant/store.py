@@ -608,6 +608,8 @@ class TradingStore:
                     broker_deal_id TEXT,
                     quote_json TEXT NOT NULL DEFAULT '{}',
                     filled_at TEXT NOT NULL,
+                    fee_is_estimate INTEGER NOT NULL DEFAULT 0,
+                    fee_unavailable_reason TEXT,
                     UNIQUE(source, broker_deal_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_fill_ledger_time ON fill_ledger(filled_at);
@@ -793,10 +795,13 @@ class TradingStore:
             connection.execute(
                 """INSERT INTO fill_ledger
                 (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,
-                 reference_price,source,quote_json,filled_at)
+                 reference_price,source,quote_json,filled_at,
+                 fee_is_estimate,fee_unavailable_reason)
                 SELECT f.intent_id,i.strategy_id,i.symbol,i.side,f.quantity,f.price,
                 CASE WHEN i.symbol GLOB 'US.*[0-9][CP][0-9]*' THEN 100 ELSE 1 END,
-                f.fees,json_extract(i.metadata_json,'$.reference_price'),'SHADOW',f.quote_json,f.created_at
+                f.fees,json_extract(i.metadata_json,'$.reference_price'),'SHADOW',f.quote_json,f.created_at,
+                0,
+                CASE WHEN ABS(COALESCE(f.fees,0)-1.0) < 1e-9 THEN 'legacy_placeholder_1usd' END
                 FROM shadow_fills f JOIN order_intents i ON i.id=f.intent_id
                 WHERE NOT EXISTS (
                     SELECT 1 FROM fill_ledger l WHERE l.source='SHADOW' AND l.intent_id=f.intent_id
@@ -806,12 +811,15 @@ class TradingStore:
             connection.execute(
                 """INSERT INTO fill_ledger
                 (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,
-                 reference_price,source,quote_json,filled_at)
+                 reference_price,source,quote_json,filled_at,
+                 fee_is_estimate,fee_unavailable_reason)
                 SELECT intent.id,intent.strategy_id,intent.symbol,intent.side,intent.filled_quantity,
                 intent.average_fill_price,
                 CASE WHEN intent.symbol GLOB 'US.*[0-9][CP][0-9]*' THEN 100 ELSE 1 END,
                 intent.fees,json_extract(intent.metadata_json,'$.reference_price'),
-                'LEGACY_INTENT_AGGREGATE','{}',intent.updated_at
+                'LEGACY_INTENT_AGGREGATE','{}',intent.updated_at,
+                0,
+                CASE WHEN ABS(COALESCE(intent.fees,0)-1.0) < 1e-9 THEN 'legacy_placeholder_1usd' END
                 FROM order_intents intent
                 WHERE intent.filled_quantity > 0
                 AND NOT EXISTS (SELECT 1 FROM fill_ledger l WHERE l.intent_id=intent.id)"""
@@ -1415,15 +1423,22 @@ class TradingStore:
                     # 幂等命中：账本已覆盖券商累计成交，本笔无需再落账
                     pass
                 else:
+                    poll_fee_delta = max(0.0, float(fees or 0) - float(previous["fees"] or 0))
+                    poll_fee_reason = (
+                        "legacy_placeholder_1usd"
+                        if abs(poll_fee_delta - 1.0) < 1e-9 else None
+                    )
                     connection.execute(
                         """INSERT INTO fill_ledger
-                        (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,reference_price,source,quote_json,filled_at)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (intent_id,strategy_id,symbol,side,quantity,price,multiplier,fee_total,reference_price,source,quote_json,filled_at,
+                         fee_is_estimate,fee_unavailable_reason)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (intent["id"], intent["strategy_id"], intent["symbol"], intent["side"],
                          broker_total - ledger_total,
                          average_fill_price, float(metadata.get("multiplier", 100 if "C" in intent["symbol"] or "P" in intent["symbol"] else 1)),
-                         max(0.0, float(fees or 0) - float(previous["fees"] or 0)),
-                         metadata.get("reference_price"), "BROKER_POLL_DIFF", "{}", self.now()),
+                         poll_fee_delta,
+                         metadata.get("reference_price"), "BROKER_POLL_DIFF", "{}", self.now(),
+                         0, poll_fee_reason),
                     )
             if previous and (
                 previous["status"] != status
@@ -3045,7 +3060,15 @@ class TradingStore:
         *, source: str, quote: dict | None = None, broker_deal_id: str | None = None,
         filled_at: str | None = None, reference_price: float | None = None,
         multiplier: float = 1.0,
+        fee_is_estimate: bool = False,
+        fee_unavailable_reason: str | None = None,
     ) -> int | None:
+        """登记一笔成交。
+
+        费用三态（P1-13，2026-10-25 定稿）：`fee_is_estimate=0` 且
+        `fee_unavailable_reason IS NULL` = 真值；`=1` = 估算；`reason` 非空 = 不可用
+        （`fee_total` 数值无意义，任何成本聚合默认排除）。
+        """
         intent = self.intent(intent_id)
         if not intent or quantity <= 0 or price <= 0:
             return None
@@ -3131,12 +3154,14 @@ class TradingStore:
                 """INSERT INTO fill_ledger
                 (intent_id,strategy_id,symbol,side,quantity,price,multiplier,commission,
                  regulatory_fee,fee_total,bid_price,ask_price,mid_price,reference_price,
-                 spread_cost,price_impact_cost,source,broker_deal_id,quote_json,filled_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 spread_cost,price_impact_cost,source,broker_deal_id,quote_json,filled_at,
+                 fee_is_estimate,fee_unavailable_reason)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (intent_id, intent["strategy_id"], intent["symbol"], intent["side"],
                  quantity, price, multiplier, fees, 0.0, fees, bid or None, ask or None,
                  mid, reference, spread_cost, price_impact, source,
-                 str(broker_deal_id) if broker_deal_id else None, payload, timestamp),
+                 str(broker_deal_id) if broker_deal_id else None, payload, timestamp,
+                 1 if fee_is_estimate else 0, fee_unavailable_reason),
             )
             fill_id = int(cursor.lastrowid)
         if batch_id and fill_id:

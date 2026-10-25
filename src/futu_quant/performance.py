@@ -117,7 +117,23 @@ def performance_buckets(store, *, period: str = "daily", start: str | None = Non
     else:
         frame["期间"] = local.dt.strftime("%Y-%m")
     frame["成交金额"] = frame["quantity"] * frame["price"] * frame["multiplier"]
-    frame["手续费"] = frame["fee_total"].astype(float)
+    # P1-13 费用三态：不可用态数值无意义 → 聚合排除（NaN）；估算态保留但**显式标注**，
+    # 否则 PnL 会把估算静默当成实付（历史 689 行 $1.0 占位就是这样骗过报表的）。
+    fee_numeric = frame["fee_total"].astype(float)
+    unavailable = (
+        frame["fee_unavailable_reason"].notna()
+        if "fee_unavailable_reason" in frame.columns
+        else pd.Series(False, index=frame.index)
+    )
+    estimate = (
+        frame["fee_is_estimate"].fillna(0).astype(int).eq(1)
+        if "fee_is_estimate" in frame.columns
+        else pd.Series(False, index=frame.index)
+    )
+    frame["手续费"] = fee_numeric.mask(unavailable)
+    frame["费用状态"] = "truth"
+    frame.loc[estimate, "费用状态"] = "estimate"
+    frame.loc[unavailable, "费用状态"] = "unavailable"
     frame["价差成本"] = frame["spread_cost"].astype(float)
     frame["价格冲击"] = frame["price_impact_cost"].astype(float)
     frame["方向"] = frame["side"].map({"BUY": 1, "SELL": -1}).fillna(0)
@@ -149,6 +165,9 @@ def performance_buckets(store, *, period: str = "daily", start: str | None = Non
         手续费=("手续费", "sum"), 价差成本=("价差成本", "sum"),
         价格冲击=("价格冲击", "sum"), 净现金流=("现金流", "sum"),
         行情覆盖率=("mid_price", lambda s: float(s.notna().mean())),
+        # P1-13 三态可见性：估算态/不可用态分别计数（不可用态不计入手续费）
+        估算费用笔数=("费用状态", lambda s: int((s == "estimate").sum())),
+        不可用费用笔数=("费用状态", lambda s: int((s == "unavailable").sum())),
     )
     result["已实现盈亏"] = [realized[(str(p), str(s))] for p, s in zip(result["期间"], result["strategy_id"])]
     result["可观测交易成本"] = result["手续费"] + result["价差成本"] + result["价格冲击"]

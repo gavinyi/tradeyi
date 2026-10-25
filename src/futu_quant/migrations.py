@@ -201,6 +201,20 @@ MIGRATIONS = (
             PRIMARY KEY (tenant_id, scope)
         );
     """),
+    # P1-13 费用三态（真值 / 估算 / 不可用）。**一列一条迁移**：`apply_migrations`
+    # 只吞 "duplicate column name"，多列合在一条里会让「部分列已存在」的库补不齐剩余列。
+    Migration(17, "fill_ledger_fee_is_estimate", """
+        ALTER TABLE fill_ledger ADD COLUMN fee_is_estimate INTEGER NOT NULL DEFAULT 0;
+    """),
+    Migration(18, "fill_ledger_fee_unavailable_reason", """
+        ALTER TABLE fill_ledger ADD COLUMN fee_unavailable_reason TEXT;
+    """),
+    # 历史 689 行 `fee_total=1.0` 是回填占位值：**只打标记、值不改、不回填**
+    # （真值已不可知，不伪造）。纯数据迁移，无 DDL；`reason IS NULL` 保证重复执行幂等。
+    Migration(19, "fill_ledger_legacy_placeholder_marker", """
+        UPDATE fill_ledger SET fee_unavailable_reason='legacy_placeholder_1usd'
+        WHERE ABS(fee_total-1.0) < 1e-9 AND fee_unavailable_reason IS NULL;
+    """),
 )
 
 

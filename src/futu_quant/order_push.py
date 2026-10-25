@@ -11,6 +11,47 @@ from .tenant import campaigns_config_key_lenient
 from .volatility_orphans import volatility_write_state_key
 
 
+def resolve_fill_fee(
+    symbol: str, side: str, quantity: float, price: float, commission,
+) -> tuple[float, bool, str | None]:
+    """成交费用三态（P1-13）：返回 `(fee_total, fee_is_estimate, unavailable_reason)`。
+
+    - 券商给了 commission（>0）→ **真值**：`(commission, False, None)`；
+    - 拿不到 commission（None/0/负数）→ **估算**：`estimate_fees(...)` + `is_estimate=True`，
+      绝不写 `$1.0` 占位值（历史 689 行就是这么来的，成本被低估 2.3 倍）。
+    """
+    try:
+        value = float(commission or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value > 0:
+        return value, False, None
+    return (
+        float(estimate_fees(symbol, side, quantity, price)),
+        True,
+        None,
+    )
+
+
+def safe_resolve_fill_fee(
+    store, symbol: str, side: str, quantity: float, price: float, commission,
+) -> tuple[float, bool, str | None]:
+    """`resolve_fill_fee` 的**落账保护壳**：费用算错绝不能影响成交落账。
+
+    异常时返回 `(0.0, False, "estimate_failed")`（不可用态）并写 ERROR 审计；
+    调用方照常 `record_fill`，不会因费用问题漏账。
+    """
+    try:
+        return resolve_fill_fee(symbol, side, quantity, price, commission)
+    except Exception as exc:  # noqa: BLE001 - 费用异常不得中断落账
+        store.operational_event(
+            "order_push", "FEE_ESTIMATE_FAILED", "ERROR",
+            {"symbol": symbol, "side": side, "quantity": quantity,
+             "price": price, "error": str(exc)},
+        )
+        return 0.0, False, "estimate_failed"
+
+
 class OrderPushHandler(TradeOrderHandlerBase):
     def __init__(self, store, broker=None):
         super().__init__()
@@ -106,12 +147,19 @@ class DealPushHandler(TradeDealHandlerBase):
                     price = float(row.get("dealt_avg_price", row.get("price", 0)) or 0)
                     deal_id = row.get("deal_id", row.get("dealId"))
                     if qty > 0 and price > 0:
+                        # P1-13 铁律：**费用计算绝不允许影响成交落账**（见 safe_resolve_fill_fee）。
+                        fee_total, fee_is_estimate, fee_reason = safe_resolve_fill_fee(
+                            self.store, intent["symbol"], intent["side"], qty, price,
+                            row.get("commission", 0),
+                        )
                         self.store.record_fill(
                             intent["id"], qty, price,
-                            float(row.get("commission", 0) or 0),
+                            fee_total,
                             source="BROKER_DEAL", broker_deal_id=str(deal_id) if deal_id else None,
                             reference_price=json.loads(intent["metadata_json"] or "{}").get("reference_price"),
                             multiplier=float(json.loads(intent["metadata_json"] or "{}").get("multiplier", 1)),
+                            fee_is_estimate=fee_is_estimate,
+                            fee_unavailable_reason=fee_reason,
                         )
                         # 成交即登记归属：有 campaign → 标记；无归属 → 当场 ADOPT（不等下一周期）
                         # 传 tenant_id —— 跨租户隔离（产品红线，10-23）

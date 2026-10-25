@@ -220,7 +220,7 @@ BROKER_CRITICAL_TASKS = {
 
 def futu_sdk_preflight(
     store: TradingStore, alerts: AlertManager, settings: Settings,
-    *, force: bool = False,
+    *, force: bool = False, heartbeat_name: str = "trading_service",
 ) -> bool:
     now = datetime.now(NY)
     cache_seconds = max(5, int(os.getenv("FUTU_SDK_PREFLIGHT_CACHE_SECONDS", "30")))
@@ -244,13 +244,15 @@ def futu_sdk_preflight(
         )
     except subprocess.TimeoutExpired:
         message = f"富途 OpenD 预检超时超过 {timeout:.0f} 秒，网关通信受阻"
-        store.heartbeat("trading_service", "DEGRADED", message, os.getpid())
+        # P1-21：心跳名必须与成功路径一致（带租户），否则全局 trading_service 行
+        # 永远停在 DEGRADED —— 恢复后也不会变回 HEALTHY 的假故障。
+        store.heartbeat(heartbeat_name, "DEGRADED", message, os.getpid())
         record_broker_failure(store, alerts, "trading_service", message)
         alerts.send("CRITICAL", "OPEND_DISCONNECTED", message, incident_key="OPEND_DISCONNECTED")
         return False
     if result.returncode != 0:
         message = f"富途 OpenD 网关掉线或未启动 (预检退出码 {result.returncode})，系统已自动暂停新开仓并保持持仓保护状态"
-        store.heartbeat("trading_service", "DEGRADED", message, os.getpid())
+        store.heartbeat(heartbeat_name, "DEGRADED", message, os.getpid())
         record_broker_failure(store, alerts, "trading_service", message)
         alerts.send("CRITICAL", "OPEND_DISCONNECTED", message, incident_key="OPEND_DISCONNECTED")
         return False
@@ -835,7 +837,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             store, alerts, WEEKLY_UNIVERSE_RECALL_TASK.task_id,
             lambda: run_weekly_universe_recall(store, now=china_now),
         )
-    if not futu_sdk_preflight(store, alerts, settings):
+    if not futu_sdk_preflight(store, alerts, settings, heartbeat_name=service_heartbeat_name):
         store.set_setting("connectivity_degraded", "true")
         return
     if tenant:
@@ -1219,6 +1221,13 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
         store.heartbeat("core_satellite", "HEALTHY", core_reason, os.getpid())
     if due(store, "last_run:heartbeat:trading_service", 60, now):
         store.heartbeat(service_heartbeat_name, "HEALTHY", f"调度循环完成 · {now:%F %T %Z}", os.getpid())
+        # P1-21：全局兼容行也要写回 HEALTHY，否则历史 DEGRADED 永远留在页面上；
+        # 判故障以 `trading_service:<tenant>` 为准（全局行只做兼容显示）。
+        if service_heartbeat_name != "trading_service":
+            store.heartbeat(
+                "trading_service", "HEALTHY",
+                "调度循环完成（全局兼容行，不用于判故障）", os.getpid(),
+            )
         mark_run(store, "last_run:heartbeat:trading_service", now)
     if due(store, "last_run:maintenance", 300, now):
         run_task(store, alerts, "system_health", lambda: maintenance(store, broker))
