@@ -512,6 +512,8 @@ class TradingStore:
                     market_value REAL NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                -- risk_state 建表走版本化迁移（migrations.py:16），存量库必经，
+                -- 不写在本「新建库」分支里（否则存量库永远没有这张表）。
                 CREATE TABLE IF NOT EXISTS market_metrics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     symbol TEXT NOT NULL,
@@ -2560,6 +2562,81 @@ class TradingStore:
             query += " ORDER BY id DESC LIMIT ?"
             params.append(limit)
             return [dict(row) for row in connection.execute(query, params).fetchall()][::-1]
+
+    # ---------------------------------------------------------------- 风险熔断状态
+    def load_risk_state(self, tenant_id: str, scope: str = "equity") -> dict | None:
+        """读取租户熔断状态；无记录返回 None（首次启用须走 backfill 初始化）。"""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM risk_state WHERE tenant_id=? AND scope=?",
+                (str(tenant_id), str(scope)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_risk_state(self, state: dict) -> None:
+        """单行 upsert（key = tenant_id + scope）；只有持锁 Worker 调用。"""
+        required = ("tenant_id", "peak_hist", "peak_hist_at", "baseline_equity",
+                    "baseline_at", "peak_reset", "updated_at")
+        missing = [key for key in required if state.get(key) in (None, "")]
+        if missing:
+            raise ValueError(f"risk_state 缺必填字段：{missing}")
+        columns = (
+            "tenant_id", "scope", "peak_hist", "peak_hist_at", "peak_hist_source",
+            "baseline_equity", "baseline_at", "baseline_source", "peak_reset",
+            "breaker_level", "breaker_set_at", "breaker_reason", "ack_dd_vs_peak",
+            "ack_at", "de_risk_scale", "reset_count_30d", "last_reset_at", "updated_at",
+        )
+        values = [state.get(column) for column in columns]
+        if values[1] is None:
+            values[1] = "equity"
+        placeholders = ",".join("?" for _ in columns)
+        updates = ",".join(f"{column}=excluded.{column}" for column in columns[2:])
+        with self.connection() as connection:
+            connection.execute(
+                f"INSERT INTO risk_state({','.join(columns)}) VALUES({placeholders}) "
+                f"ON CONFLICT(tenant_id,scope) DO UPDATE SET {updates}",
+                values,
+            )
+
+    def historical_peak_equity(self, env: str, current_equity: float | None = None) -> float:
+        """**全历史**净值峰值（backfill `peak_hist` 用），fail-closed。
+
+        硬约束（2026-10-25 Product/Architect 实测，验收第 19 条）：
+        1. **必须传账户专属 env**（真实账户由 `REAL_ACCOUNT_ID` 派生 `REAL_<account_id>`，
+           禁止手写字面量，见 `risk_breaker.real_equity_env()`）——
+           库里有 legacy `REAL`（801 行、峰值 $30,007.59、min 0.00）和 `SIMULATE`
+           （峰值 $1,008,376.58），取错 env 会得到「peak < 当前权益 → 回撤 0% → 底线假绿」
+           或「peak 远大于当前 → 回撤 95% 误触发」；
+        2. **该 env 零行 → 抛错**（不能把 None/0 当「无历史」静默放过，写错一位 env 就属此类）；
+        3. **peak < `current_equity` → 抛错拒绝用作基准**（取错 env / legacy 混入的典型形态）；
+        4. **取全历史，不取近 30 天**（窗口会系统性低估峰值，底线形同虚设）。
+        """
+        if not env:
+            raise ValueError("historical_peak_equity 必须显式传账户专属 env（禁止省略/用 legacy 'REAL'）")
+        with self.connection() as connection:
+            rows, peak = connection.execute(
+                "SELECT COUNT(*), MAX(total_assets) FROM equity_snapshots WHERE env=?",
+                (str(env).upper(),),
+            ).fetchone()
+        if not rows:
+            raise ValueError(
+                f"env={env!r} 在 equity_snapshots 零行：env 写错一位或账户不存在，"
+                "拒绝用作回撤基准（fail-closed）"
+            )
+        if peak is None:
+            raise ValueError(f"env={env!r} 峰值为空，拒绝用作回撤基准（fail-closed）")
+        value = float(peak)
+        if current_equity is not None and value < float(current_equity):
+            logger.warning(
+                "env=%s 峰值 %.2f 低于当前权益 %.2f：疑似取错 env 或 legacy 混入，"
+                "拒绝用作回撤基准（否则回撤被算成 0%% → 10%% 底线假绿）",
+                env, value, float(current_equity),
+            )
+            raise ValueError(
+                f"env={env!r} 峰值 ${value:,.2f} 低于当前权益 ${float(current_equity):,.2f}："
+                "疑似取错 env 或 legacy 混入，拒绝用作回撤基准（否则回撤被算成 0 → 10% 底线假绿）"
+            )
+        return value
 
     def record_metric(self, symbol: str, metric: str, value: float) -> None:
         with self.connection() as connection:

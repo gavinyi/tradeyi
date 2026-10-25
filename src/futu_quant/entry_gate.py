@@ -25,11 +25,15 @@ from .risk_breaker import (
     RISK_BUDGET,
     STRATEGY_REDUCE_ONLY,
     BlockReason,
+    BreakerUnsupportedEnv,
+    resolve_equity_env,
 )
 
 __all__ = [
     "EntrySignals",
     "resolve_entry_block_reasons",
+    "resolve_breaker_inputs",
+    "audit_payload",
     "AGGREGATION_ORDER",
 ]
 
@@ -58,8 +62,28 @@ class EntrySignals:
     account_halt: str = ""
     strategy_reduce_only: str = ""
     breaker_reasons: tuple[BlockReason, ...] = field(default_factory=tuple)
+    #: 非空 = 该交易环境熔断维度未启用（显式记录，不产生 block 原因、不停单）
+    breaker_unsupported: str = ""
     daily_loss_halted: str = ""
     budget_exhausted: str = ""
+
+
+def resolve_breaker_inputs(
+    settings: object,
+    trading_env: str,
+    breaker_reasons: tuple[BlockReason, ...] = (),
+) -> tuple[tuple[BlockReason, ...], str]:
+    """聚合层捕获 `BreakerUnsupportedEnv`：熔断维度未启用 → **不产生 block 原因**。
+
+    返回 `(breaker_reasons, unsupported_env)`；`unsupported_env` 非空时由调用方
+    写 audit + 页面提示（`page_hint`），**绝不允许异常冒到 `submit_limit`**
+    —— 冒上去会让模拟盘全面停单。
+    """
+    try:
+        resolve_equity_env(settings, trading_env)
+    except BreakerUnsupportedEnv as exc:
+        return (), str(getattr(exc, "trading_env", trading_env) or trading_env)
+    return tuple(breaker_reasons), ""
 
 
 def resolve_entry_block_reasons(signals: EntrySignals) -> list[BlockReason]:
@@ -87,10 +111,19 @@ def resolve_entry_block_reasons(signals: EntrySignals) -> list[BlockReason]:
     return reasons
 
 
-def audit_payload(reasons: list[BlockReason]) -> dict:
-    """落 audit 的统一结构：每条原因一个 `blocked_by`，shadow 期同样记录。"""
-    return {
+def audit_payload(reasons: list[BlockReason], *, breaker_unsupported: str = "") -> dict:
+    """落 audit 的统一结构：每条原因一个 `blocked_by`，shadow 期同样记录。
+
+    `breaker_unsupported` 非空时写明「熔断维度未启用」（`breaker_unsupported_env`），
+    这是**显式记录而非静默关闭**：BUY 照常放行，但 audit/页面必须能看到原因。
+    """
+    payload: dict = {
         "blocked_by": [reason.code for reason in reasons],
         "block_details": [reason.as_audit() for reason in reasons],
         "blocked": bool(reasons),
     }
+    if breaker_unsupported:
+        payload["breaker_unsupported_env"] = breaker_unsupported
+        payload["breaker_status"] = "not_enabled"
+        payload["breaker_code"] = BreakerUnsupportedEnv.code
+    return payload

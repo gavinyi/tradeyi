@@ -64,6 +64,58 @@ def test_audit_payload_records_shadow_would_block():
     assert payload == {"blocked_by": [], "block_details": [], "blocked": False}
 
 
+def test_simulate_enforce_does_not_block_but_audit_records_unsupported_env():
+    """Chief 验收：`SIMULATE + enforce` → BUY 照常通过，audit 里有 breaker_unsupported_env。
+
+    `BreakerUnsupportedEnv` 必须被聚合层捕获，**绝不允许冒到 submit_limit**。
+    """
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(real_account_id=281756481476169109)
+    reasons, unsupported = gate.resolve_breaker_inputs(
+        settings, "SIMULATE", (rb.BlockReason(rb.DRAWDOWN_WARN, "不应出现"),)
+    )
+    assert reasons == (), "不支持的 env 熔断维度不得产生 block 原因"
+    assert unsupported == "SIMULATE"
+
+    # BUY 侧照常放行（没有其他原因时）
+    signals = gate.EntrySignals(breaker_reasons=reasons, breaker_unsupported=unsupported)
+    assert gate.resolve_entry_block_reasons(signals) == []
+    payload = gate.audit_payload([], breaker_unsupported=unsupported)
+    assert payload["blocked"] is False
+    assert payload["breaker_unsupported_env"] == "SIMULATE"
+    assert payload["breaker_code"] == "breaker_unsupported_env"
+    assert payload["breaker_status"] == "not_enabled"
+
+
+def test_real_enforce_passes_breaker_reasons_through():
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(real_account_id=281756481476169109)
+    reasons, unsupported = gate.resolve_breaker_inputs(
+        settings, "REAL", (rb.BlockReason(rb.DRAWDOWN_ABSOLUTE, "dd_vs_peak=10.1%"),)
+    )
+    assert unsupported == ""
+    assert [reason.code for reason in reasons] == [rb.DRAWDOWN_ABSOLUTE]
+    blocked = gate.resolve_entry_block_reasons(gate.EntrySignals(breaker_reasons=reasons))
+    assert gate.audit_payload(blocked)["blocked_by"] == [rb.DRAWDOWN_ABSOLUTE]
+
+
+def test_breaker_unsupported_never_escapes_aggregation():
+    """静态 + 行为双守卫：聚合层不得把 `BreakerUnsupportedEnv` 抛出去。"""
+    import inspect
+
+    source = inspect.getsource(gate)
+    assert "except BreakerUnsupportedEnv" in source
+    for env in ("SIMULATE", "", "PAPER"):
+        from types import SimpleNamespace
+
+        reasons, unsupported = gate.resolve_breaker_inputs(
+            SimpleNamespace(real_account_id=None), env
+        )
+        assert reasons == () and unsupported, f"env={env!r} 未被聚合层显式记录"
+
+
 def test_v21_entry_gate_has_no_equity_or_broker_access():
     """V21 静态守卫：聚合层出现权益/快照/券商查询即判红（第二处取快照 = 方案 1 失效）。"""
     source = SOURCE.read_text(encoding="utf-8")

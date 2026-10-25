@@ -175,6 +175,32 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_operational_events_component
             ON operational_events(component, id DESC);
     """),
+    # G4 跨日回撤熔断状态表。**必须走版本化迁移**：存量库在 `initialize()` 里
+    # `apply_migrations()` 之后就 return，只写「新建库」分支的话生产永远没有这张表
+    # （与 alerts 三列、hot_path_indexes 同源缺陷）。IF NOT EXISTS + 幂等建表。
+    Migration(16, "risk_state_circuit_breaker", """
+        CREATE TABLE IF NOT EXISTS risk_state (
+            tenant_id   TEXT NOT NULL,
+            scope       TEXT NOT NULL DEFAULT 'equity',
+            peak_hist            REAL NOT NULL,
+            peak_hist_at         TEXT NOT NULL,
+            peak_hist_source     TEXT NOT NULL DEFAULT 'live',
+            baseline_equity      REAL NOT NULL,
+            baseline_at          TEXT NOT NULL,
+            baseline_source      TEXT NOT NULL DEFAULT 'live',
+            peak_reset           REAL NOT NULL,
+            breaker_level   INTEGER NOT NULL DEFAULT 0,
+            breaker_set_at  TEXT,
+            breaker_reason  TEXT NOT NULL DEFAULT '',
+            ack_dd_vs_peak  REAL,
+            ack_at          TEXT,
+            de_risk_scale   REAL NOT NULL DEFAULT 1.0,
+            reset_count_30d INTEGER NOT NULL DEFAULT 0,
+            last_reset_at   TEXT,
+            updated_at      TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, scope)
+        );
+    """),
 )
 
 
