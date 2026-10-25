@@ -2,8 +2,8 @@
 
 背景（2026-10-23 事故复盘）：
 
-1. ``scripts/run_monthly_ml_retrain.py`` **只刷元数据、从不训练**，却把
-   ``volatility_scorer_v3.json`` 的 ``trained_at`` 写成当前时间 —— 于是生产上出现
+1. 曾有一个「月度重训」脚本**只刷元数据、从不训练**（已于 2026-10-25 P1-05 删除），
+   它把 ``volatility_scorer_v3.json`` 的 ``trained_at`` 写成当前时间 —— 于是生产上出现
    「json 显示 10-14、pkl 实际停在 09-09」的假象。**任何以该 json 的 ``trained_at``
    作为年龄依据的守卫都会永远显示绿色**，等于没有守卫。
 2. ``ml_scorer.load_ml_model`` 在 ``pickle.load`` 失败（例如缺 scikit-learn）时

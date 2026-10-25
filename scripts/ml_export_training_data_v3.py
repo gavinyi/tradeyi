@@ -219,16 +219,20 @@ def _market_times_to_utc(values: pd.Series) -> pd.Series:
     )
 
 
-def _print_safe(message: str) -> None:
+def _print_safe(*args, **kwargs) -> None:
     """打印时容忍非 UTF-8 控制台（Windows GBK、`pytest -s` 都会踩）。
 
     emoji 在 GBK 流上会抛 `UnicodeEncodeError`：手工跑导出会崩，`-s` 跑守卫会
     变成 6 条假红。入口已经接管 stdio，但**被测试直接调用的函数**仍需自带兜底。
+
+    签名用 `*args/**kwargs`：调用点可能写多参数（Reviewer 2026-10-25 核查发现
+    这是唯一一个「写错就炸」的 strict 单参版本，统一放宽以免 TypeError）。
     """
     try:
-        print(message)
+        print(*args, **kwargs)
     except UnicodeEncodeError:
-        print(message.encode("ascii", "replace").decode("ascii"))
+        fallback = " ".join(str(arg) for arg in args)
+        print(fallback.encode("ascii", "replace").decode("ascii"), **kwargs)
 
 
 def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
