@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import pickle
 import re
 import logging
@@ -73,21 +74,169 @@ INFERENCE_FEATURE_KEYS = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# rule scorer v2（连续化）常量与纯函数
+#
+# 常量**冻结**在此处、不允许运行时从配置读取：对照组口径必须稳定可复现，
+# 可配会造成「每次对比基线都不一样」（设计 §4）。
+# ---------------------------------------------------------------------------
+RULE_SCORER_VERSION = "rule scorer v2（连续化）"
+_RULE_EPS = 1e-6
+# Layer A（承载方向，权重结构对齐旧公式）
+_RULE_W_WIN = 0.175        # 等价旧 0.35*(w-0.5)
+_RULE_W_TREND = 0.05       # 等价旧 ±0.05 的幅值上限
+_RULE_W_PNL = 0.05
+# Layer B（只在 Layer A 完全等分时起作用，合计上界 0.035 < A 层最小间隔）
+_RULE_W_MOM = 0.020
+_RULE_W_PAYOFF = 0.010
+_RULE_W_SHRINK = 0.005
+_RULE_SATURATION = 2.0     # tanh 饱和常数
+_RULE_SHRINK_K = 5.0       # 交易笔数置信度平滑
+# L2 破并列：同 raw 分组内每级偏移；1e-9 << 任何两层分的可分辨间隔
+_RULE_TIE_STEP = 1e-9
+
+
+def _row_number(row, key: str, default: float) -> float:
+    """从 Series/dict 安全取数：缺失、None、NaN、非数值一律回默认值（绝不抛异常）。"""
+    try:
+        value = row.get(key, default)
+    except AttributeError:  # 非 dict-like
+        return float(default)
+    if value is None:
+        return float(default)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if number != number:  # NaN
+        return float(default)
+    return number
+
+
+def _continuous_components(row) -> dict:
+    """逐行独立的连续化分量（不依赖其他样本，不做横截面归一化）。
+
+    美元量全部除以标的自身 ``symbol_std_pnl``（量纲相消 → 账户规模/标的波动放大时不漂移），
+    再经 ``tanh`` 有界压缩；缺字段走中性值，绝不抛异常。
+    """
+    win_rate = _row_number(row, "symbol_win_rate", 0.5)
+    avg_pnl = _row_number(row, "symbol_avg_pnl", 0.0)
+    pnl_trend = _row_number(row, "symbol_pnl_trend", 0.0)
+    max_pnl = _row_number(row, "symbol_max_pnl", 0.0)
+    min_pnl = _row_number(row, "symbol_min_pnl", 0.0)
+    avg_3d = _row_number(row, "symbol_3d_avg_pnl", 0.0)
+    avg_7d = _row_number(row, "symbol_7d_avg_pnl", 0.0)
+    trade_count = max(0.0, _row_number(row, "symbol_trade_count", 0.0))
+
+    sigma = abs(_row_number(row, "symbol_std_pnl", 0.0))
+    if sigma <= _RULE_EPS:
+        # 缺/零波动兜底：用自身平均盈亏量级或 1.0，仍保持无量纲
+        sigma = max(abs(avg_pnl), 1.0)
+
+    c_win = 2.0 * (win_rate - 0.5)  # ∈[-1,1]，与旧口径同向
+    c_pnl = math.tanh((avg_pnl / sigma) / _RULE_SATURATION)
+    c_trend = math.tanh((pnl_trend / sigma) / _RULE_SATURATION)
+    c_mom = math.tanh(((avg_3d - avg_7d) / sigma) / _RULE_SATURATION)
+    payoff = max_pnl / (abs(min_pnl) + _RULE_EPS)
+    c_payoff = math.tanh(math.log(max(payoff, _RULE_EPS)) / _RULE_SATURATION)
+    shrink_gap = trade_count / (trade_count + _RULE_SHRINK_K) if trade_count > 0 else 0.0
+
+    # u_* 落在 ±[0.5,1]，贡献 ±[0.025,0.05]：与旧实现同号、同量级、仅细化
+    u_trend = c_trend * (0.5 + 0.5 * abs(c_trend))
+    u_pnl = c_pnl * (0.5 + 0.5 * abs(c_pnl))
+
+    score_a = (
+        0.5
+        + _RULE_W_WIN * c_win
+        + _RULE_W_TREND * u_trend
+        + _RULE_W_PNL * u_pnl
+    )
+    score_b = (
+        _RULE_W_MOM * c_mom
+        + _RULE_W_PAYOFF * c_payoff
+        + _RULE_W_SHRINK * shrink_gap
+    )
+    return {
+        "c_win": c_win,
+        "c_pnl": c_pnl,
+        "c_trend": c_trend,
+        "c_mom": c_mom,
+        "c_payoff": c_payoff,
+        "shrink_gap": shrink_gap,
+        "score_a": score_a,
+        "score_b": score_b,
+        "raw": score_a + score_b,
+    }
+
+
+def _rule_tie_break_key(row, index: int) -> tuple:
+    """L2 合约级确定性次序（设计 §2，**无经济含义，仅消除任意性**）。
+
+    优先级：DTE 升序 → expiry_bucket 升序 → Call 优先 → strike 升序 → 原始行号。
+    旧实现下这些并列样本的先后本来就由 CSV 行序随机决定，这里只是把它变成可复现。
+    """
+    days_to_expiry = _row_number(row, "days_to_expiry", 9999.0)
+    expiry_bucket = _row_number(row, "expiry_bucket", 9.0)
+    is_call = _row_number(row, "is_call", 0.0)
+    strike_price = _row_number(row, "strike_price", 1e12)
+    return (days_to_expiry, expiry_bucket, -is_call, strike_price, index)
+
+
 class BuiltinRuleModel:
-    """内置轻量纯 Python 打分器，无需 sklearn，完全通过核心动量、胜率与波动率特征进行标准化打分。"""
+    """内置轻量纯 Python 打分器（`rule scorer v2` 连续化版）。
+
+    设计见 `data/qa/rule_continuous_score_design.md`（Chief 已签字）。与原实现相比：
+    - **L1 连续化**：`sign(trend)`、`(avg_pnl>0)` 这类阶跃换成同号连续梯度，
+      美元量先除以标的自身 `symbol_std_pnl`（量纲相消，账户规模变化不漂移），再 tanh 有界压缩；
+    - **L2 破并列**：`symbol_*` 全是标的级字段，同标的多个合约分数恒等，仅靠 L1 不够；
+      在`raw`完全相等时用合约级次序做确定性 tie-break（**无经济含义，只消除任意性**，
+      不得解读为选品能力提升，也不得进准入卡）；
+    - 不做横截面归一化（推理侧逐标的调用拿不到当日候选池，池依赖会造成标度漂移）。
+    """
+
     def predict_proba(self, X: pd.DataFrame):
         import numpy as np
-        probs = []
-        for _, row in X.iterrows():
-            win_rate = float(row.get("symbol_win_rate", 0.50))
-            pnl_trend = float(row.get("symbol_pnl_trend", 0.0))
-            avg_pnl = float(row.get("symbol_avg_pnl", 0.0))
-            score = 0.50 + (win_rate - 0.50) * 0.35 + (0.05 if pnl_trend > 0 else (-0.05 if pnl_trend < 0 else 0))
-            if avg_pnl > 0:
-                score += 0.05
-            prob = max(0.05, min(0.95, score))
-            probs.append([1.0 - prob, prob])
-        return np.array(probs)
+
+        if X is None or len(X) == 0:
+            return np.empty((0, 2))
+
+        rows = list(X.iterrows())
+        components = [_continuous_components(row) for _, row in rows]
+
+        # Layer B **只在 Layer A 完全等分时启用**（设计 §1.2 正文）：
+        # 若对所有权重都加 B，B 的合计上界 0.035 会盖过 A 层的小间隔，
+        # 造成方向翻转 —— 实测 A4 会从 99.4% 掉到 97.8%（低于「变向」红线）。
+        base_scores = [item["score_a"] for item in components]
+        groups_a: dict[float, list[int]] = {}
+        for index, value in enumerate(base_scores):
+            groups_a.setdefault(value, []).append(index)
+        for value, indices in groups_a.items():
+            if len(indices) < 2:
+                continue
+            for index in indices:
+                base_scores[index] = value + components[index]["score_b"]
+
+        # L2：仅在 base 完全相等的分组内追加合约级确定性偏移（步长 << A/B 层任何间隔）
+        groups: dict[float, list[int]] = {}
+        for index, value in enumerate(base_scores):
+            groups.setdefault(value, []).append(index)
+        final_scores = list(base_scores)
+        for value, indices in groups.items():
+            if len(indices) < 2:
+                continue
+            ordered = sorted(
+                indices, key=lambda i: _rule_tie_break_key(rows[i][1], i)
+            )
+            for rank, index in enumerate(ordered):
+                final_scores[index] = value + rank * _RULE_TIE_STEP
+
+        probs = np.array(
+            [max(0.05, min(0.95, score)) for score in final_scores], dtype=float
+        )
+        return np.column_stack([1.0 - probs, probs])
+
+    def scorer_version(self) -> str:
+        return RULE_SCORER_VERSION
 
 
 def load_ml_model(model_path: str | None = None):
@@ -124,15 +273,27 @@ def load_ml_model(model_path: str | None = None):
                     "继续加载会导致预测 KeyError→0.0（静默降级）。已回退内置规则模型。",
                     model_path, unsupported,
                 )
+                logger.warning(
+                    "%s 已被启用：model=%s reason=特征签名不符 unsupported=%s",
+                    RULE_SCORER_VERSION, model_path, unsupported,
+                )
                 return BuiltinRuleModel(), default_cols
             if hasattr(model, 'n_jobs'):
                 model.n_jobs = 1
             logger.info(f"✅ 加载ML模型: {model_path} (强制 n_jobs=1 单线程安全模式)")
             return model, feature_cols
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             logger.info("ℹ️  启用内置轻量纯 Python 标的评分引擎 (自闭环无外部依赖)")
+            logger.warning(
+                "%s 已被启用：model=%s reason=加载异常 %s",
+                RULE_SCORER_VERSION, model_path, exc,
+            )
             return BuiltinRuleModel(), default_cols
 
+    logger.warning(
+        "%s 已被启用：model=%s reason=模型文件不存在",
+        RULE_SCORER_VERSION, model_path,
+    )
     return BuiltinRuleModel(), default_cols
 
 
