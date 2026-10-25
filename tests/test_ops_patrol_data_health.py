@@ -99,8 +99,8 @@ def test_csv_healthy_silent(tmp_path):
 
 def test_csv_required_columns_constant_covers_true_market_columns():
     audit = _import_audit()
-    # P1-09：必须**全量**断言（集合相等），只查「包含某些列」的话，
-    # 常量里少一列或有人悄悄加列都不会红，缺列检测就形同虚设。
+    # P1-09：**必需列契约**用集合全等锁定（少一列必红）；「多列」不在这里判红，
+    # 而是要求显式登记到 ML_CSV_REGISTERED_EXTRA_COLUMNS（见下两个用例）。
     assert set(audit.ML_CSV_REQUIRED_COLUMNS) == {
         "moneyness",
         "gamma_to_theta",
@@ -108,6 +108,40 @@ def test_csv_required_columns_constant_covers_true_market_columns():
         "gamma_to_theta_missing_reason",
         "moneyness_lag_minutes",
     }
+
+
+def test_csv_registered_extra_column_silent(tmp_path):
+    """多列本身不是错误：已登记的新列必须保持静默（否则每加一列就要改断言）。"""
+    audit = _import_audit()
+    path = tmp_path / "data" / "ml_training" / "volatility_trades_v3_latest.csv"
+    today = datetime.now(timezone.utc).date().isoformat()
+    row = {
+        "trade_date": today, "moneyness": "0.01", "gamma_to_theta": "1.2",
+        "moneyness_missing_reason": "OK", "gamma_to_theta_missing_reason": "OK",
+        "moneyness_lag_minutes": "0.7", "market_regime": "risk_on",
+    }
+    _write_csv(path, ["trade_date", "market_regime", *REQUIRED], [row])
+
+    assert audit.check_csv_freshness(tmp_path) == [], "已登记的多列不得产生假告警"
+
+
+def test_csv_unregistered_extra_column_alerts(tmp_path):
+    """未登记的新列必须告警并提示去白名单登记——让列契约变化成为显式动作。"""
+    audit = _import_audit()
+    path = tmp_path / "data" / "ml_training" / "volatility_trades_v3_latest.csv"
+    today = datetime.now(timezone.utc).date().isoformat()
+    row = {
+        "trade_date": today, "moneyness": "0.01", "gamma_to_theta": "1.2",
+        "moneyness_missing_reason": "OK", "gamma_to_theta_missing_reason": "OK",
+        "moneyness_lag_minutes": "0.7", "brand_new_feature": "1",
+    }
+    _write_csv(path, ["trade_date", "brand_new_feature", *REQUIRED], [row])
+
+    issues = audit.check_csv_freshness(tmp_path)
+    assert issues, "未登记的新列必须告警，不许静默通过"
+    assert "未登记" in issues[0]
+    assert "brand_new_feature" in issues[0]
+    assert "ML_CSV_REGISTERED_EXTRA_COLUMNS" in issues[0], "必须给出登记位置"
 
 
 def test_csv_staleness_fail_closed_when_date_unparsable():
@@ -230,3 +264,17 @@ def test_fee_placeholder_ratio_ignores_legacy_rows(tmp_path):
     _seed_fees(store, [2.4] * 10, days_ago=1)   # 最近的都已是估算值
 
     assert audit.check_fee_placeholder_ratio(store) == [], "窗口外历史占位不得触发告警"
+
+
+def test_fee_ledger_summary_line_shows_both_scopes(tmp_path):
+    """全表占比仍必须可见（信息项），只是不触发告警。"""
+    audit = _import_audit()
+    store = TradingStore(tmp_path / "fees.db")
+    _seed_fees(store, [1.0] * 5, days_ago=60)
+    _seed_fees(store, [2.4] * 5, days_ago=1)
+
+    line = audit.fee_ledger_summary_line(store)
+    assert "费用账本状态" in line
+    assert "全表占位" in line and "5/10" in line
+    assert "最近 7 天" in line and "0/5" in line
+    assert "不回填" in line

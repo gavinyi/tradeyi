@@ -133,6 +133,20 @@ ML_CSV_REQUIRED_COLUMNS = (
     "gamma_to_theta_missing_reason",
     "moneyness_lag_minutes",
 )
+# 已登记的非必需列（P1-09）：列契约 = 必需列**必须存在**；新增列**必须显式登记**。
+# 为什么不做「集合全等」：加特征列是常态（P0-A、⑥ 都加过），全等会让每加一列就必须改
+# 断言，最后一定有人把守卫偷偷放宽。这里让「多列」成为显式动作，而不是静默通过。
+ML_CSV_REGISTERED_EXTRA_COLUMNS = (
+    "created_at", "strategy_id", "symbol", "side", "quantity", "filled_quantity",
+    "average_fill_price", "status", "metadata_json", "trade_date", "days_to_expiry",
+    "is_call", "strike_price", "underlying_symbol", "expiry_bucket", "forward_days",
+    "window_trades", "window_buy_amount", "window_sell_amount", "window_net_pnl",
+    "is_profitable", "symbol_avg_pnl", "symbol_std_pnl", "symbol_max_pnl",
+    "symbol_min_pnl", "symbol_win_rate", "symbol_3d_avg_pnl", "symbol_7d_avg_pnl",
+    "symbol_trade_count", "symbol_pnl_trend", "day_of_week", "hour_of_day",
+    "is_market_close", "month", "quarter", "underlying_price", "option_gamma",
+    "option_theta", "vix_level", "spy_return_1d", "spy_return_5d", "market_regime",
+)
 # 新鲜度容差：按**交易日**算，不是自然日（非交易日不累加）
 ML_CSV_MAX_STALE_TRADING_DAYS = 5
 ML_CSV_MIN_COVERAGE = 0.99
@@ -171,6 +185,16 @@ def check_csv_freshness(root: Path | None = None) -> list[str]:
             f"回测会 fail-closed 或拿旧口径出结论。请重导。"
         )
         return issues  # 缺列时覆盖率/新鲜度已无意义
+
+    # P1-09：多列本身不是错误（加特征列是常态），**未登记**才是 —— 让新增列成为显式动作。
+    registered = set(ML_CSV_REQUIRED_COLUMNS) | set(ML_CSV_REGISTERED_EXTRA_COLUMNS)
+    unregistered = [col for col in header if col not in registered]
+    if unregistered:
+        issues.append(
+            f"⚠️ **训练 CSV 出现未登记的新列**：{unregistered}；"
+            "新增列是允许的，但需先在 `ML_CSV_REGISTERED_EXTRA_COLUMNS` 白名单登记，"
+            "否则列契约会在无人察觉时漂移。"
+        )
 
     total = len(rows)
     if total:
@@ -260,6 +284,28 @@ FEE_PLACEHOLDER_ALERT_RATIO = 0.05
 FEE_PLACEHOLDER_WINDOW_DAYS = 7
 
 
+def _fee_placeholder_counts(store, window_days: int) -> dict[str, tuple[int, int]]:
+    """返回 `{"all": (占位行, 总行), "window": (占位行, 总行)}`，供告警与信息项共用。"""
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(1, int(window_days)))
+    ).isoformat()
+    with store.connection() as connection:
+        all_total = connection.execute("SELECT COUNT(*) FROM fill_ledger").fetchone()[0]
+        all_ph = connection.execute(
+            "SELECT COUNT(*) FROM fill_ledger WHERE ABS(fee_total - ?) < 1e-9",
+            (FEE_PLACEHOLDER_VALUE,),
+        ).fetchone()[0]
+        win_total = connection.execute(
+            "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?", (cutoff,)
+        ).fetchone()[0]
+        win_ph = connection.execute(
+            "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?"
+            " AND ABS(fee_total - ?) < 1e-9",
+            (cutoff, FEE_PLACEHOLDER_VALUE),
+        ).fetchone()[0]
+    return {"all": (all_ph, all_total), "window": (win_ph, win_total)}
+
+
 def check_fee_placeholder_ratio(
     store,
     threshold: float = FEE_PLACEHOLDER_ALERT_RATIO,
@@ -272,25 +318,16 @@ def check_fee_placeholder_ratio(
     新数据应为 `estimate_fees` 估算值，这条巡检验证「占位值已停止增长」。
 
     **只看窗口内新成交**：历史行不回填，按全表算占比会永久 >90% → 天天假告警。
+    全表数字仍在巡检报告的「费用账本状态」信息行里展示（不触发告警）。
     权威成本口径仍是 `order_intents.fees`（估算 ≠ 实付），账本合计不可引用。
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=max(1, int(window_days)))
-    ).isoformat()
     try:
-        with store.connection() as connection:
-            total = connection.execute(
-                "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?", (cutoff,)
-            ).fetchone()[0]
-            if not total:
-                return []
-            placeholders = connection.execute(
-                "SELECT COUNT(*) FROM fill_ledger WHERE filled_at >= ?"
-                " AND ABS(fee_total - ?) < 1e-9",
-                (cutoff, FEE_PLACEHOLDER_VALUE),
-            ).fetchone()[0]
+        counts = _fee_placeholder_counts(store, window_days)
     except Exception as exc:
         return [f"⚠️ **fill_ledger 费用占位值巡检失败（fail-closed）**：{exc!r}"]
+    placeholders, total = counts["window"]
+    if not total:
+        return []
     ratio = placeholders / total
     if ratio <= threshold:
         return []
@@ -300,6 +337,25 @@ def check_fee_placeholder_ratio(
         f"阈值 {threshold:.0%}）：写入路径仍在写占位值，账本成本被低估；"
         "成本口径请继续用 order_intents.fees 的估算值。"
     ]
+
+
+def fee_ledger_summary_line(
+    store, window_days: int = FEE_PLACEHOLDER_WINDOW_DAYS,
+) -> str:
+    """巡检报告里的**信息项**（不触发告警）：历史占位不回填，但也不能让它消失。"""
+    try:
+        counts = _fee_placeholder_counts(store, window_days)
+    except Exception as exc:
+        return f"• **费用账本状态**：无法统计（{exc!r}）"
+    all_ph, all_total = counts["all"]
+    win_ph, win_total = counts["window"]
+    all_pct = f"{all_ph / all_total:.1%}" if all_total else "-"
+    win_pct = f"{win_ph / win_total:.1%}" if win_total else "-"
+    return (
+        f"• **费用账本状态**：全表占位 **{all_ph}/{all_total} = {all_pct}**"
+        "（历史行不回填，仅提示）"
+        f"；最近 {int(window_days)} 天占位 **{win_ph}/{win_total} = {win_pct}**"
+    )
 
 
 def inspect_and_alert():
@@ -604,6 +660,9 @@ def inspect_and_alert():
         )
     if positions_summary:
         msg_body += "  - 当前持仓: " + "，".join(positions_summary) + "\n"
+
+    # 费用账本三态可见性（P1-14）：历史占位不回填，但必须让它可见（信息项，不告警）
+    msg_body += "\n" + fee_ledger_summary_line(store) + "\n"
 
     full_msg = msg_header + msg_body
     print(f"[{time_str}] 系统巡检完成，推送消息到飞书...")
