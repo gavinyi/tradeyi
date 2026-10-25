@@ -149,15 +149,23 @@ def cost_summary(connection: sqlite3.Connection) -> dict:
         ).fetchone()[0]
         or 0.0
     )
-    fee_bps = (authoritative / notional * 10000) if notional else None
+    # bps / 单笔成本口径必须与分母对齐：分子用 FILLED-only，
+    # 分母用 fill_ledger 名义额（743 笔成交），否则「882 条意图的费 ÷ 743 笔的名义额」口径不配对
+    fee_bps = (authoritative_filled / notional * 10000) if notional else None
+    fee_bps_all_intents = (authoritative / notional * 10000) if notional else None
     ledger_bps = (ledger_fees / notional * 10000) if notional else None
+    fee_per_trade = (authoritative_filled / fills) if fills else None
     return {
         "fills": fills or 0,
         "notional": notional or 0.0,
-        # 权威口径：全费用估算（含未成交意图的预估费）
+        # 权威口径：全费用估算（含未成交意图的预估费，仅用于每日成本）
         "fees": round(authoritative, 2),
         "fees_filled_only": round(authoritative_filled, 2),
         "fee_bps": round(fee_bps, 2) if fee_bps is not None else None,
+        "fee_bps_all_intents": (
+            round(fee_bps_all_intents, 2) if fee_bps_all_intents is not None else None
+        ),
+        "fee_per_trade": round(fee_per_trade, 2) if fee_per_trade is not None else None,
         "fees_are_estimate": True,
         # 对比基线：成交级账本，含占位值，不可引用
         "ledger_fees": ledger_fees or 0.0,
@@ -350,12 +358,14 @@ def render(db_path: Path) -> tuple[str, dict]:
         "",
         f"- 成交笔数：**{cost['fills']}**，覆盖 **{trade_days}** 个交易日",
         f"- 名义成交额：**${cost['notional']:,.2f}**",
-        f"- **权威费用（`order_intents.fees`）**：**${cost['fees']:,.2f}**"
-        + (f"（约 **${fee_per_day:,.2f}/交易日**）" if fee_per_day is not None else "")
-        + (f"，**{cost['fee_bps']} bps**" if cost["fee_bps"] is not None else ""),
+        f"- **权威费用（`order_intents.fees`，全部意图）**：**${cost['fees']:,.2f}**"
+        + (f"（约 **${fee_per_day:,.2f}/交易日**）" if fee_per_day is not None else ""),
         "  - 性质：**全费用估算，非已扣款**（estimate_fees；`commission` 全 0，真实值需券商对账单）",
-        f"  - 其中 FILLED 意图口径：**${cost['fees_filled_only']:,.2f}**"
-        "（未成交意图的预估费不计入实际支出）",
+        f"  - 其中 **FILLED 意图口径**（bps/单笔成本与 743 笔成交分母对齐）："
+        f"**${cost['fees_filled_only']:,.2f}**"
+        + (f"，**{cost['fee_bps']:.2f} bps**" if cost["fee_bps"] is not None else "")
+        + (f"，**${cost['fee_per_trade']:.2f}/笔**" if cost["fee_per_trade"] is not None else "")
+        + "（未成交意图的预估费不计入实际支出）",
         f"- 对比基线（`fill_ledger.fee_total`，**不可引用**）：**${cost['ledger_fees']:,.2f}**"
         + (f"（约 ${ledger_fee_per_day:,.2f}/交易日）" if ledger_fee_per_day is not None else "")
         + (f"，{cost['ledger_fee_bps']} bps" if cost["ledger_fee_bps"] is not None else "")
@@ -492,6 +502,8 @@ def main() -> int:
     _print_safe(
         f"成交 {cost['fills']} 笔 / 权威费用（估算，非实付）${cost['fees']:,.2f}"
         f" / 约 ${summary['fee_per_day'] or 0:,.2f} 每交易日"
+        f"（FILLED 口径 ${cost['fees_filled_only']:,.2f} / {cost['fee_bps']:.2f} bps"
+        + (f" / ${cost['fee_per_trade']:.2f}/笔）" if cost["fee_per_trade"] is not None else "）")
     )
     _print_safe(
         f"费用两源：意图 ${recon['intent_fees_total']:,.2f} vs 成交 ${recon['ledger_fee_total']:,.2f}"

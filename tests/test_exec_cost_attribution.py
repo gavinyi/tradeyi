@@ -137,6 +137,10 @@ def test_cost_summary_excludes_unfilled_intents_from_filled_estimate(tmp_path):
         conn.close()
     assert result["fees"] == pytest.approx(11.5)
     assert result["fees_filled_only"] == pytest.approx(2.5)
+    # bps/单笔成本必须与 743 笔成交分母对齐（FILLED-only），不能拿含未成交意图的总额当分子
+    assert result["fee_bps"] == pytest.approx(125.0)
+    assert result["fee_bps_all_intents"] == pytest.approx(575.0)
+    assert result["fee_per_trade"] == pytest.approx(2.5)
 
 
 def test_fee_reconciliation_surfaces_two_source_delta(tmp_path):
