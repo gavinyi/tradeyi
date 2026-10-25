@@ -12,7 +12,7 @@
 | **依赖** | `sklearn` 从未安装 | `pyproject.toml` 有 `[ml]` extra，但 `import sklearn` → `ModuleNotFoundError` |
 | **可见性** | 无心跳、无告警、无页面 | `run_service.py` 无任何 ML 任务 |
 | **模型** | 生产 pkl 停在 2026-09-09 | `data/ml_models/volatility_scorer_v3.pkl` |
-| **陷阱** | `run_monthly_ml_retrain.py` **只刷元数据、不训练** | 它 `shutil.copy2` 备份 pkl（`:70-72`）并写 `v3.json`（`:87-89`），**从不调用训练器** —— 这就是 json 被刷新、pkl 没动的原因 |
+| **陷阱** | 曾经的「月度重训」脚本 **只刷元数据、不训练**（**已于 2026-10-25 P1-05 删除**） | 它会 `shutil.copy2` 备份 pkl 并写 `v3.json`，**从不调用训练器** —— 这就是 json 被刷新、pkl 没动的原因 |
 
 **影响**：`volatility_roll.py:317` 的 `MLSymbolScorer` 加载失败 → **降级成规则打分**（`ml_symbol_scorer.py:68-75`），不崩、不拦单，但**评分质量静默退化约 6 周**。
 
@@ -132,7 +132,7 @@ subprocess.run(
 ### 4.1 判据必须取 **pkl 内的 `trained_at`**，回落 pkl mtime
 
 **🔴 json 的 `trained_at` 是陷阱（Coder 实测）**：`volatility_scorer_v3.json:3` 的
-`trained_at: 2026-10-14` 是 `run_monthly_ml_retrain.py:77` 写的**元数据刷新时间**，
+`trained_at: 2026-10-14` 是那个**已删除的假重训脚本**写的**元数据刷新时间**，
 **不是训练时间**。而 pkl 本体 mtime 是**更老**的那个（实测比 json 老一个月以上）。
 
 **若守卫读 json → 永远显示"很新" → 永远绿 → 形同虚设。**
@@ -140,7 +140,7 @@ subprocess.run(
 **规则**：
 1. 判据 = **pkl 内的 `trained_at`**（pkl 确实带这个键），**回落 pkl mtime**；
 2. **json 那个字段必须改名或标注**为 `metadata_refreshed_at` ——
-   **名字骗人比代码错更难查**（今晚已栽过一次：`run_monthly_ml_retrain.py` 冒充训练器）；
+   **名字骗人比代码错更难查**（今晚已栽过一次：那个**已删除的假重训脚本**冒充训练器）；
 3. 守卫必须**在判据自身上可做变异测试**：构造 pkl 的 `trained_at` 为 **N 天前**
    （**N 相对生成、不写死**）→ 必须转红；
 4. **关键判据**：**json 与 pkl 不一致时，必须显示更老那个** ——
@@ -259,7 +259,7 @@ subprocess.run(
 
 ## 6. 防陷阱（必须做）
 
-1. **合并/改名 `run_monthly_ml_retrain.py`** —— 它只刷元数据、不训练，名字却像训练器，
+1. **删除「假重训」脚本**（P1-05，2026-10-25 已完成）—— 它只刷元数据、不训练，名字却像训练器，
    **已是实测陷阱**（json 被刷新、pkl 没动，误导了 6 周）；
 2. **`[ml]` extra 必须真装**（`uv sync --extra ml`），且**启动时校验**：
    缺 `sklearn` → **告警 + 明确降级提示**，不静默；

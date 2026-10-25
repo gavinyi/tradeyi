@@ -76,7 +76,7 @@ def _write_unpicklable(path: Path) -> Path:
 def test_age_comes_from_pkl_trained_at_not_metadata_json(tmp_path):
     """元数据 json 的 trained_at 是「刷新时间」不是「训练时间」—— 用它当判据等于没有判据。"""
     model = _write_dict_pickle(tmp_path / "volatility_scorer_v3.pkl", "2020-01-01T00:00:00+00:00")
-    # 故意把 json 写成「刚刚刷新」—— 陷阱脚本 run_monthly_ml_retrain.py 就是这么干的
+    # 故意把 json 写成「刚刚刷新」—— 已删除的陷阱脚本当年就是这么干的（P1-05）
     model.with_suffix(".json").write_text(
         '{"trained_at": "%s"}' % datetime.now(timezone.utc).isoformat(), encoding="utf-8"
     )
