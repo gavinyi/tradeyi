@@ -125,6 +125,127 @@ def check_processes(store) -> list[str]:
     return issues
 
 
+# 训练/回测 CSV 必需列（缺任一即说明是旧版导出，大屏/审计会静默拿旧数据）
+ML_CSV_REQUIRED_COLUMNS = (
+    "moneyness",
+    "gamma_to_theta",
+    "moneyness_missing_reason",
+    "gamma_to_theta_missing_reason",
+    "moneyness_lag_minutes",
+)
+# 新鲜度容差：按**交易日**算，不是自然日（非交易日不累加）
+ML_CSV_MAX_STALE_TRADING_DAYS = 5
+ML_CSV_MIN_COVERAGE = 0.99
+
+
+def check_csv_freshness(root: Path | None = None) -> list[str]:
+    """P1-07：训练/回测 CSV 新鲜度与列契约巡检（只读，只告警）。
+
+    背景：`data/ml_training/*.csv` 已于 2026-10-25 解除 git 跟踪，只剩磁盘副本。
+    陈旧/缺失时回测大屏与 tie-break 审计仍会跑，拿旧数据出「看起来正常」的结论 ——
+    这是「数据过期但没人知道」的典型形态。
+    """
+    import csv as _csv
+
+    base = root or Path(__file__).resolve().parents[1]
+    path = base / "data" / "ml_training" / "volatility_trades_v3_latest.csv"
+    if not path.exists():
+        return [
+            f"⚠️ **训练 CSV 缺失**：`{path}` 不存在；回测大屏与 tie-break 审计将无数据。"
+            f"请跑 `scripts/ml_export_training_data_v3.py` 重导。"
+        ]
+
+    issues: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as fh:
+            reader = _csv.DictReader(fh)
+            header = list(reader.fieldnames or [])
+            rows = list(reader)
+    except Exception as exc:  # 读不动也要可见，不许静默
+        return [f"⚠️ **训练 CSV 不可读**：`{path}`（{exc}）"]
+
+    missing = [col for col in ML_CSV_REQUIRED_COLUMNS if col not in header]
+    if missing:
+        issues.append(
+            f"⚠️ **训练 CSV 缺列**：{missing}；说明是旧版导出（无真行情列），"
+            f"回测会 fail-closed 或拿旧口径出结论。请重导。"
+        )
+        return issues  # 缺列时覆盖率/新鲜度已无意义
+
+    total = len(rows)
+    if total:
+        covered = sum(1 for r in rows if (r.get("moneyness") or "").strip())
+        coverage = covered / total
+    else:
+        coverage = 0.0
+    if coverage < ML_CSV_MIN_COVERAGE:
+        issues.append(
+            f"⚠️ **训练 CSV 覆盖率不足**：moneyness {coverage:.1%} < {ML_CSV_MIN_COVERAGE:.0%}"
+            f"（{total} 行）；可能有样本未匹配到成交前快照。"
+        )
+
+    trade_dates = sorted({(r.get("trade_date") or "").strip() for r in rows if (r.get("trade_date") or "").strip()})
+    if trade_dates:
+        issues.extend(_csv_staleness_issue(trade_dates[-1], ML_CSV_MAX_STALE_TRADING_DAYS))
+    return issues
+
+
+def _csv_staleness_issue(last_trade_date: str, max_stale: int) -> list[str]:
+    """最后成交日落后超过 N 个**交易日**才告警（XNYS 日历，不按自然日）。"""
+    try:
+        import pandas as pd
+
+        calendar = USMarketCalendar()
+        last = pd.Timestamp(last_trade_date[:10])
+        today = pd.Timestamp(datetime.now(NY_TZ).date())
+        if last >= today:
+            return []
+        elapsed = len(calendar.calendar.sessions_in_range(last, today)) - 1
+        if elapsed > max_stale:
+            return [
+                f"⚠️ **训练 CSV 已陈旧**：最后成交日 {last_trade_date}，"
+                f"距今 {elapsed} 个交易日（阈值 {max_stale}）。回测结论基于旧样本，需重导。"
+            ]
+    except Exception:
+        return []  # 日历不可用时宁可静默，不产生假告警
+    return []
+
+
+def check_snapshot_gaps(store, max_days: int = 10) -> list[str]:
+    """期权历史快照断采巡检：有 FILLED 成交、但当天 option_history 零快照。
+
+    2026-08-04~08-10 就是这样丢了 4 个交易日、约 85 笔成交，且不可回溯
+    （只能用成交前快照，补成交后快照＝look-ahead，口径禁止）。
+
+    **成交数必须取 `order_intents`（status='FILLED'）**：`fill_ledger` 只有 743 行 /
+    30 个交易日，用它做左表会只查出 1 个缺口，把 8 月那批静默漏掉 —— 守卫写对了
+    但数据源选错，等于没守。
+    """
+    sql = """
+    SELECT i.d AS trade_date, COUNT(*) AS fills
+    FROM (SELECT DISTINCT substr(created_at,1,10) AS d
+          FROM order_intents WHERE status='FILLED') i
+    LEFT JOIN (SELECT DISTINCT substr(time_key,1,10) AS d FROM option_history) o
+      ON o.d = i.d
+    WHERE o.d IS NULL
+    GROUP BY i.d
+    ORDER BY i.d DESC
+    LIMIT ?
+    """
+    try:
+        with store.connection() as connection:
+            rows = connection.execute(sql, (int(max_days),)).fetchall()
+    except Exception as exc:
+        return [f"⚠️ **快照断采巡检失败**：{exc}"]
+    issues: list[str] = []
+    for trade_date, fills in rows:
+        issues.append(
+            f"🚨 **期权快照断采**：{trade_date} 有 {fills} 笔成交但当天 option_history "
+            f"零快照 —— 这批成交无法进入训练样本且不可回溯。请检查 option_history 采集任务。"
+        )
+    return issues
+
+
 def inspect_and_alert():
     now_utc = datetime.now(timezone.utc)
     now_china = now_utc.astimezone(CHINA_TZ)
@@ -347,6 +468,16 @@ def inspect_and_alert():
                     issues.append(f"⚠️ **日志检测到严重错误追踪**：`{sample}`")
         except Exception:
             pass
+
+    # 5.1 训练/回测 CSV 新鲜度（Chief 2026-10-25 指派 P1-07）
+    # 为什么要有：CSV 已解除 git 跟踪、只剩磁盘副本，陈旧或缺失会让回测大屏与
+    # tie-break 审计拿着旧数据出「看起来正常」的结论。只告警，不碰交易。
+    issues.extend(check_csv_freshness())
+
+    # 5.2 期权历史快照断采（2026-08-04~08-10 事故形态）
+    # 有 FILLED 成交但当天 option_history 零快照 → 那批成交永远无法入训且不可回溯。
+    # 成交数必须取 order_intents：fill_ledger 只有 30 个交易日、会静默漏掉 8 月那批。
+    issues.extend(check_snapshot_gaps(store))
 
     print(f"[{time_str}] 系统巡检完成，发现问题数: {len(issues)}")
     for iss in issues:
