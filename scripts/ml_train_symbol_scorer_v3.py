@@ -19,6 +19,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+from futu_quant.ml_scorer import gamma_to_theta_ratio, moneyness_ratio
+
 try:
     from sklearn.model_selection import train_test_split, cross_val_score
     from sklearn.preprocessing import StandardScaler
@@ -69,7 +71,9 @@ def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[
         # 结果特征（订单执行后才知道，不应用于训练）
         'average_fill_price', 'filled_quantity', 'limit_price', 'quantity',
         # 标的符号（改用underlying_symbol的编码版本）
-        'underlying_symbol'
+        'underlying_symbol',
+        # v3.2 原始行情列：只用于派生 moneyness/gamma_to_theta，不作为特征直投
+        'underlying_price', 'option_gamma', 'option_theta'
     ]
     
     feature_cols = [col for col in df.columns if col not in exclude_cols]
@@ -83,21 +87,38 @@ def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[
     pnl = df['window_net_pnl'].fillna(0).abs() if 'window_net_pnl' in df.columns else pd.Series(0.0, index=df.index)
     sample_weights = pd.Series(1.0 + np.log1p(pnl.values * 10.0), index=df.index)
 
-    # 特征工程 v3.2（凸性与无量纲化）：
-    # 1. 虚实值偏离度 Moneyness = S/K - 1（彻底剔除绝对行权价的量纲污染）
-    if 'strike_price' in X.columns:
-        if 'underlying_price' in df.columns:
-            X['moneyness'] = (df['underlying_price'] / (X['strike_price'] + 1e-6)) - 1.0
-        else:
-            underlying_medians = df.groupby('underlying_symbol')['strike_price'].transform('median')
-            X['moneyness'] = (df['strike_price'] / (underlying_medians + 1e-6)) - 1.0
-        X = X.drop(columns=['strike_price'], errors='ignore')
+    # 特征工程 v3.2（凸性与无量纲化）：口径与推理侧共用 `futu_quant.ml_scorer` 的
+    # `moneyness_ratio` / `gamma_to_theta_ratio`，且**只认真实行情**。
+    # 以前的两个"特征"都是伪的：
+    #   * `strike/median(同标的strike)-1` → 该行权价在同批候选里的相对位置，
+    #     随当天候选池漂移，同一合约换一天值就变，推理侧不可能复现；
+    #   * `1/(dte·vix)` → 与 gamma/theta 没有任何关系，名不符实。
+    # 缺列就报错拒绝，绝不静默换定义（否则训练出的重要性没有意义）。
+    required_market = ('underlying_price', 'option_gamma', 'option_theta')
+    missing_market = [column for column in required_market if column not in df.columns]
+    if missing_market:
+        raise RuntimeError(
+            f"训练数据缺少 v3.2 必需的真实行情列 {missing_market}：拒绝用伪特征兜底"
+            "（strike/median(strike)、dte·vix 都不是 moneyness/gamma_to_theta）。"
+            "请先用 scripts/ml_export_training_data_v3.py 重新导出（会 join option_history）。"
+        )
 
-    # 2. 注入期权做多波动率凸性性价比因子 gamma_to_theta
-    if 'days_to_expiry' in X.columns:
-        dte = X['days_to_expiry'].clip(lower=1)
-        vix = X.get('vix_level', pd.Series(20.0, index=X.index))
-        X['gamma_to_theta'] = (1.0 / (dte * (vix / 20.0) + 1e-6)).clip(0, 10)
+    moneyness_values = [
+        moneyness_ratio(spot, strike)
+        for spot, strike in zip(df['underlying_price'], df['strike_price'])
+    ]
+    if any(value is None for value in moneyness_values):
+        raise RuntimeError("moneyness 出现空值（spot/strike 无效）：拒绝静默填 0")
+    gamma_theta_values = [
+        gamma_to_theta_ratio(gamma, theta)
+        for gamma, theta in zip(df['option_gamma'], df['option_theta'])
+    ]
+    if any(value is None for value in gamma_theta_values):
+        raise RuntimeError("gamma_to_theta 出现空值（gamma/theta 无效）：拒绝静默填 0")
+
+    X['moneyness'] = [float(value) for value in moneyness_values]
+    X['gamma_to_theta'] = [float(value) for value in gamma_theta_values]
+    X = X.drop(columns=['strike_price', *required_market], errors='ignore')
     
     # 处理缺失值
     X = X.fillna(0)

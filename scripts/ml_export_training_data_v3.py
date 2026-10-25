@@ -166,6 +166,61 @@ def add_option_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
+    """合并``option_history`` 里**成交时刻的真实行情**：正股价 + 期权希腊字母。
+
+    为什么必须这么做（v3.2 特征定义之争）：moneyness = S/K - 1 与
+    gamma_to_theta = |gamma|/(|theta|+1e-6) 只能来自真行情。以前训练侧用
+    ``strike / median(同标的 strike) - 1``（随当天候选池漂移、同一合约换一天就变）
+    和 ``1/(dte·vix)``（与 gamma/theta 毫无关系）顶替，推理侧永远复现不出来，
+    训练出的重要性也是伪特征的成绩。缺行情就**丢样本并告警**，绝不补 0 或补伪值。
+    """
+    print("\n🔧 合并成交时刻真实行情（option_history）...")
+    market_cols = ["underlying_price", "option_gamma", "option_theta"]
+    conn = sqlite3.connect(db_path)
+    try:
+        history = pd.read_sql_query(
+            "SELECT code, time_key, underlying_price, gamma, theta FROM option_history",
+            conn,
+        )
+    finally:
+        conn.close()
+
+    if history.empty:
+        raise RuntimeError(
+            "option_history 无任何行情记录：无法构造真实 moneyness/gamma_to_theta，"
+            "拒绝导出会用伪特征占位的训练集"
+        )
+
+    history = history.rename(columns={"gamma": "option_gamma", "theta": "option_theta"})
+    history["time_key"] = pd.to_datetime(history["time_key"], errors="coerce")
+    history = history.dropna(subset=["time_key"]).sort_values("time_key")
+    history = history.dropna(subset=["underlying_price"])
+
+    frame = df.copy()
+    frame["code"] = frame["symbol"]
+    frame["created_at"] = pd.to_datetime(frame["created_at"], errors="coerce")
+    frame = frame.sort_values("created_at")
+    merged = pd.merge_asof(
+        frame,
+        history[["code", "time_key", *market_cols]],
+        left_on="created_at", right_on="time_key", by="code",
+        direction="backward", tolerance=pd.Timedelta(days=1),
+    )
+    merged = merged.drop(columns=["time_key", "code"])
+
+    covered = merged.dropna(subset=market_cols)
+    dropped = len(merged) - len(covered)
+    if dropped:
+        print(f"   ⚠️  {dropped}/{len(merged)} 条样本没有成交时刻的真实行情 → 丢弃（不补伪值）")
+    if covered.empty:
+        raise RuntimeError(
+            "没有任何样本能匹配到 option_history 的真实行情：v3.2 特征无法构造，拒绝训练"
+        )
+    print(f"   ✅ 真实行情样本: {len(covered)}/{len(merged)}")
+    return covered.reset_index(drop=True)
+
+
 def calculate_pnl_labels(df: pd.DataFrame, forward_days: int = 7) -> pd.DataFrame:
     """为每个标的计算未来N天的盈亏标签"""
     labeled_data = []
@@ -344,6 +399,9 @@ def main():
     
     # 4. 计算历史特征
     featured_df = calculate_historical_features(labeled_df)
+    
+    # 4b. 合并成交时刻真实行情（v3.2 的 moneyness / gamma_to_theta 只认真值）
+    featured_df = add_option_market_features(featured_df, args.db)
     
     # 5. 添加市场环境特征
     featured_df = add_market_environment_features(featured_df)

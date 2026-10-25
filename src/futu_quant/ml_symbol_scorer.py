@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from .ml_scorer import (
+    MissingFeatureError,
     load_ml_model,
     predict_symbol_score,
     batch_predict_scores,
@@ -84,10 +85,11 @@ class MLSymbolScorer:
     def score_symbol(
         self,
         symbol: str,
-        broker: FutuPaperBroker,
+        broker: FutuPaperBroker | None,
         store: TradingStore,
-        trade_time: datetime | None = None
-    ) -> float:
+        trade_time: datetime | None = None,
+        market_context: dict | None = None,
+    ) -> float | None:
         """
         为单个标的打分
         
@@ -98,30 +100,36 @@ class MLSymbolScorer:
             trade_time: 交易时间，默认当前时间
         
         Returns:
-            0-1之间的分数，越高越可能盈利
+            0-1之间的分数，越高越可能盈利；**拿不到必需特征时返回 None（NA）**，
+            由调用方回退规则排序。以前这里 return 0.0，会被下游当成真实最低分。
         """
         if not self.enabled or self.model is None:
             return 0.5  # 默认中等分数
         
         try:
-            score = predict_symbol_score(
+            return predict_symbol_score(
                 symbol,
                 self.model,
                 self.feature_cols,
                 store,
-                trade_time
+                trade_time,
+                broker,
+                market_context,
             )
-            return score
+        except MissingFeatureError as exc:
+            logger.error(f"ML评分缺必需特征 {symbol}，返回 NA（回退规则，不再静默 0.0）: {exc}")
+            return None
         except Exception as e:
-            logger.error(f"ML评分失败 {symbol}: {e}")
-            return 0.0  # 失败时返回最低分
+            logger.error(f"ML评分失败 {symbol}，返回 NA（回退规则）: {e}")
+            return None
     
     def rank_symbols(
         self,
         symbols: list[str],
-        broker: FutuPaperBroker,
+        broker: FutuPaperBroker | None,
         store: TradingStore,
-        trade_time: datetime | None = None
+        trade_time: datetime | None = None,
+        market_context: dict | None = None,
     ) -> pd.DataFrame:
         """
         对标的列表进行排名
@@ -143,36 +151,46 @@ class MLSymbolScorer:
                 self.model,
                 self.feature_cols,
                 store,
-                trade_time
+                trade_time,
+                broker,
+                market_context,
             )
             
-            # 构建结果
+            # 构建结果：None = 无法评分 → ml_rank=NA，不再冒充 0.0（真实最低分）
             results = []
             for symbol, score in scores.items():
-                rank = 'HIGH' if score >= 0.7 else 'MEDIUM' if score >= 0.5 else 'LOW'
+                if score is None:
+                    rank = 'NA'
+                else:
+                    rank = 'HIGH' if score >= 0.7 else 'MEDIUM' if score >= 0.5 else 'LOW'
                 results.append({
                     'symbol': symbol,
                     'ml_score': score,
                     'ml_rank': rank
                 })
             
-            df = pd.DataFrame(results).sort_values('ml_score', ascending=False)
-            return df
+            df = pd.DataFrame(results)
+            if df.empty:
+                return df
+            return df.sort_values(
+                'ml_score', ascending=False, na_position='last'
+            ).reset_index(drop=True)
             
         except Exception as e:
             logger.error(f"批量排名失败: {e}")
             return pd.DataFrame([
-                {'symbol': s, 'ml_score': 0.0, 'ml_rank': 'LOW'}
+                {'symbol': s, 'ml_score': None, 'ml_rank': 'NA'}
                 for s in symbols
             ])
     
     def filter_symbols(
         self,
         symbols: list[str],
-        broker: FutuPaperBroker,
+        broker: FutuPaperBroker | None,
         store: TradingStore,
         min_score: float | None = None,
-        trade_time: datetime | None = None
+        trade_time: datetime | None = None,
+        market_context: dict | None = None,
     ) -> list[str]:
         """
         过滤出高分标的
@@ -195,20 +213,30 @@ class MLSymbolScorer:
             min_score = self.threshold
         
         try:
-            ranked = self.rank_symbols(symbols, broker, store, trade_time)
-            filtered = ranked[ranked['ml_score'] >= min_score]
-            
-            logger.info(f"ML筛选: {len(symbols)} → {len(filtered)} (阈值={min_score:.2f})")
-            
-            # 记录过滤详情
+            ranked = self.rank_symbols(symbols, broker, store, trade_time, market_context)
+            if ranked['ml_score'].notna().sum() == 0:
+                logger.error(
+                    "ML 全部标的都无法评分（缺行情/模型异常），回退规则：候选不筛选、原样放行"
+                )
+                return symbols
+
+            # fail-open：无法评分的标的原样放行（宁可少筛、不可误杀），并留痕
+            keep = ranked[ranked['ml_score'].isna() | (ranked['ml_score'] >= min_score)]
+            unscored = int(ranked['ml_score'].isna().sum())
+            if unscored:
+                logger.error(f"ML 有 {unscored}/{len(ranked)} 个标的无法评分，按 fail-open 放行")
+
+            logger.info(f"ML筛选: {len(symbols)} → {len(keep)} (阈值={min_score:.2f})")
+
             for _, row in ranked.iterrows():
-                symbol = row['symbol']
                 score = row['ml_score']
-                passed = score >= min_score
-                status = "✅通过" if passed else "❌过滤"
-                logger.info(f"  {status} {symbol}: ML分数={score:.3f}")
-            
-            return filtered['symbol'].tolist()
+                if pd.isna(score):
+                    logger.info(f"  ⚪NA {row['symbol']}: 无法评分（放行）")
+                    continue
+                status = "✅通过" if score >= min_score else "❌过滤"
+                logger.info(f"  {status} {row['symbol']}: ML分数={score:.3f}")
+
+            return keep['symbol'].tolist()
             
         except Exception as e:
             logger.error(f"ML过滤失败: {e}，返回全部候选")
