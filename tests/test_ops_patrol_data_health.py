@@ -249,7 +249,11 @@ def test_fee_placeholder_ratio_ignores_legacy_rows(tmp_path):
 
 
 def test_fee_ledger_summary_line_shows_both_scopes(tmp_path):
-    """全表占比仍必须可见（信息项），只是不触发告警。"""
+    """全表占比仍必须可见（信息项），只是不触发告警。
+
+    合并 fill-fee 分支后新建库已带三态列，文案走「历史占位 + 未标注 1.0 哨兵」两段；
+    这里只断言关键数字都出现，不锁死具体措辞。
+    """
     audit = _import_audit()
     store = TradingStore(tmp_path / "fees.db")
     _seed_fees(store, [1.0] * 5, days_ago=60)
@@ -257,19 +261,26 @@ def test_fee_ledger_summary_line_shows_both_scopes(tmp_path):
 
     line = audit.fee_ledger_summary_line(store)
     assert "费用账本状态" in line
-    assert "占位 1.0" in line and "5/10" in line
+    assert "5/10" in line, "全表 5 行 1.0 必须显示"
     assert "最近 7 天" in line and "0/5" in line
 
 
 def _add_fee_state_columns(store) -> None:
-    """模拟迁移 17/18：给 fill_ledger 补三态两列（真实迁移落地前测试用）。"""
+    """模拟迁移 17/18：给 fill_ledger 补三态两列（真实迁移落地前测试用）。
+
+    合并 fill-fee 分支后，新建库本身已带这两列 —— 先探测再补，否则 `ALTER TABLE`
+    会报 `duplicate column name`（两支各自绿、合起来红，2026-10-25 全量实测到）。
+    """
     with store.connection() as connection:
-        connection.execute(
-            "ALTER TABLE fill_ledger ADD COLUMN fee_is_estimate INTEGER NOT NULL DEFAULT 0"
-        )
-        connection.execute(
-            "ALTER TABLE fill_ledger ADD COLUMN fee_unavailable_reason TEXT"
-        )
+        existing = {row[1] for row in connection.execute("pragma table_info(fill_ledger)")}
+        if "fee_is_estimate" not in existing:
+            connection.execute(
+                "ALTER TABLE fill_ledger ADD COLUMN fee_is_estimate INTEGER NOT NULL DEFAULT 0"
+            )
+        if "fee_unavailable_reason" not in existing:
+            connection.execute(
+                "ALTER TABLE fill_ledger ADD COLUMN fee_unavailable_reason TEXT"
+            )
 
 
 def _set_fee_state(store, row_id: int, *, estimate: int = 0, reason: str | None = None) -> None:
