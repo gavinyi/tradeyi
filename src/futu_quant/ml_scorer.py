@@ -70,7 +70,51 @@ INFERENCE_FEATURE_KEYS = frozenset({
     'vix_level', 'spy_return_1d', 'spy_return_5d', 'market_regime',
     # v3.2 凸性/无量纲（需要 market_context 里的真实行情）
     'moneyness', 'gamma_to_theta',
+    # 标的级新信息（零采集：行情仓库/实时 K 线派生；见 data/qa/symbol_level_feature_availability.md）
+    'symbol_momentum_20d', 'regime_label',
 })
+
+
+def momentum_20d_from_bars(bars, *, include_last: bool = False) -> float | None:
+    """标的 20 日动量（严格用**已收**K 线，防 look-ahead）。
+
+    - ``include_last=False``（实时推理）：最后一根可能是未收盘的当根，用 ``close[-2]/close[-22]-1``；
+    - ``include_last=True``（历史回补，bars 已按成交日截断）：用 ``close[-1]/close[-21]-1``。
+    数据不足返回 None，绝不编 0（没数据与"动量恰好为 0"是两件事）。
+    """
+    need = 21 if include_last else 22
+    if bars is None or len(bars) < need:
+        return None
+    try:
+        closes = [float(value) for value in bars["close"].tolist()]
+    except (KeyError, TypeError, ValueError):
+        return None
+    base = closes[-21] if include_last else closes[-22]
+    latest = closes[-1] if include_last else closes[-2]
+    if base <= 0:
+        return None
+    return latest / base - 1.0
+
+
+def regime_label_from_spy(spy_return_5d: float | None, threshold: float = 0.01) -> int | None:
+    """大盘趋势标签：+1=TREND_UP / -1=TREND_DOWN / 0=RANGE。
+
+    与既有 ``market_regime``（1/2/3 = 正常/高波动/危机，波动维度）互补：
+    这里给的是**方向维度**。零采集，复用 SPY 5 日收益。
+    """
+    if spy_return_5d is None:
+        return None
+    try:
+        value = float(spy_return_5d)
+    except (TypeError, ValueError):
+        return None
+    if value != value:  # NaN
+        return None
+    if value > threshold:
+        return 1
+    if value < -threshold:
+        return -1
+    return 0
 
 
 class BuiltinRuleModel:
@@ -348,6 +392,9 @@ def prepare_symbol_features(
             features['spy_return_1d'] = market_data['spy_return_1d']
             features['spy_return_5d'] = market_data['spy_return_5d']
             features['market_regime'] = market_data['market_regime']
+            trend_label = regime_label_from_spy(market_data['spy_return_5d'])
+            if trend_label is not None:
+                features['regime_label'] = trend_label
         except Exception as e:
             logger.warning(f"获取市场环境数据失败: {e}，使用默认值")
             features['vix_level'] = 20.0
@@ -355,7 +402,7 @@ def prepare_symbol_features(
             features['spy_return_5d'] = 0.0
             features['market_regime'] = 1
     else:
-        # 占位符
+        # 占位符（仅当调用方拿不到 broker 时；这也是要修「推理链不传 broker」的原因）
         features['vix_level'] = 20.0
         features['spy_return_1d'] = 0.0
         features['spy_return_5d'] = 0.0
@@ -373,6 +420,19 @@ def prepare_symbol_features(
     )
     if gamma_to_theta is not None:
         features['gamma_to_theta'] = gamma_to_theta
+
+    # 6. 标的级新信息（零采集）：优先用调用方已取到的行情（避免逐标的重复拉 K 线）
+    momentum = context.get('symbol_momentum_20d')
+    if momentum is None and broker is not None and opt_info is not None:
+        try:
+            momentum = momentum_20d_from_bars(
+                broker.candles(f"US.{opt_info['underlying']}", count=120)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"获取 {symbol} 标的动量失败: {exc}")
+            momentum = None
+    if momentum is not None:
+        features['symbol_momentum_20d'] = float(momentum)
 
     return features
 

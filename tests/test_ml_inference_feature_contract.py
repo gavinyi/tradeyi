@@ -127,8 +127,11 @@ def test_prepare_symbol_features_produces_market_features(tmp_path):
         },
     )
 
-    assert set(INFERENCE_FEATURE_KEYS) <= set(features), (
-        f"推理侧缺特征: {sorted(set(INFERENCE_FEATURE_KEYS) - set(features))}"
+    # 两个标的级新特征需要真实行情/broker（market_context 或 broker 透传），
+    # 由 tests/test_symbol_level_features_inference.py 单独覆盖；这里断言其余特征全可产。
+    needs_market = {"symbol_momentum_20d", "regime_label"}
+    assert (set(INFERENCE_FEATURE_KEYS) - needs_market) <= set(features), (
+        f"推理侧缺特征: {sorted((set(INFERENCE_FEATURE_KEYS) - needs_market) - set(features))}"
     )
     assert features["moneyness"] == pytest.approx(200.0 / MODEL_STRIKE - 1.0)
     assert features["gamma_to_theta"] == pytest.approx(0.5, rel=1e-4)

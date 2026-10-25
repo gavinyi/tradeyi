@@ -73,10 +73,18 @@ def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[
         # 标的符号（改用underlying_symbol的编码版本）
         'underlying_symbol',
         # v3.2 原始行情列：只用于派生 moneyness/gamma_to_theta，不作为特征直投
-        'underlying_price', 'option_gamma', 'option_theta'
+        'underlying_price', 'option_gamma', 'option_theta',
+        # 「只观测」列与缺失原因：覆盖率不足时只留观测，绝不入训
+        'symbol_momentum_20d_observation', 'symbol_momentum_missing_reason',
     ]
-    
+
     feature_cols = [col for col in df.columns if col not in exclude_cols]
+    # 「只观测」列一律不得入训（否则"只观测"会悄悄变成"多学一列"，且不报错）。
+    # 用后缀规则兜住未来新增的 *_observation 列，别依赖人手逐个加白名单。
+    dropped_observations = [col for col in feature_cols if col.endswith('_observation')]
+    if dropped_observations:
+        print(f"  排除只观测列（不入训）: {dropped_observations}")
+        feature_cols = [col for col in feature_cols if col not in dropped_observations]
     
     # 提取特征和标签
     X = df[feature_cols].copy()
