@@ -10,7 +10,7 @@ import streamlit as st
 
 from futu_quant.broker import FutuPaperBroker
 from futu_quant.config import DEFAULT_VOLATILITY_SYMBOLS, Settings
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar
 from futu_quant.universe.lifecycle_manager import LifecycleManager
 from futu_quant.universe.recall_scanner import RecallScanner

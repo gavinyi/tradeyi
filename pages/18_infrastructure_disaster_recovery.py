@@ -14,7 +14,7 @@ from futu_quant.postgres_migration import postgres_readiness
 from futu_quant.rbac import PERMISSIONS, role_for_session
 from futu_quant.secret_store import keychain_available, secret_status, set_secret
 from futu_quant.storage_monitor import storage_report
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar
 
 

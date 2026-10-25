@@ -6,7 +6,7 @@ from futu_quant.config import Settings
 from futu_quant.crypto_swap_service_control import status
 from futu_quant.crypto_swap_watchlist import load_swap_radar_managed_symbols
 from futu_quant.okx_config import OkxSettings
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import render_sidebar
 
 st.set_page_config(page_title="合约量化总览", page_icon=":material/radar:", layout="wide")

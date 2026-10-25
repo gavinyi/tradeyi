@@ -35,6 +35,9 @@ if not _external_temp or not Path(_external_temp).exists():
 else:
     tempfile.tempdir = _external_temp
 
+# 测试环境：允许临时库 bootstrap（生产路径必须显式 bootstrap=True）
+os.environ.setdefault("TRADEYI_ALLOW_BOOTSTRAP", "1")
+
 
 def _assert_code_origin() -> None:
     """验收前置（P0-5 §8.0）：断言 `futu_quant` 解析到**本 worktree**。
@@ -331,11 +334,12 @@ def _isolate_environment(monkeypatch, tmp_path):
 
     _real_init = _TradingStore.__init__
 
-    def _isolated_init(self, path=None, tenant_registry=None):
+    def _isolated_init(self, path=None, tenant_registry=None, read_only=False, bootstrap=False):
         if path is not None and Path(path).resolve() != Path(_PROD_DB).resolve():
-            _real_init(self, path, tenant_registry)
+            _real_init(self, path, tenant_registry, read_only=read_only, bootstrap=bootstrap)
         else:
-            _real_init(self, tmp_path / "isolated.db", tenant_registry)
+            _real_init(self, tmp_path / "isolated.db", tenant_registry,
+                       read_only=read_only, bootstrap=bootstrap)
 
     monkeypatch.setattr(_TradingStore, "__init__", _isolated_init)
 

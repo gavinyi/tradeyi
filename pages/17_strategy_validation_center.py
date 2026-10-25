@@ -8,7 +8,7 @@ import streamlit as st
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.combo_analytics import combo_execution_quality
 from futu_quant.config import Settings
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar, translate_common_values
 from futu_quant.validation_loop import (
     apply_auto_downgrade, calibrate_capacity, calibrate_scores, capacity_observations,

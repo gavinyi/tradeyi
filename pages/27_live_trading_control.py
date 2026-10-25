@@ -11,7 +11,7 @@ from futu_quant.real_trading import (
     session_status,
 )
 from futu_quant.risk import ny_trading_day_start_utc
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.strategy_plugins import strategy_plugins
 from futu_quant.ui import render_admin_login, render_sidebar
 

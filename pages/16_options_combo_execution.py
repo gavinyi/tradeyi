@@ -16,7 +16,7 @@ from futu_quant.config import Settings
 from futu_quant.execution import ExecutionManager
 from futu_quant.risk import RiskLimits
 from futu_quant.replay import run_combo_resilience_drill
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.strategy_plugins import strategy_plugins
 from futu_quant.ui import china_time_columns, chinese_columns, render_admin_login, render_sidebar
 

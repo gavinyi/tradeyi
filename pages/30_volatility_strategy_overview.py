@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import json
 from datetime import datetime
 
@@ -12,7 +14,7 @@ from futu_quant.config import (
 )
 from futu_quant.radar_control import start as radar_start, status as radar_status, stop as radar_stop
 from futu_quant.service_control import status as service_status
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import (
     china_time_columns, get_current_tenant, render_admin_login, render_sidebar, translate_common_values,
 )
@@ -84,7 +86,7 @@ def build_position_map(frame: pd.DataFrame) -> dict[str, dict[str, float]]:
     return result
 
 
-def build_shadow_map(store: TradingStore) -> dict[str, dict[str, float]]:
+def build_shadow_map(store: Any) -> dict[str, dict[str, float]]:
     result: dict[str, dict[str, float]] = {}
     for item in store.shadow_open_positions():
         if str(item.get("strategy_id", "")) != "volatility_long_gamma":

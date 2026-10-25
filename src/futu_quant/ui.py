@@ -1073,3 +1073,21 @@ def render_pnl_metric(
     </div>
     """
     st.markdown(card_html, unsafe_allow_html=True)
+def open_trading_store(*args, **kwargs):
+    """UI 专用 store 入口：待迁移库不得把页面炸成堆栈（Architect 2026-10-25）。
+
+    `TRADEYI_ALLOW_MIGRATION` 只允许服务启动路径；页面/脚本遇到 pending 迁移时，
+    捕获 `PendingMigrationsError` 并显示「系统正在升级」，**不得重试写库**。
+    """
+    from .migrations import PendingMigrationsError
+    from .store import TradingStore
+
+    try:
+        return TradingStore(*args, **kwargs)
+    except PendingMigrationsError as exc:
+        st.error(
+            "系统正在升级：数据库等待 Worker 完成迁移，请稍后刷新页面（本次不会重试写库）。"
+        )
+        st.caption(str(exc))
+        st.stop()
+        raise  # pragma: no cover - st.stop 已中断

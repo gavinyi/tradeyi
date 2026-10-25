@@ -13,7 +13,7 @@ from futu_quant.config import (
 )
 from futu_quant.service_control import status as service_status
 from futu_quant.radar_control import status as radar_status
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import (
     china_time_columns, readable_payload, render_admin_login, render_sidebar,
     translate_common_values,

@@ -34,7 +34,7 @@ from futu_quant.option_expectancy import add_iv_history_percentiles
 from futu_quant.volatility_structures import build_volatility_structure_candidates
 from futu_quant.volatility_orphans import volatility_state_keys
 from futu_quant.campaign_timing import campaign_time_display
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.execution_mode import resolve_configured_execution_mode
 from futu_quant.volatility_pause import set_volatility_new_entries_paused
 from futu_quant.tenant import (

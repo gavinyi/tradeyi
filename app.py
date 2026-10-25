@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import os
 import sys
 from pathlib import Path
@@ -20,7 +22,7 @@ from futu_quant.home_dashboard import render_home_dashboard
 from futu_quant.option_lifecycle import parse_option_code
 from futu_quant.performance import performance_report
 from futu_quant.strategies import STRATEGIES
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.trade_diagnostics import (
     build_diagnostic_report, diagnostic_window, latest_us_session_date,
 )
@@ -268,7 +270,7 @@ def option_position_display(frame: pd.DataFrame) -> pd.DataFrame:
     return display[columns]
 
 
-def shadow_positions_frame(store: TradingStore) -> pd.DataFrame:
+def shadow_positions_frame(store: Any) -> pd.DataFrame:
     frame = pd.DataFrame(store.shadow_open_positions())
     if frame.empty:
         return frame

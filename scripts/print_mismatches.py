@@ -4,7 +4,7 @@ from futu_quant.store import TradingStore
 from futu_quant.reconciliation import reconcile_ledgers
 
 settings = Settings.load(refresh=True)
-store = TradingStore()
+store = TradingStore(read_only=True)
 broker_real = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
 
 df = reconcile_ledgers(store, broker_real)

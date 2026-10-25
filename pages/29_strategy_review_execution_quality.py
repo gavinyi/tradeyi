@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from futu_quant.config import Settings
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.strategy_review import build_strategy_review, review_markdown
 from futu_quant.trade_diagnostics import diagnostic_window, latest_us_session_date
 from futu_quant.ui import china_time_columns, chinese_columns, render_sidebar, get_current_tenant

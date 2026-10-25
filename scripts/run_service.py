@@ -1464,6 +1464,9 @@ def _wait_or_stop(seconds: float, stop_file: Path | None = None) -> None:
 
 
 def main() -> None:
+    # P0（2026-10-25）：**只有服务启动路径**可授权迁移。其余脚本/测试打开存量库
+    # 遇到 pending 迁移会直接失败，避免「跑一条巡检脚本就顺手迁移生产库」。
+    os.environ["TRADEYI_ALLOW_MIGRATION"] = "1"
     parser = argparse.ArgumentParser(description="Unified Futu paper strategy service")
     parser.add_argument("--once", action="store_true", help="Run one scheduling cycle")
     parser.add_argument("--poll", type=int, default=10, help="Scheduler polling seconds")
@@ -1502,7 +1505,7 @@ def main() -> None:
         lock.flush()
         lock.truncate()
         pid_file.write_text(str(os.getpid()))
-        store = TradingStore()
+        store = TradingStore(bootstrap=True)
         service_name = f"trading_service:{tenant_profile.tenant_id}" if tenant_profile else "trading_service"
         runtime_manifest = publish_approval_runtime_manifest(store, os.getpid())
         ensure_default_budgets(store)

@@ -9,7 +9,7 @@ import streamlit as st
 from futu_quant.config import Settings
 from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.replay import run_resilience_drill
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import (
     CHINA_TZ, STRATEGY_LABELS, china_time_columns, readable_payload,
     render_admin_login, render_sidebar, translate_common_values,

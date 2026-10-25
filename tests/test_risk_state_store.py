@@ -32,7 +32,8 @@ STATE = dict(
 )
 
 
-def test_risk_state_table_created_on_existing_db_via_migration(tmp_path):
+def test_risk_state_table_created_on_existing_db_via_migration(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADEYI_ALLOW_MIGRATION", "1")  # 迁移授权（P0 门禁，见 test_migration_gate）
     """存量库分支守卫：`initialize()` 对存量库是 `apply_migrations()` 后直接 return，
 
     只写「新建库」分支的建表语句在存量库上**永远不生效**（alerts 三列同源缺陷）。

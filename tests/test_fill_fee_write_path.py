@@ -1,4 +1,4 @@
-﻿"""P1-13 费用三态守卫：真值 / 估算 / 不可用。
+"""P1-13 费用三态守卫：真值 / 估算 / 不可用。
 
 契约（2026-10-25 定稿）：
 - `fee_is_estimate=0` 且 `fee_unavailable_reason IS NULL` → 真值，唯一可当「实付」；
@@ -84,7 +84,8 @@ def test_legacy_placeholder_columns_default_for_new_rows(tmp_path):
     assert row["fee_is_estimate"] == 0
 
 
-def test_migration_19_marks_existing_placeholder_rows(tmp_path):
+def test_migration_19_marks_existing_placeholder_rows(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADEYI_ALLOW_MIGRATION", "1")  # 迁移授权（P0 门禁，见 test_migration_gate）
     path = tmp_path / "marker.db"
     store = TradingStore(path)
     intent_id = _new_intent(store)

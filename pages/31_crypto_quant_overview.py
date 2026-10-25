@@ -6,7 +6,7 @@ from futu_quant.config import Settings
 from futu_quant.crypto_service_control import status
 from futu_quant.crypto_watchlist import load_crypto_watchlist
 from futu_quant.okx_config import OkxSettings
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import render_sidebar
 
 st.set_page_config(page_title="币量化总览", page_icon=":material/currency_bitcoin:", layout="wide")

@@ -17,7 +17,7 @@ from futu_quant.core_validation import (
     enable_core_daily_validation,
     load_core_daily_validation,
 )
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import (
     chinese_columns, render_admin_login, render_sidebar, get_current_tenant, get_tenant_broker,
 )

@@ -4,7 +4,7 @@ from futu_quant.store import TradingStore
 from futu_quant.risk import RiskLimits
 
 settings = Settings.load(refresh=True)
-store = TradingStore()
+store = TradingStore(read_only=True)
 broker_real = FutuPaperBroker(settings, trading_env_override="REAL", account_id_override=settings.real_account_id)
 
 print("=== 1. REAL ACCOUNT BALANCE & ASSETS ===")

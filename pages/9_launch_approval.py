@@ -13,7 +13,7 @@ from futu_quant.broker import BrokerError
 from futu_quant.config import Settings, save_runtime_settings
 from futu_quant.execution_quality import execution_quality_report
 from futu_quant.reconciliation import reconcile_ledgers
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.stress import stress_test
 from futu_quant.replay import run_resilience_drill
 

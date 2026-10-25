@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from futu_quant.performance import performance_buckets, performance_dashboard_data
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import render_sidebar
 from futu_quant.config import Settings
 

@@ -12,7 +12,7 @@ from futu_quant.performance import performance_report
 from futu_quant.radar_control import status as radar_status
 from futu_quant.monitoring import heartbeat_display_status, heartbeat_stale_after
 from futu_quant.service_control import status as service_status
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.scheduled_tasks import (
     BOARD_TIMERS, next_board_timer_run, set_timer_enabled, timer_default_enabled, timer_enabled_setting_key,
 )

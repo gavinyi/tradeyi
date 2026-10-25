@@ -6,7 +6,7 @@ import streamlit as st
 from futu_quant.broker import BrokerError, FutuPaperBroker
 from futu_quant.config import Settings
 from futu_quant.portfolio_allocator import ensure_default_budgets, strategy_budget_usage
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.stress import joint_stress_test, portfolio_market_snapshot
 from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
 

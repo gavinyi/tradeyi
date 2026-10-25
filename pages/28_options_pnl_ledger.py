@@ -5,7 +5,7 @@ import streamlit as st
 
 from futu_quant.config import Settings
 from futu_quant.option_pnl import build_option_pnl_ledger, option_pnl_summary
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import (
     STRATEGY_LABELS,
     china_time_columns,

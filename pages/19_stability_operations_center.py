@@ -10,7 +10,7 @@ from futu_quant.operational_readiness import (
     observability_snapshot, operations_report, paper_e2e_check,
     strategy_paper_acceptance,
 )
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.strategy_plugins import strategy_plugins
 from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar
 

@@ -13,7 +13,7 @@ from futu_quant.core_satellite import PROFILES
 from futu_quant.strategies import STRATEGIES
 from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
 from futu_quant.walk_forward import walk_forward_validate
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 
 
 st.set_page_config(page_title="策略回测", page_icon="🧪", layout="wide")

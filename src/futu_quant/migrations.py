@@ -2,7 +2,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import os
 import sqlite3
+
+
+#: 迁移授权开关（P0，2026-10-25 事故）：只有服务启动路径可以设置。
+#: 背景：v18 代码落盘生产目录后，任意会 `TradingStore()` 的脚本（巡检/诊断/清理）
+#: 都会顺带把 pending 迁移执行掉 —— 22:20:42 生产库被提前迁移就是这样发生的。
+MIGRATION_ALLOW_ENV = "TRADEYI_ALLOW_MIGRATION"
+
+
+def migrations_allowed() -> bool:
+    return os.getenv(MIGRATION_ALLOW_ENV, "").strip() == "1"
+
+
+def pending_migrations(connection: sqlite3.Connection) -> list[int]:
+    """返回尚未应用的迁移版本（表不存在时视为全部 pending）。"""
+    try:
+        applied = {
+            int(row[0]) for row in connection.execute("SELECT version FROM schema_migrations")
+        }
+    except sqlite3.OperationalError:
+        applied = set()
+    return [migration.version for migration in MIGRATIONS if migration.version not in applied]
 
 
 @dataclass(frozen=True)
@@ -259,35 +281,121 @@ def _verify_existing_column(
 
 
 
-def apply_migrations(connection: sqlite3.Connection) -> list[int]:
+class PendingMigrationsError(RuntimeError):
+    """存量库存在未授权迁移（UI 应捕获并提示「系统升级中」，不得重试写库）。"""
+
+
+def _split_statements(sql: str) -> list[str]:
+    """把迁移脚本安全拆成单条语句（`executescript` 会隐式提交，破坏事务原子性）。
+
+    用 `sqlite3.complete_statement` 判断语句边界，能正确处理字符串/注释里的分号。
+    """
+    statements: list[str] = []
+    buffer = ""
+    for char in sql:
+        buffer += char
+        if char == ";" and sqlite3.complete_statement(buffer):
+            statements.append(buffer.strip())
+            buffer = ""
+    tail = buffer.strip()
+    if tail:
+        statements.append(tail)
+    return [statement for statement in statements if statement]
+
+
+def _audit_migration(
+    connection: sqlite3.Connection, *, actor: str, payload: dict,
+) -> None:
+    """迁移审计：没有审计的迁移等于「查不出谁改的库」（2026-10-25 事故教训）。"""
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(audit_events)")
+    }
+    if not columns:
+        return  # 极老库还没有 audit_events 表：不因此阻断迁移
+    import json as _json
+
+    payload_json = _json.dumps(payload, ensure_ascii=False, default=str)
+    if "actor" in columns:
+        connection.execute(
+            "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at,actor) "
+            "VALUES(?,?,?,datetime('now'),?)",
+            ("MIGRATION_APPLIED", None, payload_json, actor),
+        )
+    else:
+        connection.execute(
+            "INSERT INTO audit_events(event_type,strategy_id,payload_json,created_at) "
+            "VALUES(?,?,?,datetime('now'))",
+            ("MIGRATION_APPLIED", None, payload_json),
+        )
+
+
+def apply_migrations(
+    connection: sqlite3.Connection, *,
+    actor: str = "service:run_service",
+    trigger: str = "",
+) -> list[int]:
+    """应用 pending 迁移（**单写者 + 全事务 + 审计**）。
+
+    并发安全（Architect 2026-10-25）：`BEGIN IMMEDIATE` 取得库级写锁后再**二次读取**
+    已应用版本；第二个 Worker 会阻塞在锁上，进事务后发现版本已齐 → 直接 no-op。
+    任一语句失败 → 整个事务回滚，绝不留半迁移状态。
+    """
+    import time
+
     connection.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY,name TEXT NOT NULL,checksum TEXT NOT NULL,applied_at TEXT NOT NULL
     )""")
-    applied = {int(row[0]): str(row[1]) for row in connection.execute(
-        "SELECT version,checksum FROM schema_migrations"
-    )}
-    completed = []
-    for migration in MIGRATIONS:
-        if migration.version in applied:
-            if migration.version != 1 and applied[migration.version] != migration.checksum:
-                raise RuntimeError(f"迁移 {migration.version} 校验和不一致，拒绝继续")
-            continue
-        try:
-            connection.executescript(migration.sql)
-        except sqlite3.OperationalError as exc:
-            if "duplicate column name" in str(exc).lower():
-                # 列已存在（例如生产事故时手工 ALTER 过）→ 继续记为已应用，
-                # 但**必须校验既有列的定义**：同名列类型/默认值不同 = 静默不一致，
-                # 那比没有列更难查（查询拿到的类型与代码假设不同）。
-                _verify_existing_column(connection, migration.sql, exc)
-            else:
-                raise
-        connection.execute(
-            "INSERT INTO schema_migrations VALUES(?,?,?,datetime('now'))",
-            (migration.version, migration.name, migration.checksum),
-        )
-        completed.append(migration.version)
-    return completed
+    # 审计表必须先存在（否则「迁移成功但审计写失败」又变成查不出来）
+    connection.execute("""CREATE TABLE IF NOT EXISTS audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        strategy_id TEXT,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""")
+    started = time.time()
+    # 调用方（新建库分支）可能已开隐式事务（INSERT OR IGNORE 基线版本），先落盘再取写锁
+    if connection.in_transaction:
+        connection.commit()
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        # 二次校验：拿到写锁后重读，避免并发 Worker 各迁一遍
+        applied = {int(row[0]): str(row[1]) for row in connection.execute(
+            "SELECT version,checksum FROM schema_migrations"
+        )}
+        for migration in MIGRATIONS:
+            if migration.version in applied and migration.version != 1:
+                if applied[migration.version] != migration.checksum:
+                    raise RuntimeError(f"迁移 {migration.version} 校验和不一致，拒绝继续")
+        to_apply = [item for item in MIGRATIONS if item.version not in applied]
+        completed: list[int] = []
+        for migration in to_apply:
+            for statement in _split_statements(migration.sql):
+                try:
+                    connection.execute(statement)
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" in str(exc).lower():
+                        _verify_existing_column(connection, statement, exc)
+                    else:
+                        raise
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES(?,?,?,datetime('now'))",
+                (migration.version, migration.name, migration.checksum),
+            )
+            completed.append(migration.version)
+        if completed:
+            _audit_migration(connection, actor=actor, payload={
+                "from_version": max(applied or {0}),
+                "to_version": max(completed),
+                "applied": completed,
+                "duration_ms": int((time.time() - started) * 1000),
+                "trigger": trigger or MIGRATION_ALLOW_ENV,
+            })
+        connection.commit()
+        return completed
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def migration_status(store) -> dict:

@@ -7,7 +7,7 @@ import streamlit as st
 
 from futu_quant.config import Settings
 from futu_quant.crypto_review import build_crypto_strategy_review, crypto_review_markdown
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import render_sidebar
 
 

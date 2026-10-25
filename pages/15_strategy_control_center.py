@@ -17,7 +17,7 @@ from futu_quant.radar_control import (
 from futu_quant.service_control import restart, start, status as service_status, stop
 from futu_quant.execution_mode import resolve_configured_execution_mode
 from futu_quant.strategy_pause import is_strategy_entries_paused, set_strategy_entries_paused
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.strategy_budgeting import (
     budget_group_label,
     recommended_active_budget_rows,

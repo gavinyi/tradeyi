@@ -9,7 +9,7 @@ from futu_quant.long_term_validation import (
     manually_restore_paper, stability_scores, stored_greeks_attribution,
     stratified_execution_quality, strategy_horizon_metrics,
 )
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import render_admin_login, render_sidebar
 
 

@@ -8,7 +8,7 @@ from futu_quant.config import Settings
 from futu_quant.option_event_backtest import run_option_event_backtest
 from futu_quant.option_history import collect_option_snapshots, history_frame
 from futu_quant.option_evidence import assess_option_evidence, option_research_buckets
-from futu_quant.store import TradingStore
+from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.volatility_validation import volatility_walk_forward
 from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
 

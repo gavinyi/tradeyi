@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import logging
 import math
@@ -147,24 +148,53 @@ class TradingStore:
     FILL_PROXY_MATCH_WINDOW_SECONDS = 120.0
     FILL_DUP_MATCH_WINDOW_SECONDS = 120.0
 
-    def __init__(self, path: Path | str = DEFAULT_DB, tenant_registry: dict[str, Any] | None = None):
+    def __init__(
+        self, path: Path | str = DEFAULT_DB,
+        tenant_registry: dict[str, Any] | None = None,
+        read_only: bool = False,
+        bootstrap: bool = False,
+    ):
         self.path = Path(path).resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = bool(read_only)
         self.tenant_registry = tenant_registry
+        if self.read_only:
+            # 只读模式（巡检/诊断/清理脚本专用）：不建目录、不 initialize、不迁移。
+            if not self.path.exists():
+                raise FileNotFoundError(f"只读打开失败，数据库不存在：{self.path}")
+            return
+        if not self.path.exists():
+            # Reviewer 补充：区分「首次部署」与「路径写错」。
+            # 非显式 bootstrap（或测试环境变量）时，文件缺失一律拒绝，
+            # 否则路径写错会静默创建一个空库，表现为「系统健康但数据全空」。
+            allowed = bootstrap or os.getenv("TRADEYI_ALLOW_BOOTSTRAP", "").strip() == "1"
+            if not allowed:
+                raise FileNotFoundError(
+                    f"数据库不存在：{self.path}。非显式 bootstrap 拒绝创建空库"
+                    "（防路径写错被当成正常）；首次部署请显式传 bootstrap=True。"
+                )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(str(self.path), timeout=30)
+        if self.read_only:
+            connection = sqlite3.connect(
+                f"file:{self.path.as_posix()}?mode=ro", uri=True, timeout=30
+            )
+        else:
+            connection = sqlite3.connect(str(self.path), timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA cache_size=-64000")  # 64MB 高速页面缓存
         connection.execute("PRAGMA temp_store=MEMORY")  # 临时表与排序运算全部内存化
         connection.execute("PRAGMA mmap_size=268435456")  # 256MB 内存映射 I/O
         connection.execute("PRAGMA busy_timeout=30000")
+        if self.read_only:
+            # 只读由 SQLite 强制（不依赖调用方自觉）：任何写语句都会直接报错
+            connection.execute("PRAGMA query_only=ON")
         try:
             yield connection
-            if connection.in_transaction:
+            if connection.in_transaction and not self.read_only:
                 connection.commit()
         finally:
             connection.close()
@@ -252,9 +282,29 @@ class TradingStore:
                 if "tenant_id" not in v_cols:
                     connection.execute("ALTER TABLE virtual_allocations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
                     connection.execute("CREATE INDEX IF NOT EXISTS idx_virtual_alloc_tenant ON virtual_allocations(tenant_id, strategy_id, symbol)")
-                # 存量库同样必须跑版本化迁移：否则任何新增迁移对已存在的库永远不生效
-                from .migrations import apply_migrations
-                apply_migrations(connection)
+                # 存量库同样必须跑版本化迁移：否则任何新增迁移对已存在的库永远不生效。
+                # **但迁移必须显式授权**（P0 事故 2026-10-25）：只有服务启动路径设置
+                # TRADEYI_ALLOW_MIGRATION=1；巡检/诊断/清理脚本打开存量库遇到 pending
+                # 迁移必须直接失败，绝不能顺带把生产库迁移掉（22:20:42 就是这样发生的）。
+                from .migrations import (
+                    MIGRATION_ALLOW_ENV,
+                    PendingMigrationsError,
+                    apply_migrations,
+                    migrations_allowed,
+                    pending_migrations,
+                )
+
+                pending = pending_migrations(connection)
+                if pending:
+                    if not migrations_allowed():
+                        # 专用异常：UI 捕获后显示「系统升级中」而不是抛堆栈
+                        raise PendingMigrationsError(
+                            f"检测到 {len(pending)} 条未应用迁移 {pending}，"
+                            f"当前进程未获迁移授权（需环境变量 {MIGRATION_ALLOW_ENV}=1，"
+                            "仅 run_service 启动路径设置）。"
+                            "本进程已拒绝启动：请改用只读方式，或等 Worker 重启完成迁移。"
+                        )
+                    apply_migrations(connection, trigger=f"env={MIGRATION_ALLOW_ENV}")
                 return
             connection.executescript(
                 """
@@ -880,7 +930,7 @@ class TradingStore:
                 VALUES(1,'baseline_sqlite_schema','baseline-v1',?)""", (self.now(),),
             )
             from .migrations import apply_migrations
-            apply_migrations(connection)
+            apply_migrations(connection, trigger="bootstrap")
 
     @staticmethod
     def now() -> str:
