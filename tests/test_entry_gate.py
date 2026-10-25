@@ -76,6 +76,21 @@ def test_risk_decision_can_be_omitted_for_shadow_path():
     assert [reason.code for reason in reasons] == [rb.DRAWDOWN_ABSOLUTE]
 
 
+def test_unlabelled_risk_reject_gets_fallback_reason():
+    """P0 fail-open 防线：RiskEngine 拒绝了但没带 `blocked_by` → 必须补兜底原因。"""
+    decision = SimpleNamespace(
+        allowed=False, reason="单笔名义金额超过 $100,000", blocked_by=()
+    )
+    reasons = gate.resolve_entry_block_reasons(gate.EntrySignals(), decision)
+    assert [reason.code for reason in reasons] == [gate.RISK_ENGINE_REJECT]
+    assert reasons[0].detail == "单笔名义金额超过 $100,000"
+
+
+def test_allowed_decision_has_no_fallback_reason():
+    decision = SimpleNamespace(allowed=True, reason="风控通过", blocked_by=())
+    assert gate.resolve_entry_block_reasons(gate.EntrySignals(), decision) == []
+
+
 def test_empty_signals_allow_entry():
     assert gate.resolve_entry_block_reasons(gate.EntrySignals()) == []
 

@@ -202,6 +202,72 @@ def test_link_simulate_breaker_records_shadow_audit_without_blocking(tmp_path):
     assert not [e for e in store.audit_events() if e["event_type"] == "RISK_REJECTED"]
 
 
+def test_link_unlabelled_risk_reject_still_rejected(tmp_path):
+    """P0 链路守卫：RiskEngine 未标注 `blocked_by` 的拒绝路径也必须变成 REJECTED。
+
+    单笔名义金额超限（`risk.py` 历史未标注路径）走 `submit_limit`：
+    - 修前：聚合 reasons 为空 → 订单被放行（fail-open）；
+    - 修后：`decision.allowed is False` 独立拒绝 + 兜底 `risk_engine_reject`。
+    """
+    import json
+
+    from futu_quant.execution import ExecutionManager
+
+    class _ExecBroker(_Broker):
+        def __init__(self):
+            super().__init__(1_000_000.0, account_id="20170229", env="SIMULATE")
+            self.placed = []
+
+        def place_limit_order(self, symbol, side, quantity, price, **kwargs):
+            self.placed.append((symbol, side, quantity, price))
+            return pd.DataFrame([{"order_id": "ord-1"}])
+
+    store = TradingStore(tmp_path / "link-untagged.db")
+    store.set_setting("execution_mode", "PAPER")
+    broker = _ExecBroker()
+    executor = ExecutionManager(broker, store=store)
+    result = executor.submit_limit(
+        "core_satellite", "g4-link-big", "US.QQQ", "BUY", 1, 500_000.0,
+    )
+    assert result.status == "REJECTED", "未标注拒绝被放行 = fail-open"
+    assert broker.placed == [], "风控拒绝后绝不允许下单"
+    rejected = [e for e in store.audit_events() if e["event_type"] == "RISK_REJECTED"]
+    assert len(rejected) == 1
+    payload = json.loads(rejected[0]["payload_json"])
+    assert payload["blocked_by"] == ["risk_engine_reject"]
+    assert payload["block_details"][0]["detail"]
+
+
+def test_buy_branch_rejects_even_if_aggregation_returns_empty(tmp_path, monkeypatch):
+    """V20④ 第①层独立有牙：即使聚合层返回空，`decision.allowed is False` 也必须拒绝。
+
+    这条用例把第②层（兜底原因）短路掉，专门证明 BUY 的**独立拒绝分支**不是靠兜底在撑。
+    """
+    from futu_quant.execution import ExecutionManager
+
+    class _ExecBroker(_Broker):
+        def __init__(self):
+            super().__init__(1_000_000.0, account_id="20170229", env="SIMULATE")
+            self.placed = []
+
+        def place_limit_order(self, symbol, side, quantity, price, **kwargs):
+            self.placed.append((symbol, side, quantity, price))
+            return pd.DataFrame([{"order_id": "ord-1"}])
+
+    monkeypatch.setattr(
+        "futu_quant.execution.resolve_entry_block_reasons", lambda *args, **kwargs: []
+    )
+    store = TradingStore(tmp_path / "link-layer1.db")
+    store.set_setting("execution_mode", "PAPER")
+    broker = _ExecBroker()
+    executor = ExecutionManager(broker, store=store)
+    result = executor.submit_limit(
+        "core_satellite", "g4-link-layer1", "US.QQQ", "BUY", 1, 500_000.0,
+    )
+    assert result.status == "REJECTED", "独立拒绝分支被删 → 聚合层为空时订单被放行"
+    assert broker.placed == []
+
+
 def test_breaker_block_codes_are_exact_prd_literals(tmp_path, monkeypatch):
     """Reviewer/PRD 要求：运行时 `BlockReason.code` 必须是 V23 的精确字面量。"""
     assert DRAWDOWN_ABSOLUTE == "dd_vs_peak_absolute"

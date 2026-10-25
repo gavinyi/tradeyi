@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -324,7 +324,10 @@ class ExecutionManager:
                 breaker_unsupported=str(getattr(decision, "breaker_unsupported", "") or ""),
             )
             entry_reasons = resolve_entry_block_reasons(signals, decision)
-            if entry_reasons:
+            # P0 防线：**是否拒绝只看 decision.allowed**，聚合原因只用于 audit。
+            # 绝不能改成「reasons 为空即放行」——RiskEngine 32 个拒绝路径里历史只有 7 个
+            # 带 blocked_by，其余 25 条会被静默放行（Reviewer 2026-10-25 抓到的 fail-open）。
+            if not decision.allowed or entry_reasons:
                 detail = (
                     decision.reason if not decision.allowed else entry_reasons[0].detail
                 )

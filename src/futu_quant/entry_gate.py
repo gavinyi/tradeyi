@@ -35,7 +35,12 @@ __all__ = [
     "resolve_breaker_inputs",
     "audit_payload",
     "AGGREGATION_ORDER",
+    "RISK_ENGINE_REJECT",
 ]
+
+#: 兜底原因码：`RiskEngine` 拒绝但**未标注 `blocked_by`** 的路径（历史 25 条）。
+#: 没有这个兜底，`submit_limit` 的 BUY 聚合一旦以 reasons 为空为放行条件，就会 fail-open。
+RISK_ENGINE_REJECT = "risk_engine_reject"
 
 #: 聚合顺序参考（**实际顺序** = `risk_decision.blocked_by` 原序 → 熔断原因）。
 #: 既有闸门的 code 由 `RiskEngine` 给出，聚合层不再重复持有它们的字段。
@@ -107,6 +112,15 @@ def resolve_entry_block_reasons(
             continue
         seen.add(reason.code)
         reasons.append(reason)
+    # 兜底（P0 fail-open 防线）：RiskEngine 已拒绝但没有任何结构化原因时，
+    # 必须补一条通用原因，保证拒绝不会被聚合层“吃掉”。
+    if not reasons and risk_decision is not None and getattr(risk_decision, "allowed", True) is False:
+        reasons.append(
+            BlockReason(
+                RISK_ENGINE_REJECT,
+                str(getattr(risk_decision, "reason", "") or "风控拒绝（未标注具体闸门）"),
+            )
+        )
     return reasons
 
 
