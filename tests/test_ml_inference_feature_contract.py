@@ -45,6 +45,16 @@ from futu_quant.ml_scorer import (  # noqa: E402
 from futu_quant.store import TradingStore  # noqa: E402
 
 MODEL_SYMBOL = "US.AAPL240119C175000"
+
+
+@pytest.fixture(autouse=True)
+def _clear_snapshot_cache():
+    """快照缓存跨用例必须清掉（模块级 TTL 缓存，key 含库路径）。"""
+    from futu_quant import ml_scorer
+
+    ml_scorer._clear_snapshot_cache()
+    yield
+    ml_scorer._clear_snapshot_cache()
 MODEL_STRIKE = 175.0
 
 # v3.2 candidate（data/ml_models/volatility_scorer_v3_candidate.json）真实的 18 个特征。
@@ -116,12 +126,19 @@ def test_load_model_accepts_current_production_v3_set(tmp_path):
 
 def test_prepare_symbol_features_produces_market_features(tmp_path):
     store = TradingStore(tmp_path / "t.db")
+    # moneyness 的唯一 spot 来源：最近一条 option_history 快照（不再用 last_price）
+    store.import_option_history([
+        {
+            "code": MODEL_SYMBOL, "time_key": "2026-10-24 09:45:00",
+            "underlying": "US.AAPL", "underlying_price": 200.0,
+            "gamma": 0.05, "theta": -0.10, "source": "TEST",
+        }
+    ])
     features = prepare_symbol_features(
         MODEL_SYMBOL,
         datetime(2026, 10, 24, 10, 0),
         store,
         market_context={
-            "spot": 200.0,
             "option_gamma": 0.05,
             "option_theta": -0.10,
         },
@@ -131,9 +148,28 @@ def test_prepare_symbol_features_produces_market_features(tmp_path):
         f"推理侧缺特征: {sorted(set(INFERENCE_FEATURE_KEYS) - set(features))}"
     )
     assert features["moneyness"] == pytest.approx(200.0 / MODEL_STRIKE - 1.0)
+    assert features["moneyness_lag_minutes"] == pytest.approx(15.0)
     assert features["gamma_to_theta"] == pytest.approx(0.5, rel=1e-4)
     assert features["month"] == 10
     assert features["quarter"] == 4
+
+
+def test_moneyness_absent_when_snapshot_stale(tmp_path):
+    """快照滞后 >45 分钟 → moneyness 置空 + 原因，**不许回落 last_price**。"""
+    store = TradingStore(tmp_path / "t.db")
+    store.import_option_history([
+        {
+            "code": MODEL_SYMBOL, "time_key": "2026-10-24 08:00:00",
+            "underlying": "US.AAPL", "underlying_price": 200.0,
+            "gamma": 0.05, "theta": -0.10, "source": "TEST",
+        }
+    ])
+    features = prepare_symbol_features(
+        MODEL_SYMBOL, datetime(2026, 10, 24, 10, 0), store,
+        market_context={"option_gamma": 0.05, "option_theta": -0.10},
+    )
+    assert "moneyness" not in features
+    assert features["moneyness_missing_reason"] == "snapshot_missing_or_stale"
 
 
 def test_predict_raises_instead_of_silent_zero(tmp_path):

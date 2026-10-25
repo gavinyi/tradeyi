@@ -251,6 +251,19 @@ with tab_backtest:
         else:
             st.error(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
 
+        # 数据质量必须可见（P0-B：行级缺值不抛，但丢弃数/原因不许静默）
+        dq = getattr(res, "data_quality", {}) or {}
+        if dq.get("unusable_rows"):
+            detail = "、".join(
+                f"{name}:{count}" for name, count in dq.get("missing_by_column", {}).items()
+            )
+            st.warning(
+                f"⚠️ 数据质量：共 {dq['total_rows']} 条，行级缺值丢弃 "
+                f"{dq['unusable_rows']} 条（可用 {dq['usable_rows']} 条）；缺值列：{detail}"
+            )
+        elif dq:
+            st.caption(f"数据质量：{dq['total_rows']} 条全部可用（无行级缺值）")
+
         with st.expander("🔍 生产准入硬指标核验清单 (Checklist)", expanded=True):
             st.dataframe(pd.DataFrame(rep["checklist"]), hide_index=True, width="stretch")
 

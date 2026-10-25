@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .ml_scorer import BuiltinRuleModel, load_ml_model
+from .ml_scorer import BuiltinRuleModel, MissingFeatureError, load_ml_model
 from .store import TradingStore
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ class BacktestComparisonResult:
     rule_ic: float
     divergence_records: list[dict[str, Any]]
     readiness_report: dict[str, Any]
+    data_quality: dict[str, Any] = field(default_factory=dict)
 
 
 def run_ml_vs_rule_comparison(
@@ -83,16 +84,54 @@ def run_ml_vs_rule_comparison(
         ml_model.n_jobs = 1
     rule_model = BuiltinRuleModel()
 
-    # 准备特征
-    avail_cols = [c for c in feature_cols if c in df.columns]
-    X = df[avail_cols].fillna(0)
+    # 准备特征（P0-B 分层处理，Chief 2026-10-25 裁定）：
+    #   * **列缺失 → 抛错指名**：旧实现 `avail_cols` 把缺列静默丢掉，v3.2 模型需要
+    #     moneyness/gamma_to_theta 而旧 CSV 从来没有 → ML 臂实际少两个核心特征在打分
+    #     （甚至 KeyError 被吞成常数 0.50），大屏 🟢「满足实盘接入」因此不可信；
+    #   * **行级 NaN → 不抛**：几行脏数据不许炸掉整个大屏，但要计数 + 原因并回传给页面显示。
+    missing_features = [col for col in feature_cols if col not in df.columns]
+    if missing_features:
+        raise MissingFeatureError(
+            f"回测数据缺少模型所需特征 {missing_features}：拒绝用缺列数据打分"
+            "（静默丢列会让 ML 臂少特征出分，对照结论无意义）。"
+            "请用 scripts/ml_export_training_data_v3.py 重新导出补列。"
+        )
+
+    total_rows = len(df)
+    missing_by_column = {
+        col: int(df[col].isna().sum()) for col in feature_cols if df[col].isna().any()
+    }
+    usable_mask = df[feature_cols].notna().all(axis=1)
+    unusable_rows = int((~usable_mask).sum())
+    data_quality = {
+        "total_rows": total_rows,
+        "usable_rows": total_rows - unusable_rows,
+        "unusable_rows": unusable_rows,
+        "missing_by_column": missing_by_column,
+        "policy": "行级缺失丢弃并计数（列缺失则抛错）；不许静默 fillna(0)",
+    }
+    if unusable_rows:
+        logger.warning(
+            "行级缺值丢弃 %s/%s 条：%s", unusable_rows, total_rows, missing_by_column
+        )
+    df = df[usable_mask].reset_index(drop=True)
+    if len(df) < 20:
+        raise ValueError(
+            f"剔除行级缺值后可用样本过少（剩 {len(df)} 条，丢弃 {unusable_rows} 条）："
+            f"{missing_by_column}"
+        )
+    X = df[feature_cols]
 
     # 3. 计算双模型预测概率
     try:
         df["ml_score"] = ml_model.predict_proba(X)[:, 1]
-    except Exception as exc:
-        logger.warning("ML 模型预测失败，降级为默认: %s", exc)
-        df["ml_score"] = 0.50
+    except Exception as exc:  # noqa: BLE001
+        # 不再降级成常数 0.50：那会让"模型没打分"与"模型打 0.5 分"无法区分，
+        # 大屏却照常出绿 —— 静默降级正是本单要消灭的。
+        raise MissingFeatureError(
+            f"ML 模型预测失败（{type(exc).__name__}: {exc}）："
+            "拒绝降级为常数 0.50，否则对照结论建立在假分数上"
+        ) from exc
 
     df["rule_score"] = rule_model.predict_proba(X)[:, 1]
 
@@ -310,4 +349,5 @@ def run_ml_vs_rule_comparison(
         rule_ic=round(rule_ic, 4),
         divergence_records=divergence_records[:30],
         readiness_report=readiness_report,
+        data_quality=data_quality,
     )

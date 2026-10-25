@@ -6,9 +6,11 @@ import math
 import pickle
 import re
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -72,6 +74,103 @@ INFERENCE_FEATURE_KEYS = frozenset({
     # v3.2 凸性/无量纲（需要 market_context 里的真实行情）
     'moneyness', 'gamma_to_theta',
 })
+
+# moneyness 的 spot 来源**唯一**：最近一条 `option_history` 快照（Chief 2026-10-25 裁定）。
+# 不允许回落到 `owner["last_price"]`（扫描实时价）——那是另一套口径，等于 train/serve skew。
+SNAPSHOT_MAX_LAG_MINUTES = 45
+_SNAPSHOT_CACHE_TTL_SECONDS = 60.0
+_SNAPSHOT_CACHE: dict[tuple[str, str, str], tuple[float, dict]] = {}
+_NEW_YORK = ZoneInfo("America/New_York")
+
+
+def _snapshot_time(raw) -> datetime | None:
+    """option_history.time_key 的口径与 `data_quality.quote_freshness` 一致：naive=ET。"""
+    try:
+        stamp = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=_NEW_YORK)
+    return stamp
+
+
+def _clear_snapshot_cache() -> None:
+    """清空快照缓存（测试隔离用：模块级 TTL 缓存会跨 tmp DB 串味）。"""
+    _SNAPSHOT_CACHE.clear()
+
+
+def latest_underlying_snapshot(
+    store,
+    symbol: str,
+    trade_time: datetime,
+    max_lag_minutes: int = SNAPSHOT_MAX_LAG_MINUTES,
+) -> dict:
+    """最近一条 `option_history` 快照（spot / lag / 希腊字母），推理侧唯一行情来源。
+
+    返回 ``{"spot", "lag_minutes", "gamma", "theta"}``；快照缺失或滞后 > ``max_lag_minutes``
+    → ``spot=None``：**只置空，绝不回落 `owner["last_price"]` 或实时链希腊字母**。
+
+    缓存：key 含 **(库路径, underlying, 分钟)** + 60s TTL —— 不带库标识会让不同
+    tmp DB 互相命中（Reviewer 2026-10-25 指出）。
+    """
+    empty = {"spot": None, "lag_minutes": None, "gamma": None, "theta": None}
+    info = parse_option_symbol(symbol)
+    if info is None or store is None:
+        return empty
+    underlying = str(info.get("underlying") or "").upper()
+    if not underlying:
+        return empty
+    if not underlying.startswith("US."):
+        underlying = f"US.{underlying}"
+
+    moment = trade_time if trade_time.tzinfo is not None else trade_time.replace(tzinfo=_NEW_YORK)
+    moment_utc = moment.astimezone(timezone.utc)
+    store_key = str(getattr(store, "path", "")) or str(id(store))
+    cache_key = (store_key, underlying, moment.strftime("%Y%m%d%H%M"))
+    cached = _SNAPSHOT_CACHE.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] <= _SNAPSHOT_CACHE_TTL_SECONDS:
+        return dict(cached[1])
+
+    start_key = (moment - timedelta(minutes=max_lag_minutes)).astimezone(_NEW_YORK)
+    end_key = moment.astimezone(_NEW_YORK)
+    try:
+        rows = store.option_history_for_underlying(
+            underlying,
+            start=start_key.strftime("%Y-%m-%d %H:%M:%S"),
+            end=end_key.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 %s 快照失败: %s", underlying, exc)
+        _SNAPSHOT_CACHE[cache_key] = (now, dict(empty))
+        return empty
+
+    result = dict(empty)
+    for row in reversed(rows or []):
+        stamp = _snapshot_time(row.get("time_key"))
+        spot = _safe_float(row.get("underlying_price"))
+        if stamp is None or spot is None or spot <= 0:
+            continue
+        delta_minutes = (moment_utc - stamp.astimezone(timezone.utc)).total_seconds() / 60.0
+        if delta_minutes < 0:
+            continue
+        result["lag_minutes"] = round(delta_minutes, 3)
+        if delta_minutes <= max_lag_minutes:
+            result["spot"] = float(spot)
+            result["gamma"] = _safe_float(row.get("gamma"))
+            result["theta"] = _safe_float(row.get("theta"))
+        break
+
+    _SNAPSHOT_CACHE[cache_key] = (now, dict(result))
+    return result
+
+
+def _safe_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if number != number else number
 
 
 # ---------------------------------------------------------------------------
@@ -525,15 +624,30 @@ def prepare_symbol_features(
     # 5. v3.2 凸性/无量纲特征：只认真实行情。
     # 缺 spot / 希腊字母时**不写这两个键**，由 predict_symbol_score 报 MissingFeatureError；
     # 编一个 0 出去比报错危险得多（模型会把「没数据」学成「低赔率」）。
-    context = market_context or {}
-    moneyness = moneyness_ratio(context.get('spot'), features.get('strike_price'))
-    if moneyness is not None:
-        features['moneyness'] = moneyness
-    gamma_to_theta = gamma_to_theta_ratio(
-        context.get('option_gamma'), context.get('option_theta')
-    )
+
+    # moneyness + gamma_to_theta **统一口径**（Chief 2026-10-25 裁定）：两侧都用
+    # 「最近一条 option_history 快照」的 underlying_price 与 gamma/theta，
+    # **不再用** `owner["last_price"]` 或实时链上下文里的希腊字母——后者是扫描时实时值，
+    # 与导出侧成交前 ≤45 分钟的快照不同源，等于把 train/serve skew 养在系统里。
+    snapshot = latest_underlying_snapshot(store, symbol, trade_time)
+    spot = snapshot.get("spot")
+    lag_minutes = snapshot.get("lag_minutes")
+    if spot is not None:
+        moneyness = moneyness_ratio(spot, features.get('strike_price'))
+        if moneyness is not None:
+            features['moneyness'] = moneyness
+            features['moneyness_lag_minutes'] = lag_minutes
+        else:
+            features['moneyness_missing_reason'] = "invalid_spot_or_strike"
+    else:
+        features['moneyness_missing_reason'] = "snapshot_missing_or_stale"
+
+    gamma_to_theta = gamma_to_theta_ratio(snapshot.get("gamma"), snapshot.get("theta"))
     if gamma_to_theta is not None:
         features['gamma_to_theta'] = gamma_to_theta
+    else:
+        # 实时链上下文（context）不再作为兜底来源：双源就是 skew
+        features['gamma_to_theta_missing_reason'] = "snapshot_missing_or_invalid_greeks"
 
     return features
 
