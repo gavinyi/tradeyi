@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +11,11 @@ import pandas as pd
 from .risk import RiskEngine
 from .alerts import AlertManager
 from .store import TradingStore
+from .entry_gate import (
+    EntrySignals,
+    audit_payload as gate_audit_payload,
+    resolve_entry_block_reasons,
+)
 from .approval import (
     approval_enforcement_enabled, approval_runtime_manifest, runtime_strategy_fingerprint,
     strategy_fingerprint, strategy_requires_approval,
@@ -309,9 +314,52 @@ class ExecutionManager:
                 strategy_id,
              actor="service:execution")
             raise
-        if not decision.allowed:
+        # 开仓门禁聚合（G4/D3.1 + Chief 2026-10-25 裁定）：
+        # BUY 只读一次聚合函数（参数 signals + decision），
+        # `RiskEngine.blocked_by` 与熔断原因**一次写 audit**（不再分两个事件）；
+        # 熔断维度未启用（如 SIMULATE）只记录、不拦，异常绝不上冒到下单路径。
+        if side == "BUY":
+            signals = EntrySignals(
+                breaker_reasons=tuple(getattr(decision, "breaker_reasons", ()) or ()),
+                breaker_unsupported=str(getattr(decision, "breaker_unsupported", "") or ""),
+            )
+            entry_reasons = resolve_entry_block_reasons(signals, decision)
+            if entry_reasons:
+                detail = (
+                    decision.reason if not decision.allowed else entry_reasons[0].detail
+                )
+                self.store.update_intent(intent["id"], "REJECTED", error=detail)
+                self.store.audit(
+                    "RISK_REJECTED",
+                    {"intent_id": intent["id"], "reason": detail,
+                     "blocked_by": [reason.code for reason in entry_reasons],
+                     "block_details": [reason.as_audit() for reason in entry_reasons]},
+                    strategy_id,
+                 actor="service:execution")
+                self.alerts.send("WARNING", "RISK_REJECTED", f"{strategy_id} {symbol}: {detail}")
+                return ExecutionResult(intent["id"], "REJECTED", detail)
+            breaker_would_block = bool(getattr(decision, "breaker_would_block", False))
+            if breaker_would_block or signals.breaker_unsupported:
+                self.store.audit(
+                    "ENTRY_GATE_SHADOW",
+                    gate_audit_payload(
+                        entry_reasons,
+                        breaker_unsupported=signals.breaker_unsupported,
+                    ),
+                    strategy_id,
+                 actor="service:execution")
+        elif not decision.allowed:
+            # 非 BUY（SELL）：保持原有拒绝路径与原因（熔断/聚合不参与退出）
             self.store.update_intent(intent["id"], "REJECTED", error=decision.reason)
-            self.store.audit("RISK_REJECTED", {"intent_id": intent["id"], "reason": decision.reason}, strategy_id, actor="service:execution")
+            self.store.audit(
+                "RISK_REJECTED",
+                {
+                    "intent_id": intent["id"],
+                    "reason": decision.reason,
+                    "blocked_by": list(decision.blocked_by),
+                },
+                strategy_id,
+             actor="service:execution")
             self.alerts.send("WARNING", "RISK_REJECTED", f"{strategy_id} {symbol}: {decision.reason}")
             return ExecutionResult(intent["id"], "REJECTED", decision.reason)
         self.store.decision_snapshot(strategy_id, symbol, self._snapshot_context({

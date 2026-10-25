@@ -276,6 +276,12 @@ class RiskState:
 
         return asdict(self)
 
+    @classmethod
+    def from_row(cls, row: dict) -> RiskState:
+        """从 `risk_state` 表行构造（忽略表里多出来的列，缺列用默认值）。"""
+        fields = {field.name for field in cls.__dataclass_fields__.values()}
+        return cls(**{key: value for key, value in dict(row).items() if key in fields})
+
 
 @dataclass(frozen=True)
 class BlockReason:
@@ -308,7 +314,11 @@ def effective_absolute_floor(ack_dd_vs_peak: float | None, gap_pp: float) -> flo
 
 def _level_for(dd_since_reset: float, dd_vs_peak: float, thresholds: BreakerThresholds,
                ack_dd_vs_peak: float | None) -> tuple[int, str]:
-    """并集判定：2 档优先（含绝对底线），其次 8% 档。返回 (level, reason_code)。"""
+    """并集判定：2 档优先（含绝对底线），其次 warn 档。返回 (level, reason_code)。
+
+    code 用**语义名**（`dd_since_reset_warn` 等）：阈值可配，把数字写进 id 会在
+    参数调整后误导审计与页面；具体百分比一律放 `BlockReason.detail`（Chief 定稿）。
+    """
     floor = effective_absolute_floor(ack_dd_vs_peak, thresholds.rearm_gap_pp)
     if dd_since_reset >= thresholds.stop:
         return 2, DRAWDOWN_STOP
@@ -408,9 +418,8 @@ def evaluate(
 
     reasons: tuple[BlockReason, ...] = ()
     if level > 0:
-        code = DRAWDOWN_ABSOLUTE if level == 2 and reason_code == DRAWDOWN_ABSOLUTE else (
-            DRAWDOWN_STOP if level == 2 else DRAWDOWN_WARN
-        )
+        # code 用语义名；具体百分比在 detail 里（阈值可配，id 不带数字）
+        code = reason_code or (DRAWDOWN_STOP if level == 2 else DRAWDOWN_WARN)
         reasons = (
             BlockReason(
                 code=code,

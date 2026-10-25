@@ -216,6 +216,11 @@ def test_tenant_kill_switch_blocks_risk_engine_buy(tmp_path):
     blocked = risk.check(broker, "US.QQQ", "BUY", 1, 100)
     assert not blocked.allowed
     assert "急停" in blocked.reason
+    # V23：audit 必须能区分具体闸门（不是只写「被拦住」）
+    from futu_quant.risk_breaker import ACCOUNT_HALT
+
+    assert blocked.blocked_by == (ACCOUNT_HALT,)
+    assert ok.blocked_by == (), "放行的决策不得带 blocked_by"
 
     # SELL 平仓通道保持畅通（急停只禁新增风险；预置持仓过数量校验）
     broker._positions = pd.DataFrame([{
@@ -233,6 +238,25 @@ def test_tenant_kill_switch_blocks_risk_engine_buy(tmp_path):
     store.set_kill_switch(False, account_id="281756481476169109", tenant_id="futu_real_master")
     resumed = risk.check(broker, "US.QQQ", "BUY", 1, 100)
     assert resumed.allowed
+
+
+def test_reconciliation_lock_decision_tagged_with_blocked_by(tmp_path):
+    """V23：对账锁拦截也必须带结构化 `blocked_by`（判定位置与行为均未改）。"""
+    from futu_quant.risk import RiskEngine, RiskLimits
+    from futu_quant.risk_breaker import RECONCILIATION_LOCK
+
+    store = TradingStore(tmp_path / "tag.db")
+    broker = StubBroker(env="REAL", account_id="281756481476169109")
+    risk = RiskEngine(store, RiskLimits(max_order_notional=10_000, max_daily_notional=50_000))
+    store.set_setting(f"symbol_blocked:{broker.account_id}:US.QQQ", "true")
+    blocked = risk.check(broker, "US.QQQ", "BUY", 1, 100)
+    assert not blocked.allowed
+    assert blocked.blocked_by == (RECONCILIATION_LOCK,)
+    # SELL 不受对账锁影响（现有 BUY-only 语义，本批不改）
+    broker._positions = pd.DataFrame([{
+        "code": "US.QQQ", "qty": 10.0, "can_sell_qty": 10.0, "market_val": 1000.0,
+    }])
+    assert risk.check(broker, "US.QQQ", "SELL", 1, 100, strategy_id="core_satellite").allowed
 
 
 # ---------- 7. UI 租户集 ⊆ 服务注册租户集（同源一致性） ----------

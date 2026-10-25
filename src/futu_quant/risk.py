@@ -13,6 +13,24 @@ from .store import USED_NOTIONAL_STATUSES, TradingStore
 from .tenant import broker_scope, tenant_config_key_candidates, tenant_of_broker
 from .portfolio_risk import projected_portfolio_allowed
 from .portfolio_allocator import strategy_budget_allowed
+from .risk_breaker import (
+    ACCOUNT_HALT,
+    DAILY_LOSS,
+    DRAWDOWN_ABSOLUTE,
+    INTRADAY_DRAWDOWN,
+    INTRADAY_LOSS,
+    MODE_ENFORCE,
+    MODE_SHADOW,
+    RECONCILIATION_LOCK,
+    BlockReason,
+    BreakerConfigError,
+    BreakerUnsupportedEnv,
+    evaluate as evaluate_breaker,
+    initial_peaks,
+    load_thresholds,
+    resolve_equity_env,
+    validate_equity_sample,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -89,6 +107,12 @@ class RiskDecision:
     allowed: bool
     reason: str
     notional: float
+    #: 结构化拦截原因（audit 用；`blocked_by` 能区分具体闸门）。默认空 = 未标注，行为不变。
+    blocked_by: tuple[str, ...] = ()
+    #: 熔断维度（G4）：shadow 期只记录不拦；未启用的交易环境显式记录，绝不冒异常
+    breaker_reasons: tuple[BlockReason, ...] = ()
+    breaker_unsupported: str = ""
+    breaker_would_block: bool = False
 
 
 class RiskEngine:
@@ -107,6 +131,7 @@ class RiskEngine:
         self.store = store
         self.broker = broker
         self._resolution_error: str | None = None
+        self._settings_cache = None
         if limits is not None:
             self.limits = limits
             return
@@ -267,6 +292,146 @@ class RiskEngine:
         )
         return True
 
+    def _settings_provider(self):
+        """`REAL_ACCOUNT_ID` 等配置的单一来源（熔断 env 派生用）。
+
+        `Settings.load()` 失败时返回 None：`resolve_equity_env` 会据此 fail-closed，
+        绝不在下单路径里因为配置加载异常把异常抛给调用方。
+        """
+        if self._settings_cache is None:
+            try:
+                from .config import Settings
+
+                self._settings_cache = Settings.load()
+            except Exception as exc:  # noqa: BLE001 - 配置异常不得影响下单路径判定
+                logger.warning("加载 Settings 失败，熔断按未启用处理：%s", exc)
+                return None
+        return self._settings_cache
+
+    def _drawdown_breaker_for_entry(
+        self, broker, broker_acc, assets: float, execution_mode: str,
+    ) -> dict:
+        """G4 跨日回撤熔断评估（**取数与计算都在 RiskEngine 侧**，聚合层只接收结果）。
+
+        - 默认 `off`：直接返回空结果，零 store 写入、零行为变化；
+        - `shadow`：只计算 + 写 audit（`would_block`），不拦；
+        - `enforce`：返回 block 原因，由 `check()` 转成 `RiskDecision(False)`；
+        - 非 REAL 环境（`SIMULATE`）：**显式记录未启用**（`breaker_unsupported`），不拦。
+        """
+        result: dict = {"reasons": (), "unsupported": "", "would_block": False, "blocked": False}
+        tenant, _ = tenant_of_broker(broker, strict=False)
+        suffix = f":{tenant}" if tenant else (f":{broker_acc}" if broker_acc else "")
+        raw_mode = str(self.store.get_setting(f"risk_breaker_mode{suffix}", "") or "").strip().lower()
+        mode = raw_mode or "off"
+        if mode not in {"off", MODE_SHADOW, MODE_ENFORCE}:
+            logger.warning("risk_breaker_mode=%r 非法，按 off 处理（fail-safe）", raw_mode)
+            mode = "off"
+        if mode == "off":
+            return result
+        trading_env = "REAL" if str(execution_mode).upper() == "REAL" else "SIMULATE"
+
+        def getter(key: str):
+            value = self.store.get_setting(f"{key}{suffix}", "")
+            return value if str(value).strip() else None
+
+        try:
+            # getter 已自带租户后缀 → tenant_id 传空，避免拼成 `:tenant:tenant`
+            thresholds = load_thresholds(getter, "")
+        except BreakerConfigError as exc:
+            # 阈值类缺键/非法 → fail-closed（设计 D4.2）：拒绝开新仓，不回落默认值
+            reason = BlockReason("risk_breaker_config", f"熔断阈值配置不完整：{exc}")
+            self.store.operational_event(
+                "risk_breaker", "DRAWDOWN_BREAKER", "BLOCKED", {"reason": str(exc)}
+            )
+            result.update(reasons=(reason,), blocked=True)
+            return result
+        try:
+            equity_env = resolve_equity_env(self._settings_provider(), trading_env)
+        except BreakerUnsupportedEnv as exc:
+            # 聚合层负责把它转成「熔断维度未启用」；这里只记录，绝不抛
+            result["unsupported"] = exc.trading_env
+            self.store.operational_event(
+                "risk_breaker", "DRAWDOWN_BREAKER", "NOT_ENABLED",
+                {"env": exc.trading_env, "hint": exc.page_hint()},
+            )
+            return result
+        except BreakerConfigError as exc:
+            reason = BlockReason("risk_breaker_config", f"实盘账户未配置：{exc}")
+            self.store.operational_event(
+                "risk_breaker", "DRAWDOWN_BREAKER", "BLOCKED", {"reason": str(exc)}
+            )
+            result.update(reasons=(reason,), blocked=True)
+            return result
+
+        sample = validate_equity_sample(assets, None)
+        if not sample.ok:
+            self.store.operational_event(
+                "risk_breaker", "DRAWDOWN_BREAKER", "SKIPPED", {"reason": sample.reason}
+            )
+            return result
+
+        state_key = tenant or str(broker_acc or "")
+        state_row = self.store.load_risk_state(state_key)
+        from .risk_breaker import RiskState
+
+        state = RiskState.from_row(state_row) if state_row is not None else None
+        if state is None:
+            try:
+                peak_hist = self.store.historical_peak_equity(
+                    equity_env, current_equity=float(assets)
+                )
+                peak_hist, peak_reset = initial_peaks(
+                    current_equity=float(assets), historical_high=peak_hist
+                )
+            except (ValueError, TypeError) as exc:
+                hint = f"回撤基准不可用：{exc}"
+                if mode == MODE_ENFORCE:
+                    reason = BlockReason("breaker_peak_unavailable", hint)
+                    result.update(reasons=(reason,), blocked=True)
+                else:
+                    result["unsupported"] = equity_env
+                self.store.operational_event(
+                    "risk_breaker", "DRAWDOWN_BREAKER",
+                    "BLOCKED" if result["blocked"] else "NOT_ENABLED",
+                    {"reason": hint, "env": equity_env},
+                )
+                return result
+            from .risk_breaker import RiskState
+
+            state = RiskState(
+                tenant_id=state_key,
+                peak_hist=peak_hist,
+                peak_hist_at=self.store.now(),
+                peak_hist_source="backfill",
+                baseline_equity=float(assets),
+                baseline_at=self.store.now(),
+                baseline_source="live",
+                peak_reset=peak_reset,
+                updated_at=self.store.now(),
+            )
+        decision = evaluate_breaker(
+            state, sample, thresholds,
+            now=self.store.now(),
+            current_trading_day=self.store.now()[:10],
+        )
+        if decision.state is not state:
+            self.store.save_risk_state(decision.state.as_row())
+        result["reasons"] = decision.reasons
+        result["would_block"] = decision.would_block
+        blocking = decision.blocked or (mode == MODE_ENFORCE and decision.would_block)
+        result["blocked"] = bool(blocking)
+        self.store.operational_event(
+            "risk_breaker", "DRAWDOWN_BREAKER",
+            "BLOCKED" if blocking else ("SHADOW" if decision.would_block else "OK"),
+            {
+                "level": decision.level,
+                "mode": mode,
+                "reasons": [reason.code for reason in decision.reasons],
+                "skipped": decision.skipped_reason,
+            },
+        )
+        return result
+
     def check(
         self, broker, symbol: str, side: str, quantity: int, price: float,
         multiplier: float | None = None, underlying: str | None = None,
@@ -300,7 +465,10 @@ class RiskEngine:
                 self.store.get_setting(f"symbol_blocked:{acc_prefix}{symbol}", "false") == "true"
                 or self.store.get_setting(f"symbol_blocked:{symbol}", "false") == "true"
             ):
-                return RiskDecision(False, f"标的 {symbol} 存在持仓对账差异，该标的新增买入已临时阻断", 0)
+                return RiskDecision(
+                    False, f"标的 {symbol} 存在持仓对账差异，该标的新增买入已临时阻断", 0,
+                    blocked_by=(RECONCILIATION_LOCK,),
+                )
             # 2. 策略级阻断
             if strategy_id:
                 # 租户优先级：**走共享入口** `tenant_of_broker`（broker 显式携带 >
@@ -316,21 +484,33 @@ class RiskEngine:
                     or (broker_acc and self.store.get_setting(f"strategy_reconciliation_disabled:{broker_acc}:{strategy_id}", "false") == "true")
                 )
                 if is_strat_disabled:
-                    return RiskDecision(False, f"策略 {strategy_id} 存在持仓差异已被对账暂停，禁止新开仓", 0)
+                    return RiskDecision(
+                        False,
+                        f"策略 {strategy_id} 存在持仓差异已被对账暂停，禁止新开仓",
+                        0,
+                        blocked_by=(RECONCILIATION_LOCK,),
+                    )
             # 3. 全局阻断兜底（仅当未指定策略时）
             acc_recovery_blocked = (
                 self.store.get_setting(f"recovery_blocked:{broker_acc}", "false") == "true"
                 if broker_acc else False
             )
             if not strategy_id and (acc_recovery_blocked or self.store.get_setting("recovery_blocked", "false") == "true"):
-                return RiskDecision(False, "启动恢复发现三账差异，请先完成持仓归属与对账", 0)
+                return RiskDecision(
+                    False, "启动恢复发现三账差异，请先完成持仓归属与对账", 0,
+                    blocked_by=(RECONCILIATION_LOCK,),
+                )
         contract_multiplier = multiplier or (100.0 if OPTION_PATTERN.match(symbol) else 1.0)
         notional = float(quantity) * float(price) * contract_multiplier
+        breaker_info: dict = {}
         # 急停禁止新增风险，但保留卖出平仓通道；严格支持按账户隔离急停。
         broker_acc = getattr(broker, "account_id", None)
         if self.store.kill_switch(account_id=broker_acc) and side == "BUY":
             target_desc = f"账户 {broker_acc}" if broker_acc else "系统"
-            return RiskDecision(False, f"{target_desc} 急停已开启，禁止新增仓位", notional)
+            return RiskDecision(
+                False, f"{target_desc} 急停已开启，禁止新增仓位", notional,
+                blocked_by=(ACCOUNT_HALT,),
+            )
         # A regular SELL may still open risk (for example a protected option short),
         # so only verified long-position reductions receive the dedicated allowance.
         if (side != "SELL" or protected_short) and notional > self.limits.max_order_notional:
@@ -470,6 +650,7 @@ class RiskEngine:
                         False,
                         f"账户 {broker_acc or ''} 亏损已达到 ${self.limits.max_daily_loss:,.0f} 急停线",
                         notional,
+                        blocked_by=(INTRADAY_LOSS, DAILY_LOSS),
                     )
             if assets > 0 and positions is not None:
                 shadow_positions = self.store.shadow_open_positions()
@@ -534,7 +715,25 @@ class RiskEngine:
                             False,
                             f"账户 {broker_acc or ''} 日内回撤达到 {drawdown:.2%}，已自动急停",
                             notional,
+                            blocked_by=(INTRADAY_DRAWDOWN,),
                         )
+                # 回撤熔断（G4）：取数与计算在本侧完成；聚合层只接收结果
+                breaker = self._drawdown_breaker_for_entry(
+                    broker, broker_acc, assets, execution_mode,
+                )
+                breaker_info = breaker
+                if breaker["blocked"]:
+                    reasons = tuple(reason.code for reason in breaker["reasons"]) or (
+                        DRAWDOWN_ABSOLUTE,
+                    )
+                    return RiskDecision(
+                        False,
+                        "跨日回撤熔断已触发，暂停新开仓（持仓退出不受影响）",
+                        notional,
+                        blocked_by=reasons,
+                        breaker_reasons=breaker["reasons"],
+                        breaker_would_block=breaker["would_block"],
+                    )
                 market_value = float(positions.get("market_val", []).sum()) if "market_val" in positions else 0
                 symbol_rows = positions[positions["code"] == symbol] if not positions.empty else positions
                 symbol_value = float(symbol_rows["market_val"].sum()) if "market_val" in symbol_rows else 0
@@ -568,4 +767,9 @@ class RiskEngine:
                                          "HEALTHY" if allowed else "BLOCKED", exposure)
             if not allowed:
                 return RiskDecision(False, portfolio_reason, notional)
-        return RiskDecision(True, "风控通过", notional)
+        return RiskDecision(
+            True, "风控通过", notional,
+            breaker_reasons=tuple(breaker_info.get("reasons", ())),
+            breaker_unsupported=str(breaker_info.get("unsupported", "")),
+            breaker_would_block=bool(breaker_info.get("would_block", False)),
+        )

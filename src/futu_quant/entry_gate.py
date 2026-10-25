@@ -37,7 +37,8 @@ __all__ = [
     "AGGREGATION_ORDER",
 ]
 
-#: 固定聚合顺序（对账锁 → 急停 → 只减仓 → 熔断 → 日亏损 → 预算）
+#: 聚合顺序参考（**实际顺序** = `risk_decision.blocked_by` 原序 → 熔断原因）。
+#: 既有闸门的 code 由 `RiskEngine` 给出，聚合层不再重复持有它们的字段。
 AGGREGATION_ORDER = (
     RECONCILIATION_LOCK,
     ACCOUNT_HALT,
@@ -52,20 +53,16 @@ AGGREGATION_ORDER = (
 
 @dataclass(frozen=True)
 class EntrySignals:
-    """调用方（`submit_limit` / `RiskEngine` 侧）**已经算好**的门禁信号。
+    """调用方（`submit_limit` / `RiskEngine` 侧）**已经算好**的熔断维度信号。
 
-    这里没有 broker、没有 store、没有权益查询入口——纯数据。
+    单一来源（Chief 2026-10-25 裁定）：既有 4 套闸门的原因**只来自**
+    `risk_decision.blocked_by`，这里**不再持有**对账锁/急停/只减仓/日亏损/预算字段
+    —— 同一原因两个来源必然漂移（重复原因，或一个说有、一个说没有）。
     """
 
-    reconciliation_locked: bool = False
-    reconciliation_detail: str = ""
-    account_halt: str = ""
-    strategy_reduce_only: str = ""
     breaker_reasons: tuple[BlockReason, ...] = field(default_factory=tuple)
     #: 非空 = 该交易环境熔断维度未启用（显式记录，不产生 block 原因、不停单）
     breaker_unsupported: str = ""
-    daily_loss_halted: str = ""
-    budget_exhausted: str = ""
 
 
 def resolve_breaker_inputs(
@@ -86,28 +83,30 @@ def resolve_breaker_inputs(
     return tuple(breaker_reasons), ""
 
 
-def resolve_entry_block_reasons(signals: EntrySignals) -> list[BlockReason]:
+def resolve_entry_block_reasons(
+    signals: EntrySignals,
+    risk_decision: object | None = None,
+) -> list[BlockReason]:
     """返回**全部**阻止开新仓的原因（空列表 = 放行）。
 
-    多条原因**全量返回**，由调用方全部落 audit（不是只报第一条）。
+    唯一出口：`risk_decision.blocked_by`（RiskEngine 既有闸门）作为**第一条原因**，
+    再接熔断原因，按 code 去重；调用方一次写 audit（V9 走真实链路）。
+    本函数仍**不判定**：只读取 RiskEngine 已给出的结论与数值。
     """
     reasons: list[BlockReason] = []
-    if signals.reconciliation_locked:
-        reasons.append(
-            BlockReason(
-                RECONCILIATION_LOCK,
-                signals.reconciliation_detail or "三账不一致，恢复前禁止开仓",
-            )
-        )
-    if signals.account_halt:
-        reasons.append(BlockReason(ACCOUNT_HALT, signals.account_halt))
-    if signals.strategy_reduce_only:
-        reasons.append(BlockReason(STRATEGY_REDUCE_ONLY, signals.strategy_reduce_only))
-    reasons.extend(signals.breaker_reasons)
-    if signals.daily_loss_halted:
-        reasons.append(BlockReason(DAILY_LOSS, signals.daily_loss_halted))
-    if signals.budget_exhausted:
-        reasons.append(BlockReason(RISK_BUDGET, signals.budget_exhausted))
+    seen: set[str] = set()
+    if risk_decision is not None:
+        decision_reason = str(getattr(risk_decision, "reason", "") or "风控拒绝")
+        for code in tuple(getattr(risk_decision, "blocked_by", ()) or ()):
+            if code in seen:
+                continue
+            seen.add(code)
+            reasons.append(BlockReason(str(code), decision_reason))
+    for reason in signals.breaker_reasons:
+        if reason.code in seen:
+            continue
+        seen.add(reason.code)
+        reasons.append(reason)
     return reasons
 
 

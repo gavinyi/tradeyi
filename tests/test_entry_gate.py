@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from futu_quant import entry_gate as gate
 from futu_quant import risk_breaker as rb
@@ -16,25 +17,63 @@ from futu_quant import risk_breaker as rb
 SOURCE = Path(gate.__file__)
 
 
-def test_aggregate_keeps_all_reasons_in_fixed_order():
+def test_entry_signals_fields_are_breaker_only():
+    """单一来源（Chief 裁定）：既有闸门原因只来自 `risk_decision.blocked_by`。
+
+    `EntrySignals` 只允许熔断维度字段；若有人把对账锁/急停/日亏损等字段加回来，
+    就会出现「同一原因两个来源」的漂移，本断言立即变红。
+    """
+    import dataclasses
+
+    assert {field.name for field in dataclasses.fields(gate.EntrySignals)} == {
+        "breaker_reasons",
+        "breaker_unsupported",
+    }
+
+
+def test_decision_reasons_come_first_then_breaker():
+    """原因顺序 = `risk_decision.blocked_by` 原序 → 熔断原因（去重）。"""
+    decision = SimpleNamespace(
+        allowed=False,
+        reason="三账不一致",
+        blocked_by=(rb.RECONCILIATION_LOCK, rb.ACCOUNT_HALT, rb.STRATEGY_REDUCE_ONLY),
+    )
     reasons = gate.resolve_entry_block_reasons(
-        gate.EntrySignals(
-            reconciliation_locked=True,
-            account_halt="账户急停",
-            strategy_reduce_only="策略只减仓",
-            breaker_reasons=(rb.BlockReason(rb.DRAWDOWN_WARN, "回撤 9%"),),
-            daily_loss_halted="日亏损硬停",
-            budget_exhausted="预算用尽",
-        )
+        gate.EntrySignals(breaker_reasons=(rb.BlockReason(rb.DRAWDOWN_WARN, "回撤 9%"),)),
+        decision,
     )
     assert [reason.code for reason in reasons] == [
         rb.RECONCILIATION_LOCK,
         rb.ACCOUNT_HALT,
         rb.STRATEGY_REDUCE_ONLY,
         rb.DRAWDOWN_WARN,
-        rb.DAILY_LOSS,
-        rb.RISK_BUDGET,
     ]
+    assert reasons[0].detail == "三账不一致"
+
+
+def test_risk_decision_reasons_merged_first_and_deduplicated():
+    """Chief 裁定：`risk_decision.blocked_by` 作为第一条原因合并，一次落 audit（V9）。"""
+    decision = SimpleNamespace(
+        allowed=False, reason="账户急停已开启", blocked_by=(rb.ACCOUNT_HALT,)
+    )
+    reasons = gate.resolve_entry_block_reasons(
+        gate.EntrySignals(
+            breaker_reasons=(
+                rb.BlockReason(rb.DRAWDOWN_WARN, "回撤 9%"),
+                rb.BlockReason(rb.ACCOUNT_HALT, "重复来源的急停"),
+            ),
+        ),
+        decision,
+    )
+    assert [reason.code for reason in reasons] == [rb.ACCOUNT_HALT, rb.DRAWDOWN_WARN]
+    assert reasons[0].detail == "账户急停已开启"
+
+
+def test_risk_decision_can_be_omitted_for_shadow_path():
+    reasons = gate.resolve_entry_block_reasons(
+        gate.EntrySignals(breaker_reasons=(rb.BlockReason(rb.DRAWDOWN_ABSOLUTE, "x"),))
+    )
+    assert [reason.code for reason in reasons] == [rb.DRAWDOWN_ABSOLUTE]
 
 
 def test_empty_signals_allow_entry():
@@ -153,8 +192,9 @@ def test_v21_entry_gate_signature_only_takes_signals():
 
     signature = inspect.signature(gate.resolve_entry_block_reasons)
     parameters = list(signature.parameters.values())
-    assert len(parameters) == 1
+    assert len(parameters) == 2
     assert parameters[0].name == "signals"
+    assert parameters[1].name == "risk_decision"
     assert parameters[0].annotation in ("EntrySignals", gate.EntrySignals)
 
 

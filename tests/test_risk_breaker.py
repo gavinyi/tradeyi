@@ -1,4 +1,4 @@
-"""G4 回撤熔断纯判定内核守卫（`src/futu_quant/risk_breaker.py`）。
+﻿"""G4 回撤熔断纯判定内核守卫（`src/futu_quant/risk_breaker.py`）。
 
 对齐设计基线 `c227416` 的 V1–V22 中纯逻辑部分：
 - 双基准各自只涨不跌，回撤恒 >= 0（Reviewer C1 / V2）；
@@ -185,6 +185,7 @@ def test_absolute_floor_is_relaxed_by_ack_then_rearmed():
     decision = rb.evaluate(worse, rb.validate_equity_sample(87_000.0, None), TH,
                            now="2026-10-24T15:00:00", current_trading_day="2026-10-24")
     assert decision.level == 2
+    # 锁存后绝对底线放宽到 ack+2pp = 12% → code 跟随生效底线（不是写死 10pct）
     assert decision.reasons[0].code == rb.DRAWDOWN_ABSOLUTE
 
 
@@ -288,6 +289,46 @@ def test_unparsable_last_reset_is_fail_closed(caplog):
     assert any("无法解析" in record.message for record in caplog.records)
     assert rb.unparsable_last_reset(state) is True
     assert rb.unparsable_last_reset(_state()) is False
+
+
+#: code 枚举白名单（新增/改名必须先改白名单，否则审计与文档会长期漂移）
+ALLOWED_REASON_CODES = {
+    "dd_since_reset_warn",
+    "dd_since_reset_stop",
+    "dd_vs_peak_absolute",
+}
+
+
+def test_tier_codes_are_semantic_and_enumerated():
+    """Chief 定稿：code 用语义名、数值放 detail；白名单固定 code 集合。"""
+    assert rb.DRAWDOWN_WARN == "dd_since_reset_warn"
+    assert rb.DRAWDOWN_STOP == "dd_since_reset_stop"
+    assert rb.DRAWDOWN_ABSOLUTE == "dd_vs_peak_absolute"
+    assert {rb.DRAWDOWN_WARN, rb.DRAWDOWN_STOP, rb.DRAWDOWN_ABSOLUTE} == ALLOWED_REASON_CODES
+    assert rb._level_for(0.08, 0.0, TH, None) == (1, "dd_since_reset_warn")
+    assert rb._level_for(0.10, 0.0, TH, None)[1] == "dd_since_reset_stop"
+    assert rb._level_for(0.0, 0.10, TH, None)[1] == "dd_vs_peak_absolute"
+    # 阈值改成 7%/9%：code 仍是语义名（不带数字），具体数值由 detail 承载
+    relaxed = rb.BreakerThresholds(warn=0.07, stop=0.09, resume=0.05, rearm_gap_pp=0.02,
+                                   mode=rb.MODE_ENFORCE)
+    assert rb._level_for(0.07, 0.0, relaxed, None)[1] == "dd_since_reset_warn"
+    assert rb._level_for(0.09, 0.0, relaxed, None)[1] == "dd_since_reset_stop"
+    decision = rb.evaluate(
+        _state(), rb.validate_equity_sample(92_000.0, None), relaxed,
+        now="2026-10-25T14:00:00", current_trading_day="2026-10-25",
+    )
+    assert decision.reasons[0].code == "dd_since_reset_warn"
+    assert "dd_since_reset=8.00%" in decision.reasons[0].detail
+    # 所有运行期产出的 code 必须落在白名单内
+    emitted = {decision.reasons[0].code}
+    for sample, th in ((92_000.0, TH), (90_000.0, TH), (89_000.0, TH)):
+        reported = rb.evaluate(
+            _state(peak_hist=100_000.0, peak_reset=89_000.0, baseline_equity=89_000.0),
+            rb.validate_equity_sample(sample, None), th,
+            now="2026-10-25T14:00:00", current_trading_day="2026-10-25",
+        )
+        emitted.update(reason.code for reason in reported.reasons)
+    assert emitted <= ALLOWED_REASON_CODES, f"出现白名单外的 code：{emitted - ALLOWED_REASON_CODES}"
 
 
 def test_reset_retry_after_none_when_window_expired_or_never_reset():
