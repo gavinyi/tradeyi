@@ -12,7 +12,10 @@ UTC-aware。直接 `merge_asof` 会抛 `MergeError: incompatible merge keys`；�
 
 from __future__ import annotations
 
+import importlib
+import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -101,6 +104,35 @@ def test_unmatched_rows_are_dropped_not_filled(tmp_path):
         add_option_market_features(frame, str(db))
 
 
+def test_snapshot_within_tolerance_matches(tmp_path):
+    """容差边界内（44 分钟前）的快照必须能匹配。"""
+    db = _make_db(
+        tmp_path / "t.db",
+        [(CODE, "2026-10-22 10:32:00", 200.0, 0.05, -0.10)],  # 10:32 ET = 14:32Z
+    )
+    frame = pd.DataFrame(
+        {"symbol": [CODE], "created_at": ["2026-10-22T15:16:37+00:00"]}  # 11:16 ET
+    )
+
+    merged = add_option_market_features(frame, str(db))
+
+    assert merged.loc[0, "underlying_price"] == pytest.approx(200.0)
+
+
+def test_snapshot_beyond_tolerance_is_dropped(tmp_path):
+    """20 小时前的快照必须丢弃 —— 旧的 1 天容差会把它当成交时刻行情（跨夜错配）。"""
+    db = _make_db(
+        tmp_path / "t.db",
+        [(CODE, "2026-10-21 15:00:00", 200.0, 0.05, -0.10)],  # 前一日 15:00 ET
+    )
+    frame = pd.DataFrame(
+        {"symbol": [CODE], "created_at": ["2026-10-22T15:16:37+00:00"]}
+    )
+
+    with pytest.raises(RuntimeError, match="没有任何样本"):
+        add_option_market_features(frame, str(db))
+
+
 def test_no_market_history_raises(tmp_path):
     db = _make_db(tmp_path / "t.db", [])
     frame = pd.DataFrame(
@@ -109,3 +141,41 @@ def test_no_market_history_raises(tmp_path):
 
     with pytest.raises(RuntimeError, match="option_history 无任何行情记录"):
         add_option_market_features(frame, str(db))
+
+
+def test_import_does_not_hijack_stdio():
+    """导入导出脚本不得替换 stdout/stderr（否则 pytest capture 又被顶掉）。"""
+    module = importlib.import_module("scripts.ml_export_training_data_v3")
+    stdout_before, stderr_before = sys.stdout, sys.stderr
+
+    assert module is not None
+    assert sys.stdout is stdout_before, "导入期替换了 sys.stdout：会顶掉 pytest capture"
+    assert sys.stderr is stderr_before, "导入期替换了 sys.stderr：会顶掉 pytest capture"
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    module_level = [line.strip() for line in source.split("if __name__ == '__main__':")[0].splitlines()]
+    assert "_force_utf8_stdio()" not in module_level
+    assert "_force_utf8_stdio()" in source.split("if __name__ == '__main__':")[1]
+
+
+def test_export_entrypoint_survives_gbk_stdout(tmp_path):
+    """Step 2 是**手工跑导出**：GBK 控制台下打印 emoji 不得 UnicodeEncodeError。"""
+    script = ROOT / "scripts" / "ml_export_training_data_v3.py"
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "gbk"  # 强制复现 Windows 控制台 GBK 场景
+    env.pop("PYTHONUTF8", None)
+
+    result = subprocess.run(
+        [
+            sys.executable, str(script),
+            "--output", str(tmp_path / "out.csv"),
+            "--db", str(tmp_path / "missing.db"),
+        ],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=env, cwd=ROOT, timeout=120,
+    )
+
+    assert "UnicodeEncodeError" not in (result.stderr or ""), (
+        "入口没有接管 stdio，GBK 下 emoji 打印直接崩：\n" + (result.stderr or "")[-800:]
+    )
+    assert "📂" in (result.stdout or ""), "脚本应跑到打印阶段（说明入口 stdio 已修好）"
