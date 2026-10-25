@@ -153,8 +153,30 @@ if dd_since_reset < 8%:  de_risk_scale 恢复 1.0
 新增 `src/futu_quant/entry_gate.py`：
 
 ```python
-def resolve_entry_block_reasons(store, broker, strategy_id, tenant_id) -> list[BlockReason]:
-    """返回**全部**阻止开新仓的原因（空列表=放行）。ExecutionManager 只调这一个函数。"""
+@dataclass(frozen=True)
+class EntrySignals:
+    """由 RiskEngine / 调用方**算好并传入**的只读信号快照。
+
+    聚合层**只读**这些字段：它没有 store、没有 broker、不能查库、不能取快照。
+    """
+    strategy_id: str
+    tenant_id: str
+    reconciliation_locked: bool
+    kill_switch_active: bool
+    entries_paused: bool
+    breaker_level: int          # RiskEngine 侧算好的档位
+    breaker_blocked_by: str     # 闸门标识，写进 audit（V23）
+    intraday_dd: float          # 既有日内回撤（只读，不重算）
+    daily_loss: float
+    budget_exhausted: bool
+
+def resolve_entry_block_reasons(signals: EntrySignals) -> list[BlockReason]:
+    """纯函数：返回**全部**阻止开新仓的原因（空列表=放行）。ExecutionManager 只调这一个函数。
+
+    🔴 v2 修正（Coder 指出）：初稿签名是 ``(store, broker, strategy_id, tenant_id)``，
+    与 §D3.1「`entry_gate` 禁止取数」**自相矛盾** —— 那个签名会诱导下个实现者
+    在聚合层里写查询。**以本签名（只吃 signals）为准。**
+    """
 ```
 内部按固定顺序聚合现有 4 套 + 新增回撤熔断：
 `对账锁 → 租户/账户急停 → 策略只减仓 → 回撤熔断(1/2档) → 日亏损 → 风险预算`。
