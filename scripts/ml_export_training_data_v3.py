@@ -166,6 +166,35 @@ def add_option_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+MARKET_TIMEZONE = "America/New_York"
+
+
+def _market_stamp_to_utc(raw) -> pd.Timestamp:
+    """把一条行情时间解释成 UTC-aware。
+
+    `option_history.time_key` 是 **naive 的交易所本地时间（ET）**（与
+    `futu_quant.data_quality.quote_freshness` 同一口径：naive → localize(NY)）；
+    `order_intents.created_at` 是 UTC-aware。两者必须先归一到同一时区形态：
+    - 直接混算会抛 `MergeError: incompatible merge keys`；
+    - 更危险的是"能算但不报错"的情形：naive 当 UTC 会错位 4~5 小时，把**成交之后**
+      的快照当成入场时点 —— 典型 look-ahead 污染。
+    """
+    stamp = pd.to_datetime(raw, errors="coerce")
+    if pd.isna(stamp):
+        return pd.NaT
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize(MARKET_TIMEZONE)
+    return stamp.tz_convert("UTC")
+
+
+def _market_times_to_utc(values: pd.Series) -> pd.Series:
+    return pd.Series(
+        [_market_stamp_to_utc(value) for value in values],
+        index=values.index,
+        dtype="datetime64[ns, UTC]",
+    )
+
+
 def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
     """合并``option_history`` 里**成交时刻的真实行情**：正股价 + 期权希腊字母。
 
@@ -193,14 +222,14 @@ def add_option_market_features(df: pd.DataFrame, db_path: str) -> pd.DataFrame:
         )
 
     history = history.rename(columns={"gamma": "option_gamma", "theta": "option_theta"})
-    history["time_key"] = pd.to_datetime(history["time_key"], errors="coerce")
+    history["time_key"] = _market_times_to_utc(history["time_key"])
     history = history.dropna(subset=["time_key"]).sort_values("time_key")
     history = history.dropna(subset=["underlying_price"])
 
     frame = df.copy()
     frame["code"] = frame["symbol"]
-    frame["created_at"] = pd.to_datetime(frame["created_at"], errors="coerce")
-    frame = frame.sort_values("created_at")
+    frame["created_at"] = _market_times_to_utc(frame["created_at"])
+    frame = frame.dropna(subset=["created_at"]).sort_values("created_at")
     merged = pd.merge_asof(
         frame,
         history[["code", "time_key", *market_cols]],
