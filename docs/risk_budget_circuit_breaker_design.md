@@ -286,6 +286,9 @@ def resolve_entry_block_reasons(store, broker, strategy_id, tenant_id) -> list[B
 - **V20**（R2 部分配置即拒单）只写 9/10 个字段 → `RiskLimitsConfigError` → BUY 被拒 + ERROR；SELL 不受影响。**写满 10 个**才放行。
 - **V21**（N1/N5 双闸门不重复实现）日内回撤硬停与跨日熔断**共用同一个 `compute_equity_drawdowns()`**：变异——在 `entry_gate.py` 里另写一遍取快照逻辑 → 单源守卫必红；并断言日内 5% 触发时走**既有**分支（`risk.py:525`），不是新熔断分支（两者报文不同，可区分）。
 - **V22**（成本常量边界，对应 PRD §15）`fee_per_trade_estimate` **写死在代码里 → 判失败**；**把它加成 `resolve_entry_block_reasons()` 的一条拦截原因 → 判失败**；把它用于仓位规模计算 → 判失败。三处用途白名单（页面/评审/回测）之外一律不允许。
+- **V23**（Reviewer 实现期要求）**audit 必须带 `blocked_by`** 标明是哪个闸门拦的（`intraday_drawdown_5pct` / `dd_since_reset` / `dd_vs_peak` / 其它）。**理由**：新熔断 8% 与既有日内 `max_drawdown_pct=0.05` 并存，两个闸门都可能拦 BUY；若 audit 不区分，S2 shadow 观测会把两者混在一起，**无法证明"新熔断零误报"**。变异：去掉 `blocked_by` → 此用例必红。
+
+**单源约束（Coder/Ops 补，防第三处漂移）**：G4 实现**必须直接读 `cost_summary()['fee_per_trade']`**（`exec_cost_attribution.py:157`），**不得自己复算**；配置键注释写死「分子 = FILLED-only 意图费用，分母 = 成交笔数」。
 
 ---
 
