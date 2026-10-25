@@ -7,7 +7,8 @@ ML 增强打分 vs 纯规则打分 对照回测与满足度检验引擎
 2. A/B 绩效对决：总收益率、交易胜率、最大回撤、夏普比率、盈亏比并列统计；
 3. 五档单调性检验：按分值切分 Q1~Q5 档位，验证高分组是否显著优于低分组；
 4. 选品分歧账本：提取 ML 避雷案例（规则看好但 ML 避开亏损）与淘金案例（规则落选但 ML 抓取盈利）；
-5. 生产准入红绿灯：自动化判定 ML 是否满足推向实战的标准。
+5. 本次回测对照结论：只描述**单次评估**的差异（不作生产准入判定；准入按
+   `data/qa/ml_v32_enable_runbook.md` 的预写阈值，需要时间序重训 + OOT ≥55~60 交易日 + block bootstrap）。
 """
 from __future__ import annotations
 
@@ -359,16 +360,24 @@ def run_ml_vs_rule_comparison(
     else:
         mono_pass = True
 
-    # 综合判定
+    # 综合判定（**只描述本次回测**，不作准入结论；准入口径见 runbook 预写阈值）
     all_passed = ret_pass and win_pass and dd_pass and mono_pass
+    sample_trades = int(len(df))
+    sample_days = int(df[group_col].nunique()) if group_col in df.columns else 0
     readiness_report = {
         "is_ready": all_passed,
-        "verdict_title": "🟢 满足实盘接入要求 (Recommended for Production)" if all_passed else "🔴 建议维持规则打分 (Keep Rule-Based)",
+        "verdict_title": "📊 本次回测结果（单次评估，不构成准入结论）",
         "verdict_desc": (
-            "ML 模型在收益率、胜率提升与分层单调性上全面战胜规则基准，具备稳定的增量 Alpha 能力，可安全接入实盘或模拟盘。"
-            if all_passed else
-            "ML 模型在部分关键风控或收益指标上未达标，暂不建议盲目切入真金交易，建议继续积累样本或微调特征权重。"
+            f"样本：{sample_trades} 笔 / {sample_days} 个交易日。"
+            "本页只展示这一次回测的对照差异：不含置信区间、不做折内重训、无样本量门槛，"
+            "因此**只描述本次结果，不作准入判定**（达标/未达标仅是本次四项相对比较）。"
+            "准入复测请按 data/qa/ml_v32_enable_runbook.md 的「切/不切判定」小节："
+            "预写阈值 + 时间序重训 + OOT ≥55~60 个交易日 + 同口径交易日 block bootstrap。"
         ),
+        "evaluation_scope": "single_run_backtest",
+        "sample_trades": sample_trades,
+        "sample_days": sample_days,
+        "admission_reference": "data/qa/ml_v32_enable_runbook.md#切/不切判定",
         "checklist": checks,
     }
 

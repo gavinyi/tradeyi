@@ -244,12 +244,17 @@ with tab_backtest:
 
     res = st.session_state.get("ml_comparison_result")
     if res is not None:
-        # 1. 自动化准入卡
+        # 1. 本次回测结果（**不是**准入卡）：中性展示，不得用绿勾/红叉替页面背书，
+        # 也不得写成「可实盘接入」这类准入结论（Chief 2026-10-25 裁定）。
+        # 守卫 `tests/test_readiness_wording.py` 咬住「verdict 不得用 st.success/st.error」。
         rep = res.readiness_report
-        if rep["is_ready"]:
-            st.success(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
-        else:
-            st.error(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+        st.info(f"### {rep['verdict_title']}\n{rep['verdict_desc']}")
+        if rep.get("sample_trades") is not None:
+            st.caption(
+                f"样本量：{rep['sample_trades']} 笔 / {rep['sample_days']} 个交易日"
+                "（交易日=去重后的日期数）；"
+                f"准入参考：{rep.get('admission_reference')}"
+            )
 
         # 数据质量必须可见（P0-B：行级缺值不抛，但丢弃数/原因不许静默）
         dq = getattr(res, "data_quality", {}) or {}
