@@ -50,7 +50,9 @@ def metadata_mismatches(meta: dict, pkl_meta: dict) -> list[str]:
             f"features 不一致：json={len(actual_features)} 个 / pkl={len(expected_features)} 个"
         )
     json_version = str(meta.get("version") or "")
-    if json_version and not json_version.startswith(str(pkl_meta["version"])):
+    # 版本必须**逐字一致**：用前缀判定会把 `v3.1_retrained_20261024` 误认为 pkl 的 `v3`
+    # （2026-10-27 全量红就是这么来的：「跑的是 v3.1、pkl 是 v3」却报配对成功）。
+    if json_version and json_version != str(pkl_meta["version"]):
         problems.append(f"version 不一致：json={json_version} / pkl={pkl_meta['version']}")
     json_trained = str(meta.get("trained_at") or "")
     pkl_trained = str(pkl_meta.get("trained_at") or "")

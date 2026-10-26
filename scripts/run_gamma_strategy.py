@@ -568,6 +568,7 @@ def _alert_missing_campaign_tenant(executor, strategy_id: str, code: str) -> Non
             },
         )
     except Exception:  # noqa: BLE001 - 留痕失败不得阻断交易主循环
+        # silent-ok: 磁盘/DB 写失败时不能因此打断决策主流程（下一轮会再尝试留痕）
         pass
 
 

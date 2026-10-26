@@ -828,7 +828,8 @@ def maybe_trigger_auto_retrain(store) -> bool:
                     },
                 )
                 store.set_setting("ml_auto_retrain_disabled_logged_on", today)
-            except Exception:  # noqa: BLE001 - 同上：留痕失败不能阻断交易主循环
+            except Exception:  # noqa: BLE001 - 同下
+                # silent-ok: ML_AUTO_RETRAIN_SKIPPED 留痕失败不得阻断交易主循环
                 pass
         return False
     wrapper = Path(__file__).resolve().parent / "run_ml_retrain_wrapper.py"

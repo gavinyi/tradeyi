@@ -68,7 +68,8 @@ def test_two_consecutive_inactive_reset_timer_and_bump_epoch_on_reactivation():
         state, regime_active=False, now=NOW + timedelta(minutes=1),
         inactive_tolerance_cycles=1,
     )
-    assert state["signal_started_at"] is None, "连续 2 轮 inactive 必须结束 epoch"
+    # 实现结束 epoch 用的是 pop（与旧行为一致）→ 键不存在，而不是「存在为 None」
+    assert "signal_started_at" not in state, "连续 2 轮 inactive 必须结束 epoch"
     assert state["exit_signal_epoch"] == 3
     assert state["signal_epoch"] == 3, "epoch 在重新激活时才自增"
 
@@ -81,15 +82,20 @@ def test_two_consecutive_inactive_reset_timer_and_bump_epoch_on_reactivation():
 
 
 def test_sustained_inactive_stays_fail_closed():
-    """③ 持续 inactive 长周期：计时保持清空、signal_active=False（不进场）。"""
+    """③ 持续 inactive 长周期：容忍期后计时清空、signal_active=False（始终不进场）。"""
     state = _state()
     for index in range(5):
         update_signal_epoch_state(
             state, regime_active=False, now=NOW + timedelta(minutes=index),
             inactive_tolerance_cycles=1,
         )
-        assert state["signal_started_at"] is None
+        # 无论是否在容忍期，**当轮都不进场**（signal_active 无条件 False）
         assert state["signal_active"] is False
+        if index == 0:
+            # 容忍期内（streak=1 ≤ 1）计时保留，这正是 A13 要的行为
+            assert state["signal_started_at"] == T0
+        else:
+            assert "signal_started_at" not in state, "连续 inactive 超容忍后计时必须清空"
     assert state["signal_epoch"] == 3, "持续 inactive 不应凭空增加 epoch"
 
 
@@ -99,7 +105,7 @@ def test_zero_tolerance_keeps_old_strict_behaviour():
     update_signal_epoch_state(
         state, regime_active=False, now=NOW, inactive_tolerance_cycles=0,
     )
-    assert state["signal_started_at"] is None
+    assert "signal_started_at" not in state
     assert state["exit_signal_epoch"] == 3
 
 
