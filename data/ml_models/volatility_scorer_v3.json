@@ -1,6 +1,28 @@
 {
-  "version": "v3.1_retrained_20261024_103653",
-  "trained_at": "2026-10-24T10:36:54.098296+00:00",
+  "artifact": "volatility_scorer_v3.pkl",
+  "version": "v3",
+  "trained_at": "2026-08-29T08:22:01.215754",
+  "model_type": "RandomForestClassifier",
+  "feature_count": 16,
+  "features": [
+    "days_to_expiry",
+    "is_call",
+    "strike_price",
+    "expiry_bucket",
+    "symbol_avg_pnl",
+    "symbol_std_pnl",
+    "symbol_max_pnl",
+    "symbol_min_pnl",
+    "symbol_win_rate",
+    "symbol_3d_avg_pnl",
+    "symbol_7d_avg_pnl",
+    "symbol_trade_count",
+    "symbol_pnl_trend",
+    "day_of_week",
+    "hour_of_day",
+    "is_market_close"
+  ],
+  "source": "rebuilt_from_pkl",
   "sample_trades_count": 330,
   "incubator_symbols_count": 8,
   "underlying_weights": {
@@ -99,14 +121,5 @@
       "win_rate": 0.4,
       "total_pnl": -282.17
     }
-  },
-  "features": [
-    "f_atr_ratio_20d",
-    "f_zscore_20d",
-    "f_beta_to_spy",
-    "f_iv_rv_ratio",
-    "f_iv_percentile",
-    "f_sandbox_win_rate",
-    "f_avg_slippage"
-  ]
+  }
 }
