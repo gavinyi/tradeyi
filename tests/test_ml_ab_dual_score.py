@@ -30,7 +30,7 @@ from futu_quant.ml_ab_observe import (  # noqa: E402
     observe_enabled,
     record_observation,
 )
-import volatility_roll  # noqa: E402
+from futu_quant import volatility_roll  # noqa: E402  实现落在 src/futu_quant，不是 scripts/
 
 TENANT = "futu_paper_sandbox"
 NOW = datetime(2026, 10, 28, 14, 35, 12, tzinfo=timezone.utc)
