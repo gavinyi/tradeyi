@@ -517,6 +517,31 @@ def hard_issues_block_action(hard_issues: list[str], quantity: int) -> bool:
     return bool(hard_issues) and int(quantity) <= 0
 
 
+_MISSING_TENANT_ALERTED = False
+
+
+def _alert_missing_campaign_tenant(executor, strategy_id: str, code: str) -> None:
+    """A3（2026-10-27）：campaign 与执行器都拿不到租户时，显式 ERROR 留痕（每进程一次）。
+
+    `store.decision()` 对空租户本身会发 WARNING；这里再补一条 ERROR 级事件，
+    使「决策审计无法归户」在告警面板可见 —— 不是静默写空租户。
+    """
+    global _MISSING_TENANT_ALERTED
+    if _MISSING_TENANT_ALERTED:
+        return
+    _MISSING_TENANT_ALERTED = True
+    try:
+        executor.store.operational_event(
+            strategy_id, "DECISION_MISSING_TENANT_ID", "ERROR",
+            {
+                "code": code,
+                "reason": "campaign 与执行器均无 tenant_id，决策审计无法归户",
+            },
+        )
+    except Exception:  # noqa: BLE001 - 留痕失败不得阻断交易主循环
+        pass
+
+
 def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
@@ -526,11 +551,13 @@ def run_campaign(
     if not _campaign_tenant:
         # A3（2026-10-27）：生产 `VOLATILITY_CAMPAIGNS` 存量 campaign 可能缺 tenant_id
         # （当时 8 条全缺），决策日志会写空租户 → 热路径告警刷屏 + 审计无法归户。
-        # 口径：**执行器所属租户优先**（由 broker 账户 + 租户注册表解析，权威来源）；
-        # 仍未解析出时保持空串，由 store 的 DECISION_MISSING_TENANT_ID 告警兜底（不静默）。
+        # 口径：**执行器所属租户优先**（由 broker 账户 + 租户注册表解析，权威来源）。
         _campaign_tenant = str(
             getattr(getattr(executor, "tenant", None), "tenant_id", "") or ""
         ).strip()
+    if not _campaign_tenant:
+        # 仍无租户上下文：显式 ERROR 留痕（不静默）。生产服务路径不会走到这里。
+        _alert_missing_campaign_tenant(executor, strategy_id, code)
     legs = campaign.get("legs") or [{"code": code, "side": "BUY", "ratio": 1}]
     valid_leg_codes = [
         str(leg.get("code", "")).upper()

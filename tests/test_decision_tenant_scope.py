@@ -210,6 +210,128 @@ def test_worker_run_campaign_records_tenant_id(tmp_path, monkeypatch):
     assert len(warnings) == 0, f"Worker 决策触发了未传租户告警：{warnings}"
 
 
+def test_campaign_without_tenant_falls_back_to_executor_tenant(tmp_path, monkeypatch):
+    """A3（2026-10-27）：campaign 缺 `tenant_id` 时，决策日志必须落**执行器租户**，不得写空。
+
+    生产 `VOLATILITY_CAMPAIGNS` 8 条全部缺 tenant_id（已只读核实），当日因此积了
+    11.4 万条空租户 decision_logs。口径：campaign 值优先 → 执行器租户兜底 → 都没有则
+    显式 ERROR 留痕（不静默写空）。
+    """
+    from types import SimpleNamespace
+
+    import pandas as pd
+    import scripts.run_gamma_strategy as rgs
+    from futu_quant.execution import ExecutionManager
+
+    store = TradingStore(tmp_path / "a3.db")
+    code = "US.AMD261030P520000"
+    positions = pd.DataFrame([{"code": code, "qty": 0, "cost_price": 2.0}])
+
+    class FakeBroker:
+        def positions(self, refresh=False):
+            return positions
+
+        def orders(self, *args, **kwargs):
+            return pd.DataFrame()
+
+        def snapshots(self, symbols):
+            stamp = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S")
+            return pd.DataFrame([
+                {"code": symbol, "bid_price": 1.95, "ask_price": 2.05,
+                 "last_price": 2.0, "update_time": stamp}
+                for symbol in symbols
+            ])
+
+        def snapshots_tolerant(self, symbols, **kwargs):
+            return self.snapshots(symbols)
+
+        def candles(self, symbol, count=120):
+            bars = max(1, int(count or 120))
+            closes = [600.0 + index for index in range(bars)]
+            return pd.DataFrame({
+                "code": symbol,
+                "time_key": pd.date_range("2026-07-01", periods=bars, freq="D"),
+                "open": closes, "close": closes,
+                "high": closes, "low": closes, "volume": 1000,
+            })
+
+    executor = ExecutionManager(FakeBroker(), store=store)
+    # 生产由 broker 账户 + 租户注册表解析；这里直接给权威值（测试聚焦兜底契约）
+    executor.tenant = SimpleNamespace(tenant_id=REAL)
+
+    monkeypatch.setattr(rgs, "diagnose_campaign", lambda campaign, events: ["财报时间未人工确认"])
+    monkeypatch.setattr(rgs, "hard_campaign_issues", lambda campaign, issues: list(issues))
+
+    # **故意不带 tenant_id** —— 复现生产 8 条 campaign 的形态
+    campaign = {
+        "code": code,
+        "trigger_mode": "VOLATILITY",
+        "underlying": "META",
+        "option_type": "PUT",
+        "legs": [{"code": code, "side": "BUY", "ratio": 1}],
+        "closed": True,
+    }
+    rgs.run_campaign(FakeBroker(), executor, campaign, {})
+
+    decisions = store.decisions(limit=10)
+    assert decisions, "run_campaign 没有写决策"
+    assert decisions[0]["tenant_id"] == REAL, f"空租户兜底失效：{decisions[0]}"
+    missing = [
+        e for e in store.operational_events()
+        if e["event_type"] == "DECISION_MISSING_TENANT_ID"
+    ]
+    assert not missing, f"有执行器租户时不应触发缺失租户告警：{missing}"
+
+
+def test_missing_tenant_both_sides_emits_error_event(tmp_path, monkeypatch):
+    """A3 反向：campaign 与执行器都没有租户 → 必须显式 ERROR 留痕（不静默写空）。"""
+    import pandas as pd
+    import scripts.run_gamma_strategy as rgs
+
+    store = TradingStore(tmp_path / "a3b.db")
+    code = "US.AMD261030P520000"
+
+    class FakeBroker:
+        def positions(self, refresh=False):
+            return pd.DataFrame([{"code": code, "qty": 0, "cost_price": 2.0}])
+
+        def orders(self, *args, **kwargs):
+            return pd.DataFrame()
+
+        def snapshots(self, symbols):
+            stamp = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S")
+            return pd.DataFrame([
+                {"code": symbol, "bid_price": 1.95, "ask_price": 2.05,
+                 "last_price": 2.0, "update_time": stamp}
+                for symbol in symbols
+            ])
+
+    class FakeExecutor:
+        def __init__(self):
+            from types import SimpleNamespace
+
+            self.store = store
+            self.tenant = None
+            self.alerts = SimpleNamespace(send=lambda *args, **kwargs: None)
+
+    monkeypatch.setattr(rgs, "diagnose_campaign", lambda campaign, events: [])
+    monkeypatch.setattr(rgs, "hard_campaign_issues", lambda campaign, issues: list(issues))
+    monkeypatch.setattr(rgs, "_MISSING_TENANT_ALERTED", False)
+
+    campaign = {
+        "code": code, "trigger_mode": "VOLATILITY", "underlying": "META",
+        "option_type": "PUT", "legs": [{"code": code, "side": "BUY", "ratio": 1}],
+        "closed": True,
+    }
+    # 触发早退路径（无持仓）——只验租户缺失的可见性
+    rgs.run_campaign(FakeBroker(), FakeExecutor(), campaign, {})
+    events = [
+        e for e in store.operational_events()
+        if e["event_type"] == "DECISION_MISSING_TENANT_ID"
+    ]
+    assert events, "两面都缺租户时必须留 ERROR 事件，不得静默"
+
+
 def test_missing_tenant_warning_is_throttled_per_process(tmp_path):
     """热路径保护（Chief 复核追加）：同一调用点缺租户只报一次。
 

@@ -164,6 +164,15 @@ def run_once(
             },
         )
     campaigns = load_volatility_campaigns(_tenant_id)
+    # A3（2026-10-27）：存量 campaign 可能**没有 tenant_id**（生产 `VOLATILITY_CAMPAIGNS`
+    # 8 条全缺）——于是在这里用**执行上下文租户**注入，保证后续决策日志/事件都能归户。
+    # 只补缺失值，不覆盖已有 tenant_id；不写回 DB（纯读侧补全）。
+    if _tenant_id:
+        campaigns = [
+            item if str(item.get("tenant_id") or "").strip()
+            else {**item, "tenant_id": _tenant_id}
+            for item in campaigns
+        ]
     # Clean malformed contracts before they reach the decision loop.  A bad
     # code otherwise produces hundreds of repetitive BLOCKED decisions and
     # obscures the actionable diagnostics for valid campaigns.
