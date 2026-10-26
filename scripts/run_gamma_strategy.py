@@ -49,6 +49,7 @@ from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.volatility_orphans import (
     volatility_write_state_key,
     without_legacy_signal_state_keys,
+    legacy_volatility_signal_state_key,
 )
 from futu_quant.campaign_cleanup import campaign_expired
 from futu_quant.data_quality import (
@@ -252,6 +253,38 @@ def save_state(state: dict) -> None:
     # `updated_at` 每轮刷新（生产 18:27:30 实测）。落盘前统一过滤，内存副本不动
     # （迁移仍可从内存读到旧键）。
     TradingStore().save_campaign_states(without_legacy_signal_state_keys(state))
+
+
+def audit_legacy_signal_state_takeover(
+    store, state: dict, strategy_id: str, underlying: str, tenant_id: str,
+) -> bool:
+    """旧无租户信号键被某租户接管时留一条审计（A17，2026-10-27）。
+
+    迁移是「只搬不复制」，执行完旧键就从 state 里 `pop` 掉 —— 所以本函数对每个
+    (标的, 旧键) 天然只触发一次。留痕的意义：接管是**静默的状态转移**，
+    时间线上一旦对不上（谁拿走了那段确认计时），没有审计就只能靠猜。
+    返回 True 表示本次确实发生了接管。
+    """
+    normalized_underlying = str(underlying or "").strip().upper()
+    legacy_key = legacy_volatility_signal_state_key(
+        normalized_underlying, prefix=f"{strategy_id}:",
+    )
+    legacy_value = state.get(legacy_key)
+    if not isinstance(legacy_value, dict):
+        return False
+    store.audit(
+        "VOLATILITY_LEGACY_SIGNAL_STATE_TAKEOVER",
+        {
+            "tenant_id": str(tenant_id or "").strip() or None,
+            "underlying": normalized_underlying,
+            "legacy_key": legacy_key,
+            "signal_started_at": legacy_value.get("signal_started_at"),
+            "signal_epoch": legacy_value.get("signal_epoch"),
+        },
+        strategy_id,
+        actor="service:gamma",
+    )
+    return True
 
 
 def safe_datetime(value, default: datetime) -> datetime:
@@ -681,6 +714,12 @@ def run_campaign(
     # confirmation timer from (for example) MSFT C505 to MSFT C520.
     signal_state = campaign_state
     if trigger_mode == "VOLATILITY":
+        # A17（2026-10-27）：旧无租户信号键被接管时留一条审计 —— 必须在
+        # `volatility_signal_state()` 之前判（它内部会把旧键 pop 掉）。
+        audit_legacy_signal_state_takeover(
+            executor.store, state, strategy_id,
+            campaign.get("underlying", ""), _campaign_tenant,
+        )
         signal_state = volatility_signal_state(
             state, campaign_state, strategy_id, campaign.get("underlying", ""), code,
             # 2026-10-27：信号键必须带租户段（实盘/模拟同标的不得互相推进确认计时）

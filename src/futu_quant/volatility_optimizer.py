@@ -30,19 +30,27 @@ def volatility_signal_state(
     normalized_underlying = str(underlying or "").strip().upper()
     tenant_id = str(tenant_id or "").strip()
     if not tenant_id:
-        # 无租户上下文：返回游离 dict（不挂到 state 上）→ 计时不持久化，确认不通过
-        signal_state: dict = {}
-    else:
-        signal_key = volatility_signal_state_key(
-            normalized_underlying, tenant_id, prefix=f"{strategy_id}:",
-        )
-        legacy_key = legacy_volatility_signal_state_key(
-            normalized_underlying, prefix=f"{strategy_id}:",
-        )
-        legacy_value = state.pop(legacy_key, None)  # 只搬不复制：迁移后旧键不残留
-        if signal_key not in state and legacy_value:
-            state[signal_key] = legacy_value
-        signal_state = state.setdefault(signal_key, {})
+        # 无租户上下文：返回游离 dict（不挂到 state 上）→ 计时不持久化，确认不通过。
+        # A17（2026-10-27）：**提前 return，跳过下面那段 campaign_state 回填**。
+        # 回填会把 campaign 里残留的 `signal_started_at` 抄进游离 dict —— 于是
+        # 「计时无法持久化」并不可靠：一次调用就可能带着旧时间戳直接判过确认，
+        # fail-closed 不彻底。这里只保留与确认计时无关的表达/epoch 默认值。
+        orphan_state: dict = {
+            "active_contract_code": code,
+            "exit_signal_epoch": None,
+            "signal_epoch": 0,
+        }
+        return orphan_state
+    signal_key = volatility_signal_state_key(
+        normalized_underlying, tenant_id, prefix=f"{strategy_id}:",
+    )
+    legacy_key = legacy_volatility_signal_state_key(
+        normalized_underlying, prefix=f"{strategy_id}:",
+    )
+    legacy_value = state.pop(legacy_key, None)  # 只搬不复制：迁移后旧键不残留
+    if signal_key not in state and legacy_value:
+        state[signal_key] = legacy_value
+    signal_state = state.setdefault(signal_key, {})
     if not signal_state.get("signal_started_at") and campaign_state.get("signal_started_at"):
         for key in (
             "signal_started_at", "signal_start_volume_ratio", "signal_active",
