@@ -32,6 +32,21 @@ else:
     from run_gamma_strategy import load_state, run_campaign, save_state
 
 _VOL_STATE_PREFIX = "volatility_long_gamma:"
+#: 共享信号状态键的段标记：`<strategy>:signal:<UNDERLYING>`（跨合约共享的确认计时载体）。
+_SIGNAL_STATE_MARKER = ":signal:"
+
+
+def is_signal_state_key(key: str) -> bool:
+    """是不是「共享信号状态键」（`volatility_long_gamma:signal:US.AMD`）。
+
+    A14（2026-10-27）：这类键既不是 campaign 键、也不对应合约代码，但**是入场确认
+    计时的唯一载体**。旧逻辑每轮把它当 stale 从 state 里过滤/剪枝掉 → 下一轮
+    `volatility_signal_state()` 又 setdefault 重建 → `signal_started_at` 丢失、计时恒 0
+    （AMD 实测 signal_epoch 恒 1、各轮 started_at 都等于当轮时间）。
+    因此过滤与剪枝都必须**显式放行**这类键。
+    """
+    return _SIGNAL_STATE_MARKER in key
+
 
 # 平仓路径的日期判定必须用纽约日期：北京日期比纽约早 12–13 小时，
 # 会让「纽约当日到期」的 combo 提前约 4 小时被 `close_stale_expired_combos` 平掉。
@@ -61,9 +76,32 @@ def prunable_state_keys(
     return [
         key for key in candidates
         if not key.startswith(foreign_prefixes)
+        # A14：共享信号键不是 campaign/合约键，绝不能被本函数判 stale 删除
+        and not is_signal_state_key(key)
         and key not in active_keys
         and state_key_code(key, _VOL_STATE_PREFIX) not in active_codes
     ]
+
+
+def filter_volatility_state(
+    state: dict, active_keys: set[str], active_codes: set[str],
+) -> dict:
+    """剪掉 stale 的 campaign 状态键；**共享信号键必须保留**（A14，2026-10-27）。
+
+    旧实现把所有 `volatility_long_gamma:` 开头但不属于 active campaign/合约的键丢掉，
+    包括 `volatility_long_gamma:signal:<UNDERLYING>` —— 入场确认计时因此每轮归零。
+    """
+    def _is_active(key: str) -> bool:
+        if is_signal_state_key(key):
+            return True
+        if key in active_keys:
+            return True
+        return state_key_code(key, _VOL_STATE_PREFIX) in active_codes
+
+    return {
+        key: value for key, value in state.items()
+        if not key.startswith(_VOL_STATE_PREFIX) or _is_active(key)
+    }
 
 # 独立命名空间：此前复用 data/trading-service.stop，会让这个独立脚本顺带停掉
 # 全部租户 Worker（含实盘真金），属跨脚本污染。
@@ -285,14 +323,9 @@ def run_once(
         str(item.get("code") or "").strip().upper()
         for item in campaigns if str(item.get("code") or "").strip()
     }
-    def _is_active(key: str) -> bool:
-        if key in active_keys:
-            return True
-        return state_key_code(key, "volatility_long_gamma:") in active_codes
-    state = {
-        key: value for key, value in state.items()
-        if not key.startswith("volatility_long_gamma:") or _is_active(key)
-    }
+    # A14（2026-10-27）：抽成 filter_volatility_state —— 共享信号键
+    # `volatility_long_gamma:signal:<UNDERLYING>` 必须保留，否则入场确认计时每轮归零。
+    state = filter_volatility_state(state, active_keys, active_codes)
     # 逐租户剪枝：只删本租户（或历史无租户形态）的 stale 键。
     # 不再调用 store.prune_campaign_states（它按全局前缀扫描，会删掉其他租户的
     # 带租户键 —— 2026-10-23 开盘实测：实盘状态键被模拟那轮反复删除、peak 归零）。
