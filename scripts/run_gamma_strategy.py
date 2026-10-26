@@ -264,7 +264,16 @@ def audit_legacy_signal_state_takeover(
     (标的, 旧键) 天然只触发一次。留痕的意义：接管是**静默的状态转移**，
     时间线上一旦对不上（谁拿走了那段确认计时），没有审计就只能靠猜。
     返回 True 表示本次确实发生了接管。
+
+    **两条纪律**（Reviewer 2026-10-27 退改）：
+    1. 审计是**观测动作**，`store.audit()` 失败绝不能打断入场主流程 —— 必须兜底。
+    2. **空租户直接返回 False**：空租户分支在 `volatility_signal_state()` 里提前
+       return、旧键不会被 `pop` → 不拦的话同一标的每轮都会发一条「接管」审计，
+       而实际什么都没接管（假事件比没事件更糟）。
     """
+    normalized_tenant = str(tenant_id or "").strip()
+    if not normalized_tenant:
+        return False
     normalized_underlying = str(underlying or "").strip().upper()
     legacy_key = legacy_volatility_signal_state_key(
         normalized_underlying, prefix=f"{strategy_id}:",
@@ -272,18 +281,22 @@ def audit_legacy_signal_state_takeover(
     legacy_value = state.get(legacy_key)
     if not isinstance(legacy_value, dict):
         return False
-    store.audit(
-        "VOLATILITY_LEGACY_SIGNAL_STATE_TAKEOVER",
-        {
-            "tenant_id": str(tenant_id or "").strip() or None,
-            "underlying": normalized_underlying,
-            "legacy_key": legacy_key,
-            "signal_started_at": legacy_value.get("signal_started_at"),
-            "signal_epoch": legacy_value.get("signal_epoch"),
-        },
-        strategy_id,
-        actor="service:gamma",
-    )
+    try:
+        store.audit(
+            "VOLATILITY_LEGACY_SIGNAL_STATE_TAKEOVER",
+            {
+                "tenant_id": normalized_tenant,
+                "underlying": normalized_underlying,
+                "legacy_key": legacy_key,
+                "signal_started_at": legacy_value.get("signal_started_at"),
+                "signal_epoch": legacy_value.get("signal_epoch"),
+            },
+            strategy_id,
+            actor="service:gamma",
+        )
+    except Exception as exc:  # silent-ok: 审计失败降级为日志，不得中断交易主流程
+        print(f"[WARN] 旧信号状态键接管审计写入失败（已忽略）：{exc}")
+        return False
     return True
 
 

@@ -130,3 +130,25 @@ def test_legacy_takeover_audit_ignores_non_signal_legacy_values():
         store, {LEGACY_KEY: "stale"}, "volatility_long_gamma", UNDERLYING, REAL,
     ) is False
     assert store.audits == []
+
+
+def test_empty_tenant_skips_takeover_audit():
+    """空租户不得发「接管」审计：此时旧键不会被 pop，每轮都会误报且永不消失。"""
+    store = _RecordingStore()
+    for _ in range(3):
+        assert audit_legacy_signal_state_takeover(
+            store, {LEGACY_KEY: _feed()}, "volatility_long_gamma", UNDERLYING, "",
+        ) is False
+    assert store.audits == [], "空租户误报接管审计（且每轮刷一条假事件）"
+
+
+class _BrokenStore:
+    def audit(self, *_args, **_kwargs):
+        raise RuntimeError("audit 表不可写")
+
+
+def test_takeover_audit_failure_does_not_break_main_flow():
+    """审计是观测动作：写入失败必须兜底，绝不能打断入场主流程。"""
+    assert audit_legacy_signal_state_takeover(
+        _BrokenStore(), {LEGACY_KEY: _feed()}, "volatility_long_gamma", UNDERLYING, REAL,
+    ) is False
