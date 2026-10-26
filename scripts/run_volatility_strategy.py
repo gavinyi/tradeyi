@@ -18,6 +18,8 @@ from futu_quant.volatility_orphans import (
     protection_coverage,
     retain_campaign_if_at_risk,
     active_volatility_state_keys,
+    # A15（2026-10-27）：信号键判定只此一处（过滤/剪枝/测试共用），不再本地实现。
+    is_signal_state_key,
 )
 from futu_quant.store import state_key_code
 from futu_quant.tenant import campaigns_config_key_lenient, tenant_id_of_broker, DEFAULT_TENANTS
@@ -32,20 +34,6 @@ else:
     from run_gamma_strategy import load_state, run_campaign, save_state
 
 _VOL_STATE_PREFIX = "volatility_long_gamma:"
-#: 共享信号状态键的段标记：`<strategy>:signal:<UNDERLYING>`（跨合约共享的确认计时载体）。
-_SIGNAL_STATE_MARKER = ":signal:"
-
-
-def is_signal_state_key(key: str) -> bool:
-    """是不是「共享信号状态键」（`volatility_long_gamma:signal:US.AMD`）。
-
-    A14（2026-10-27）：这类键既不是 campaign 键、也不对应合约代码，但**是入场确认
-    计时的唯一载体**。旧逻辑每轮把它当 stale 从 state 里过滤/剪枝掉 → 下一轮
-    `volatility_signal_state()` 又 setdefault 重建 → `signal_started_at` 丢失、计时恒 0
-    （AMD 实测 signal_epoch 恒 1、各轮 started_at 都等于当轮时间）。
-    因此过滤与剪枝都必须**显式放行**这类键。
-    """
-    return _SIGNAL_STATE_MARKER in key
 
 
 # 平仓路径的日期判定必须用纽约日期：北京日期比纽约早 12–13 小时，

@@ -12,10 +12,37 @@ from .gamma_risk import market_number, normalize_iv, realized_volatility
 
 def volatility_signal_state(
     state: dict, campaign_state: dict, strategy_id: str, underlying: str, code: str,
+    tenant_id: str = "",
 ) -> dict:
-    """Return confirmation state shared by option expressions of one underlying."""
-    signal_key = f"{strategy_id}:signal:{str(underlying or '').upper()}"
-    signal_state = state.setdefault(signal_key, {})
+    """Return confirmation state shared by option expressions of one underlying.
+
+    2026-10-27：信号键加**租户段** —— `{strategy}:signal:{tenant}:{UNDERLYING}`。
+    原来无租户段时实盘/模拟共用一条计时状态，同标的会互相推进对方确认计时。
+    兼容历史无租户键：**只搬不复制**（读到旧键就搬到规范键并删旧键，避免两份并存）。
+    **租户缺失 fail-closed**：不写任何共享键（计时无法持久化 → 确认永不通过），
+    绝不静默回落成跨租户共享键。
+    """
+    from .volatility_orphans import (
+        legacy_volatility_signal_state_key,
+        volatility_signal_state_key,
+    )
+
+    normalized_underlying = str(underlying or "").strip().upper()
+    tenant_id = str(tenant_id or "").strip()
+    if not tenant_id:
+        # 无租户上下文：返回游离 dict（不挂到 state 上）→ 计时不持久化，确认不通过
+        signal_state: dict = {}
+    else:
+        signal_key = volatility_signal_state_key(
+            normalized_underlying, tenant_id, prefix=f"{strategy_id}:",
+        )
+        legacy_key = legacy_volatility_signal_state_key(
+            normalized_underlying, prefix=f"{strategy_id}:",
+        )
+        legacy_value = state.pop(legacy_key, None)  # 只搬不复制：迁移后旧键不残留
+        if signal_key not in state and legacy_value:
+            state[signal_key] = legacy_value
+        signal_state = state.setdefault(signal_key, {})
     if not signal_state.get("signal_started_at") and campaign_state.get("signal_started_at"):
         for key in (
             "signal_started_at", "signal_start_volume_ratio", "signal_active",
@@ -27,6 +54,7 @@ def volatility_signal_state(
     signal_state.setdefault("exit_signal_epoch", None)
     signal_state.setdefault("signal_epoch", 0)
     return signal_state
+
 
 
 VOLATILITY_EXIT_PRIORITY = [

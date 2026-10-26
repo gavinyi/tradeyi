@@ -70,9 +70,12 @@ def test_volatility_signal_state_survives_expression_roll():
     first = volatility_signal_state(
         state, state["volatility_long_gamma:US.MSFT261002C505000"],
         "volatility_long_gamma", "US.MSFT", "US.MSFT261002C505000",
+        # 2026-10-27：信号键带租户段（无租户 fail-closed，不再共用共享键）
+        tenant_id="futu_real_master",
     )
     second = volatility_signal_state(
         state, {}, "volatility_long_gamma", "US.MSFT", "US.MSFT261002C520000",
+        tenant_id="futu_real_master",
     )
     assert second is first
     assert second["signal_started_at"] == "2026-09-25T10:00:00-04:00"

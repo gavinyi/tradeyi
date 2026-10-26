@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 import os
+import re
 from typing import Iterable
 
 import pandas as pd
@@ -285,6 +286,75 @@ def volatility_write_state_key(
     return f"{prefix}{tenant_id}:{code}" if tenant_id else f"{prefix}{code}"
 
 
+SIGNAL_STATE_SEGMENT = "signal"
+#: 标的形态（`US.AMD` / `US.BRK.B`）。信号键的第三段必须是它，否则不是信号键。
+_UNDERLYING_PATTERN = re.compile(r"^US\.[A-Z0-9.]+$")
+
+
+def volatility_signal_state_key(
+    underlying: str, tenant_id: str, prefix: str = "volatility_long_gamma:",
+) -> str:
+    """**规范**信号状态键：`{strategy}:signal:{tenant}:{UNDERLYING}`（2026-10-27 加租户段）。
+
+    为什么要租户段：信号状态（确认计时）原来只有一条无租户键，实盘与模拟两个 Worker
+    共用 → 一旦同标的出现，两边会互相推进对方确认计时。加租户段后各租户独立。
+    **租户缺失即 fail-closed**（抛错），绝不静默回落到共享键。
+    """
+    normalized_underlying = str(underlying or "").strip().upper()
+    normalized_tenant = str(tenant_id or "").strip()
+    if not normalized_underlying or not normalized_tenant:
+        raise ValueError(
+            "信号状态键必须同时提供标的与租户（fail-closed：禁止无租户共享键）"
+        )
+    return f"{prefix}{SIGNAL_STATE_SEGMENT}:{normalized_tenant}:{normalized_underlying}"
+
+
+def legacy_volatility_signal_state_key(
+    underlying: str, prefix: str = "volatility_long_gamma:",
+) -> str:
+    """历史（无租户段）信号键：`{strategy}:signal:{UNDERLYING}`，只用于迁移。**
+
+    读侧认它、写侧只写规范键；迁移是「只搬不复制」（搬到规范键后删旧键）。
+    """
+    return f"{prefix}{SIGNAL_STATE_SEGMENT}:{str(underlying or '').strip().upper()}"
+
+
+def parse_signal_state_key(
+    key: str, prefix: str = "volatility_long_gamma:",
+) -> tuple[str | None, str | None]:
+    """**严格解析**信号状态键，返回 ``(tenant_id, underlying)``；非法 → ``(None, None)``。
+
+    只接受两种形态（过滤/剪枝共用本函数，不许各写一套）：
+      - 规范：`volatility_long_gamma:signal:{tenant}:{US.XXX}` → (tenant, US.XXX)
+      - 历史：`volatility_long_gamma:signal:{US.XXX}`       → ("", US.XXX)
+    反例（一律非法）：缺标的、多段、非 `signal` 段、非波动率前缀、标的不是 `US.*`。
+    """
+    if not key or not key.startswith(prefix):
+        return None, None
+    segments = key[len(prefix):].split(":")
+    if len(segments) == 2:
+        if segments[0] != SIGNAL_STATE_SEGMENT:
+            return None, None
+        underlying = segments[1].strip().upper()
+        if not _UNDERLYING_PATTERN.match(underlying):
+            return None, None
+        return "", underlying
+    if len(segments) == 3:
+        if segments[0] != SIGNAL_STATE_SEGMENT or not segments[1].strip():
+            return None, None
+        underlying = segments[2].strip().upper()
+        if not _UNDERLYING_PATTERN.match(underlying):
+            return None, None
+        return segments[1].strip(), underlying
+    return None, None
+
+
+def is_signal_state_key(key: str, prefix: str = "volatility_long_gamma:") -> bool:
+    """是不是合法信号状态键（含历史无租户形态）。过滤/剪枝/测试共用。"""
+    _, underlying = parse_signal_state_key(key, prefix)
+    return underlying is not None
+
+
 def volatility_state_keys(
     code: str, tenant_id: str = "", underlying: str = "", prefix: str = "volatility_long_gamma:",
 ) -> set[str]:
@@ -309,7 +379,10 @@ def volatility_state_keys(
     if underlying:
         keys.add(f"{prefix}signal:{underlying}")
         if tenant_id:
+            # P0-9 既有形态（campaign 键命名空间）与 2026-10-27 规范形态都要认，
+            # 否则加了租户段之后旧形态的保护集合会漏掉。
             keys.add(f"{prefix}{tenant_id}:signal:{underlying}")
+            keys.add(volatility_signal_state_key(underlying, tenant_id, prefix=prefix))
     return keys
 
 

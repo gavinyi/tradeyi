@@ -674,6 +674,8 @@ def run_campaign(
     if trigger_mode == "VOLATILITY":
         signal_state = volatility_signal_state(
             state, campaign_state, strategy_id, campaign.get("underlying", ""), code,
+            # 2026-10-27：信号键必须带租户段（实盘/模拟同标的不得互相推进确认计时）
+            tenant_id=_campaign_tenant,
         )
         campaign_state["active_contract_code"] = code
         campaign_state.setdefault("exit_signal_epoch", None)
