@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import contextvars
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -19,15 +20,16 @@ from zoneinfo import ZoneInfo
 
 os.environ.setdefault("FUTU_LOG_ROLE", "service")
 os.environ["PYTHONUNBUFFERED"] = "1"
+logger = logging.getLogger("run_service")
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(line_buffering=True)
-    except Exception:
+    except Exception:  # noqa: silent-ok: 控制台重定向尽力而为，失败不影响交易
         pass
 if hasattr(sys.stderr, "reconfigure"):
     try:
         sys.stderr.reconfigure(line_buffering=True)
-    except Exception:
+    except Exception:  # noqa: silent-ok: 控制台重定向尽力而为，失败不影响交易
         pass
 if sys.platform == "win32":
     _local_appdata = Path(__file__).resolve().parents[1] / "data" / "appdata"
@@ -618,12 +620,23 @@ def run_task(
     started = time.monotonic()
     run_started_at = store.now()
     store.heartbeat(strategy_id, "RUNNING", "正在执行", os.getpid())
+    tracker = store.begin_heartbeat_run(strategy_id)
     try:
         callback()
         duration = time.monotonic() - started
-        internal = store.heartbeat_status(strategy_id)
-        if internal_degraded_since(internal, run_started_at):
+        internal = store.end_heartbeat_run(tracker)
+        worst = str(internal.get("status") or "").upper()
+        if worst not in INTERNAL_DEGRADED_STATUSES:
+            # 另一个线程写心跳时 tracker 记不到，用「运行期心跳行」兜底判断。
+            row = store.heartbeat_status(strategy_id)
+            if internal_degraded_since(row, run_started_at):
+                internal = row or {}
+                worst = str(internal.get("status") or "").upper()
+        if worst in INTERNAL_DEGRADED_STATUSES:
             message = str(internal.get("message") or "任务内部报告降级")
+            # 内层「先 DEGRADED 后 HEALTHY」也要以最差为准：把最差状态写回心跳行，
+            # 否则库里看到的仍是最后那条 HEALTHY（等于洗白）。
+            store.heartbeat(strategy_id, worst, message, os.getpid())
             store.finish_task_run(run_id, "DEGRADED", duration, message)
             # 不覆盖内部状态、不重置失败计数、不发送「已恢复」：内部降级必须保持可见。
             return True
@@ -653,6 +666,7 @@ def run_task(
         )
         return True
     except BrokerError as exc:
+        store.end_heartbeat_run(tracker)
         duration = time.monotonic() - started
         message = str(exc)
         if strategy_id == "core_satellite" and (
@@ -687,6 +701,7 @@ def run_task(
         )
         return False
     except Exception as exc:
+        store.end_heartbeat_run(tracker)
         duration = time.monotonic() - started
         store.finish_task_run(run_id, "ERROR", duration, str(exc))
         failures = int(store.get_setting(_sched_read_key(store, f"task_failure_count:{strategy_id}"), "0") or 0) + 1
@@ -914,7 +929,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 if moomoo_cfg_raw:
                     try:
                         moomoo_is_en = bool(json.loads(moomoo_cfg_raw).get("enabled", False))
-                    except Exception:
+                    except Exception:  # noqa: silent-ok: 配置解析失败按未启用处理（fail-safe 方向）
                         pass
                 if moomoo_is_en:
                     try:
@@ -929,7 +944,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                         store.save_broker_snapshot("account_info_moomoo_real", moomoo_acc)
                         store.save_broker_snapshot("positions_moomoo_real", moomoo_pos)
                         store.save_broker_snapshot("orders_moomoo_real", moomoo_b.orders())
-                    except Exception:
+                    except Exception:  # noqa: silent-ok: moomoo 附属账户快照失败不得打断主账户流程
                         pass
                 try:
                     if not hasattr(broker, "_broker_sim_companion"):
@@ -953,8 +968,8 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                             float(s_row.get("market_val", 0) or 0),
                             env="SIMULATE",
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error("模拟盘权益快照写入失败：%s", exc)
             else:
                 store.save_broker_snapshot("account_info_sim", account)
                 store.save_broker_snapshot("positions_sim", positions)
@@ -1203,8 +1218,8 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
         try:
             from futu_quant.profit_sweeper import ProfitSweeper
             ProfitSweeper(store).sweep_profit_to_spy(min_threshold_usd=1000.0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error("利润锁箱沉淀失败（不阻断底仓调仓）：%s", exc)
         key = "last_run:core_satellite"
         core_broker = broker
         core_executor = executor
@@ -1623,7 +1638,7 @@ def main() -> None:
             try:
                 from futu_quant.broker import close_all_connections
                 close_all_connections()
-            except Exception:
+            except Exception:  # noqa: silent-ok: 进程退出路径，连接关闭失败已无可补救
                 pass
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
+import logging
 from typing import Callable
 import os
 import signal
@@ -21,6 +22,7 @@ from .tenant import campaigns_config_key_lenient, tenant_id_of_broker
 
 
 NY = ZoneInfo("America/New_York")
+logger = logging.getLogger("futu_quant.volatility_scanner")
 
 
 class RadarCallTimeout(TimeoutError):
@@ -200,8 +202,8 @@ def scan_market_layer(
     try:
         spy = _timed_call(lambda: broker.snapshots(["US.SPY"])).iloc[0]
         market_move = float(spy["last_price"]) / float(spy["prev_close_price"]) - 1
-    except Exception:
-        pass
+    except Exception as exc:  # 静默降级清零：取不到 SPY 必须留痕（否则相对强度门静默失真）
+        logger.warning("SPY 相对强度基准取数失败，本轮 market_move 按 0 处理：%s", exc)
 
     results: dict[str, "MarketSymbolResult"] = {}
     rows: list[dict] = []
@@ -695,5 +697,5 @@ def _monitor_sandbox_incubator_candidates(broker, store) -> None:
                         "source": "incubator_shadow_scan",
                     },
                 )
-    except Exception:
-        pass
+    except Exception as exc:  # 静默降级清零：孵化器沙箱扫描是观测，但失败必须留痕
+        logger.warning("孵化器沙箱扫描失败（不影响主扫描）：%s", exc)

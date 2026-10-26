@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -16,6 +17,12 @@ from typing import Any, Iterator
 
 
 logger = logging.getLogger(__name__)
+
+# 任务运行期心跳状态的「最差档」记录（2026-10-26 静默降级缺陷族）：
+# `run_task` 成功路径曾无条件写 HEALTHY，把任务内部刚写的 DEGRADED 洗白。
+# 这里在任务运行期间收集**所有**内部心跳写，取最差状态，避免「先 DEGRADED 后 HEALTHY」也被洗白。
+_HEARTBEAT_STATUS_RANK = {"RUNNING": 0, "HEALTHY": 0, "DEGRADED": 1, "ERROR": 2}
+_HEARTBEAT_RUN: ContextVar[dict | None] = ContextVar("heartbeat_run", default=None)
 
 # 标准美股期权合约代码：US.<正股><到期><C|P><行权价>
 OPTION_SYMBOL_RE = re.compile(r"^US\.[A-Z0-9.]+[0-9][CP][0-9]+$")
@@ -1762,6 +1769,31 @@ class TradingStore:
                 updated_at=excluded.updated_at""",
                 (strategy_id, status, message, pid, self.now()),
             )
+        tracker = _HEARTBEAT_RUN.get()
+        if tracker is not None and tracker.get("strategy_id") == strategy_id:
+            rank = _HEARTBEAT_STATUS_RANK.get(str(status).upper(), 0)
+            if rank > tracker["rank"]:
+                tracker["rank"] = rank
+                tracker["status"] = str(status).upper()
+                tracker["message"] = message
+
+    def begin_heartbeat_run(self, strategy_id: str) -> dict:
+        """开始记录本任务运行期间的心跳写入（取最差状态）。"""
+        tracker: dict = {
+            "strategy_id": strategy_id, "rank": -1, "status": "", "message": "",
+        }
+        tracker["_token"] = _HEARTBEAT_RUN.set(tracker)
+        return tracker
+
+    def end_heartbeat_run(self, tracker: dict) -> dict:
+        """结束记录并返回 `{status, message, rank}`（status 为空 = 运行期没有内部写入）。"""
+        token = tracker.pop("_token", None)
+        if token is not None:
+            try:
+                _HEARTBEAT_RUN.reset(token)
+            except ValueError:  # 跨线程/跨上下文重置时忽略，不能因此打断任务
+                pass  # noqa: silent-ok: ContextVar 重置异常无补救动作，且不能打断任务
+        return tracker
 
     def heartbeat_status(self, strategy_id: str) -> dict | None:
         """Read one heartbeat row (None when the task never wrote one).
@@ -2798,7 +2830,7 @@ class TradingStore:
                     frame = frame.f_back
                 if frame:
                     caller_info = f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}"
-            except Exception:
+            except Exception:  # noqa: silent-ok: 调用点信息仅用于排障，取不到就回落 unknown
                 pass
             try:
                 self.operational_event(
@@ -2810,8 +2842,8 @@ class TradingStore:
                         "caller": caller_info,
                     },
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # 连这条 WARNING 都写不进去时只能落日志，禁止静默
+                logger.warning("DECISION_MISSING_TENANT_ID 事件写入失败：%s", exc)
         self._DECISION_CACHE[(strategy_id, symbol, tenant)] = (decision, reason, time.time())
         with self.connection() as connection:
             connection.execute(

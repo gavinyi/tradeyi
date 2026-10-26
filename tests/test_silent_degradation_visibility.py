@@ -69,6 +69,22 @@ def test_stale_degraded_from_previous_run_is_recovered(tmp_path: Path):
     assert store.task_runs(limit=1)[0]["status"] == "SUCCESS"
 
 
+def test_internal_degraded_then_healthy_reports_worst(tmp_path: Path):
+    """内层「先 DEGRADED 后 HEALTHY」也要按最差上报，否则最后一条 HEALTHY 等于洗白。"""
+    store = TradingStore(tmp_path / "trading.db")
+    alerts = AlertManager(store)
+
+    def callback() -> None:
+        store.heartbeat("option_history", "DEGRADED", "采集中：25 条降级")
+        store.heartbeat("option_history", "HEALTHY", "后来补写一条健康")
+
+    assert run_task(store, alerts, "option_history", callback) is True
+    heartbeat = store.heartbeat_status("option_history")
+    assert heartbeat["status"] == "DEGRADED", "最后一条内层 HEALTHY 把 DEGRADED 洗白了"
+    assert "25 条降级" in heartbeat["message"]
+    assert store.task_runs(limit=1)[0]["status"] == "DEGRADED"
+
+
 def test_internal_degraded_since_handles_missing_and_naive_timestamps():
     assert internal_degraded_since(None, "2026-10-26T00:00:00+00:00") is False
     assert internal_degraded_since({"status": "HEALTHY", "updated_at": "x"}, "y") is False

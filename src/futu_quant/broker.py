@@ -112,7 +112,7 @@ class _BrokerConnectionPool:
             if ctx is not None:
                 try:
                     ctx.close()
-                except Exception:
+                except Exception:  # noqa: silent-ok: 连接池丢弃路径，关闭失败无补救动作
                     pass
                 setattr(self, kind, None)
 
@@ -259,7 +259,7 @@ class FutuPaperBroker:
             time.sleep(0.05)
         try:
             ctx.close()
-        except Exception:
+        except Exception:  # noqa: silent-ok: 连接就绪超时的清理路径，随后即抛 BrokerError
             pass
         raise BrokerError(
             f"富途 OpenD {label} 连接在超时时间内未就绪（status={status}）；"
