@@ -232,16 +232,16 @@ def test_refreshed_trade_quotes_reads_clock_per_attempt(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 4. 采集侧：盘口观测参与 quality_status（与入场同源，2026-10-27）
+# 4. 采集侧：quality_status（ML 标签）冻结；盘口活性只进心跳口径（2026-10-27）
 # ---------------------------------------------------------------------------
 
 
-def test_collection_quality_uses_book_activity_same_as_entry(tmp_path, monkeypatch):
-    """采集侧 quality_status 与入场同源：成交冻结但盘口有变化 → GOOD。
+def test_collection_quality_status_frozen_but_heartbeat_uses_book_activity(tmp_path, monkeypatch):
+    """quality_status 逐行保持旧口径（ML 标签不可动）；心跳另算 collection_fresh。
 
-    2026-10-27 口径变更（Ops 取证 + Chief 定案）：`update_time` 是成交驱动，
-    冻结≠过期；新鲜度主基准改为 min(成交年龄, 盘口变化年龄)，`option_history.py:74`
-    与入场 `run_gamma_strategy.py` 共用 `option_quote_activity`，不再各写各的。
+    Reviewer 2026-10-27 裁定：`:74` 不得掺入盘口活性，否则训练样本分布被改。
+    修 4/8 心跳误报只能改心跳口径 —— 成交冻结但盘口在动 → 心跳 HEALTHY，
+    而落库 `quality_status` 仍是 DEGRADED（与原实现逐行相同）。
     """
     store = TradingStore(tmp_path / "trading.db")
     frozen_trade = _quote_at(700)
@@ -274,20 +274,112 @@ def test_collection_quality_uses_book_activity_same_as_entry(tmp_path, monkeypat
     first = collect_option_snapshots(Broker(), store)
     assert first["stored"] == 1
     row = store.option_history("US.AAPL260720C300000")[0]
-    # 首次观测没有盘口年龄 → 仍按成交时间判断：冻结 700s → DEGRADED（fail-closed）
-    assert row["quality_status"] == "DEGRADED"
+    assert row["quality_status"] == "DEGRADED", "ML 标签口径被改动（冻结成交应仍 DEGRADED）"
+    assert row["quality_reason"].startswith("行情已过期"), row["quality_reason"]
     assert row["book_active_seconds"] is None, "首次观测盘口年龄未知，应为 NULL"
+    # 首次无盘口基准 → 心跳也不可用
+    first_beat = [h for h in store.heartbeats() if h["strategy_id"] == "option_history"][-1]
+    assert first_beat["status"] == "DEGRADED"
 
-    # 第二次采集：盘口有观测基准（年龄≈0）→ 与入场同源判 GOOD
-    collect_option_snapshots(Broker(), store)
+    # 第二次采集：盘口有观测基准（年龄≈0）→ 心跳转 HEALTHY，但 quality_status 仍 DEGRADED
+    second = collect_option_snapshots(Broker(), store)
+    assert second["usable"] == 1
+    assert second["good"] == 0, "ML 标签统计不得被盘口活性放大"
     rows = store.option_history("US.AAPL260720C300000")
-    assert rows[0]["quality_status"] == "GOOD", "采集侧未与入场同源（仍按成交时间误判）"
+    assert rows[0]["quality_status"] == "DEGRADED", "ML 标签被盘口活性改动"
     assert rows[0]["book_active_seconds"] is not None
     assert rows[0]["book_active_seconds"] >= 0
+    beat = [h for h in store.heartbeats() if h["strategy_id"] == "option_history"][-1]
+    assert beat["status"] == "HEALTHY", beat["message"]
+    assert "可用 1" in beat["message"]
 
 
 def test_option_quote_freshness_keeps_legacy_trade_time_semantics():
-    """`option_quote_freshness` 保留旧成交时间口径（其它调用方用），采集侧已不调用它。"""
+    """`option_quote_freshness` 保留旧成交时间口径（ML 标签/其它调用方用）。"""
     row = {"bid_price": 1.0, "ask_price": 1.2, "update_time": _quote_at(500)}
     fresh, _, _, degraded = option_quote_freshness(row, maximum_seconds=300)
     assert fresh is False and degraded is False
+
+
+# ---------------------------------------------------------------------------
+# 5. 跨轮次盘口观测的窗口 / fail-closed 边界（Reviewer 五条硬条件）
+# ---------------------------------------------------------------------------
+
+
+class _FakeObservationStore:
+    def __init__(self, row):
+        self._row = row
+        self.raise_error = False
+
+    def latest_option_history(self, code):
+        if self.raise_error:
+            raise RuntimeError("db down")
+        return self._row
+
+
+def _now_utc():
+    return datetime.now(timezone.utc)
+
+
+def test_book_activity_age_usable_inside_window(monkeypatch):
+    gamma = _patch_gamma_module(monkeypatch)
+    now = _now_utc()
+    store = _FakeObservationStore({
+        "book_active_seconds": 120.0,
+        "fetched_at": (now - timedelta(seconds=30)).isoformat(),
+    })
+    age, blocked = gamma.latest_book_activity_age(store, "US.X", now)
+    assert blocked is False
+    assert 149.0 <= age <= 151.0, f"活年龄应≈150s，实际 {age}"
+
+
+def test_book_activity_age_blocks_without_history_row(monkeypatch):
+    gamma = _patch_gamma_module(monkeypatch)
+    age, blocked = gamma.latest_book_activity_age(
+        _FakeObservationStore(None), "US.X", _now_utc(),
+    )
+    assert age is None and blocked is True
+
+
+def test_book_activity_age_blocks_when_observation_too_old(monkeypatch):
+    gamma = _patch_gamma_module(monkeypatch)
+    now = _now_utc()
+    store = _FakeObservationStore({
+        "book_active_seconds": 10.0,
+        "fetched_at": (now - timedelta(seconds=901)).isoformat(),
+    })
+    age, blocked = gamma.latest_book_activity_age(store, "US.X", now)
+    assert age is None and blocked is True
+
+
+def test_book_activity_age_blocks_on_negative_clock_skew(monkeypatch):
+    gamma = _patch_gamma_module(monkeypatch)
+    now = _now_utc()
+    store = _FakeObservationStore({
+        "book_active_seconds": 10.0,
+        "fetched_at": (now + timedelta(seconds=60)).isoformat(),
+    })
+    age, blocked = gamma.latest_book_activity_age(store, "US.X", now)
+    assert age is None and blocked is True, "时钟回拨不得 clamp 成 0 放行"
+
+
+def test_book_activity_null_falls_back_to_legacy_300s_gate(monkeypatch):
+    gamma = _patch_gamma_module(monkeypatch)
+    now = _now_utc()
+    store = _FakeObservationStore({"book_active_seconds": None, "fetched_at": now.isoformat()})
+    age, blocked = gamma.latest_book_activity_age(store, "US.X", now)
+    assert age is None and blocked is False, "NULL 应回落 300s 旧口径（不是放行、不是 BLOCK）"
+
+
+def test_book_basis_blocked_forces_fail_closed(monkeypatch):
+    gamma = _patch_gamma_module(monkeypatch)
+    frozen = _quote_at(700)
+    broker = _SequenceBroker([(9.75, 9.95, frozen)] * 3)
+    _, _, check = gamma.refreshed_trade_quotes(
+        broker, "US.AMD261030P520000", "US.AMD", datetime.now(NY), 12.0,
+        retries=2, wait_seconds=0, maximum_stale_seconds=600,
+        book_active_seconds=120.0, book_basis_blocked=True,
+    )
+    assert check["option_fresh"] is False
+    assert "观测不可信" in check["option_reason"]
+

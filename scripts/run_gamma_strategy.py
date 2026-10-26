@@ -87,34 +87,57 @@ def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float
     return quantity, max(0.01, entry_debit), current_value
 
 
-def latest_book_activity_age(store, code: str, now: datetime) -> float | None:
+#: 盘口活跃观测的有效窗口（秒）：超过它视为「观测过期」，fail-closed 拦截而不是猜测。
+BOOK_OBSERVATION_MAX_AGE_SECONDS = 900
+
+
+def latest_book_activity_age(
+    store, code: str, now: datetime,
+) -> tuple[float | None, bool]:
     """跨轮次盘口变化年龄（秒）：最近一次采集的 book_active_seconds + 该观测的年龄。
+
+    返回 ``(age, blocked)``：
+
+    - ``(age, False)``：可用，年龄 = ``book_active_seconds + (now - fetched_at)``；
+    - ``(None, False)``：有观测行但 ``book_active_seconds`` 为 NULL → **回落 300s 旧口径**
+      （不是放行，也不是按盘口放行）；
+    - ``(None, True)``：**必须 BLOCK** —— 无历史行 / `fetched_at` 缺失或不可解析 /
+      负时差（时钟回拨）/ 超过 ``BOOK_OBSERVATION_MAX_AGE_SECONDS``。
+      观测不可信时宁可拦截，绝不 clamp 成 0 变相放行。
 
     为什么必须跨轮次（2026-10-27）：入场每次 attempt 只隔 1.5s，跨分钟才变一次的盘口
     在 `book_moved`（同 attempt 两次快照比较）里永远是 False，于是回落 300s 成交门禁继续
-    误拦。`option_history` 采集在每次雷达轮次都在累积盘口变化（`BookActivityTracker`），
-    这里把它作为新鲜度主基准。取不到就返回 None（退化为旧口径，不夸大新鲜度）。
+    误拦。`option_history` 采集在每次雷达轮次都在累积盘口变化（`BookActivityTracker`）。
     """
     try:
-        latest = store.latest_option_book_activity(code)
-    except Exception:  # noqa: BLE001 - 观测辅助取数失败不得阻断下单判定，退化为旧口径
-        return None
+        latest = store.latest_option_history(code)
+    except Exception:  # noqa: BLE001 - 读不到观测即不可信，按 fail-closed 处理
+        return None, True
     if not latest:
-        return None
+        return None, True
     book_active = latest.get("book_active_seconds")
     if book_active is None:
-        return None
-    observed_age = 0.0
+        return None, False
     fetched_at = latest.get("fetched_at")
-    if fetched_at:
-        try:
-            observed_dt = datetime.fromisoformat(str(fetched_at))
-            if observed_dt.tzinfo is None:
-                observed_dt = observed_dt.replace(tzinfo=timezone.utc)
-            observed_age = max(0.0, (now - observed_dt).total_seconds())
-        except ValueError:
-            observed_age = 0.0
-    return float(book_active) + observed_age
+    if not fetched_at:
+        return None, True
+    try:
+        observed_dt = datetime.fromisoformat(str(fetched_at))
+    except ValueError:
+        return None, True
+    if observed_dt.tzinfo is None:
+        observed_dt = observed_dt.replace(tzinfo=timezone.utc)
+    observed_age = (now - observed_dt).total_seconds()
+    if observed_age < 0 or observed_age > BOOK_OBSERVATION_MAX_AGE_SECONDS:
+        # 时钟回拨 / 观测过期：不 clamp，直接判不可信 → BLOCK
+        return None, True
+    try:
+        book_age = float(book_active)
+    except (TypeError, ValueError):
+        return None, True
+    if book_age != book_age:  # NaN：盘口全是 NaN 时可能出现
+        return None, True
+    return book_age + observed_age, False
 
 
 def refreshed_trade_quotes(
@@ -122,6 +145,7 @@ def refreshed_trade_quotes(
     maximum_spread_pct: float, retries: int = 2, wait_seconds: float = 1.5,
     maximum_stale_seconds: int = 600,
     book_active_seconds: float | None = None,
+    book_basis_blocked: bool = False,
 ) -> tuple[pd.Series, pd.Series, dict]:
     """取入场前的期权 / 正股快照，**用盘口活性判新鲜**（2026-10-26 修）。
 
@@ -133,6 +157,7 @@ def refreshed_trade_quotes(
       （682.40366 ×3），重试实际是空转。
     - `book_active_seconds`：**跨轮次**盘口变化年龄（来自 `option_history` 采集），
       补上「跨分钟才变一次」的场景（2026-10-27）。
+    - `book_basis_blocked`：观测不可信（无历史行 / 超 900s / 时钟回拨）→ fail-closed 拦截。
     """
     attempts: list[dict] = []
     last_option = None
@@ -152,6 +177,11 @@ def refreshed_trade_quotes(
             fresh_seconds=180, maximum_seconds=maximum_stale_seconds,
             maximum_spread_pct=maximum_spread_pct,
         )
+        if book_basis_blocked:
+            option_fresh = False
+            option_reason = (
+                "盘口活跃观测不可信（无历史行 / 超过 900s / 时钟回拨），fail-closed 拦截"
+            )
         owner_fresh, owner_reason, owner_age = quote_freshness(owner, attempt_now)
         book_ok, book_reason, spread_pct = option_book_status(option, maximum_spread_pct)
         previous_bid, previous_ask = (
@@ -166,6 +196,7 @@ def refreshed_trade_quotes(
             "option_age_seconds": option_age,
             "option_degraded": option_degraded,
             "book_moved": book_moved,
+            "book_basis_blocked": book_basis_blocked,
             "bid_price": float(option.get("bid_price") or 0),
             "ask_price": float(option.get("ask_price") or 0),
             "previous_bid_price": previous_bid,
@@ -738,6 +769,11 @@ def run_campaign(
     max_quote_spread_pct = float(campaign.get(
         "max_spread_pct", 12.0 if trigger_mode == "VOLATILITY" else 20.0
     ))
+    # 跨轮次盘口变化年龄（2026-10-27）：同 attempt 1.5s 比不出来，从采集侧取。
+    # blocked=True（无历史行 / 观测超 900s / 时钟回拨）→ 入场 fail-closed。
+    book_active_seconds, book_basis_blocked = latest_book_activity_age(
+        executor.store, code, now,
+    )
     option, owner, quote_check = refreshed_trade_quotes(
         broker, code, campaign["underlying"], now, max_quote_spread_pct,
         # 降级上限与候选层**同源**（P0-5 §5.1：900 → 300）。
@@ -745,8 +781,8 @@ def run_campaign(
         # 会把 VOLATILITY 的 12% 放宽到 20% —— 那是**放松真金入场门禁**，
         # 不在本批授权范围内，故只接管停滞上限。
         maximum_stale_seconds=quality.entry_max_stale_seconds,
-        # 跨轮次盘口变化年龄（2026-10-27）：同 attempt 1.5s 比不出来，从采集侧取。
-        book_active_seconds=latest_book_activity_age(executor.store, code, now),
+        book_active_seconds=book_active_seconds,
+        book_basis_blocked=book_basis_blocked,
     )
     # `quote_age_at_submit` 埋点（P0-5 §5.1）：门禁**通过**（含降级通过）时记录当次年龄。
     # 300s 是"先上线、带埋点、一周后按数据复审" —— **不许再用"影响几乎为零"这类断言**，

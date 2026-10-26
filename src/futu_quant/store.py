@@ -2606,12 +2606,16 @@ class TradingStore:
         with self.connection() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM option_history").fetchone()[0])
 
-    def latest_option_book_activity(self, code: str) -> dict | None:
-        """最近一次采集的盘口活跃观测（入场新鲜度主基准，2026-10-27）。
+    def latest_option_history(self, code: str) -> dict | None:
+        """最近一次采集的期权快照观测行（入场新鲜度主基准，2026-10-27）。
 
-        返回 ``{"book_active_seconds", "fetched_at"}``；调用方需把
-        ``now - fetched_at`` 加到 `book_active_seconds` 上，才是「跨轮次盘口变化年龄」。
-        只取单行，避免热路径把整段 option_history 读出来。
+        返回 ``{"book_active_seconds", "fetched_at"}``；窗口判定（≤900s、负时差）
+        与 fail-closed 由调用方 `run_gamma_strategy.latest_book_activity_age` 负责，
+        本方法只做单行轻量读，避免热路径整段扫 option_history。
+
+        注：`option_history` 是**全局研究数据表**（无 tenant_id 列；`configured_option_contracts`
+        注释明确「期权历史本就该看全量合约」），无法按租户过滤；交易侧的租户隔离由 campaign
+        决定，本表只回答「该合约盘口最近是否在动」。
         """
         with self.connection() as connection:
             row = connection.execute(

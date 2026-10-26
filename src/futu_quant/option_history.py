@@ -6,7 +6,7 @@ import json
 import pandas as pd
 
 from .config import load_all_volatility_campaigns, load_gamma_campaigns
-from .data_quality import option_quote_activity
+from .data_quality import option_quote_activity, option_quote_freshness
 from .option_lifecycle import parse_option_code
 from .quote_liveness import BookActivityTracker
 
@@ -57,6 +57,7 @@ def collect_option_snapshots(broker, store) -> dict:
     fetched = datetime.now(timezone.utc).isoformat()
     records: list[dict] = []
     missing: list[dict] = []
+    collection_usable: list[bool] = []
     for code, contract in parsed.items():
         row = indexed.get(code)
         underlying_row = indexed.get(contract.underlying) if contract else None
@@ -74,18 +75,22 @@ def collect_option_snapshots(broker, store) -> dict:
         book_active_seconds = _BOOK_ACTIVITY.observe(
             code, row, datetime.now(timezone.utc),
         )
-        # 与入场**同一判据**（2026-10-27）：`update_time` 是成交驱动，冻结≠过期；
-        # 新鲜度主基准 = min(成交年龄, 盘口变化年龄)。心跳 DEGRADED 4/8 曾因此误报。
-        fresh, freshness_reason, _, _ = option_quote_activity(
-            row, datetime.fromisoformat(fetched),
-            book_active_seconds=book_active_seconds,
-            fresh_seconds=180, maximum_seconds=300, maximum_spread_pct=20.0,
-        )
+        # quality_status 是 **ML 训练标签，口径冻结**（Reviewer 2026-10-27）：
+        # 仍按成交时间判（旧口径），不得掺入盘口活性，否则训练样本分布被改。
+        fresh, freshness_reason, _, _ = option_quote_freshness(row)
         book_good = bid > 0 and ask >= bid and iv > 0
         quality = "GOOD" if fresh and book_good else "DEGRADED"
         quality_reason = freshness_reason if book_good else (
             f"盘口或 IV 无效：买一 {bid:.3f}、卖一 {ask:.3f}、IV {iv:.4f}"
         )
+        # 心跳口径**单独算**（不入库、不影响 quality_status）：成交冻结≠采集失效，
+        # 主基准 = min(成交年龄, 盘口变化年龄)。修 2026-10-27 的 4/8 心跳误报。
+        collection_fresh, _, _, _ = option_quote_activity(
+            row, datetime.fromisoformat(fetched),
+            book_active_seconds=book_active_seconds,
+            fresh_seconds=180, maximum_seconds=300, maximum_spread_pct=20.0,
+        )
+        collection_usable.append(bool(collection_fresh and book_good))
         raw_time = row.get("update_time") or row.get("time_key") or fetched
         records.append({
             "code": code, "time_key": str(raw_time), "underlying": contract.underlying,
@@ -104,6 +109,8 @@ def collect_option_snapshots(broker, store) -> dict:
             "book_active_seconds": book_active_seconds,
         })
     store.import_option_history(records)
+    # 心跳用 collection_usable（盘口活性基准），quality_status 仅作 ML 标签统计。
+    usable = sum(collection_usable)
     good = sum(record["quality_status"] == "GOOD" for record in records)
     if missing:
         reasons: dict[str, int] = {}
@@ -120,14 +127,19 @@ def collect_option_snapshots(broker, store) -> dict:
             "option_history",
             actor="service:option_history",
         )
-    healthy = good == len(records) and not missing
-    message = f"采集 {len(records)} 个合约；可用 {good}，降级 {len(records) - good}"
+    healthy = usable == len(records) and not missing
+    message = (
+        f"采集 {len(records)} 个合约；可用 {usable}，降级 {len(records) - usable}"
+        f"（ML 标签 GOOD {good}）"
+    )
     if missing:
         message += f"；缺失 {len(missing)}（已记 OPTION_SNAPSHOT_MISSING）"
     store.heartbeat("option_history", "HEALTHY" if healthy else "DEGRADED", message)
     return {
         "contracts": len(contracts), "stored": len(records),
-        "good": good, "degraded": len(records) - good, "missing": len(missing),
+        # good/degraded 保持旧语义（ML 标签），usable 是新心跳口径
+        "good": good, "degraded": len(records) - good,
+        "usable": usable, "missing": len(missing),
     }
 
 
