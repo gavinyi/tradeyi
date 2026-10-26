@@ -77,7 +77,11 @@ def test_collector_records_point_in_time_snapshot(tmp_path, monkeypatch):
             ])
 
     result = collect_option_snapshots(Broker(), store)
-    assert result == {"contracts": 1, "stored": 1, "good": 1, "degraded": 0, "missing": 0}
+    # usable 是 2026-10-27 新增的「心跳口径」计数（盘口活性基准）；good/degraded 仍是 ML 标签口径
+    assert result == {
+        "contracts": 1, "stored": 1, "good": 1, "degraded": 0,
+        "usable": 1, "missing": 0,
+    }
     row = store.option_history("US.AAPL260720C300000")[0]
     assert row["source"] == "FUTU_SNAPSHOT_V1"
     assert row["underlying_price"] == 330
