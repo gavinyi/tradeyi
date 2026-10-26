@@ -58,7 +58,7 @@ def test_noqa_silent_ok_with_reason_is_allowed(tmp_path: Path):
         "def f():\n"
         "    try:\n"
         "        work()\n"
-        "    except Exception:  # noqa: silent-ok: 退出路径无可补救\n"
+        "    except Exception:  # silent-ok: 退出路径无可补救\n"
         "        pass\n",
         encoding="utf-8",
     )
@@ -71,7 +71,7 @@ def test_noqa_without_reason_is_not_enough(tmp_path: Path):
         "def f():\n"
         "    try:\n"
         "        work()\n"
-        "    except Exception:  # noqa: silent-ok\n"
+        "    except Exception:  # silent-ok\n"
         "        pass\n",
         encoding="utf-8",
     )

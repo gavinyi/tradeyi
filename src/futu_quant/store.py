@@ -1792,7 +1792,7 @@ class TradingStore:
             try:
                 _HEARTBEAT_RUN.reset(token)
             except ValueError:  # 跨线程/跨上下文重置时忽略，不能因此打断任务
-                pass  # noqa: silent-ok: ContextVar 重置异常无补救动作，且不能打断任务
+                pass  # silent-ok: ContextVar 重置异常无补救动作，且不能打断任务
         return tracker
 
     def heartbeat_status(self, strategy_id: str) -> dict | None:
@@ -2830,7 +2830,7 @@ class TradingStore:
                     frame = frame.f_back
                 if frame:
                     caller_info = f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}"
-            except Exception:  # noqa: silent-ok: 调用点信息仅用于排障，取不到就回落 unknown
+            except Exception:  # silent-ok: 调用点信息仅用于排障，取不到就回落 unknown
                 pass
             try:
                 self.operational_event(

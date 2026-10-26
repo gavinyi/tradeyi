@@ -20,16 +20,15 @@ from zoneinfo import ZoneInfo
 
 os.environ.setdefault("FUTU_LOG_ROLE", "service")
 os.environ["PYTHONUNBUFFERED"] = "1"
-logger = logging.getLogger("run_service")
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(line_buffering=True)
-    except Exception:  # noqa: silent-ok: 控制台重定向尽力而为，失败不影响交易
+    except Exception:  # silent-ok: 控制台重定向尽力而为，失败不影响交易
         pass
 if hasattr(sys.stderr, "reconfigure"):
     try:
         sys.stderr.reconfigure(line_buffering=True)
-    except Exception:  # noqa: silent-ok: 控制台重定向尽力而为，失败不影响交易
+    except Exception:  # silent-ok: 控制台重定向尽力而为，失败不影响交易
         pass
 if sys.platform == "win32":
     _local_appdata = Path(__file__).resolve().parents[1] / "data" / "appdata"
@@ -104,6 +103,9 @@ from futu_quant.scheduled_tasks import (
     run_weekly_universe_recall,
     timer_default_enabled, timer_enabled_setting_key, _timer_due,
 )
+
+# 必须在 import 块之后赋值：放前面会让后续 import 触发 ruff E402
+logger = logging.getLogger("run_service")
 
 
 NY = ZoneInfo("America/New_York")
@@ -929,7 +931,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 if moomoo_cfg_raw:
                     try:
                         moomoo_is_en = bool(json.loads(moomoo_cfg_raw).get("enabled", False))
-                    except Exception:  # noqa: silent-ok: 配置解析失败按未启用处理（fail-safe 方向）
+                    except Exception:  # silent-ok: 配置解析失败按未启用处理（fail-safe 方向）
                         pass
                 if moomoo_is_en:
                     try:
@@ -944,7 +946,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                         store.save_broker_snapshot("account_info_moomoo_real", moomoo_acc)
                         store.save_broker_snapshot("positions_moomoo_real", moomoo_pos)
                         store.save_broker_snapshot("orders_moomoo_real", moomoo_b.orders())
-                    except Exception:  # noqa: silent-ok: moomoo 附属账户快照失败不得打断主账户流程
+                    except Exception:  # silent-ok: moomoo 附属账户快照失败不得打断主账户流程
                         pass
                 try:
                     if not hasattr(broker, "_broker_sim_companion"):
@@ -1638,7 +1640,7 @@ def main() -> None:
             try:
                 from futu_quant.broker import close_all_connections
                 close_all_connections()
-            except Exception:  # noqa: silent-ok: 进程退出路径，连接关闭失败已无可补救
+            except Exception:  # silent-ok: 进程退出路径，连接关闭失败已无可补救
                 pass
 
 

@@ -174,7 +174,7 @@ def safe_datetime(value, default: datetime) -> datetime:
     try:
         if value is None or pd.isna(value):
             return default
-    except (TypeError, ValueError):  # noqa: silent-ok: 不可解析的选填参数回落默认值
+    except (TypeError, ValueError):  # silent-ok: 不可解析的选填参数回落默认值
         pass
     text = str(value).strip()
     if not text or text.lower() in {"nan", "nat", "none", "<na>"}:
@@ -729,7 +729,7 @@ def run_campaign(
                 "phase": "ADMITTED",
             }])
         except Exception:  # noqa: BLE001 - 埋点失败绝不能阻断下单
-            pass  # noqa: silent-ok: 排除留痕是观测动作，失败不得阻断下单
+            pass  # silent-ok: 排除留痕是观测动作，失败不得阻断下单
     # A quote between 180s and 900s old is explicitly marked degraded by the
     # data-quality layer. Permit a small, liquid entry in that window; fully
     # stale or unusable-book quotes remain blocked.
@@ -1099,7 +1099,7 @@ def run_campaign(
                 ).fetchone()
                 if row:
                     promoted_record = dict(row)
-        except Exception:  # noqa: silent-ok: 提升池记录仅用于展示，读取失败不阻断调度
+        except Exception:  # silent-ok: 提升池记录仅用于展示，读取失败不阻断调度
             pass
 
         if promoted_record is not None:

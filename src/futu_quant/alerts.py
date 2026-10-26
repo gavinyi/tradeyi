@@ -173,7 +173,7 @@ def update_mute_list(
                 "alerting",
              actor="service:alerts")
         except Exception:  # noqa: BLE001 - 留痕失败不能阻断配置写入
-            pass  # noqa: silent-ok: 静音清单审计失败不得阻断配置写入
+            pass  # silent-ok: 静音清单审计失败不得阻断配置写入
     return accepted, []
 
 
@@ -216,7 +216,7 @@ class AlertManager:
                 return
             self.store.add_alert("WARNING", "ALERT_MUTE_LIST_ENTRY_REJECTED", message)
         except Exception:  # noqa: BLE001 - 留痕失败绝不能阻断告警
-            pass  # noqa: silent-ok: 静音清单条目的拒绝留痕失败不得阻断告警主流程
+            pass  # silent-ok: 静音清单条目的拒绝留痕失败不得阻断告警主流程
 
     def _push_webhook(self, severity: str, event_type: str, message: str) -> int:
         """推通用 webhook。三态：**-1 通道未配置 / 0 失败 / 1 成功**。"""
@@ -322,7 +322,7 @@ class AlertManager:
             ):
                 return
         except Exception:  # noqa: BLE001
-            pass  # noqa: silent-ok: 去重查询失败时宁可多发一条，不能丢告警
+            pass  # silent-ok: 去重查询失败时宁可多发一条，不能丢告警
         self.send(severity, event_type, message)
 
     def probe_delivery(self) -> dict:
@@ -389,7 +389,7 @@ class AlertManager:
                 from .feishu_reporter import FeishuReporter
                 reporter = FeishuReporter(self.store)
                 feishu_recovered = reporter.send_alert_card("INFO", event_type, message, is_recovered=True)
-            except Exception:  # noqa: silent-ok: 恢复卡片失败已由后续 feishu_state 反映，不重复抛
+            except Exception:  # silent-ok: 恢复卡片失败已由后续 feishu_state 反映，不重复抛
                 pass
 
         feishu_state = -1

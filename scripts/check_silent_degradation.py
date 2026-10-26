@@ -4,7 +4,7 @@
 允许例外，但必须显式豁免并写理由：
 
     except Exception:
-        pass  # noqa: silent-ok: 这里丢弃的原因是……
+        pass  # silent-ok: 这里丢弃的原因是……
 
 用法：
     python scripts/check_silent_degradation.py        # 扫默认清单，有违规 exit 1
@@ -34,7 +34,7 @@ CRITICAL_FILES: tuple[str, ...] = (
     "src/futu_quant/alerts.py",
 )
 
-ALLOW_MARKER = "noqa: silent-ok:"
+ALLOW_MARKER = "silent-ok:"
 
 
 def _handler_is_silent(node: ast.ExceptHandler) -> bool:
@@ -73,7 +73,7 @@ def find_violations(path: Path) -> list[dict]:
         violations.append({
             "lineno": node.lineno,
             "column": node.col_offset,
-            "reason": "裸 except 静默吞异常（补日志/计数，或加 # noqa: silent-ok: 理由）",
+            "reason": "裸 except 静默吞异常（补日志/计数，或加 # silent-ok: 理由）",
             "snippet": lines[node.lineno - 1].strip(),
         })
     return violations
