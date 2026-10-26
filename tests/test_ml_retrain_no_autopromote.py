@@ -197,15 +197,42 @@ def test_monthly_script_no_promote_never_touches_production(tmp_path, monkeypatc
     assert Path(report["candidate_model"]).exists(), "候选模型没有落盘（人工 promote 无从下手）"
 
 
-def test_monthly_script_keeps_promote_path_and_daily_docstring():
-    """默认（未带 --no-promote）仍走人工 promote 语义；间隔口径与实现对齐为「日频 24h」。"""
+def test_monthly_script_keeps_promote_path_and_interval_docstring():
+    """默认（未带 --no-promote）仍走人工 promote 语义；间隔口径与实现对齐。"""
     source = (SCRIPTS / "ml_retrain_monthly.py").read_text(encoding="utf-8")
     assert "--no-promote" in source
     assert "promote_if_better" in source, "人工路径被删掉了，手动重训语义变了"
 
     service_source = (SCRIPTS / "run_service.py").read_text(encoding="utf-8")
     assert "，默认 30）" not in service_source, (
-        "docstring 又写回了未实现的「interval_days 默认 30」—— 实际是日频 24h"
+        "docstring 又写回了旧的「interval_days 默认 30」说法 —— 实际默认 1 天"
     )
-    assert "日频" in service_source, "docstring 未说明实际频率（日频 24h）"
-    assert "24 * 60 * 60" in service_source, "调度 gate 不再是 24h —— 与 docstring 口径不符"
+    assert "ml_auto_retrain_interval_days" in service_source, "间隔键没有真正接线"
+    assert "auto_retrain_interval_seconds(store)" in service_source, (
+        "service_cycle 的 due gate 没有用参数化间隔"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. A-4a 间隔参数化：ml_auto_retrain_interval_days 真实生效，默认 24h 不变
+# ---------------------------------------------------------------------------
+
+
+def test_interval_defaults_to_one_day_without_key():
+    store = _FakeStore({})
+    assert run_service.auto_retrain_interval_seconds(store) == 24 * 60 * 60
+    assert store.events == [], "没有配置键时不该报错"
+
+
+def test_interval_reads_configured_days():
+    store = _FakeStore({run_service.AUTO_RETRAIN_INTERVAL_KEY: "7"})
+    assert run_service.auto_retrain_interval_seconds(store) == 7 * 24 * 60 * 60
+
+
+@pytest.mark.parametrize("bad_value", ["abc", "0", "-3", "400", "1.5e99"])
+def test_interval_invalid_falls_back_to_default_and_logs_error(bad_value):
+    store = _FakeStore({run_service.AUTO_RETRAIN_INTERVAL_KEY: bad_value})
+    assert run_service.auto_retrain_interval_seconds(store) == 24 * 60 * 60
+    events = [event for event in store.events if event[1] == "ML_AUTO_RETRAIN_INTERVAL_INVALID"]
+    assert events, f"非法间隔 {bad_value!r} 未留 ERROR 事件（静默改节奏）"
+    assert events[0][2] == "ERROR"

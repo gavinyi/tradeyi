@@ -799,17 +799,51 @@ def portfolio_stress_check(broker, store, alerts, tenant_id) -> None:
     # action == "none"：缓冲带内或状态未变 —— 不重发、不误消警
 
 
+AUTO_RETRAIN_INTERVAL_KEY = "ml_auto_retrain_interval_days"
+AUTO_RETRAIN_INTERVAL_DEFAULT_DAYS = 1
+
+
+def auto_retrain_interval_seconds(store) -> int:
+    """A-4a：自动重训间隔（**真实配置键**，不再是注释）——`ml_auto_retrain_interval_days`。
+
+    - 默认 **1 天 = 24h**，与 A-4a 之前的硬编码 `24*60*60` **行为完全一致**（不改行为）；
+    - 合法范围 [1, 365] 天；非法值（非数字/0/负数/过大）→ 落
+      `ML_AUTO_RETRAIN_INTERVAL_INVALID` ERROR 并按默认 1 天处理 ——
+      绝不静默改成别的节奏（否则「为什么一个月没重训」查不出来）。
+    """
+    raw = str(store.get_setting(AUTO_RETRAIN_INTERVAL_KEY, "") or "").strip()
+    days = AUTO_RETRAIN_INTERVAL_DEFAULT_DAYS
+    if raw:
+        try:
+            parsed = int(float(raw))
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed is None or parsed < 1 or parsed > 365:
+            store.operational_event(
+                "ml_retrain", "ML_AUTO_RETRAIN_INTERVAL_INVALID", "ERROR",
+                {
+                    "setting": AUTO_RETRAIN_INTERVAL_KEY,
+                    "value": raw,
+                    "fallback_days": AUTO_RETRAIN_INTERVAL_DEFAULT_DAYS,
+                    "rule": "整数天数，范围 [1, 365]",
+                },
+            )
+        else:
+            days = parsed
+    return days * 24 * 60 * 60
+
+
 def maybe_trigger_auto_retrain(store) -> bool:
     """P2-4：自动重训（**默认关闭**，需用户明确开启后才生效）。
 
     设计要点：
     - 交给**独立子进程**（wrapper）执行，绝不阻塞交易主循环 —— 训练可能跑几十分钟；
     - 默认 `ml_auto_retrain_enabled=false`：这一步会改变策略行为，必须用户拍板；
-    - **触发频率 = 每 24h 一次（日频）**：gate 在 `service_cycle` 里是
-      `due(store, "last_run:ml_auto_retrain", 24*60*60, now)`（`last_run` 键带租户段，
-      两 Worker 各一份；并发由 `data/ml_retrain.lock` 兜底，第二个拿 `SKIP:already_running`）。
-      A-4a（2026-10-27）收口：旧 docstring 曾写「`ml_auto_retrain_interval_days` 默认 30」
-      但代码从未实现该键 —— 现按实际行为明确为日频，避免下一个人按注释以为是月跑；
+    - **触发频率 = `ml_auto_retrain_interval_days` 天一次**（默认 1 天 = 日频 24h）：
+      gate 在 `service_cycle` 里是 `due(store, "last_run:ml_auto_retrain",
+      auto_retrain_interval_seconds(store), now)`。A-4a（2026-10-27）：这个键此前只存在于
+      docstring、代码硬编码 24h；现在参数化为**真实配置**（默认不变、校验见上）。
+      `last_run` 键带租户段，两 Worker 各一份；并发由 `data/ml_retrain.lock` 兜底；
     - **绝不自动 promote**（A-4a，用户 2026-10-27 拍板「promote 仍人工」）：
       自动触发一律带 `--no-promote`，训练只落
       `data/ml_models/volatility_scorer_candidate_auto.pkl`，生产 pkl/json 不动；
@@ -1459,10 +1493,9 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
         )
         mark_run(store, "last_run:ml_tiebreak_audit", now)
     # P2-4 自动重训：**默认关闭**（改策略行为，需用户拍板后才开启）。
-    # 频率是**日频**（24h gate，A-4a 已把 docstring 与实现对齐；旧的
-    # `ml_auto_retrain_interval_days` 说法从未实现）。开启后交独立子进程跑
-    # （`--no-promote`：只落候选、不改生产模型），不阻塞主循环。
-    if due(store, "last_run:ml_auto_retrain", 24 * 60 * 60, now):
+    # 间隔由 `ml_auto_retrain_interval_days` 决定（默认 1 天 = 24h，A-4a 前的硬编码行为）；
+    # 开启后交独立子进程跑（`--no-promote`：只落候选、不改生产模型），不阻塞主循环。
+    if due(store, "last_run:ml_auto_retrain", auto_retrain_interval_seconds(store), now):
         if maybe_trigger_auto_retrain(store):
             store.operational_event(
                 "ml_retrain", "ML_AUTO_RETRAIN_DISPATCHED", "HEALTHY", {},
