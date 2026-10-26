@@ -135,7 +135,10 @@ class _RecordingExecutor:
         return type("R", (), {"status": "SUBMITTED", "broker_order_id": "BRK-X",
                               "message": ""})()
 
+    @property
     def alerts(self):
+        """必须是**属性**：`run_campaign` 用 `executor.alerts.send(...)`（2026-10-27 批 B
+        的 exit_book_bypass 分支让该行可达）。写成方法会返回 bound method，没有 `.send`。"""
         return self
 
     def send(self, *args, **kwargs):
