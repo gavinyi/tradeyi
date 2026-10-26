@@ -149,7 +149,9 @@ def test_worker_run_campaign_records_tenant_id(tmp_path, monkeypatch):
     store = TradingStore(tmp_path / "t.db")
 
     code = "US.META261030P660000"
-    positions = pd.DataFrame([{"code": code, "qty": 1, "cost_price": 2.0}])
+    # 数量 0：走 run_campaign 的 `quantity <= 0` 早退分支（写一条 HOLD 决策即返回），
+    # 本用例只验「决策留痕带租户」，不承载持仓退出链路的完整撮合。
+    positions = pd.DataFrame([{"code": code, "qty": 0, "cost_price": 2.0}])
 
     class FakeBroker:
         def positions(self, refresh=False):
@@ -157,6 +159,32 @@ def test_worker_run_campaign_records_tenant_id(tmp_path, monkeypatch):
 
         def orders(self, *args, **kwargs):
             return pd.DataFrame()
+
+        def snapshots(self, symbols):
+            """批 B 起入场先取期权/正股快照判盘口活性，桩要按请求的代码逐条回。"""
+            stamp = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S")
+            rows = []
+            for symbol in symbols:
+                if symbol == code:
+                    rows.append({"code": symbol, "bid_price": 1.95, "ask_price": 2.05,
+                                 "last_price": 2.0, "update_time": stamp})
+                else:
+                    rows.append({"code": symbol, "bid_price": 659.90, "ask_price": 660.10,
+                                 "last_price": 660.0, "update_time": stamp})
+            return pd.DataFrame(rows)
+
+        def snapshots_tolerant(self, symbols, **kwargs):
+            return self.snapshots(symbols)
+
+        def candles(self, symbol, count=120):
+            bars = max(1, int(count or 120))
+            closes = [600.0 + index for index in range(bars)]
+            return pd.DataFrame({
+                "code": symbol,
+                "time_key": pd.date_range("2026-07-01", periods=bars, freq="D"),
+                "open": closes, "close": closes,
+                "high": closes, "low": closes, "volume": 1000,
+            })
 
     executor = ExecutionManager(FakeBroker(), store=store)
 
@@ -167,6 +195,7 @@ def test_worker_run_campaign_records_tenant_id(tmp_path, monkeypatch):
         "code": code,
         "trigger_mode": "VOLATILITY",
         "underlying": "META",
+        "option_type": "PUT",
         "legs": [{"code": code, "side": "BUY", "ratio": 1}],
         "tenant_id": REAL,
         "closed": True,  # 触发 CLOSED 决策

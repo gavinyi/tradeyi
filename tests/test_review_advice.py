@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import date
-from pathlib import Path
 
 from futu_quant.store import TradingStore
 from futu_quant.strategy_review import (
@@ -14,8 +13,8 @@ from futu_quant.strategy_review import (
 from futu_quant.trade_diagnostics import diagnostic_window
 
 
-def test_review_advice_generates_compact_sections():
-    store = TradingStore(Path(__file__).resolve().parents[1] / "data" / "test_advice_check.db")
+def test_review_advice_generates_compact_sections(tmp_path):
+    store = TradingStore(tmp_path / "advice_check.db")
     review = build_strategy_review(store, diagnostic_window(date(2026, 10, 9)))
     issues, advice = _review_issue_advice(review)
     markdown = review_advice_markdown(review)
@@ -29,8 +28,8 @@ def test_review_advice_generates_compact_sections():
     assert advice, "应至少有一条建议"
 
 
-def test_review_markdown_contains_advice_section():
-    store = TradingStore(Path(__file__).resolve().parents[1] / "data" / "test_advice_check.db")
+def test_review_markdown_contains_advice_section(tmp_path):
+    store = TradingStore(tmp_path / "advice_check.db")
     review = build_strategy_review(store, diagnostic_window(date(2026, 10, 9)))
     markdown = review_markdown(review)
 
