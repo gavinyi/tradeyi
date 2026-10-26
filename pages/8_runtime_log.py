@@ -70,6 +70,16 @@ with decision_tab:
 
 with snapshot_tab:
     snapshots = pd.DataFrame(store.decision_snapshots())
+    if not snapshots.empty:
+        # A-2（2026-10-27）：`volatility_long_ab` 是 **ML A/B 双算观测**行（payload 结构不同），
+        # 不是决策上下文；混读会在这里显示成一片「空行」。单独剔除并给一句说明。
+        ab_rows = int((snapshots["strategy_id"] == "volatility_long_ab").sum())
+        snapshots = snapshots[snapshots["strategy_id"] != "volatility_long_ab"].copy()
+        if ab_rows:
+            st.caption(
+                f"已隐藏 {ab_rows} 条 ML A/B 双算观测快照（`volatility_long_ab`），"
+                "它们由 `scripts/ml_ab_analyze.py` 使用，不属于决策上下文。"
+            )
     if snapshots.empty:
         st.info("暂无可复现决策快照。")
     else:

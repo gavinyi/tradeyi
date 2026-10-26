@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -256,6 +256,24 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     # 生产存量 campaign 的 JSON 里**没有 tenant_id 键**（实测），只看它会让租户级
     # ML 开关永远回落全局；用 broker 反解兜底（共享入口 tenant_of_broker，fail-closed）。
     _roll_tenant = str(campaign.get("tenant_id") or tenant_id_of_broker(broker) or "")
+    # A-2（2026-10-27）**同一批决策双算**：rule 臂分数必须在 ML 重排**之前**冻结。
+    # `_apply_ml_ranking` 只做排序/加列、不过滤行 → 两臂天然同分母；这里保存重排前的快照，
+    # 供 ml_ab_observe 组装 payload（只写观测，不影响排序与成交）。
+    _rule_arm_rows = [
+        {
+            "code": str(row.get("code") or ""),
+            "rule_score": row.get("volatility_quality_score"),
+        }
+        for _, row in eligible.iterrows()
+    ]
+    _ml_arm_enabled = False
+    try:
+        from .ml_ab_observe import observe_enabled
+
+        _ml_arm_enabled = observe_enabled(store, _roll_tenant)
+    except Exception:  # noqa: BLE001 - 观测开关解析失败只影响观测，不影响决策
+        # silent-ok: 观测开关读失败不得打断 roll 主流程（观测失败 ≠ 交易失败）
+        _ml_arm_enabled = False
     eligible = _apply_ml_ranking(
         eligible, store, tenant_id=_roll_tenant, spot=spot, broker=broker, bars=bars
     )
@@ -283,6 +301,59 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         return _with_diagnostics(
             campaign, structures, regime, "最佳结构缺少可解析的主期权代码，跳过本轮维护"
         )
+    if _ml_arm_enabled:
+        # A-2 双算观测：两臂同批同分母（`eligible` 行集合一致），只写观测。
+        try:
+            from .ml_ab_observe import build_payload, record_observation
+            from .ml_config import resolve_ml_factor
+
+            ml_rows = [
+                {
+                    "code": str(row.get("code") or ""),
+                    "ml_score": row.get("ml_score"),
+                    "ml_adjusted_score": row.get("ml_adjusted_score"),
+                    "ml_score_missing_reason": row.get("ml_score_missing_reason"),
+                }
+                for _, row in eligible.iterrows()
+            ]
+            rule_rows = [
+                {
+                    "code": item["code"],
+                    "rule_score": item["rule_score"],
+                }
+                for item in _rule_arm_rows
+            ]
+            rule_selected_candidates = sorted(
+                rule_rows,
+                key=lambda item: (
+                    -float(item.get("rule_score") or 0.0),
+                    str(item.get("code") or ""),
+                ),
+            )
+            payload = build_payload(
+                tenant_id=_roll_tenant,
+                env=str(getattr(broker, "trading_env", "") or "").upper(),
+                strategy_id="volatility_long_gamma",
+                underlying=str(underlying),
+                observed_at=datetime.now(timezone.utc),
+                rule_rows=rule_rows,
+                ml_rows=ml_rows,
+                model_path=str(resolve_ml_factor(store, _roll_tenant, "model_path")),
+                rule_selected_code=(
+                    rule_selected_candidates[0]["code"] if rule_selected_candidates else None
+                ),
+                ml_selected_code=str(eligible.iloc[0].get("code") or "") or None,
+                regime={
+                    "risk_tier": "强波动" if regime.get("strong_signal_override")
+                    else "动态波动" if regime.get("active") else "常规",
+                    "candidate_count": int(len(structures)),
+                    "eligible_count": int(len(eligible)),
+                },
+            )
+            record_observation(store, payload)
+        except Exception as exc:  # noqa: BLE001 - 观测组装失败不得打断 roll 主流程
+            # silent-ok: 双算观测是旁路，任何异常都不能影响决策/成交（观测失败≠交易失败）
+            _ = exc
     selected_contract = pd.Series(selected.get("primary_row") or selected.to_dict())
     analysis = contract_analysis(
         selected_contract, spot, rv, store, peer_contracts=candidates
@@ -468,10 +539,14 @@ def _apply_ml_ranking(
 
     result = structures.copy()
     scores = []
+    # A-2（2026-10-27）条件③：ML 缺分**原因不许被吞**——观测需要它解释覆盖率，
+    # 但**降级行为不变**（仍 None → 调整分=质量分 → 该行实际按 rule 排）。
+    missing_reasons: list[str | None] = []
     for _, row in result.iterrows():
         code = _main_leg_code(row)
         if not code:
             scores.append(None)
+            missing_reasons.append("main_leg_code_missing")
             continue
         try:
             s = scorer.score_symbol(
@@ -479,9 +554,12 @@ def _apply_ml_ranking(
                 market_context=_row_market_context(row, spot, bars),
             )
             scores.append(s)
-        except Exception:  # noqa: BLE001
+            missing_reasons.append(None if s is not None else "ml_score_unavailable")
+        except Exception as exc:  # noqa: BLE001
             scores.append(None)
+            missing_reasons.append(str(exc).strip()[:120] or type(exc).__name__)
     result["ml_score"] = scores
+    result["ml_score_missing_reason"] = missing_reasons
     result["ml_rank"] = [
         ("HIGH" if s is not None and s >= 0.7
          else "MEDIUM" if s is not None and s >= 0.5
