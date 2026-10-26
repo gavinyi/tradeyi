@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import tempfile
+import contextlib
 from pathlib import Path
 
 import pandas as pd
@@ -53,8 +53,6 @@ class DrillBroker:
         return pd.DataFrame([{"order_id": order_id, "price": price}])
 
 
-import contextlib
-
 @contextlib.contextmanager
 def _safe_drill_dir(name: str):
     p = Path("data/qa") / name
@@ -63,10 +61,14 @@ def _safe_drill_dir(name: str):
         yield p
     finally:
         for f in p.glob("*"):
-            try: f.unlink()
-            except Exception: pass
-        try: p.rmdir()
-        except Exception: pass
+            try:
+                f.unlink()
+            except Exception:  # noqa: BLE001 - 清理尽力而为，不遮蔽主流程异常
+                pass
+        try:
+            p.rmdir()
+        except Exception:  # noqa: BLE001 - 同上
+            pass
 
 def run_resilience_drill() -> pd.DataFrame:
     rows = []
