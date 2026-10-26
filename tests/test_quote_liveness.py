@@ -186,6 +186,8 @@ def test_refreshed_trade_quotes_accepts_cross_round_book_activity(monkeypatch):
     assert "盘口" in check["option_reason"]
     # 年龄按更小的盘口年龄报，而不是 700s 的成交年龄
     assert check["option_age_seconds"] <= 180
+    # 旧口径成交年龄必须单列保留（上线后按「旧 300s 会拦多少」对账）
+    assert check["trade_age_seconds"] >= 690, check["trade_age_seconds"]
 
 
 def test_refreshed_trade_quotes_blocks_static_book_with_frozen_trade(monkeypatch):

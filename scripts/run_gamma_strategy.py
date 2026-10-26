@@ -182,6 +182,10 @@ def refreshed_trade_quotes(
             option_reason = (
                 "盘口活跃观测不可信（无历史行 / 超过 900s / 时钟回拨），fail-closed 拦截"
             )
+        # 旧口径（纯成交年龄）单列保留：上线后要按「旧 300s 会拦多少」对账
+        _, _, trade_age_seconds = quote_freshness(
+            option, attempt_now, maximum_stale_seconds,
+        )
         owner_fresh, owner_reason, owner_age = quote_freshness(owner, attempt_now)
         book_ok, book_reason, spread_pct = option_book_status(option, maximum_spread_pct)
         previous_bid, previous_ask = (
@@ -194,6 +198,8 @@ def refreshed_trade_quotes(
             "option_fresh": option_fresh,
             "option_reason": option_reason,
             "option_age_seconds": option_age,
+            # 旧口径成交年龄（对账用）：option_age_seconds 已是 min(成交, 盘口) 的有效年龄
+            "trade_age_seconds": trade_age_seconds,
             "option_degraded": option_degraded,
             "book_moved": book_moved,
             "book_basis_blocked": book_basis_blocked,

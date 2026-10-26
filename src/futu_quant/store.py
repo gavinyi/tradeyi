@@ -2615,12 +2615,13 @@ class TradingStore:
 
         注：`option_history` 是**全局研究数据表**（无 tenant_id 列；`configured_option_contracts`
         注释明确「期权历史本就该看全量合约」），无法按租户过滤；交易侧的租户隔离由 campaign
-        决定，本表只回答「该合约盘口最近是否在动」。
+        决定，本表只回答「该合约盘口最近是否在动」。跨租户同合约共用同一条观测：当前只有
+        实盘 + 模拟两个租户且合约集合基本不重叠，风险可接受（Reviewer 已确认）。
         """
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT book_active_seconds,fetched_at FROM option_history "
-                "WHERE code=? ORDER BY time_key DESC LIMIT 1", (code,),
+                "WHERE code=? ORDER BY fetched_at DESC, rowid DESC LIMIT 1", (code,),
             ).fetchone()
         return dict(row) if row is not None else None
 
