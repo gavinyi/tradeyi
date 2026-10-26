@@ -141,7 +141,8 @@ def test_existing_db_migration_adds_column_and_index_via_migrations(tmp_path, mo
     raw.close()
 
     # 存量库升级必须显式授权（与 run_service 启动路径同口径），未授权时 __init__ 会拒绝
-    monkeypatch.setenv("TRADEYI_ALLOW_MIGRATION", "1")
+    from futu_quant.migrations import authorize_migrations
+    authorize_migrations("test:config_audit_c1")
     # 重新打开 TradingStore -> 必须走 initialize() 存量分支中的 apply_migrations
     store = TradingStore(db_path)
 

@@ -334,16 +334,28 @@ def _isolate_environment(monkeypatch, tmp_path):
 
     _real_init = _TradingStore.__init__
 
-    def _isolated_init(self, path=None, tenant_registry=None, read_only=False, bootstrap=False):
+    def _isolated_init(
+        self, path=None, tenant_registry=None, read_only=False, bootstrap=False,
+        allow_migrations=False, migration_actor="",
+    ):
         if path is not None and Path(path).resolve() != Path(_PROD_DB).resolve():
-            _real_init(self, path, tenant_registry, read_only=read_only, bootstrap=bootstrap)
+            _real_init(self, path, tenant_registry, read_only=read_only, bootstrap=bootstrap,
+                       allow_migrations=allow_migrations, migration_actor=migration_actor)
         else:
             _real_init(self, tmp_path / "isolated.db", tenant_registry,
-                       read_only=read_only, bootstrap=bootstrap)
+                       read_only=read_only, bootstrap=bootstrap,
+                       allow_migrations=allow_migrations, migration_actor=migration_actor)
 
     monkeypatch.setattr(_TradingStore, "__init__", _isolated_init)
 
+    # 迁移授权是进程级全局（P0，2026-10-26：「授权不随子进程继承」的代价是它也不随
+    # monkeypatch 自动回滚）——每条用例前后都清空，避免上一条用例的授权泄漏给下一条。
+    from futu_quant.migrations import revoke_migrations
+    revoke_migrations()
+
     yield
+
+    revoke_migrations()
 
     # 每条用例后：恢复完整 os.environ 快照，保留 pytest 自身控制变量
     for key in list(os.environ.keys()):

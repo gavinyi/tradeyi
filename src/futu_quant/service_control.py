@@ -52,6 +52,7 @@ def _launchd_registered() -> bool:
 def _lock_owner_pid() -> int | None:
     """Recover a running service whose pid file was removed or desynchronized."""
     try:
+        from .migrations import PendingMigrationsError
         from .store import TradingStore
         store = TradingStore()
         # 心跳名已按租户区分（trading_service:<tenant>）：取**最新**的那一行，
@@ -65,6 +66,14 @@ def _lock_owner_pid() -> int | None:
             cand_pid = h.get("pid")
             if cand_pid and _pid_alive(int(cand_pid)):
                 return int(cand_pid)
+    except PendingMigrationsError as exc:
+        # 待迁移库 + 本进程无授权（P0，2026-10-26）：不能静默吞掉，
+        # 否则「库在升级、锁主查不到」会表现成服务状态不明。
+        print(
+            "[service_control] 数据库待迁移且本进程无迁移授权，改用锁文件判活："
+            f"{exc}",
+            file=sys.stderr,
+        )
     except Exception:
         pass
 

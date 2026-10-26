@@ -46,6 +46,7 @@ from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.health import maintenance
 from futu_quant.reconciliation import reconcile_ledgers
 from futu_quant.store import TradingStore
+from futu_quant.migrations import authorize_migrations
 from futu_quant.tenant import tenant_config_key_candidates
 from futu_quant.shadow_matching import match_shadow_orders
 from futu_quant.earnings_calendar import refresh_earnings_events, sync_campaign_events
@@ -1518,9 +1519,12 @@ def _wait_or_stop(seconds: float, stop_file: Path | None = None) -> None:
 
 
 def main() -> None:
-    # P0（2026-10-25）：**只有服务启动路径**可授权迁移。其余脚本/测试打开存量库
-    # 遇到 pending 迁移会直接失败，避免「跑一条巡检脚本就顺手迁移生产库」。
-    os.environ["TRADEYI_ALLOW_MIGRATION"] = "1"
+    # P0（2026-10-25/26）：**只有服务启动路径**可授权迁移，且授权必须留在本进程内。
+    # 不再写 `TRADEYI_ALLOW_MIGRATION=1` 进 os.environ —— Worker 派生的子进程
+    # （`env=os.environ.copy()`：见 `:236/:315`）会继承它，配合磁盘上的新代码
+    # 就能把生产库提前迁移（2026-10-26 00:06:44 迁移 20 号的真实成因）。
+    # authorize_migrations 是 Python 进程级授权，子进程天然不继承 → 授权面收敛。
+    authorize_migrations("service:run_service")
     parser = argparse.ArgumentParser(description="Unified Futu paper strategy service")
     parser.add_argument("--once", action="store_true", help="Run one scheduling cycle")
     parser.add_argument("--poll", type=int, default=10, help="Scheduler polling seconds")

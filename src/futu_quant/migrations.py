@@ -2,18 +2,52 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import os
 import sqlite3
 
 
-#: 迁移授权开关（P0，2026-10-25 事故）：只有服务启动路径可以设置。
-#: 背景：v18 代码落盘生产目录后，任意会 `TradingStore()` 的脚本（巡检/诊断/清理）
-#: 都会顺带把 pending 迁移执行掉 —— 22:20:42 生产库被提前迁移就是这样发生的。
-MIGRATION_ALLOW_ENV = "TRADEYI_ALLOW_MIGRATION"
+#: 进程级迁移授权（P0，2026-10-25/26）。
+#:
+#: **为什么不用环境变量**：2026-10-26 00:06:44 生产库被提前应用迁移 20。根因正是
+#: `run_service.py` 把 `TRADEYI_ALLOW_MIGRATION=1` 写进 `os.environ`：Worker 派生的
+#: 子进程（`env=os.environ.copy()`）继承后，只要磁盘上已是新代码，构造 `TradingStore()`
+#: 就会顺带迁移 —— 授权面跟着进程树扩散，无法收敛。
+#:
+#: 现在授权只存在于 Python 进程内，且必须由**服务启动路径显式调用**：
+#:
+#:     authorize_migrations("service:run_service")
+#:
+#: 子进程不继承 Python 全局变量 → 无授权时遇 pending 迁移一律
+#: `PendingMigrationsError`（fail-closed，绝不静默迁移）。
+_PROCESS_AUTHORIZATION: str | None = None
+
+
+def authorize_migrations(actor: str) -> None:
+    """**仅服务启动路径**（`scripts/run_service.py:main`）可调用。
+
+    actor 是审计落点（`audit_events.actor`），必填、禁止为空 —— 2026-10-26 之前
+    `apply_migrations` 的 actor 默认值写死 `service:run_service`，导致「谁迁的库」查不出来。
+    """
+    global _PROCESS_AUTHORIZATION
+    normalized = str(actor or "").strip()
+    if not normalized:
+        raise ValueError("迁移授权必须显式传 actor（审计要能定位调用者）")
+    _PROCESS_AUTHORIZATION = normalized
+
+
+def revoke_migrations() -> None:
+    """撤销进程级授权（测试隔离用；生产进程不调用）。"""
+    global _PROCESS_AUTHORIZATION
+    _PROCESS_AUTHORIZATION = None
 
 
 def migrations_allowed() -> bool:
-    return os.getenv(MIGRATION_ALLOW_ENV, "").strip() == "1"
+    return _PROCESS_AUTHORIZATION is not None
+
+
+def authorized_actor() -> str | None:
+    """当前进程的迁移授权调用者；无授权返回 ``None``。"""
+    return _PROCESS_AUTHORIZATION
+
 
 
 def pending_migrations(connection: sqlite3.Connection) -> list[int]:
@@ -336,15 +370,21 @@ def _audit_migration(
 
 def apply_migrations(
     connection: sqlite3.Connection, *,
-    actor: str = "service:run_service",
+    actor: str,
     trigger: str = "",
 ) -> list[int]:
     """应用 pending 迁移（**单写者 + 全事务 + 审计**）。
+
+    `actor` 必填：写进 `audit_events.actor`，回答「谁迁的库」。**禁止默认值** ——
+    2026-10-26 之前默认写死 `service:run_service`，审计无法区分调用者。
 
     并发安全（Architect 2026-10-25）：`BEGIN IMMEDIATE` 取得库级写锁后再**二次读取**
     已应用版本；第二个 Worker 会阻塞在锁上，进事务后发现版本已齐 → 直接 no-op。
     任一语句失败 → 整个事务回滚，绝不留半迁移状态。
     """
+    actor = str(actor or "").strip()
+    if not actor:
+        raise ValueError("apply_migrations 必须显式传 actor（审计要能定位调用者）")
     import time
 
     connection.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -394,7 +434,7 @@ def apply_migrations(
                 "to_version": max(completed),
                 "applied": completed,
                 "duration_ms": int((time.time() - started) * 1000),
-                "trigger": trigger or MIGRATION_ALLOW_ENV,
+                "trigger": trigger or "explicit",
             })
         connection.commit()
         return completed

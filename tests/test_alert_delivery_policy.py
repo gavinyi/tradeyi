@@ -270,7 +270,8 @@ def test_existing_db_gains_tristate_columns(tmp_path, monkeypatch):
     raw.close()
 
     # 存量库升级必须显式授权（与 run_service 启动路径同口径），未授权时 __init__ 会拒绝
-    monkeypatch.setenv("TRADEYI_ALLOW_MIGRATION", "1")
+    from futu_quant.migrations import authorize_migrations
+    authorize_migrations("test:alert_delivery_policy")
     store = TradingStore(db)  # 必须走存量库路径
     with store.connection() as connection:
         columns = {

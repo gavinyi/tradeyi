@@ -85,7 +85,8 @@ def test_legacy_placeholder_columns_default_for_new_rows(tmp_path):
 
 
 def test_migration_19_marks_existing_placeholder_rows(tmp_path, monkeypatch):
-    monkeypatch.setenv("TRADEYI_ALLOW_MIGRATION", "1")  # 迁移授权（P0 门禁，见 test_migration_gate）
+    from futu_quant.migrations import authorize_migrations
+    authorize_migrations("test:fill_fee_write_path")  # 迁移授权（P0 门禁，见 test_migration_gate）
     path = tmp_path / "marker.db"
     store = TradingStore(path)
     intent_id = _new_intent(store)

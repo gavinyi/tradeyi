@@ -1076,8 +1076,9 @@ def render_pnl_metric(
 def open_trading_store(*args, **kwargs):
     """UI 专用 store 入口：待迁移库不得把页面炸成堆栈（Architect 2026-10-25）。
 
-    `TRADEYI_ALLOW_MIGRATION` 只允许服务启动路径；页面/脚本遇到 pending 迁移时，
-    捕获 `PendingMigrationsError` 并显示「系统正在升级」，**不得重试写库**。
+    迁移授权只存在于服务进程内（`run_service.main` 调 `authorize_migrations`），
+    页面/脚本进程默认无授权；遇到 pending 迁移时捕获 `PendingMigrationsError`
+    并显示「系统正在升级」，**不得重试写库**。
     """
     from .migrations import PendingMigrationsError
     from .store import TradingStore

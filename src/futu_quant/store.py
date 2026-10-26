@@ -160,10 +160,23 @@ class TradingStore:
         tenant_registry: dict[str, Any] | None = None,
         read_only: bool = False,
         bootstrap: bool = False,
+        allow_migrations: bool = False,
+        migration_actor: str = "",
     ):
         self.path = Path(path).resolve()
         self.read_only = bool(read_only)
         self.tenant_registry = tenant_registry
+        # 迁移授权（P0，2026-10-26）：**显式传参**，默认 False。
+        # 不再读环境变量 —— env 会被子进程继承，2026-10-26 00:06:44 生产库被
+        # 提前迁移 20 号就是「Worker 子进程继承 env + 磁盘已是新代码」造成的。
+        # 服务启动路径（run_service.main）用 authorize_migrations(actor) 授权整个进程；
+        # 其他脚本默认无授权，遇 pending 迁移 fail-closed。
+        self.allow_migrations = bool(allow_migrations)
+        self.migration_actor = str(migration_actor or "").strip()
+        if self.allow_migrations and not self.migration_actor:
+            raise ValueError(
+                "allow_migrations=True 必须同时显式给 migration_actor（审计要能定位调用者）"
+            )
         if self.read_only:
             # 只读模式（巡检/诊断/清理脚本专用）：不建目录、不 initialize、不迁移。
             if not self.path.exists():
@@ -290,28 +303,35 @@ class TradingStore:
                     connection.execute("ALTER TABLE virtual_allocations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''")
                     connection.execute("CREATE INDEX IF NOT EXISTS idx_virtual_alloc_tenant ON virtual_allocations(tenant_id, strategy_id, symbol)")
                 # 存量库同样必须跑版本化迁移：否则任何新增迁移对已存在的库永远不生效。
-                # **但迁移必须显式授权**（P0 事故 2026-10-25）：只有服务启动路径设置
-                # TRADEYI_ALLOW_MIGRATION=1；巡检/诊断/清理脚本打开存量库遇到 pending
-                # 迁移必须直接失败，绝不能顺带把生产库迁移掉（22:20:42 就是这样发生的）。
+                # **但迁移必须显式授权**（P0 事故 2026-10-25 / 2026-10-26 提前迁移 20 号）。
+                # 合法授权只有两种，且都不随子进程继承：
+                #   ① run_service.main 调 authorize_migrations(actor)（进程内显式授权）；
+                #   ② TradingStore(..., allow_migrations=True, migration_actor=...)。
+                # 巡检/诊断/清理脚本打开存量库遇到 pending 迁移必须直接失败。
                 from .migrations import (
-                    MIGRATION_ALLOW_ENV,
                     PendingMigrationsError,
                     apply_migrations,
-                    migrations_allowed,
+                    authorized_actor,
                     pending_migrations,
                 )
 
                 pending = pending_migrations(connection)
                 if pending:
-                    if not migrations_allowed():
+                    actor = (
+                        self.migration_actor if self.allow_migrations else authorized_actor()
+                    )
+                    if not actor:
                         # 专用异常：UI 捕获后显示「系统升级中」而不是抛堆栈
                         raise PendingMigrationsError(
-                            f"检测到 {len(pending)} 条未应用迁移 {pending}，"
-                            f"当前进程未获迁移授权（需环境变量 {MIGRATION_ALLOW_ENV}=1，"
-                            "仅 run_service 启动路径设置）。"
+                            f"检测到 {len(pending)} 条未应用迁移 {pending}，本进程未获迁移授权。"
+                            "迁移授权只能由服务启动路径显式授予"
+                            "（run_service 启动时 authorize_migrations(actor=...)），子进程不继承；"
                             "本进程已拒绝启动：请改用只读方式，或等 Worker 重启完成迁移。"
                         )
-                    apply_migrations(connection, trigger=f"env={MIGRATION_ALLOW_ENV}")
+                    trigger = (
+                        "explicit-param" if self.allow_migrations else "process-authorized"
+                    )
+                    apply_migrations(connection, actor=actor, trigger=trigger)
                 return
             connection.executescript(
                 """
@@ -938,7 +958,9 @@ class TradingStore:
                 VALUES(1,'baseline_sqlite_schema','baseline-v1',?)""", (self.now(),),
             )
             from .migrations import apply_migrations
-            apply_migrations(connection, trigger="bootstrap")
+            # 新建库 = 首次部署（bootstrap=True 已显式授权建库）：授权来源明确，
+            # 审计写 actor=store:bootstrap，便于和「存量库迁移」区分。
+            apply_migrations(connection, actor="store:bootstrap", trigger="bootstrap")
 
     @staticmethod
     def now() -> str:
