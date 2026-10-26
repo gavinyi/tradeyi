@@ -542,6 +542,45 @@ def _alert_missing_campaign_tenant(executor, strategy_id: str, code: str) -> Non
         pass
 
 
+def update_signal_epoch_state(
+    signal_state: dict, *, regime_active: bool, now: datetime,
+    inactive_tolerance_cycles: int = 1, volume_ratio: float = 0.0,
+) -> None:
+    """A13（2026-10-27）：入场确认计时不再被**单轮** inactive 清零。
+
+    背景：判定是瞬时的，涨跌幅/Z/ATR 在阈值边缘抖动时，任一轮 `active=False` 就会
+    `pop("signal_started_at")` → 下一轮从 0 重新累计，临界波动永远达不到
+    `entry_confirmation_minutes`（实测 AMD 累计到 2.2/2.5 分钟被一次 blip 打回 0）。
+
+    规则：
+    - 激活：**只要计时还在就延续**（blip 恢复不得当新 epoch、不得重置计时）；
+      计时不存在才开新 epoch（epoch+1、记录 started_at、streak 归零）。
+    - 未激活：保持 `signal_active=False`（当轮不进场），累加 `inactive_cycles`；
+      `streak <= tolerance` 时**保留** `signal_started_at`/`signal_epoch`（计时不丢）；
+      `streak > tolerance` 才按旧逻辑结束 epoch（记录 exit_signal_epoch、清 started_at）。
+    """
+    tolerance = max(0, int(inactive_tolerance_cycles))
+    if regime_active:
+        if not signal_state.get("signal_started_at"):
+            signal_state["signal_epoch"] = int(signal_state.get("signal_epoch", 0) or 0) + 1
+            signal_state["signal_started_at"] = now.isoformat()
+            signal_state["signal_start_volume_ratio"] = float(volume_ratio or 0)
+        signal_state["signal_active"] = True
+        signal_state["inactive_cycles"] = 0
+    else:
+        streak = int(signal_state.get("inactive_cycles", 0) or 0) + 1
+        signal_state["inactive_cycles"] = streak
+        signal_state["signal_active"] = False
+        if streak > tolerance:
+            # 连续 inactive 超过容忍周期 → 真结束旧确认 epoch（保持旧行为）
+            signal_state["exit_signal_epoch"] = signal_state.get("signal_epoch")
+            signal_state.pop("signal_started_at", None)
+            signal_state.pop("signal_start_volume_ratio", None)
+            signal_state["regime_was_active"] = False
+        # else：容忍期内 —— 计时保留，当轮仍按未激活处理（不进场）
+    signal_state["regime_was_active"] = bool(regime_active)
+
+
 def run_campaign(
     broker: FutuPaperBroker, executor: ExecutionManager, campaign: dict, state: dict,
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
@@ -1029,24 +1068,17 @@ def run_campaign(
             owner, underlying_bars, effective_z, effective_move,
         )
         regime["adaptive_profile"] = adaptive
-        was_regime_active = bool(signal_state.get("regime_was_active", False))
-        if regime["active"]:
-            if not was_regime_active or not signal_state.get("signal_started_at"):
-                signal_state["signal_epoch"] = int(signal_state.get("signal_epoch", 0) or 0) + 1
-                signal_state["signal_started_at"] = now.isoformat()
-                signal_state["signal_start_volume_ratio"] = float(
-                    regime.get("volume_ratio", 0) or 0
-                )
-            signal_state["signal_active"] = True
-        else:
-            # Any inactive transition ends the old confirmation epoch.  Do not
-            # keep a stale signal alive merely because z-score remains elevated.
-            signal_state["signal_active"] = False
-            signal_state["exit_signal_epoch"] = signal_state.get("signal_epoch")
-            signal_state.pop("signal_started_at", None)
-            signal_state.pop("signal_start_volume_ratio", None)
-            signal_state["regime_was_active"] = False
-        signal_state["regime_was_active"] = bool(regime["active"])
+        # A13（2026-10-27）：单轮 inactive 不再清零确认计时；连续 inactive 超过
+        # `entry_confirmation_inactive_tolerance_cycles`（默认 1，即连续 2 轮）才结束 epoch。
+        update_signal_epoch_state(
+            signal_state,
+            regime_active=bool(regime["active"]),
+            now=now,
+            inactive_tolerance_cycles=int(
+                campaign.get("entry_confirmation_inactive_tolerance_cycles", 1)
+            ),
+            volume_ratio=float(regime.get("volume_ratio", 0) or 0),
+        )
         signal_started_at = signal_state.get("signal_started_at")
         event_time = (
             safe_datetime(signal_started_at, now) if signal_started_at else now
