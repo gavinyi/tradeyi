@@ -6,7 +6,7 @@ import json
 import pandas as pd
 
 from .config import load_all_volatility_campaigns, load_gamma_campaigns
-from .data_quality import option_quote_freshness
+from .data_quality import option_quote_activity
 from .option_lifecycle import parse_option_code
 from .quote_liveness import BookActivityTracker
 
@@ -71,16 +71,22 @@ def collect_option_snapshots(broker, store) -> dict:
         bid = float(row.get("bid_price", 0) or 0)
         ask = float(row.get("ask_price", 0) or 0)
         iv = float(row.get("option_implied_volatility", 0) or 0)
-        fresh, freshness_reason, _, _ = option_quote_freshness(row)
+        book_active_seconds = _BOOK_ACTIVITY.observe(
+            code, row, datetime.now(timezone.utc),
+        )
+        # 与入场**同一判据**（2026-10-27）：`update_time` 是成交驱动，冻结≠过期；
+        # 新鲜度主基准 = min(成交年龄, 盘口变化年龄)。心跳 DEGRADED 4/8 曾因此误报。
+        fresh, freshness_reason, _, _ = option_quote_activity(
+            row, datetime.fromisoformat(fetched),
+            book_active_seconds=book_active_seconds,
+            fresh_seconds=180, maximum_seconds=300, maximum_spread_pct=20.0,
+        )
         book_good = bid > 0 and ask >= bid and iv > 0
         quality = "GOOD" if fresh and book_good else "DEGRADED"
         quality_reason = freshness_reason if book_good else (
             f"盘口或 IV 无效：买一 {bid:.3f}、卖一 {ask:.3f}、IV {iv:.4f}"
         )
         raw_time = row.get("update_time") or row.get("time_key") or fetched
-        book_active_seconds = _BOOK_ACTIVITY.observe(
-            code, row, datetime.now(timezone.utc),
-        )
         records.append({
             "code": code, "time_key": str(raw_time), "underlying": contract.underlying,
             "underlying_price": float(underlying_row.get("last_price", 0) or 0)

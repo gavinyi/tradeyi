@@ -172,6 +172,36 @@ def test_refreshed_trade_quotes_rejects_stale_and_frozen_book(monkeypatch):
     assert all(attempt["book_moved"] is False for attempt in check["attempts"])
 
 
+def test_refreshed_trade_quotes_accepts_cross_round_book_activity(monkeypatch):
+    """成交冻结 700s，但采集侧记录「盘口 120s 内有变化」→ 按盘口基准放行（第 3 档）。"""
+    gamma = _patch_gamma_module(monkeypatch)
+    frozen = _quote_at(700)
+    broker = _SequenceBroker([(9.75, 9.95, frozen)] * 3)
+    _, _, check = gamma.refreshed_trade_quotes(
+        broker, "US.AMD261030P520000", "US.AMD", datetime.now(NY), 12.0,
+        retries=2, wait_seconds=0, maximum_stale_seconds=600,
+        book_active_seconds=120.0,
+    )
+    assert check["option_fresh"] is True, check["option_reason"]
+    assert "盘口" in check["option_reason"]
+    # 年龄按更小的盘口年龄报，而不是 700s 的成交年龄
+    assert check["option_age_seconds"] <= 180
+
+
+def test_refreshed_trade_quotes_blocks_static_book_with_frozen_trade(monkeypatch):
+    """跨轮次盘口也静止（5000s 未变）+ 成交冻结 700s → 仍 fail-closed 拦截。"""
+    gamma = _patch_gamma_module(monkeypatch)
+    frozen = _quote_at(700)
+    broker = _SequenceBroker([(9.75, 9.95, frozen)] * 3)
+    _, _, check = gamma.refreshed_trade_quotes(
+        broker, "US.AMD261030P520000", "US.AMD", datetime.now(NY), 12.0,
+        retries=2, wait_seconds=0, maximum_stale_seconds=600,
+        book_active_seconds=5000.0,
+    )
+    assert check["option_fresh"] is False, check["option_reason"]
+    assert all(attempt["book_moved"] is False for attempt in check["attempts"])
+
+
 def test_refreshed_trade_quotes_reads_clock_per_attempt(monkeypatch):
     """重试必须每次重取时钟（旧实现三次共用一个 now → 三次年龄完全相同）。
 
@@ -202,11 +232,17 @@ def test_refreshed_trade_quotes_reads_clock_per_attempt(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 4. 采集侧：只加观测字段，quality_status 口径不变
+# 4. 采集侧：盘口观测参与 quality_status（与入场同源，2026-10-27）
 # ---------------------------------------------------------------------------
 
 
-def test_collection_writes_book_active_seconds_without_changing_quality(tmp_path, monkeypatch):
+def test_collection_quality_uses_book_activity_same_as_entry(tmp_path, monkeypatch):
+    """采集侧 quality_status 与入场同源：成交冻结但盘口有变化 → GOOD。
+
+    2026-10-27 口径变更（Ops 取证 + Chief 定案）：`update_time` 是成交驱动，
+    冻结≠过期；新鲜度主基准改为 min(成交年龄, 盘口变化年龄)，`option_history.py:74`
+    与入场 `run_gamma_strategy.py` 共用 `option_quote_activity`，不再各写各的。
+    """
     store = TradingStore(tmp_path / "trading.db")
     frozen_trade = _quote_at(700)
 
@@ -238,20 +274,20 @@ def test_collection_writes_book_active_seconds_without_changing_quality(tmp_path
     first = collect_option_snapshots(Broker(), store)
     assert first["stored"] == 1
     row = store.option_history("US.AAPL260720C300000")[0]
-    # quality_status 口径不变：成交时间冻结 → 仍按旧判据 DEGRADED
+    # 首次观测没有盘口年龄 → 仍按成交时间判断：冻结 700s → DEGRADED（fail-closed）
     assert row["quality_status"] == "DEGRADED"
     assert row["book_active_seconds"] is None, "首次观测盘口年龄未知，应为 NULL"
 
-    # 第二次采集：盘口完全没变 → 记录盘口年龄
+    # 第二次采集：盘口有观测基准（年龄≈0）→ 与入场同源判 GOOD
     collect_option_snapshots(Broker(), store)
     rows = store.option_history("US.AAPL260720C300000")
-    assert rows[0]["quality_status"] == "DEGRADED", "quality_status 被观测字段影响"
+    assert rows[0]["quality_status"] == "GOOD", "采集侧未与入场同源（仍按成交时间误判）"
     assert rows[0]["book_active_seconds"] is not None
     assert rows[0]["book_active_seconds"] >= 0
 
 
-def test_option_quote_freshness_unchanged_for_collection_semantics():
-    """采集侧仍走旧函数：同一行在 300s 内降级通过、超 300s 拒绝（口径一字未改）。"""
+def test_option_quote_freshness_keeps_legacy_trade_time_semantics():
+    """`option_quote_freshness` 保留旧成交时间口径（其它调用方用），采集侧已不调用它。"""
     row = {"bid_price": 1.0, "ask_price": 1.2, "update_time": _quote_at(500)}
     fresh, _, _, degraded = option_quote_freshness(row, maximum_seconds=300)
     assert fresh is False and degraded is False

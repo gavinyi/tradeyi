@@ -2606,6 +2606,20 @@ class TradingStore:
         with self.connection() as connection:
             return int(connection.execute("SELECT COUNT(*) FROM option_history").fetchone()[0])
 
+    def latest_option_book_activity(self, code: str) -> dict | None:
+        """最近一次采集的盘口活跃观测（入场新鲜度主基准，2026-10-27）。
+
+        返回 ``{"book_active_seconds", "fetched_at"}``；调用方需把
+        ``now - fetched_at`` 加到 `book_active_seconds` 上，才是「跨轮次盘口变化年龄」。
+        只取单行，避免热路径把整段 option_history 读出来。
+        """
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT book_active_seconds,fetched_at FROM option_history "
+                "WHERE code=? ORDER BY time_key DESC LIMIT 1", (code,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def option_history(self, code: str, start: str | None = None, end: str | None = None) -> list[dict]:
         query = "SELECT * FROM option_history WHERE code=?"
         params: list = [code]

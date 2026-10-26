@@ -9,28 +9,58 @@ import pandas as pd
 NEW_YORK = ZoneInfo("America/New_York")
 
 
-def quote_freshness(row, now: datetime | None = None, max_age_seconds: int = 900) -> tuple[bool, str, float]:
-    current = now or datetime.now(NEW_YORK)
+def _quote_trade_age(row, current: datetime) -> tuple[float | None, str]:
+    """成交时间（`update_time`）年龄；缺失/不可解析返回 ``(None, 原因)``。
+
+    ⚠️ 该时间戳是**成交驱动**的：期权深度 ITM 十几分钟不成交即冻结，
+    不代表行情没在刷新（2026-10-27 Ops 取证：同采集批 5 个合约 bid/ask 全变，
+    但按 `update_time` 算出的年龄 27–1766s）。所以它只提供「成交发生」语义。
+    """
     raw = row.get("update_time") or row.get("updated_time") or row.get("time_key")
     if not raw:
-        return False, "行情没有更新时间", float("inf")
+        return None, "行情没有更新时间"
     timestamp = pd.to_datetime(raw, errors="coerce")
     if pd.isna(timestamp):
-        return False, f"无法识别行情更新时间：{raw}", float("inf")
+        return None, f"无法识别行情更新时间：{raw}"
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize(NEW_YORK)
     else:
         timestamp = timestamp.tz_convert(NEW_YORK)
-    age = max(0.0, (current - timestamp.to_pydatetime()).total_seconds())
+    return max(0.0, (current - timestamp.to_pydatetime()).total_seconds()), ""
+
+
+def quote_freshness(
+    row, now: datetime | None = None, max_age_seconds: int = 900, *,
+    book_active_age_seconds: float | None = None,
+) -> tuple[bool, str, float]:
+    """行情新鲜度：**主基准 = min(成交年龄, 盘口变化年龄)**。
+
+    传 ``book_active_age_seconds``（距上次观测到盘口变化的秒数）时按两者较小者判定，
+    `update_time` 只保留「成交发生」语义；不传则退化为旧的纯成交时间口径。
+    """
+    current = now or datetime.now(NEW_YORK)
+    trade_age, no_trade_reason = _quote_trade_age(row, current)
+    book_age: float | None = None
+    if book_active_age_seconds is not None:
+        candidate = float(book_active_age_seconds)
+        # NaN（盘口全是 NaN 时 BookActivityTracker 可能给 NaN）→ 视为「无盘口依据」
+        book_age = None if candidate != candidate else max(0.0, candidate)
+    if trade_age is None and book_age is None:
+        return False, no_trade_reason, float("inf")
+    if book_age is not None and (trade_age is None or book_age < trade_age):
+        age, basis = book_age, "，按盘口变化年龄判定"
+    else:
+        age, basis = trade_age, ""
     return age <= max_age_seconds, (
-        f"行情新鲜，延迟 {age:.0f} 秒" if age <= max_age_seconds
-        else f"行情已过期，延迟 {age:.0f} 秒，超过 {max_age_seconds} 秒"
+        f"行情新鲜，延迟 {age:.0f} 秒{basis}" if age <= max_age_seconds
+        else f"行情已过期，延迟 {age:.0f} 秒{basis}，超过 {max_age_seconds} 秒"
     ), age
 
 
 def option_quote_freshness(
     row, now: datetime | None = None, fresh_seconds: int = 180,
     maximum_seconds: int = 300, maximum_spread_pct: float = 20.0,
+    *, book_active_age_seconds: float | None = None,
 ) -> tuple[bool, str, float, bool]:
     """Allow a quiet option quote to degrade gracefully when its book is usable.
 
@@ -43,7 +73,9 @@ def option_quote_freshness(
     与配置 `entry_max_spread_pct`（默认 **12**，与真实门禁一致）共同表达。
     两者语义不同，**不要拿这个 20 当入场上限**（那会把真金门禁从 12% 放宽到 20%）。
     """
-    _, _, age = quote_freshness(row, now, maximum_seconds)
+    _, _, age = quote_freshness(
+        row, now, maximum_seconds, book_active_age_seconds=book_active_age_seconds,
+    )
     if age <= fresh_seconds:
         return True, f"行情新鲜，延迟 {age:.0f} 秒", age, False
     bid = float(row.get("bid_price") or 0)
@@ -98,18 +130,20 @@ def option_quote_activity(
     AVGO 冻结 11.5 分钟期间 bid 从 10.85 跌到 9.80），旧判据会把这些单全部误拦。
 
     判定顺序：
-    1. 成交时间 ≤ ``fresh_seconds`` → 新鲜（与旧口径一致，最省事）；
+    1. 有效年龄（min 成交年龄 / 盘口变化年龄）≤ ``fresh_seconds`` → 新鲜；
     2. 两次快照间盘口有变化（``book_moved``）→ 新鲜，理由写明「成交停滞但盘口活跃」；
     3. ``book_active_seconds``（距上次观测到盘口变化的秒数）≤ ``maximum_seconds`` → 新鲜；
-    4. 成交时间 ≤ ``maximum_seconds`` 且双边盘口可用 → **降级通过**（兜住深度 ITM）；
+    4. 有效年龄 ≤ ``maximum_seconds`` 且双边盘口可用 → **降级通过**（兜住深度 ITM）；
     5. 其余不通过。
 
-    返回 ``(fresh, reason, age, degraded)``，``age`` 仍是**成交时间**年龄，
-    ``degraded`` 语义与旧函数一致（降级通过时为 True）。
+    返回 ``(fresh, reason, age, degraded)``：``age`` 是**有效年龄**（传了盘口年龄时取
+    min(成交, 盘口)，否则就是成交年龄）；``degraded`` 语义与旧函数一致（降级通过为 True）。
     """
-    _, _, age = quote_freshness(row, now, maximum_seconds)
+    _, age_reason, age = quote_freshness(
+        row, now, maximum_seconds, book_active_age_seconds=book_active_seconds,
+    )
     if age <= fresh_seconds:
-        return True, f"行情新鲜，延迟 {age:.0f} 秒", age, False
+        return True, age_reason, age, False
     if book_moved:
         return True, (
             f"成交停滞 {age:.0f} 秒，但盘口在两次快照间有变化（盘口活跃，放行）"
