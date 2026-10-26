@@ -398,3 +398,26 @@ def test_fresh_bootstrap_has_audit_table(tmp_path):
         assert connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='audit_events'"
         ).fetchone()[0] == 1
+
+
+def test_radar_service_exits_cleanly_on_pending_migrations(tmp_path, monkeypatch, capsys):
+    """雷达进程无迁移授权（授权只在 Worker 进程内）→ 中文提示 + 退出码 2，不刷堆栈。"""
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    import run_radar_service as radar_module
+
+    from futu_quant.migrations import PendingMigrationsError
+
+    monkeypatch.setattr(radar_module, "LOCK_FILE", tmp_path / "radar.lock")
+    monkeypatch.setattr(radar_module, "PID_FILE", tmp_path / "radar.pid")
+    monkeypatch.setattr(radar_module, "STOP_FILE", tmp_path / "radar.stop")
+
+    def _pending(*_args, **_kwargs):
+        raise PendingMigrationsError("检测到 1 条未应用迁移 [20]，本进程未获迁移授权。")
+
+    monkeypatch.setattr(radar_module, "TradingStore", _pending)
+    with pytest.raises(SystemExit) as excinfo:
+        radar_module.main()
+    assert excinfo.value.code == 2
+    assert "待迁移" in capsys.readouterr().err
+    assert not (tmp_path / "radar.pid").exists(), "失败时不得留下 PID 文件"

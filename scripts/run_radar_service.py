@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import signal
+import sys
 import threading
 import time
 from zoneinfo import ZoneInfo
@@ -22,6 +23,7 @@ from futu_quant.radar_schedule import (
     save_radar_schedule_state,
 )
 from futu_quant.store import TradingStore
+from futu_quant.migrations import PendingMigrationsError
 from futu_quant.service_control import status as trading_service_status
 from futu_quant.tenant import active_tenants
 from futu_quant.volatility_scanner import fan_out_to_tenant, scan_market_layer
@@ -178,8 +180,14 @@ def main() -> None:
         lock.write(f"{os.getpid()}\n".encode())
         lock.flush()
         lock.truncate()
+        try:
+            store = TradingStore()
+        except PendingMigrationsError as exc:
+            # 待迁移库 + 雷达进程无迁移授权（授权只在 Worker 进程内，P0 2026-10-26）：
+            # 明确报中文原因并退出，不静默重试、不刷堆栈 —— 先重启 Worker 完成迁移。
+            print(f"波动率雷达无法启动（数据库待迁移）：{exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
         PID_FILE.write_text(str(os.getpid()))
-        store = TradingStore()
         calendar = USMarketCalendar()
         consecutive_errors = 0
         try:
