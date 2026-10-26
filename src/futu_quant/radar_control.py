@@ -60,6 +60,7 @@ def _lock_owner_pid() -> int | None:
         try:
             result = subprocess.run(
                 ["lsof", "-t", str(LOCK_FILE)], capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
                 timeout=2, check=False,
             )
             for value in result.stdout.splitlines():

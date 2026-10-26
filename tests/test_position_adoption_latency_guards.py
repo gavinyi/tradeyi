@@ -156,8 +156,14 @@ def test_adoption_does_not_write_production_config(tmp_path):
                if c.get("code") == "US.AMZN261120P205000"]
     assert adopted, "采用结果未写进调用方传入的 store"
     # 生产库不得出现该测试合约（隔离环境下 production_db_path() 指向真生产库）。
-    # 诚实态下（未设 TRADEYI_PROD_DB_PATH，且本工作区没有 data/trading.db）这层
-    # 比对**无法进行**：跳过而不是把「读不到库」当成「有数据被写穿」的假红。
+    # A4（2026-10-27）：只有**生产工作区**才有资格做「生产库比对」。
+    # 测试区里 `data/trading.db` 存在时，production_db_path() 指向的是**测试库**，
+    # 拿它当生产库比对会把「测试自己写的数据」误报成写穿生产 —— 这类环境不可比，
+    # 必须显式 skip 而不是 fail（今天因此浪费两轮全量）。
+    if not conftest.is_production_workspace():
+        pytest.skip(
+            "非生产工作区：production_db_path() 指向测试库，生产库比对不可比（A4）"
+        )
     if not conftest.production_db_path().exists():
         pytest.skip(
             "诚实态：production_db_path() 指向的库不存在，本轮不做生产库比对"

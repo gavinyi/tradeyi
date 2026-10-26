@@ -28,6 +28,7 @@ def get_secret(name: str, default: str = "") -> str:
         result = subprocess.run(
             ["security", "find-generic-password", "-a", name, "-s", SERVICE, "-w"],
             capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             return result.stdout.strip()

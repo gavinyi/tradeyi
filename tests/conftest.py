@@ -275,7 +275,13 @@ def pytest_sessionstart(session):
         )
         print(f"\n{message}", file=sys.stderr, flush=True)
         raise pytest.UsageError(message)
-    _SESSION_PROD_BASELINE = prod_config_fingerprint()
+    if is_production_workspace():
+        _SESSION_PROD_BASELINE = prod_config_fingerprint()
+    else:
+        # A4（2026-10-27）：测试区里的 `data/trading.db` 是**测试库**，不是生产库。
+        # 拿它当生产库做会话基线比对，会把「测试自己写的数据」误报成写穿生产 —— 必须
+        # 明确不做比对（skip 口径），而不是 fail。
+        _SESSION_PROD_BASELINE = None
     if _SESSION_PROD_BASELINE is None:
         if is_production_workspace():
             print(
@@ -338,12 +344,19 @@ def _isolate_environment(monkeypatch, tmp_path):
         self, path=None, tenant_registry=None, read_only=False, bootstrap=False,
         allow_migrations=False, migration_actor="",
     ):
+        # 测试专用 shim（P1，2026-10-27）：库代码已不再读 `TRADEYI_ALLOW_BOOTSTRAP`
+        # 环境变量（与迁移授权同源加固），但测试大量用临时路径建库。这里在 conftest
+        # 内把环境变量翻译成显式 `bootstrap=True`，被测代码路径保持纯显式参数。
+        effective_bootstrap = bootstrap or os.getenv(
+            "TRADEYI_ALLOW_BOOTSTRAP", ""
+        ).strip() == "1"
         if path is not None and Path(path).resolve() != Path(_PROD_DB).resolve():
-            _real_init(self, path, tenant_registry, read_only=read_only, bootstrap=bootstrap,
+            _real_init(self, path, tenant_registry, read_only=read_only,
+                       bootstrap=effective_bootstrap,
                        allow_migrations=allow_migrations, migration_actor=migration_actor)
         else:
             _real_init(self, tmp_path / "isolated.db", tenant_registry,
-                       read_only=read_only, bootstrap=bootstrap,
+                       read_only=read_only, bootstrap=effective_bootstrap,
                        allow_migrations=allow_migrations, migration_actor=migration_actor)
 
     monkeypatch.setattr(_TradingStore, "__init__", _isolated_init)

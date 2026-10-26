@@ -215,6 +215,7 @@ class SecFilingsClient:
                         "--user-agent", self.user_agent, url,
                     ],
                     check=True, capture_output=True, text=True, timeout=self.timeout + 2,
+                    encoding="utf-8", errors="replace",
                 )
                 return json.loads(completed.stdout)
             except (

@@ -208,6 +208,13 @@ def scan_market_layer(
     results: dict[str, "MarketSymbolResult"] = {}
     rows: list[dict] = []
     total_symbols = len(scan_symbols)
+    # A3（2026-10-27）：扫描层决策也要归户。市场层本身不碰账户，但**决策留痕**需要
+    # 租户（否则 decision_logs 空租户刷屏、审计无法归户）。由 broker 账户/环境解析，
+    # 解析不出时保持空串，由 store 的 DECISION_MISSING_TENANT_ID 告警兜底（不静默）。
+    try:
+        _scanner_tenant = str(tenant_id_of_broker(broker) or "")
+    except Exception:  # noqa: BLE001 - 租户归一化失败不阻断扫描；决策仍会带空租户告警
+        _scanner_tenant = ""
     for index, symbol in enumerate(scan_symbols, 1):
         if progress is not None:
             progress(index, total_symbols, symbol)
@@ -221,7 +228,7 @@ def scan_market_layer(
                 rows.append(row)
                 store.decision_if_changed(
                     "volatility_scanner", symbol, "BLOCKED", reason, row,
-                    repeat_after_seconds=900,
+                    repeat_after_seconds=900, tenant_id=_scanner_tenant,
                 )
                 results[symbol] = MarketSymbolResult(
                     symbol, None, None, {}, {"active": False, "reason": reason},
@@ -260,7 +267,10 @@ def scan_market_layer(
         except Exception as exc:
             row = {"symbol": symbol, "active": False, "reason": f"扫描异常：{exc}"}
             rows.append(row)
-            store.decision("volatility_scanner", symbol, "BLOCKED", row["reason"])
+            store.decision(
+                "volatility_scanner", symbol, "BLOCKED", row["reason"],
+                tenant_id=_scanner_tenant,
+            )
             results[symbol] = MarketSymbolResult(
                 symbol, None, None, {}, {"active": False, "reason": row["reason"]},
                 0.0, False, row,

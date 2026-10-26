@@ -50,6 +50,7 @@ def _process_cmdline(pid: int) -> str | None:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps],
             capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace",
         )
     except Exception:
         return None

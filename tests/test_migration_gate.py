@@ -121,6 +121,7 @@ def test_child_process_cannot_inherit_authorization(tmp_path):
          "from futu_quant.store import TradingStore\n"
          f"TradingStore({str(path)!r})\n"],
         cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120, check=False,
+        encoding="utf-8", errors="replace",
     )
     assert result.returncode != 0, f"子进程竟然迁移成功：{result.stdout}"
     assert "未获迁移授权" in result.stderr, result.stderr[-2000:]
@@ -390,6 +391,52 @@ def test_missing_db_rejected_without_explicit_bootstrap(tmp_path, monkeypatch):
     created = TradingStore(tmp_path / "explicit.db", bootstrap=True)
     with created.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] > 0
+
+
+def test_existing_file_without_order_intents_is_rejected(tmp_path, monkeypatch):
+    """A2（2026-10-27）：文件存在但无 `order_intents` 表（被清空/损坏）→ 默认拒绝重建。
+
+    否则会走进「新建库」分支重建空 schema，表现为「系统健康但数据全空」的假健康。
+    """
+    monkeypatch.delenv("TRADEYI_ALLOW_BOOTSTRAP", raising=False)
+    path = tmp_path / "emptied.db"
+    path.write_bytes(b"")  # 文件存在、0 字节：典型「被清空/损坏」
+    with pytest.raises(RuntimeError, match="没有 order_intents 表"):
+        TradingStore(path)
+    with sqlite3.connect(path) as connection:
+        tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert "order_intents" not in tables, "默认不得重建 schema"
+    # 显式 bootstrap=True 才允许重建（并给出审计/迁移基线）
+    rebuilt = TradingStore(path, bootstrap=True)
+    with rebuilt.connection() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='order_intents'"
+        ).fetchone()[0] == 1
+
+
+def test_bootstrap_ignores_environment_variable(tmp_path):
+    """A1（2026-10-27）：`TRADEYI_ALLOW_BOOTSTRAP` env 不再有授权能力（防子进程继承）。
+
+    真子进程验收：即使继承了 `TRADEYI_ALLOW_BOOTSTRAP=1`，缺库也必须拒绝建库。
+    """
+    path = tmp_path / "env_only.db"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    env["TRADEYI_ALLOW_BOOTSTRAP"] = "1"
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "from futu_quant.store import TradingStore\n"
+         f"TradingStore({str(path)!r})\n"],
+        cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=120, check=False,
+        encoding="utf-8", errors="replace",
+    )
+    assert result.returncode != 0, "env 竟然仍能授权建库"
+    assert "非显式 bootstrap" in result.stderr, result.stderr[-1500:]
+    assert not path.exists(), "失败后不得留下空库文件"
 
 
 def test_fresh_bootstrap_has_audit_table(tmp_path):

@@ -805,10 +805,31 @@ def maybe_trigger_auto_retrain(store) -> bool:
     设计要点：
     - 交给**独立子进程**（wrapper）执行，绝不阻塞交易主循环 —— 训练可能跑几十分钟；
     - 默认 `ml_auto_retrain_enabled=false`：这一步会改变策略行为，必须用户拍板；
-    - 间隔按天配置（`ml_auto_retrain_interval_days`，默认 30）。
+    - 间隔按天配置（`ml_auto_retrain_interval_days`，默认 30）；
+    - A5（2026-10-27）：关闭状态也要**可证** —— 每自然日发一条
+      `ML_AUTO_RETRAIN_SKIPPED`（reason=disabled）观测事件，否则「没跑」不可区分。
+      训练结果侧 new/old AUC 已由 `ml_retrain.py:_aucs_from_report` 回写。
     """
     enabled = str(store.get_setting("ml_auto_retrain_enabled", "false")).strip().lower() == "true"
     if not enabled:
+        today = datetime.now(NY).date().isoformat()
+        try:
+            logged_on = str(store.get_setting("ml_auto_retrain_disabled_logged_on", "") or "")
+        except Exception:  # noqa: BLE001 - 观测事件不得阻断调度循环
+            logged_on = ""
+        if logged_on != today:
+            try:
+                store.operational_event(
+                    "ml_retrain", "ML_AUTO_RETRAIN_SKIPPED", "INFO",
+                    {
+                        "reason": "disabled",
+                        "setting": "ml_auto_retrain_enabled",
+                        "note": "自动重训默认关闭，启用需用户拍板",
+                    },
+                )
+                store.set_setting("ml_auto_retrain_disabled_logged_on", today)
+            except Exception:  # noqa: BLE001 - 同上：留痕失败不能阻断交易主循环
+                pass
         return False
     wrapper = Path(__file__).resolve().parent / "run_ml_retrain_wrapper.py"
     if not wrapper.exists():

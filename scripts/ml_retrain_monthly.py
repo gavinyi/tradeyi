@@ -201,14 +201,17 @@ def promote_if_better(new_model: Path, production: Path) -> tuple[bool, float | 
             )
             return False, new_auc, old_auc
 
-    # 备份当前生产模型
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    # 备份当前生产模型。A9（2026-10-27）：备份目录**跟随 production 文件所在目录**，
+    # 不再用仓库级全局 BACKUP_DIR —— 否则用例在 tmp_path 里 promote 会把备份写进
+    # 工作树 data/ml_models/backups（污染验收环境，且并发跑会互相覆盖）。
+    backup_dir = production.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if production.exists():
-        backup_path = BACKUP_DIR / f"volatility_scorer_v3_{stamp}.pkl"
+        backup_path = backup_dir / f"volatility_scorer_v3_{stamp}.pkl"
         shutil.copy2(production, backup_path)
         print(f"   [BACKUP] 已备份当前模型: {backup_path}")
-        metrics_backup = BACKUP_DIR / f"volatility_scorer_v3_{stamp}.json"
+        metrics_backup = backup_dir / f"volatility_scorer_v3_{stamp}.json"
         if production.with_suffix(".json").exists():
             shutil.copy2(production.with_suffix(".json"), metrics_backup)
 

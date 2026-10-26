@@ -5,7 +5,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 import json
-import os
 from pathlib import Path
 import logging
 import math
@@ -166,6 +165,8 @@ class TradingStore:
         self.path = Path(path).resolve()
         self.read_only = bool(read_only)
         self.tenant_registry = tenant_registry
+        self.bootstrap = bool(bootstrap)
+        self._existed_before = self.path.exists()
         # 迁移授权（P0，2026-10-26）：**显式传参**，默认 False。
         # 不再读环境变量 —— env 会被子进程继承，2026-10-26 00:06:44 生产库被
         # 提前迁移 20 号就是「Worker 子进程继承 env + 磁盘已是新代码」造成的。
@@ -184,10 +185,9 @@ class TradingStore:
             return
         if not self.path.exists():
             # Reviewer 补充：区分「首次部署」与「路径写错」。
-            # 非显式 bootstrap（或测试环境变量）时，文件缺失一律拒绝，
-            # 否则路径写错会静默创建一个空库，表现为「系统健康但数据全空」。
-            allowed = bootstrap or os.getenv("TRADEYI_ALLOW_BOOTSTRAP", "").strip() == "1"
-            if not allowed:
+            # **显式 bootstrap 参数**（P1，2026-10-27）：不再读 `TRADEYI_ALLOW_BOOTSTRAP`
+            # 环境变量 —— 与迁移授权同一类洞（env 会被子进程继承）。
+            if not self.bootstrap:
                 raise FileNotFoundError(
                     f"数据库不存在：{self.path}。非显式 bootstrap 拒绝创建空库"
                     "（防路径写错被当成正常）；首次部署请显式传 bootstrap=True。"
@@ -333,6 +333,15 @@ class TradingStore:
                     )
                     apply_migrations(connection, actor=actor, trigger=trigger)
                 return
+            # A2（2026-10-27）：文件存在但没有 `order_intents` 表（被清空/损坏/半初始化）会
+            # 走「新建库」分支重建 schema —— 表现为「系统健康但数据全空」的假健康。
+            # 默认拒绝；确认要重建必须显式 bootstrap=True。
+            if self._existed_before and not self.bootstrap:
+                raise RuntimeError(
+                    f"数据库文件存在但没有 order_intents 表（疑似被清空/损坏）：{self.path}。"
+                    "默认拒绝重建 schema（防「系统健康但数据全空」的假健康）；"
+                    "确认要重建请显式传 bootstrap=True。"
+                )
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS order_intents (

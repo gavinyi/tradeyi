@@ -39,11 +39,9 @@ def _print_safe(message) -> None:
 
 
 try:
-    from sklearn.model_selection import train_test_split, cross_val_score
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.model_selection import train_test_split
     from sklearn.metrics import (
         classification_report, roc_auc_score, confusion_matrix,
-        precision_recall_curve, roc_curve
     )
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.feature_selection import SelectKBest, f_classif
@@ -280,7 +278,7 @@ def evaluate_model(model, X_test, y_test, feature_cols):
     # 混淆矩阵
     cm = confusion_matrix(y_test, y_pred)
     _print_safe("\n  混淆矩阵:")
-    _print_safe(f"              预测亏损  预测盈利")
+    _print_safe("              预测亏损  预测盈利")
     _print_safe(f"    实际亏损      {cm[0,0]:4d}      {cm[0,1]:4d}")
     _print_safe(f"    实际盈利      {cm[1,0]:4d}      {cm[1,1]:4d}")
     
@@ -492,8 +490,8 @@ def main():
         )
     
     X_train, y_train, sw_train = X.iloc[train_idx], y.iloc[train_idx], sample_weights.iloc[train_idx]
-    X_valid, y_valid, sw_valid = X.iloc[valid_idx], y.iloc[valid_idx], sample_weights.iloc[valid_idx]
-    X_test, y_test, sw_test = X.iloc[test_idx], y.iloc[test_idx], sample_weights.iloc[test_idx]
+    X_valid, y_valid = X.iloc[valid_idx], y.iloc[valid_idx]
+    X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
     
     _print_safe(f"  训练集: {len(X_train)} 条")
     _print_safe(f"  验证集: {len(X_valid)} 条")
@@ -551,7 +549,7 @@ def main():
         _print_safe("  - 🎉 模型表现良好！")
         _print_safe("  - 可作为主要筛选依据，ML权重50-70%")
     
-    _print_safe(f"\n  推荐阈值: 0.5 (精确率优先)")
+    _print_safe("\n  推荐阈值: 0.5 (精确率优先)")
     _print_safe(f"  模型文件: {output_path}")
 
 

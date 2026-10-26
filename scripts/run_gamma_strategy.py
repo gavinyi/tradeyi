@@ -522,7 +522,15 @@ def run_campaign(
     strategy_id: str = "earnings_gamma", positions_snapshot=None, orders_snapshot=None,
 ) -> None:
     code = str(campaign.get("code", ""))
-    _campaign_tenant = str(campaign.get("tenant_id") or "")
+    _campaign_tenant = str(campaign.get("tenant_id") or "").strip()
+    if not _campaign_tenant:
+        # A3（2026-10-27）：生产 `VOLATILITY_CAMPAIGNS` 存量 campaign 可能缺 tenant_id
+        # （当时 8 条全缺），决策日志会写空租户 → 热路径告警刷屏 + 审计无法归户。
+        # 口径：**执行器所属租户优先**（由 broker 账户 + 租户注册表解析，权威来源）；
+        # 仍未解析出时保持空串，由 store 的 DECISION_MISSING_TENANT_ID 告警兜底（不静默）。
+        _campaign_tenant = str(
+            getattr(getattr(executor, "tenant", None), "tenant_id", "") or ""
+        ).strip()
     legs = campaign.get("legs") or [{"code": code, "side": "BUY", "ratio": 1}]
     valid_leg_codes = [
         str(leg.get("code", "")).upper()
