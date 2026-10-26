@@ -78,7 +78,9 @@ def initialize_database(root: Path | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     from futu_quant.store import TradingStore
 
-    store = TradingStore(path)  # initialize() + apply_migrations()
+    # A1（2026-10-27）：bootstrap 改为显式参数（env 不再授权建库）。
+    # 这是测试区的「首次部署」入口，本来就该显式建库。
+    store = TradingStore(path, bootstrap=True)  # initialize() + apply_migrations()
     store.set_setting("ENABLE_PAPER_ORDERS", "true")
     store.set_setting("enable_paper_orders", "true")
     return path

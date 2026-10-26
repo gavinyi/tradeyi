@@ -94,7 +94,8 @@ def main() -> int:
     )
     from futu_quant.store import TradingStore  # noqa: PLC0415
 
-    store = TradingStore(db_path)
+    # A1（2026-10-27）：测试区播种脚本允许显式建库（env 不再授权 bootstrap）
+    store = TradingStore(db_path, bootstrap=True)
     store.set_setting(
         candidate_quality_key(SEED_TENANT),
         json.dumps(SEED_CANDIDATE_QUALITY, ensure_ascii=False),

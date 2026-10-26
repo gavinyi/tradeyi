@@ -71,7 +71,8 @@ def _safe_drill_dir(name: str):
 def run_resilience_drill() -> pd.DataFrame:
     rows = []
     with _safe_drill_dir("drill_tmp") as directory:
-        store = TradingStore(Path(directory) / "drill.db")
+        # A1：演练库是运行时新建的一次性库，必须显式 bootstrap（env 不再授权建库）
+        store = TradingStore(Path(directory) / "drill.db", bootstrap=True)
         # The drill must be deterministic and isolated from the operator's
         # current SHADOW/PAPER setting. DrillBroker never reaches Futu.
         store.set_setting("execution_mode", "PAPER")
@@ -126,7 +127,7 @@ def run_resilience_drill() -> pd.DataFrame:
 def run_combo_resilience_drill() -> pd.DataFrame:
     rows = []
     with _safe_drill_dir("drill_tmp") as directory:
-        store = TradingStore(Path(directory) / "combo-drill.db")
+        store = TradingStore(Path(directory) / "combo-drill.db", bootstrap=True)
         store.set_setting("execution_mode", "PAPER")
         store.approve_strategy(
             "drill", strategy_fingerprint("drill"), "combo_resilience_drill",
