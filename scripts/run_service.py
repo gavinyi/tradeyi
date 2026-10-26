@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import contextvars
 import json
 import os
@@ -575,6 +575,36 @@ def core_rebalance_window(store: TradingStore, session, now: datetime) -> tuple[
     return False, "本交易日每日加速验证已执行"
 
 
+INTERNAL_DEGRADED_STATUSES = {"DEGRADED", "ERROR"}
+
+
+def internal_degraded_since(heartbeat: dict | None, started_at: str) -> bool:
+    """任务内部在本次执行期间写过 DEGRADED/ERROR → True。
+
+    缺陷背景（2026-10-26）：`run_task` 成功路径无条件把心跳写成 HEALTHY，
+    把任务内部刚写的 DEGRADED 覆盖成「最近一次执行成功」——
+    `option_history` 当日 25 条降级因此在库里显示为 HEALTHY。
+    时间戳都是 `store.now()` 的 UTC isoformat；无法解析时宁可保留内部状态。
+    """
+    if not heartbeat:
+        return False
+    if str(heartbeat.get("status") or "").upper() not in INTERNAL_DEGRADED_STATUSES:
+        return False
+    updated = heartbeat.get("updated_at")
+    if not updated:
+        return False
+    try:
+        updated_dt = datetime.fromisoformat(str(updated))
+        started_dt = datetime.fromisoformat(str(started_at))
+    except ValueError:
+        return True
+    if updated_dt.tzinfo is None:
+        updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+    if started_dt.tzinfo is None:
+        started_dt = started_dt.replace(tzinfo=timezone.utc)
+    return updated_dt >= started_dt
+
+
 def run_task(
     store: TradingStore, alerts: AlertManager, strategy_id: str, callback,
     timeout_seconds: float | None = None,
@@ -586,10 +616,17 @@ def run_task(
     timeout = float(timeout_seconds or TASK_TIMEOUTS.get(strategy_id, 120))
     run_id = store.start_task_run(strategy_id, timeout, os.getpid())
     started = time.monotonic()
+    run_started_at = store.now()
     store.heartbeat(strategy_id, "RUNNING", "正在执行", os.getpid())
     try:
         callback()
         duration = time.monotonic() - started
+        internal = store.heartbeat_status(strategy_id)
+        if internal_degraded_since(internal, run_started_at):
+            message = str(internal.get("message") or "任务内部报告降级")
+            store.finish_task_run(run_id, "DEGRADED", duration, message)
+            # 不覆盖内部状态、不重置失败计数、不发送「已恢复」：内部降级必须保持可见。
+            return True
         store.set_setting(_sched_write_key(f"task_failure_count:{strategy_id}"), "0")
         store.set_setting(_sched_write_key(f"task_backoff_until:{strategy_id}"), "")
         if strategy_id in BROKER_CRITICAL_TASKS:

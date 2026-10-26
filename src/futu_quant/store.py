@@ -1762,6 +1762,18 @@ class TradingStore:
                 (strategy_id, status, message, pid, self.now()),
             )
 
+    def heartbeat_status(self, strategy_id: str) -> dict | None:
+        """Read one heartbeat row (None when the task never wrote one).
+
+        任务包装器用它判断「任务内部是否已经写过 DEGRADED/ERROR」，
+        避免成功路径把内部降级状态覆盖成 HEALTHY（静默降级缺陷族，2026-10-26）。
+        """
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM strategy_heartbeats WHERE strategy_id=?", (strategy_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
     def save_broker_snapshot(self, key: str, value) -> None:
         with self.connection() as connection:
             connection.execute(

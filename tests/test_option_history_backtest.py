@@ -77,7 +77,7 @@ def test_collector_records_point_in_time_snapshot(tmp_path, monkeypatch):
             ])
 
     result = collect_option_snapshots(Broker(), store)
-    assert result == {"contracts": 1, "stored": 1, "good": 1, "degraded": 0}
+    assert result == {"contracts": 1, "stored": 1, "good": 1, "degraded": 0, "missing": 0}
     row = store.option_history("US.AAPL260720C300000")[0]
     assert row["source"] == "FUTU_SNAPSHOT_V1"
     assert row["underlying_price"] == 330

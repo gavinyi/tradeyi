@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from typing import Any
 
@@ -25,6 +26,8 @@ from .real_trading import check_real_trade, resolve_real_account_limits
 from .risk_limits import RiskLimitsConfigError, resolve_risk_limits
 from .strategy_pause import is_strategy_entries_paused
 from .execution_mode import strategy_execution_mode_override
+
+logger = logging.getLogger("futu_quant.execution")
 
 
 
@@ -444,15 +447,22 @@ class ExecutionManager:
             if current and current["status"] in {"CREATED", "SUBMITTING", "SUBMITTED"}:
                 self.store.update_intent(intent["id"], "UNKNOWN", broker_order_id=order_id,
                                          error=reason)
-        except Exception:
+        except Exception as exc:
             # The pre-submission SUBMITTING marker is deliberately non-retryable.
-            pass
+            # 但不能静默：UNKNOWN 标记没落库，必须能从日志追。
+            logger.error(
+                "标记 UNKNOWN 失败（intent_id=%s, event=%s）：%s", intent.get("id"), event, exc,
+            )
         try:
             self.store.audit(event, {"intent_id": intent["id"], "broker_order_id": order_id,
                                      "reason": reason}, intent["strategy_id"], actor="service:execution")
             self.alerts.send("ERROR", event, f"{intent['strategy_id']} {intent['symbol']}: {reason}")
-        except Exception:
-            pass
+        except Exception as exc:
+            # 审计/告警本身失败时没有别的落库通道，只能升级到 ERROR 日志（禁止 pass）。
+            logger.error(
+                "审计/告警写入失败（event=%s, intent_id=%s, strategy=%s）：%s",
+                event, intent.get("id"), intent.get("strategy_id"), exc,
+            )
 
     def _snapshot_context(
         self, base: dict[str, Any], symbol: str, underlying: str | None,
@@ -493,8 +503,25 @@ class ExecutionManager:
         frames = [self.broker.orders()]
         try:
             frames.append(self.broker.orders(historical=True))
-        except Exception:
-            pass
+        except Exception as exc:
+            # 历史委托拉不到 → 本轮对账可能「假 MATCHED」，必须可见（禁止 pass）。
+            logger.error("历史委托拉取失败，本轮对账可能不完整：%s", exc)
+            try:
+                now = datetime.now(timezone.utc)
+                last = self.store.get_setting("reconcile_history_orders_error_at")
+                elapsed = (now - datetime.fromisoformat(last)).total_seconds() if last else None
+                if elapsed is None or elapsed >= 600:
+                    self.store.set_setting(
+                        "reconcile_history_orders_error_at", now.isoformat(),
+                    )
+                    self.store.audit(
+                        "RECONCILIATION_HISTORY_ORDERS_FAILED",
+                        {"reason": str(exc)},
+                        "order_reconciliation",
+                        actor="service:execution",
+                    )
+            except Exception as audit_exc:  # 审计通道也失败时至少留日志
+                logger.error("写「历史委托拉取失败」审计出错：%s", audit_exc)
         updated = 0
         seen_order_ids: set[str] = set()
         for frame in frames:

@@ -50,10 +50,17 @@ def collect_option_snapshots(broker, store) -> dict:
     indexed = {str(row["code"]): row for _, row in frame.iterrows()}
     fetched = datetime.now(timezone.utc).isoformat()
     records: list[dict] = []
+    missing: list[dict] = []
     for code, contract in parsed.items():
         row = indexed.get(code)
         underlying_row = indexed.get(contract.underlying) if contract else None
         if row is None or contract is None:
+            # 缺合约不再静默跳过（2026-10-26 静默降级清零）：
+            # 记入 missing，落审计 + 心跳降级，禁止只留 continue。
+            missing.append({
+                "code": code,
+                "reason": "contract_unparsable" if contract is None else "snapshot_absent",
+            })
             continue
         bid = float(row.get("bid_price", 0) or 0)
         ask = float(row.get("ask_price", 0) or 0)
@@ -82,13 +89,29 @@ def collect_option_snapshots(broker, store) -> dict:
         })
     store.import_option_history(records)
     good = sum(record["quality_status"] == "GOOD" for record in records)
-    store.heartbeat(
-        "option_history", "HEALTHY" if good == len(records) else "DEGRADED",
-        f"采集 {len(records)} 个合约；可用 {good}，降级 {len(records) - good}",
-    )
+    if missing:
+        reasons: dict[str, int] = {}
+        for item in missing:
+            reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
+        store.audit(
+            "OPTION_SNAPSHOT_MISSING",
+            {
+                "missing_count": len(missing),
+                "expected_count": len(parsed),
+                "contracts": [item["code"] for item in missing][:20],
+                "reasons": reasons,
+            },
+            "option_history",
+            actor="service:option_history",
+        )
+    healthy = good == len(records) and not missing
+    message = f"采集 {len(records)} 个合约；可用 {good}，降级 {len(records) - good}"
+    if missing:
+        message += f"；缺失 {len(missing)}（已记 OPTION_SNAPSHOT_MISSING）"
+    store.heartbeat("option_history", "HEALTHY" if healthy else "DEGRADED", message)
     return {
         "contracts": len(contracts), "stored": len(records),
-        "good": good, "degraded": len(records) - good,
+        "good": good, "degraded": len(records) - good, "missing": len(missing),
     }
 
 

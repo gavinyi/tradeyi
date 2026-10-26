@@ -84,8 +84,10 @@ def configure_futu_process_log(role: str) -> Path:
     return target
 
 
-_RETRYABLE_READ_TOKENS = (
-    "disconn", "timeout", "timed out", "etimedout", "callclose",
+logger = logging.getLogger("futu_quant.broker")
+
+
+_RETRYABLE_READ_TOKENS = (    "disconn", "timeout", "timed out", "etimedout", "callclose",
     "connection reset", "reset by peer", "broken pipe", "wait_reconnect",
     "network error", "连接失败", "连接超时", "已断开", "连接被断开", "链路断开",
     "服务端关闭", "socket closed", "远程主机", "unreachable",
@@ -583,11 +585,24 @@ class FutuPaperBroker:
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     @_read_with_reconnect("quote")
-    def snapshots_tolerant(self, symbols: list[str]) -> pd.DataFrame:
-        """Fetch a broad universe while isolating unsupported OTC/bad symbols."""
+    def snapshots_tolerant(
+        self, symbols: list[str], *, dropped_out: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Fetch a broad universe while isolating unsupported OTC/bad symbols.
+
+        被丢弃的 symbol 不再静默（2026-10-26 静默降级清零）：逐个 `logger.warning`，
+        并通过 `dropped_out` 回传给调用方记事件；行为本身（跳过坏 symbol）不变。
+        """
         if not symbols or any(not symbol.startswith("US.") for symbol in symbols):
             raise BrokerError("Snapshots require US.* symbols")
         frames: list[pd.DataFrame] = []
+
+        def _drop(symbols_: list[str], detail) -> None:
+            for symbol in symbols_:
+                logger.warning("snapshots_tolerant 丢弃标的 %s：%s", symbol, detail)
+                if dropped_out is not None:
+                    dropped_out.append(symbol)
+
         with self.quote_context() as ctx:
             def fetch_batch(batch: list[str]) -> None:
                 if not batch:
@@ -605,6 +620,7 @@ class FutuPaperBroker:
                 if not symbol_error:
                     raise BrokerError(f"snapshots failed: {data}")
                 if len(batch) == 1:
+                    _drop(batch, data)
                     return
                 middle = len(batch) // 2
                 fetch_batch(batch[:middle])
