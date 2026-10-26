@@ -42,7 +42,10 @@ DEFAULTS: dict[str, Any] = {
     "soft_spread_pct": 10.0,          # 模拟盘默认；实盘由租户配置收紧到 5.0
     "soft_volume_min": 0,
     "entry_max_spread_pct": 12.0,     # = **真实入场门禁**（campaign `max_spread_pct` 的 VOLATILITY 默认值）
-    "entry_max_stale_seconds": 300,   # 降级上限（P0-5 §5.1，原 900）
+    "entry_max_stale_seconds": 600,   # 兜底上限（P0-5 §5.1 原 900 → 300 → 600）
+    # ↑ 2026-10-26：`update_time` 是成交驱动，深度 ITM 十几分钟不成交即冻结；
+    #   入场主判据已改为盘口活性（`data_quality.option_quote_activity`），
+    #   这里只是「既没成交、相邻快照也没动」时的兜底窗，故调回 600。
     "hard_oi_min": 500,               # 既有字面量（earnings_gamma 调用点）
     "hard_spread_pct": 12.0,          # 既有字面量
     "hard_moneyness_max": 10.0,       # 既有字面量

@@ -719,6 +719,7 @@ class TradingStore:
                     volume REAL,open_interest REAL,source TEXT NOT NULL DEFAULT 'UNKNOWN',
                     fetched_at TEXT,quality_status TEXT NOT NULL DEFAULT 'UNKNOWN',
                     quality_reason TEXT NOT NULL DEFAULT '',
+                    book_active_seconds REAL,
                     PRIMARY KEY(code,time_key)
                 );
                 CREATE TABLE IF NOT EXISTS runtime_config (
@@ -2527,19 +2528,22 @@ class TradingStore:
                 item.get("source", "IMPORT"), item.get("fetched_at", self.now()),
                 item.get("quality_status", "UNKNOWN"),
                 item.get("quality_reason", ""),
+                item.get("book_active_seconds"),
             ))
         with self.connection() as connection:
             connection.executemany(
                 """INSERT INTO option_history
                 (code,time_key,underlying,underlying_price,bid,ask,iv,delta,gamma,theta,
-                volume,vega,rho,open_interest,source,fetched_at,quality_status,quality_reason)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(code,time_key) DO UPDATE SET
+                volume,vega,rho,open_interest,source,fetched_at,quality_status,quality_reason,
+                book_active_seconds)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(code,time_key) DO UPDATE SET
                 underlying=excluded.underlying,underlying_price=excluded.underlying_price,
                 bid=excluded.bid,ask=excluded.ask,iv=excluded.iv,delta=excluded.delta,
                 gamma=excluded.gamma,theta=excluded.theta,vega=excluded.vega,rho=excluded.rho,
                 volume=excluded.volume,open_interest=excluded.open_interest,
                 source=excluded.source,fetched_at=excluded.fetched_at,
-                quality_status=excluded.quality_status,quality_reason=excluded.quality_reason""",
+                quality_status=excluded.quality_status,quality_reason=excluded.quality_reason,
+                book_active_seconds=excluded.book_active_seconds""",
                 rows,
             )
         return len(rows)

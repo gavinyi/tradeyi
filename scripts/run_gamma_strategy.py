@@ -49,8 +49,9 @@ from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.volatility_orphans import volatility_write_state_key
 from futu_quant.campaign_cleanup import campaign_expired
 from futu_quant.data_quality import (
-    option_book_status, option_quote_freshness, quote_freshness,
+    option_book_status, option_quote_activity, quote_freshness,
 )
+from futu_quant.quote_liveness import option_book_moved
 from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.option_lifecycle import parse_option_code
 from futu_quant.store import TradingStore
@@ -89,27 +90,52 @@ def combo_position_mark(store, broker, combo_id: str) -> tuple[int, float, float
 def refreshed_trade_quotes(
     broker: FutuPaperBroker, code: str, underlying: str, now: datetime,
     maximum_spread_pct: float, retries: int = 2, wait_seconds: float = 1.5,
-    maximum_stale_seconds: int = 300,
+    maximum_stale_seconds: int = 600,
 ) -> tuple[pd.Series, pd.Series, dict]:
+    """取入场前的期权 / 正股快照，**用盘口活性判新鲜**（2026-10-26 修）。
+
+    - `update_time` 是成交驱动的，深度 ITM 十几分钟不成交就冻结，但 bid/ask 在动；
+      旧实现直接拿它当盘口年龄，导致 91 条误拦里的 82 条（`OPTION_MARKET_DATA_BLOCKED`）。
+    - 每次 attempt 用 `<2s` 间隔的**两次快照**比较 bid/ask/last：有变化即视为盘口活跃；
+      600s 只做兜底（深度 ITM 无成交、且相邻快照也没动时靠它降级放行）。
+    - **每次 attempt 重取时钟**：旧实现三次共用同一个 `now`，实测三次 age 完全相同
+      （682.40366 ×3），重试实际是空转。
+    """
     attempts: list[dict] = []
     last_option = None
     last_owner = None
+    previous_option = None
     for attempt in range(retries + 1):
+        if attempt:
+            clock.sleep(wait_seconds)  # 两次快照间隔 ≤2s（默认 1.5s）
+        attempt_now = datetime.now(NY)  # 每次重取时钟，修复重试空转
         quote = broker.snapshots([code, underlying])
         option = quote[quote["code"] == code].iloc[0]
         owner = quote[quote["code"] == underlying].iloc[0]
-        option_fresh, option_reason, option_age, option_degraded = option_quote_freshness(
-            option, now, fresh_seconds=180, maximum_seconds=maximum_stale_seconds,
+        book_moved = option_book_moved(previous_option, option)
+        option_fresh, option_reason, option_age, option_degraded = option_quote_activity(
+            option, attempt_now, book_moved=book_moved,
+            fresh_seconds=180, maximum_seconds=maximum_stale_seconds,
             maximum_spread_pct=maximum_spread_pct,
         )
-        owner_fresh, owner_reason, owner_age = quote_freshness(owner, now)
+        owner_fresh, owner_reason, owner_age = quote_freshness(owner, attempt_now)
         book_ok, book_reason, spread_pct = option_book_status(option, maximum_spread_pct)
+        previous_bid, previous_ask = (
+            (float(previous_option.get("bid_price") or 0),
+             float(previous_option.get("ask_price") or 0))
+            if previous_option is not None else (None, None)
+        )
         attempts.append({
             "attempt": attempt + 1,
             "option_fresh": option_fresh,
             "option_reason": option_reason,
             "option_age_seconds": option_age,
             "option_degraded": option_degraded,
+            "book_moved": book_moved,
+            "bid_price": float(option.get("bid_price") or 0),
+            "ask_price": float(option.get("ask_price") or 0),
+            "previous_bid_price": previous_bid,
+            "previous_ask_price": previous_ask,
             "underlying_fresh": owner_fresh,
             "underlying_reason": owner_reason,
             "underlying_age_seconds": owner_age,
@@ -118,10 +144,9 @@ def refreshed_trade_quotes(
             "spread_pct": spread_pct,
         })
         last_option, last_owner = option, owner
+        previous_option = option
         if option_fresh and owner_fresh and book_ok:
             break
-        if attempt < retries:
-            clock.sleep(wait_seconds)
     latest = attempts[-1]
     latest["attempts"] = attempts
     return last_option, last_owner, latest

@@ -1,0 +1,242 @@
+"""批 B：期权行情「盘口活性」判据的守卫（2026-10-26）。
+
+根因：Futu 期权快照 `update_time` 是**成交驱动**的，深度 ITM 十几分钟不成交就冻结，
+但 bid/ask 实时在动 —— 旧判据把这类合约全判「行情过期」，当日 91 条拦截里 82 条如此。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import sys
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+
+from futu_quant.data_quality import option_quote_activity, option_quote_freshness
+from futu_quant.option_history import collect_option_snapshots
+from futu_quant.quote_liveness import BookActivityTracker, book_signature, option_book_moved
+from futu_quant.store import TradingStore
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+NY = ZoneInfo("America/New_York")
+
+
+def _row(bid: float, ask: float, last: float = 0.0) -> dict:
+    return {"bid_price": bid, "ask_price": ask, "last_price": last}
+
+
+def _quote_at(seconds_ago: int) -> str:
+    stamp = datetime.now(NY) - timedelta(seconds=seconds_ago)
+    return stamp.strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ---------------------------------------------------------------------------
+# 1. 盘口活性工具
+# ---------------------------------------------------------------------------
+
+
+def test_book_signature_accepts_both_column_names():
+    assert book_signature({"bid_price": 1.5, "ask_price": 1.7, "last_price": 1.6}) == (1.5, 1.7, 1.6)
+    assert book_signature({"bid": 2, "ask": 3}) == (2.0, 3.0, 0.0)
+    assert book_signature(None) == (0.0, 0.0, 0.0)
+
+
+def test_option_book_moved_only_counts_real_changes():
+    assert option_book_moved(_row(1.0, 1.2), _row(1.0, 1.2)) is False
+    assert option_book_moved(_row(1.0, 1.2), _row(1.1, 1.2)) is True
+    assert option_book_moved(_row(1.0, 1.2), _row(1.0, 1.3)) is True
+    # 没有盘口不能当成「在动」
+    assert option_book_moved(_row(1.0, 1.2), _row(0.0, 0.0)) is False
+    assert option_book_moved(None, _row(1.0, 1.2)) is False
+
+
+def test_book_activity_tracker_reports_age_since_last_change():
+    tracker = BookActivityTracker()
+    t0 = datetime(2026, 10, 26, 14, 0, tzinfo=timezone.utc)
+    assert tracker.observe("US.X", _row(1.0, 1.2), t0) is None  # 首次 = 未知
+    assert tracker.observe("US.X", _row(1.0, 1.2), t0 + timedelta(seconds=40)) == 40.0
+    assert tracker.observe("US.X", _row(1.1, 1.2), t0 + timedelta(seconds=45)) == 0.0
+    assert tracker.observe("US.X", _row(1.1, 1.2), t0 + timedelta(seconds=70)) == 25.0
+    # 没有盘口不更新状态
+    assert tracker.observe("US.X", _row(0.0, 0.0), t0 + timedelta(seconds=90)) is None
+
+
+# ---------------------------------------------------------------------------
+# 2. 新判据：成交停滞但盘口活跃 → 放行
+# ---------------------------------------------------------------------------
+
+
+def test_quote_activity_keeps_normal_fresh_path():
+    row = {"bid_price": 1.0, "ask_price": 1.2, "update_time": _quote_at(2)}
+    fresh, reason, age, degraded = option_quote_activity(row, book_moved=False)
+    assert fresh and not degraded and age < 60
+    assert "行情新鲜" in reason
+
+
+def test_quote_activity_passes_stale_trade_when_book_moves():
+    """复现 AVGO：成交冻结 11.5 分钟，但相邻快照 bid 在动 → 放行。"""
+    row = {"bid_price": 9.80, "ask_price": 9.95, "update_time": _quote_at(690)}
+    fresh, reason, age, degraded = option_quote_activity(row, book_moved=True)
+    assert fresh is True, "盘口在动仍被判过期（本次修复的核心用例）"
+    assert degraded is False
+    assert age >= 600 and "盘口活跃" in reason
+
+
+def test_quote_activity_uses_book_age_for_shadow_matching():
+    row = {"bid_price": 1.0, "ask_price": 1.2, "update_time": _quote_at(2000)}
+    fresh, reason, _, _ = option_quote_activity(
+        row, book_active_seconds=120.0, maximum_seconds=900,
+    )
+    assert fresh is True
+    assert "盘口" in reason and "120" in reason
+
+
+def test_quote_activity_600s_fallback_only_passes_usable_book():
+    row = {"bid_price": 1.0, "ask_price": 1.2, "update_time": _quote_at(500)}
+    fresh, _, _, degraded = option_quote_activity(row, book_moved=False)
+    assert fresh is True and degraded is True, "500s 应走 600s 兜底降级"
+
+    stale = {"bid_price": 9.80, "ask_price": 9.95, "update_time": _quote_at(7300)}
+    fresh, reason, age, degraded = option_quote_activity(stale, book_moved=False)
+    assert fresh is False and degraded is False
+    assert age > 600 and "盘口变化年龄 未知" in reason
+
+
+def test_quote_activity_blocked_when_previous_judgement_still_blocks_wide_book():
+    stale_wide = {"bid_price": 1.0, "ask_price": 2.0, "update_time": _quote_at(5000)}
+    fresh, _, _, degraded = option_quote_activity(stale_wide, book_moved=False)
+    assert fresh is False and degraded is False
+
+
+# ---------------------------------------------------------------------------
+# 3. 入场取价：两次快照 + 每次重取时钟
+# ---------------------------------------------------------------------------
+
+
+def _patch_gamma_module(monkeypatch):
+    import run_gamma_strategy as gamma
+
+    monkeypatch.setattr(gamma.clock, "sleep", lambda *_a, **_k: None)
+    return gamma
+
+
+class _SequenceBroker:
+    """每次 snapshots() 返回下一组盘口（模拟盘口在动）。"""
+
+    def __init__(self, option_quotes, underlying_quotes=None):
+        self._option_quotes = list(option_quotes)
+        self._underlying_quotes = list(underlying_quotes or [330.0] * len(option_quotes))
+
+    def snapshots(self, symbols):
+        option = self._option_quotes.pop(0) if len(self._option_quotes) > 1 else self._option_quotes[0]
+        underlying = (
+            self._underlying_quotes.pop(0)
+            if len(self._underlying_quotes) > 1 else self._underlying_quotes[0]
+        )
+        return pd.DataFrame([
+            {"code": "US.AMD261030P520000", "bid_price": option[0], "ask_price": option[1],
+             "update_time": option[2]},
+            {"code": "US.AMD", "last_price": underlying,
+             "update_time": _quote_at(1)},
+        ])
+
+
+def test_refreshed_trade_quotes_uses_book_movement(monkeypatch):
+    gamma = _patch_gamma_module(monkeypatch)
+    stale_trade_time = _quote_at(700)  # 成交冻结，但盘口在动
+    broker = _SequenceBroker([
+        (9.75, 9.95, stale_trade_time),
+        (9.80, 9.95, stale_trade_time),
+    ])
+    _, _, check = gamma.refreshed_trade_quotes(
+        broker, "US.AMD261030P520000", "US.AMD", datetime.now(NY), 12.0,
+        retries=2, wait_seconds=0, maximum_stale_seconds=600,
+    )
+    assert check["option_fresh"] is True
+    assert check["book_moved"] is True
+    assert check["attempts"][-1]["bid_price"] == 9.80
+    assert check["attempts"][-1]["previous_bid_price"] == 9.75
+
+
+def test_refreshed_trade_quotes_rejects_stale_and_frozen_book(monkeypatch):
+    gamma = _patch_gamma_module(monkeypatch)
+    frozen = _quote_at(700)
+    broker = _SequenceBroker([(9.75, 9.95, frozen)] * 3)
+    _, _, check = gamma.refreshed_trade_quotes(
+        broker, "US.AMD261030P520000", "US.AMD", datetime.now(NY), 12.0,
+        retries=2, wait_seconds=0, maximum_stale_seconds=600,
+    )
+    assert check["option_fresh"] is False, "既无成交、盘口也没动，应保持拒绝"
+    assert all(attempt["book_moved"] is False for attempt in check["attempts"])
+
+
+def test_refreshed_trade_quotes_reads_clock_per_attempt(monkeypatch):
+    """旧实现三次共用同一个 now → 三次年龄完全相同（实测 682.40366×3）。"""
+    gamma = _patch_gamma_module(monkeypatch)
+    frozen = _quote_at(700)
+    broker = _SequenceBroker([(9.75, 9.95, frozen)] * 3)
+    _, _, check = gamma.refreshed_trade_quotes(
+        broker, "US.AMD261030P520000", "US.AMD", datetime.now(NY), 12.0,
+        retries=2, wait_seconds=0, maximum_stale_seconds=600,
+    )
+    ages = [attempt["option_age_seconds"] for attempt in check["attempts"]]
+    assert len(set(ages)) == 3, f"三次 attempt 年龄完全相同 = 重试空转：{ages}"
+    assert ages == sorted(ages)
+
+
+# ---------------------------------------------------------------------------
+# 4. 采集侧：只加观测字段，quality_status 口径不变
+# ---------------------------------------------------------------------------
+
+
+def test_collection_writes_book_active_seconds_without_changing_quality(tmp_path, monkeypatch):
+    store = TradingStore(tmp_path / "trading.db")
+    frozen_trade = _quote_at(700)
+
+    class Broker:
+        @staticmethod
+        def positions():
+            return pd.DataFrame()
+
+        @staticmethod
+        def snapshots(symbols):
+            return pd.DataFrame([
+                {"code": "US.AAPL260720C300000", "bid_price": 30, "ask_price": 30.5,
+                 "option_implied_volatility": 0.4, "option_delta": 0.8,
+                 "option_open_interest": 100, "volume": 10, "update_time": frozen_trade},
+                {"code": "US.AAPL", "last_price": 330},
+            ])
+
+    monkeypatch.setattr(
+        "futu_quant.option_history.load_gamma_campaigns",
+        lambda: [{"code": "US.AAPL260720C300000"}],
+    )
+    monkeypatch.setattr(
+        "futu_quant.option_history.load_all_volatility_campaigns", lambda: []
+    )
+    monkeypatch.setattr(
+        "futu_quant.option_history._BOOK_ACTIVITY", BookActivityTracker(),
+    )
+
+    first = collect_option_snapshots(Broker(), store)
+    assert first["stored"] == 1
+    row = store.option_history("US.AAPL260720C300000")[0]
+    # quality_status 口径不变：成交时间冻结 → 仍按旧判据 DEGRADED
+    assert row["quality_status"] == "DEGRADED"
+    assert row["book_active_seconds"] is None, "首次观测盘口年龄未知，应为 NULL"
+
+    # 第二次采集：盘口完全没变 → 记录盘口年龄
+    collect_option_snapshots(Broker(), store)
+    rows = store.option_history("US.AAPL260720C300000")
+    assert rows[0]["quality_status"] == "DEGRADED", "quality_status 被观测字段影响"
+    assert rows[0]["book_active_seconds"] is not None
+    assert rows[0]["book_active_seconds"] >= 0
+
+
+def test_option_quote_freshness_unchanged_for_collection_semantics():
+    """采集侧仍走旧函数：同一行在 300s 内降级通过、超 300s 拒绝（口径一字未改）。"""
+    row = {"bid_price": 1.0, "ask_price": 1.2, "update_time": _quote_at(500)}
+    fresh, _, _, degraded = option_quote_freshness(row, maximum_seconds=300)
+    assert fresh is False and degraded is False

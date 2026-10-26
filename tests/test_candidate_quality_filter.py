@@ -39,6 +39,16 @@ from futu_quant.earnings_gamma import screen_gamma_contracts
 from futu_quant.store import TradingStore
 
 
+def _fixture_contract() -> tuple[str, str]:
+    """测试用合约的到期日必须落在 campaign 的 [maturity_min_dte, maturity_max_dte] 内。
+
+    写死 `2026-10-30` 会在日期推进后掉到 4 DTE < min 5，用例就因「未满最小到期天数」
+    提前返回而恒红（2026-10-26 实测），属于夹具缺陷而非实现缺陷。
+    """
+    expiry = datetime.now(NEW_YORK).date() + timedelta(days=10)
+    return expiry.isoformat(), f"US.META{expiry:%y%m%d}P660000"
+
+
 class FakeStore:
     def __init__(self, settings: dict | None = None):
         self.settings = dict(settings or {})
@@ -426,7 +436,7 @@ def test_filter_to_empty_returns_original_campaign(monkeypatch):
     from futu_quant import volatility_roll as vr
 
     campaign = {
-        "underlying": "US.META", "code": "US.META261030P660000",
+        "underlying": "US.META", "code": _fixture_contract()[1],
         "tenant_id": "futu_real_master", "maturity_min_dte": 5, "maturity_max_dte": 21,
     }
     quote_row = {"code": "US.META", "last_price": 100.0,
@@ -440,11 +450,11 @@ def test_filter_to_empty_returns_original_campaign(monkeypatch):
             return pd.DataFrame({"close": [1.0] * 30})
 
         def option_expirations(self, underlying):
-            return pd.DataFrame([{"strike_time": "2026-10-30"}])
+            return pd.DataFrame([{"strike_time": _fixture_contract()[0]}])
 
         def option_chain(self, underlying, expiry):
             return pd.DataFrame([{
-                "code": "US.META261030P660000", "option_type": "PUT",
+                "code": _fixture_contract()[1], "option_type": "PUT",
                 "strike_price": 66.0, "option_open_interest": 900, "suspension": False,
             }])
 
@@ -514,16 +524,16 @@ def test_exclusion_record_failure_is_visible_and_does_not_block_selection(monkey
             return pd.DataFrame({"close": [1.0] * 30})
 
         def option_expirations(self, underlying):
-            return pd.DataFrame([{"strike_time": "2026-10-30"}])
+            return pd.DataFrame([{"strike_time": _fixture_contract()[0]}])
 
         def option_chain(self, underlying, expiry):
             return pd.DataFrame([{
-                "code": "US.META261030P660000", "option_type": "PUT",
+                "code": _fixture_contract()[1], "option_type": "PUT",
                 "strike_price": 66.0, "option_open_interest": 900, "suspension": False,
             }])
 
     campaign = {
-        "underlying": "US.META", "code": "US.META261030P660000",
+        "underlying": "US.META", "code": _fixture_contract()[1],
         "tenant_id": "futu_real_master", "maturity_min_dte": 5, "maturity_max_dte": 21,
     }
 

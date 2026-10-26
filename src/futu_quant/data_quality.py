@@ -85,6 +85,60 @@ def option_book_status(row, maximum_spread_pct: float = 20.0) -> tuple[bool, str
     ), spread_pct
 
 
+def option_quote_activity(
+    row, now: datetime | None = None, *, book_moved: bool = False,
+    book_active_seconds: float | None = None,
+    fresh_seconds: int = 180, maximum_seconds: int = 600,
+    maximum_spread_pct: float = 20.0,
+) -> tuple[bool, str, float, bool]:
+    """入场 / 影子撮合专用：**盘口活性为主判据**，成交时间只作下限。
+
+    为什么不能用 `option_quote_freshness`：Futu 期权快照的 `update_time` 是成交驱动的，
+    深度 ITM 合约十几分钟不成交就冻结，但 bid/ask 实时在动（2026-10-26 实测：
+    AVGO 冻结 11.5 分钟期间 bid 从 10.85 跌到 9.80），旧判据会把这些单全部误拦。
+
+    判定顺序：
+    1. 成交时间 ≤ ``fresh_seconds`` → 新鲜（与旧口径一致，最省事）；
+    2. 两次快照间盘口有变化（``book_moved``）→ 新鲜，理由写明「成交停滞但盘口活跃」；
+    3. ``book_active_seconds``（距上次观测到盘口变化的秒数）≤ ``maximum_seconds`` → 新鲜；
+    4. 成交时间 ≤ ``maximum_seconds`` 且双边盘口可用 → **降级通过**（兜住深度 ITM）；
+    5. 其余不通过。
+
+    返回 ``(fresh, reason, age, degraded)``，``age`` 仍是**成交时间**年龄，
+    ``degraded`` 语义与旧函数一致（降级通过时为 True）。
+    """
+    _, _, age = quote_freshness(row, now, maximum_seconds)
+    if age <= fresh_seconds:
+        return True, f"行情新鲜，延迟 {age:.0f} 秒", age, False
+    if book_moved:
+        return True, (
+            f"成交停滞 {age:.0f} 秒，但盘口在两次快照间有变化（盘口活跃，放行）"
+        ), age, False
+    if book_active_seconds is not None and book_active_seconds <= maximum_seconds:
+        return True, (
+            f"成交停滞 {age:.0f} 秒，但盘口 {book_active_seconds:.0f} 秒内有变化"
+            f"（≤{maximum_seconds} 秒，盘口活跃，放行）"
+        ), age, False
+    bid = float(row.get("bid_price") or 0)
+    ask = float(row.get("ask_price") or 0)
+    middle = (bid + ask) / 2
+    spread_pct = (ask - bid) / middle * 100 if middle > 0 and ask >= bid else float("inf")
+    book_usable = bid > 0 and ask > 0 and ask >= bid and spread_pct <= maximum_spread_pct
+    if age <= maximum_seconds and book_usable:
+        return True, (
+            f"成交不活跃，行情延迟 {age:.0f} 秒；双边盘口仍可用，"
+            f"价差 {spread_pct:.1f}%（允许≤{maximum_spread_pct:.1f}%），降级通过"
+        ), age, True
+    book_age_text = (
+        "未知" if book_active_seconds is None else f"{book_active_seconds:.0f} 秒"
+    )
+    return False, (
+        f"行情已过期，成交延迟 {age:.0f} 秒，超过 {maximum_seconds} 秒；"
+        f"盘口变化年龄 {book_age_text}；"
+        f"买一 {bid:.2f}、卖一 {ask:.2f}、价差 {spread_pct:.1f}%"
+    ), age, False
+
+
 def option_quote_freshness_for_exit(
     row,
     now: datetime | None = None,

@@ -8,12 +8,17 @@ import re
 from zoneinfo import ZoneInfo
 
 from .fee_model import estimate_fees
-from .data_quality import option_quote_freshness
+from .data_quality import option_quote_activity
 from .market_calendar import USMarketCalendar
+from .quote_liveness import BookActivityTracker
 
 
 OPEN_STATUSES = {"SHADOW", "SHADOW_PART"}
 OPTION_PATTERN = re.compile(r"^US\..+\d{6}[CP]\d+$")
+
+# 影子撮合每个周期都看同一批合约，用「距上次盘口变化秒数」当盘口年龄
+# （成交时间在期权上是成交驱动的，不能当盘口新鲜度；2026-10-26）。
+_BOOK_ACTIVITY = BookActivityTracker()
 
 
 def _shadow_reprice_target(
@@ -62,8 +67,10 @@ def match_shadow_orders(store, broker, now: datetime | None = None) -> int:
                 if not USMarketCalendar().session(ny_now).regular_open(ny_now):
                     store.update_intent(intent["id"], "SHADOW_EXPIRED", error="虚拟订单超时未成交")
                     continue
-                fresh, _, _, _ = option_quote_freshness(
-                    quote, ny_now, fresh_seconds=180, maximum_seconds=900,
+                fresh, _, _, _ = option_quote_activity(
+                    quote, ny_now,
+                    book_active_seconds=_BOOK_ACTIVITY.observe(intent["symbol"], quote, ny_now),
+                    fresh_seconds=180, maximum_seconds=900,
                 )
                 if not fresh:
                     store.update_intent(intent["id"], "SHADOW_EXPIRED", error="虚拟订单超时未成交")
@@ -114,8 +121,10 @@ def match_shadow_orders(store, broker, now: datetime | None = None) -> int:
                 ny_now = now.astimezone(ZoneInfo("America/New_York"))
                 if not USMarketCalendar().session(ny_now).regular_open(ny_now):
                     continue
-                fresh, _, _, _ = option_quote_freshness(
-                    quote, ny_now, fresh_seconds=180, maximum_seconds=900,
+                fresh, _, _, _ = option_quote_activity(
+                    quote, ny_now,
+                    book_active_seconds=_BOOK_ACTIVITY.observe(intent["symbol"], quote, ny_now),
+                    fresh_seconds=180, maximum_seconds=900,
                 )
                 if not fresh:
                     continue

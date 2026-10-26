@@ -8,6 +8,12 @@ import pandas as pd
 from .config import load_all_volatility_campaigns, load_gamma_campaigns
 from .data_quality import option_quote_freshness
 from .option_lifecycle import parse_option_code
+from .quote_liveness import BookActivityTracker
+
+
+# 采集进程内复用：同一合约每轮只观测一次盘口，用「距上次变化秒数」当 `book_active_seconds`。
+# ⚠️ 该字段**只做观测**，不参与 `quality_status`（GOOD/DEGRADED 决定 ML 训练样本，不可动）。
+_BOOK_ACTIVITY = BookActivityTracker()
 
 
 def configured_option_contracts(broker=None) -> tuple[str, ...]:
@@ -72,6 +78,9 @@ def collect_option_snapshots(broker, store) -> dict:
             f"盘口或 IV 无效：买一 {bid:.3f}、卖一 {ask:.3f}、IV {iv:.4f}"
         )
         raw_time = row.get("update_time") or row.get("time_key") or fetched
+        book_active_seconds = _BOOK_ACTIVITY.observe(
+            code, row, datetime.now(timezone.utc),
+        )
         records.append({
             "code": code, "time_key": str(raw_time), "underlying": contract.underlying,
             "underlying_price": float(underlying_row.get("last_price", 0) or 0)
@@ -86,6 +95,7 @@ def collect_option_snapshots(broker, store) -> dict:
             "open_interest": float(row.get("option_open_interest", 0) or 0),
             "source": "FUTU_SNAPSHOT_V1", "fetched_at": fetched,
             "quality_status": quality, "quality_reason": quality_reason,
+            "book_active_seconds": book_active_seconds,
         })
     store.import_option_history(records)
     good = sum(record["quality_status"] == "GOOD" for record in records)

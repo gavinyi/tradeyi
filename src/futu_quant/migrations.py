@@ -237,6 +237,11 @@ MIGRATIONS = (
         UPDATE fill_ledger SET fee_unavailable_reason='legacy_placeholder_1usd'
         WHERE ABS(fee_total-1.0) < 1e-9 AND fee_unavailable_reason IS NULL;
     """),
+    # 期权「盘口年龄」：**观测专用**，不参与 quality_status（训练样本口径不可动）。
+    # 历史行为 NULL（真值不可知，不回填）。
+    Migration(20, "option_history_book_active_seconds", """
+        ALTER TABLE option_history ADD COLUMN book_active_seconds REAL;
+    """),
 )
 
 
