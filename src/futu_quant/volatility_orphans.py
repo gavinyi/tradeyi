@@ -355,6 +355,32 @@ def is_signal_state_key(key: str, prefix: str = "volatility_long_gamma:") -> boo
     return underlying is not None
 
 
+def is_legacy_signal_state_key(key: str, prefix: str = "volatility_long_gamma:") -> bool:
+    """是不是**历史无租户段**的信号状态键：`{strategy}:signal:{UNDERLYING}`。
+
+    与 `parse_signal_state_key` 同源判定（租户段为空才算历史形态），不另写一套正则。
+    这种形态只用于迁移与清理，**写侧绝不能落库**（A16，2026-10-27）：
+    另一进程周期开始时 load 到的内存副本可能仍含旧键，整份 state 回写会把它
+    复活 → 迁移 `pop` 白做、规范键与旧键两份并存。
+    """
+    tenant_id, underlying = parse_signal_state_key(key, prefix)
+    return underlying is not None and not tenant_id
+
+
+def without_legacy_signal_state_keys(
+    state: dict, prefix: str = "volatility_long_gamma:",
+) -> dict:
+    """返回剔除历史无租户信号键的**副本** —— 落盘前必须过这一层（A16）。
+
+    返回副本而不是原地删：内存里的旧键还要留给 `volatility_signal_state()`
+    做「只搬不复制」迁移，删掉就丢失了一次计时。
+    """
+    return {
+        key: value for key, value in (state or {}).items()
+        if not is_legacy_signal_state_key(key, prefix)
+    }
+
+
 def volatility_state_keys(
     code: str, tenant_id: str = "", underlying: str = "", prefix: str = "volatility_long_gamma:",
 ) -> set[str]:

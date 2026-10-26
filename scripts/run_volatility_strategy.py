@@ -20,6 +20,8 @@ from futu_quant.volatility_orphans import (
     active_volatility_state_keys,
     # A15（2026-10-27）：信号键判定只此一处（过滤/剪枝/测试共用），不再本地实现。
     is_signal_state_key,
+    # A16（2026-10-27）：历史无租户信号键的清理/落盘过滤共用判定
+    is_legacy_signal_state_key,
 )
 from futu_quant.store import state_key_code
 from futu_quant.tenant import campaigns_config_key_lenient, tenant_id_of_broker, DEFAULT_TENANTS
@@ -69,6 +71,22 @@ def prunable_state_keys(
         and key not in active_keys
         and state_key_code(key, _VOL_STATE_PREFIX) not in active_codes
     ]
+
+
+def drop_legacy_signal_state_rows(store, state: dict) -> list[str]:
+    """**一次性**清掉 DB 里残留的历史无租户信号键（A16，2026-10-27）。
+
+    A15 的迁移是「只搬不复制」，但另一进程整份 state 回写会把已被 `pop` 的旧键
+    复活（生产 18:27:30 实测：旧键 `updated_at` 每轮刷新）→ DB 里新旧两份并存。
+    落盘侧已在 `save_state()` 过滤；这里把**存量行**删干净。
+
+    `state` 只读不改：内存里的旧键还要留给 `volatility_signal_state()` 迁移，
+    删内存等于把一次确认计时丢掉。
+    """
+    legacy_keys = [key for key in state if is_legacy_signal_state_key(key)]
+    if legacy_keys:
+        store.delete_campaign_states(legacy_keys)
+    return legacy_keys
 
 
 def filter_volatility_state(
@@ -314,6 +332,15 @@ def run_once(
     # A14（2026-10-27）：抽成 filter_volatility_state —— 共享信号键
     # `volatility_long_gamma:signal:<UNDERLYING>` 必须保留，否则入场确认计时每轮归零。
     state = filter_volatility_state(state, active_keys, active_codes)
+    # A16（2026-10-27）：清掉 DB 里残留的历史无租户信号键（一次性；之后不会再有）。
+    legacy_signal_keys = drop_legacy_signal_state_rows(executor.store, state)
+    if legacy_signal_keys:
+        executor.store.audit(
+            "VOLATILITY_LEGACY_SIGNAL_KEYS_DROPPED",
+            {"keys": legacy_signal_keys, "count": len(legacy_signal_keys)},
+            "volatility_long_gamma",
+            actor="service:volatility",
+        )
     # 逐租户剪枝：只删本租户（或历史无租户形态）的 stale 键。
     # 不再调用 store.prune_campaign_states（它按全局前缀扫描，会删掉其他租户的
     # 带租户键 —— 2026-10-23 开盘实测：实盘状态键被模拟那轮反复删除、peak 归零）。

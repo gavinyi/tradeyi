@@ -46,7 +46,10 @@ from futu_quant.volatility_optimizer import (
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
 )
 from futu_quant.volatility_structures import automatic_combo_id
-from futu_quant.volatility_orphans import volatility_write_state_key
+from futu_quant.volatility_orphans import (
+    volatility_write_state_key,
+    without_legacy_signal_state_keys,
+)
 from futu_quant.campaign_cleanup import campaign_expired
 from futu_quant.data_quality import (
     option_book_status, option_quote_activity, quote_freshness,
@@ -242,7 +245,13 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    TradingStore().save_campaign_states(state)
+    # A16（2026-10-27）：**绝不持久化历史无租户信号键**。
+    # 缺陷形态：某进程周期开始时 load 到的内存副本仍含旧键
+    # `volatility_long_gamma:signal:US.AMD`，整份 state 回写把这个键复活 →
+    # `volatility_signal_state()` 里的迁移 `pop` 白做，DB 里新旧两份并存且旧键
+    # `updated_at` 每轮刷新（生产 18:27:30 实测）。落盘前统一过滤，内存副本不动
+    # （迁移仍可从内存读到旧键）。
+    TradingStore().save_campaign_states(without_legacy_signal_state_keys(state))
 
 
 def safe_datetime(value, default: datetime) -> datetime:
