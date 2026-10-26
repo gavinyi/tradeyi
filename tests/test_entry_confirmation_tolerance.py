@@ -129,3 +129,51 @@ def test_entry_confirmation_only_applies_to_flat_position():
     assert entry_confirmation_applicable(1) is False, "已持仓仍走确认会重复开仓"
     assert entry_confirmation_applicable(3) is False
     assert entry_confirmation_applicable(None) is True
+
+
+def test_positioned_round_skips_entry_confirmation(tmp_path, monkeypatch):
+    """Reviewer 第 5 条（行为级）：**确认通过并入场后**（已有持仓），下一轮即使
+    `regime.active=True` 也不得再次进入入场确认 → 不会重复开仓。
+
+    用既有的端到端脚手架（持仓 1 张、亏损超硬止损线）跑一轮 run_campaign，
+    断言 `volatility_entry_confirmation` 根本未被调用。
+    """
+    import sys
+    from pathlib import Path
+
+    from futu_quant.store import TradingStore
+
+    tests_dir = Path(__file__).resolve().parent
+    if str(tests_dir) not in sys.path:
+        sys.path.insert(0, str(tests_dir))
+    from test_hard_stop_end_to_end import (
+        BID,
+        _LossBroker,
+        _RecordingExecutor,
+        _campaign,
+        _load_gamma,
+    )
+
+    rg = _load_gamma()
+    store = TradingStore(tmp_path / "no_dup_entry.db")
+    executor = _RecordingExecutor(store)
+    calls: list[int] = []
+
+    def _spy(*args, **kwargs):
+        calls.append(1)
+        return True, "确认通过（桩）"
+
+    monkeypatch.setattr(rg, "volatility_entry_confirmation", _spy)
+    monkeypatch.setattr(rg, "volatility_signal_state", lambda *a, **k: {})
+    monkeypatch.setattr(rg, "sync_volatility_position_cycle", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rg.MARKET_CALENDAR, "session",
+        lambda _now: type("S", (), {"regular_open": staticmethod(lambda _n: True)})(),
+    )
+
+    campaign = _campaign()  # 持仓 1 张（已入场）
+    rg.run_campaign(
+        _LossBroker(bid=BID), executor, campaign, {},
+        strategy_id="volatility_long_gamma",
+    )
+    assert not calls, "已持仓（已入场）仍走了入场确认 → 存在重复开仓风险"
