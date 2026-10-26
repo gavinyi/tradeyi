@@ -173,16 +173,31 @@ def test_refreshed_trade_quotes_rejects_stale_and_frozen_book(monkeypatch):
 
 
 def test_refreshed_trade_quotes_reads_clock_per_attempt(monkeypatch):
-    """旧实现三次共用同一个 now → 三次年龄完全相同（实测 682.40366×3）。"""
+    """重试必须每次重取时钟（旧实现三次共用一个 now → 三次年龄完全相同）。
+
+    不靠 wall-clock 分辨率：注入递进时钟，每次 now() 比上次晚 2s。
+    """
     gamma = _patch_gamma_module(monkeypatch)
     frozen = _quote_at(700)
+    retries = 2
+    base = datetime.now(NY)
+    ticks = iter([base + timedelta(seconds=2 * index) for index in range(retries + 1)])
+
+    class _AdvancingClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            moment = next(ticks)
+            return moment if tz is None else moment.astimezone(tz)
+
+    monkeypatch.setattr(gamma, "datetime", _AdvancingClock)
     broker = _SequenceBroker([(9.75, 9.95, frozen)] * 3)
     _, _, check = gamma.refreshed_trade_quotes(
         broker, "US.AMD261030P520000", "US.AMD", datetime.now(NY), 12.0,
-        retries=2, wait_seconds=0, maximum_stale_seconds=600,
+        retries=retries, wait_seconds=0, maximum_stale_seconds=600,
     )
     ages = [attempt["option_age_seconds"] for attempt in check["attempts"]]
-    assert len(set(ages)) == 3, f"三次 attempt 年龄完全相同 = 重试空转：{ages}"
+    assert len(ages) == retries + 1
+    assert len(set(ages)) == len(ages), f"三次 attempt 年龄完全相同 = 重试空转：{ages}"
     assert ages == sorted(ages)
 
 
