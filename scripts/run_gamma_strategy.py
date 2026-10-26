@@ -178,7 +178,11 @@ def refreshed_trade_quotes(
             maximum_spread_pct=maximum_spread_pct,
         )
         if book_basis_blocked:
+            # 门禁是「not fresh 且 not degraded」才算 stale（见 run_campaign 入场判定）：
+            # 成交 180~300s + 双边盘口可用时 option_quote_activity 返回 degraded=True，
+            # 只置 fresh=False 会被降级放行绕过 → 必须同时清掉 degraded。
             option_fresh = False
+            option_degraded = False
             option_reason = (
                 "盘口活跃观测不可信（无历史行 / 超过 900s / 时钟回拨），fail-closed 拦截"
             )

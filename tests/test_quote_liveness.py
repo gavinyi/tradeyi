@@ -373,6 +373,25 @@ def test_book_activity_null_falls_back_to_legacy_300s_gate(monkeypatch):
     assert age is None and blocked is False, "NULL 应回落 300s 旧口径（不是放行、不是 BLOCK）"
 
 
+def test_book_basis_blocked_overrides_degraded_pass(monkeypatch):
+    """成交 250s（180~300）+ 双边盘口可用 → activity 本会 degraded=True 减速放行；
+    `book_basis_blocked` 必须同时清零 degraded，否则「not fresh and not degraded」门禁被绕过。"""
+    gamma = _patch_gamma_module(monkeypatch)
+    stale_250 = _quote_at(250)
+    broker = _SequenceBroker([(9.75, 9.95, stale_250)] * 3)
+    _, _, check = gamma.refreshed_trade_quotes(
+        broker, "US.AMD261030P520000", "US.AMD", datetime.now(NY), 12.0,
+        retries=2, wait_seconds=0, maximum_stale_seconds=600,
+        book_active_seconds=None, book_basis_blocked=True,
+    )
+    assert check["option_fresh"] is False
+    assert check["option_degraded"] is False, "degraded 未清零 → 入场门禁被绕过"
+    quote_stale = (not check["underlying_fresh"]) or (
+        not check["option_fresh"] and not check["option_degraded"]
+    )
+    assert quote_stale is True, "入场必须按行情过期 BLOCK"
+
+
 def test_book_basis_blocked_forces_fail_closed(monkeypatch):
     gamma = _patch_gamma_module(monkeypatch)
     frozen = _quote_at(700)
