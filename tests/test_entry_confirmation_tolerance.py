@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from scripts.run_gamma_strategy import update_signal_epoch_state
+from scripts.run_gamma_strategy import (
+    entry_confirmation_applicable,
+    update_signal_epoch_state,
+)
 
 T0 = "2026-10-26T17:00:00+00:00"
 NOW = datetime(2026, 10, 26, 17, 1, tzinfo=timezone.utc)
@@ -98,3 +101,31 @@ def test_zero_tolerance_keeps_old_strict_behaviour():
     )
     assert state["signal_started_at"] is None
     assert state["exit_signal_epoch"] == 3
+
+
+def test_invalid_tolerance_falls_back_to_zero_and_warns(monkeypatch, capsys):
+    """非法容忍值（非整数/负数）→ 按 0 处理并 WARN，不许静默放大容忍度。"""
+    import scripts.run_gamma_strategy as rgs
+
+    monkeypatch.setattr(rgs, "_INVALID_TOLERANCE_WARNED", False)
+    assert rgs.inactive_tolerance_cycles(
+        {"entry_confirmation_inactive_tolerance_cycles": "abc"}
+    ) == 0
+    assert rgs.inactive_tolerance_cycles(
+        {"entry_confirmation_inactive_tolerance_cycles": -3}
+    ) == 0
+    captured = capsys.readouterr().out
+    assert "[WARN]" in captured, captured
+    # 缺省 = 1；合法值原样返回
+    assert rgs.inactive_tolerance_cycles({}) == 1
+    assert rgs.inactive_tolerance_cycles(
+        {"entry_confirmation_inactive_tolerance_cycles": 2}
+    ) == 2
+
+
+def test_entry_confirmation_only_applies_to_flat_position():
+    """Reviewer 第 4 条：入场确认只对空仓生效 → 已入场/已持仓不会重复触发开仓。"""
+    assert entry_confirmation_applicable(0) is True
+    assert entry_confirmation_applicable(1) is False, "已持仓仍走确认会重复开仓"
+    assert entry_confirmation_applicable(3) is False
+    assert entry_confirmation_applicable(None) is True

@@ -45,7 +45,7 @@ from futu_quant.volatility_orphans import volatility_write_state_key
 from futu_quant.market_calendar import USMarketCalendar
 from futu_quant.health import maintenance
 from futu_quant.reconciliation import reconcile_ledgers
-from futu_quant.store import TradingStore
+from futu_quant.store import DEFAULT_DB, TradingStore
 from futu_quant.migrations import authorize_migrations
 from futu_quant.tenant import tenant_config_key_candidates
 from futu_quant.shadow_matching import match_shadow_orders
@@ -1584,7 +1584,11 @@ def main() -> None:
         lock.flush()
         lock.truncate()
         pid_file.write_text(str(os.getpid()))
-        store = TradingStore(bootstrap=True)
+        # A2（Reviewer 2026-10-27 退改）：**不得**硬编码 bootstrap=True —— 那会让
+        # 「库文件存在但被清空/损坏（无 order_intents 表）」的 Worker 直接重建空 schema，
+        # 正是 A2 要防的「假健康」。仅当库文件不存在（首次部署）才允许建库；
+        # 文件存在但结构损坏 → 交给 TradingStore 的 A2 守卫大声失败。
+        store = TradingStore(bootstrap=not Path(DEFAULT_DB).exists())
         service_name = f"trading_service:{tenant_profile.tenant_id}" if tenant_profile else "trading_service"
         runtime_manifest = publish_approval_runtime_manifest(store, os.getpid())
         ensure_default_budgets(store)

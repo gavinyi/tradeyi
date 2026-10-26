@@ -518,6 +518,35 @@ def hard_issues_block_action(hard_issues: list[str], quantity: int) -> bool:
 
 
 _MISSING_TENANT_ALERTED = False
+_INVALID_TOLERANCE_WARNED = False
+
+
+def inactive_tolerance_cycles(campaign: dict) -> int:
+    """A13：读取 `entry_confirmation_inactive_tolerance_cycles`（默认 1）。
+
+    非法值（非整数 / 负数 / 解析失败）→ 按 **0**（旧严格口径）处理并 WARN 一次，
+    **不许静默放大容忍度**（那会改变入场行为）。
+    """
+    raw = campaign.get("entry_confirmation_inactive_tolerance_cycles", 1)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = -1
+    if value < 0:
+        global _INVALID_TOLERANCE_WARNED
+        if not _INVALID_TOLERANCE_WARNED:
+            _INVALID_TOLERANCE_WARNED = True
+            print(
+                "[WARN] entry_confirmation_inactive_tolerance_cycles 非法"
+                f"（{raw!r}）→ 按 0（旧严格口径）处理"
+            )
+        return 0
+    return value
+
+
+def entry_confirmation_applicable(quantity: int) -> bool:
+    """A13/Reviewer：只有**空仓**才走入场确认 → 已持仓/已入场后不会重复触发开仓。"""
+    return int(quantity or 0) <= 0
 
 
 def _alert_missing_campaign_tenant(executor, strategy_id: str, code: str) -> None:
@@ -1074,9 +1103,7 @@ def run_campaign(
             signal_state,
             regime_active=bool(regime["active"]),
             now=now,
-            inactive_tolerance_cycles=int(
-                campaign.get("entry_confirmation_inactive_tolerance_cycles", 1)
-            ),
+            inactive_tolerance_cycles=inactive_tolerance_cycles(campaign),
             volume_ratio=float(regime.get("volume_ratio", 0) or 0),
         )
         signal_started_at = signal_state.get("signal_started_at")
@@ -1103,7 +1130,7 @@ def run_campaign(
             executor.store.decision(strategy_id, code, "HOLD", reason, {"regime": regime}, tenant_id=_campaign_tenant)
             print(f"{code}: HOLD ({reason})")
             return
-        if quantity <= 0:
+        if entry_confirmation_applicable(quantity):
             entry_confirmed, confirmation_reason = volatility_entry_confirmation(
                 now=now,
                 signal_started_at=signal_state.get("signal_started_at"),

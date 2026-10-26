@@ -418,6 +418,21 @@ def test_existing_file_without_order_intents_is_rejected(tmp_path, monkeypatch):
         ).fetchone()[0] == 1
 
 
+def test_service_worker_does_not_blindly_bootstrap(tmp_path):
+    """A2（Reviewer 退改）：Worker 不得硬编码 bootstrap=True。
+
+    否则「库文件存在但被清空/损坏（无 order_intents 表）」时，Worker 会直接重建空
+    schema —— 正是 A2 要防的「假健康」。只允许「库文件不存在（首次部署）」时建库。
+    """
+    service = (SCRIPTS / "run_service.py").read_text(encoding="utf-8")
+    assert "TradingStore(bootstrap=True)" not in service, (
+        "run_service 仍硬编码 bootstrap=True —— 损坏库会被重建为假健康"
+    )
+    assert "bootstrap=not Path(DEFAULT_DB).exists()" in service, (
+        "run_service 未按「仅首次部署（库不存在）才 bootstrap」的契约改"
+    )
+
+
 def test_bootstrap_ignores_environment_variable(tmp_path):
     """A1（2026-10-27）：`TRADEYI_ALLOW_BOOTSTRAP` env 不再有授权能力（防子进程继承）。
 
