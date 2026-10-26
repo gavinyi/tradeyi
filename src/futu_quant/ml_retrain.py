@@ -77,11 +77,20 @@ def run_retrain(
     script: Path | None = None,
     lock_path: Path | None = None,
     runner: Any = None,
+    no_promote: bool = False,
 ) -> dict:
-    """跑一次重训，返回 {status, reason, run_id, ...}。**永不抛出**。"""
+    """跑一次重训，返回 {status, reason, run_id, ...}。**永不抛出**。
+
+    `no_promote=True`（A-4a，2026-10-27）：给训练脚本传 `--no-promote`，只训练并落
+    候选模型，**绝不覆盖生产模型**；`trigger_kind=auto`（自动重训）必须为 True，
+    因为「promote 仍人工」是用户拍板边界。人工手动重训仍走原语义。
+    """
     run_script = Path(script or RETRAIN_SCRIPT)
     lock_file = Path(lock_path or LOCK_PATH)
     run_subprocess = runner or subprocess.run
+    command = [sys.executable, str(run_script)]
+    if no_promote:
+        command.append("--no-promote")
 
     def _skip(reason: str) -> dict:
         run_id = store.record_ml_retrain_run(
@@ -114,7 +123,7 @@ def run_retrain(
                 env["PYTHONUTF8"] = "1"
                 env["PYTHONIOENCODING"] = "utf-8"
                 completed = run_subprocess(
-                    [sys.executable, str(run_script)],
+                    command,
                     capture_output=True, text=True,
                     encoding="utf-8", errors="replace",
                     timeout=timeout_seconds, env=env,
@@ -137,6 +146,9 @@ def run_retrain(
             new_auc, old_auc = _aucs_from_report(report)
             if completed.returncode == 0:
                 status, reason = "SUCCESS", ""
+                if no_promote:
+                    # 留痕：这次只落候选，生产模型未动（人工 promote 仍待做）
+                    reason = "candidate_only（未替换生产模型，promote 待人工）"
             else:
                 tail = (completed.stderr or completed.stdout or "").strip()[-500:]
                 status, reason = "FAILED", f"返回码 {completed.returncode}：{tail}"

@@ -12,6 +12,7 @@
 
 用法：
     python scripts/run_ml_retrain_wrapper.py --triggered-by panel --kind manual
+    python scripts/run_ml_retrain_wrapper.py --triggered-by scheduler --kind auto --no-promote
 """
 
 from __future__ import annotations
@@ -31,12 +32,16 @@ def main() -> int:
     parser.add_argument("--triggered-by", default="panel")
     parser.add_argument("--kind", default="manual", choices=("manual", "auto"))
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument(
+        "--no-promote", action="store_true",
+        help="只训练并落候选模型，绝不覆盖生产模型（自动重训必须带）",
+    )
     args = parser.parse_args()
 
     store = TradingStore()
     result = run_retrain(
         store, triggered_by=args.triggered_by, trigger_kind=args.kind,
-        timeout_seconds=args.timeout,
+        timeout_seconds=args.timeout, no_promote=args.no_promote,
     )
     print(f"[ML-RETRAIN] status={result.get('status')} reason={result.get('reason', '')}")
     # SKIP 也是正常结论（缺依赖/已在跑），返回 0 让调用方不要把它当失败

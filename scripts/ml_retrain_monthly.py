@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-月度自动重训练脚本（供定时任务调用，无人值守）
+自动重训练脚本（供定时任务/人工调用，无人值守）
 
 流程：
 1. 导出最新训练数据（波动率策略全部历史）
@@ -9,9 +9,16 @@
 4. 若新模型 AUC >= 当前模型，备份旧模型并替换生产模型文件
 5. 输出结构化报告（JSON + 控制台）
 
+**`--no-promote`（A-4a，2026-10-27 用户拍板）**：
+    只训练并落**候选**模型（固定文件名 `volatility_scorer_candidate_auto.pkl`，
+    覆盖式，不累积），**绝不写生产模型** pkl/json。自动重训（`trigger_kind=auto`）
+    必须带这个开关 —— 「promote 仍人工」是拍板边界；要不要换生产模型由人决定。
+    报告 `status=CANDIDATE_ONLY`、`promoted=false`、`candidate_model=<路径>`。
+
 用法：
     uv run python scripts/ml_retrain_monthly.py
     uv run python scripts/ml_retrain_monthly.py --model-output data/ml_models/volatility_scorer_v3.pkl
+    uv run python scripts/ml_retrain_monthly.py --no-promote     # 自动重训用这个
 """
 
 from __future__ import annotations
@@ -223,6 +230,22 @@ def promote_if_better(new_model: Path, production: Path) -> tuple[bool, float | 
     return True, new_auc, old_auc
 
 
+def candidate_only(new_model: Path, production: Path) -> tuple[float | None, float | None]:
+    """A-4a：只训练落候选，**绝不写生产模型**。
+
+    自动重训（`trigger_kind=auto`）走这条路径 —— 「promote 仍人工」是用户 2026-10-27
+    拍板的边界。这里只算新旧 AUC 供人工复核，生产 pkl/json 一个字节都不动。
+    """
+    _print_safe("🧪 [3/4] 只统计新旧 AUC（--no-promote：不替换生产模型）")
+    new_auc = load_auc(new_model)
+    old_auc = load_auc(production)
+    print(f"   新模型 AUC: {new_auc if new_auc is not None else 'N/A'}")
+    print(f"   生产模型 AUC: {old_auc if old_auc is not None else 'N/A'}")
+    if new_auc is None:
+        _print_safe("   ⚠️  [SKIP:auc_missing] 无法读取新模型 AUC（仅提示：人工 promote 前需补指标）")
+    return new_auc, old_auc
+
+
 def write_report(report: dict) -> Path:
     """写入结构化报告"""
     report_dir = ROOT / "data/ml_training/reports"
@@ -235,9 +258,13 @@ def write_report(report: dict) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="月度自动重训练")
+    parser = argparse.ArgumentParser(description="自动重训练（--no-promote 时只落候选）")
     parser.add_argument("--model-output", default=str(DEFAULT_MODEL), help="生产模型路径")
     parser.add_argument("--start-date", default=None, help="数据起始日期（默认全量）")
+    parser.add_argument(
+        "--no-promote", action="store_true",
+        help="只训练并落候选模型，绝不覆盖生产模型（自动重训必须带）",
+    )
     args = parser.parse_args()
 
     started = datetime.now()
@@ -245,6 +272,7 @@ def main() -> int:
         "run_at": started.isoformat(),
         "status": "RUNNING",
         "steps": {},
+        "mode": "candidate_only" if args.no_promote else "promote_if_better",
     }
 
     try:
@@ -260,13 +288,32 @@ def main() -> int:
             write_report(report)
             return 0
 
-        # 2. 训练新模型（临时文件）
+        production = Path(args.model_output)
+
+        # 2a. A-4a：只落候选（自动重训路径）—— 候选文件名固定、覆盖式，不累积
+        if args.no_promote:
+            candidate = ROOT / "data/ml_models/volatility_scorer_candidate_auto.pkl"
+            train_model(data_path, candidate)
+            new_auc, old_auc = candidate_only(candidate, production)
+            report["new_auc"] = new_auc
+            report["old_auc"] = old_auc
+            report["promoted"] = False
+            report["candidate_model"] = str(candidate)
+            report["production_model"] = str(production)
+            report["status"] = "CANDIDATE_ONLY"
+            report["duration_seconds"] = (datetime.now() - started).total_seconds()
+            write_report(report)
+            print("\n" + "=" * 60)
+            print(f"[OK] 重训完成（未替换生产模型）: 候选 {candidate.name}")
+            print("=" * 60)
+            return 0
+
+        # 2b. 人工路径：临时文件 + 对比后替换
         stamp = started.strftime("%Y%m%d_%H%M%S")
         new_model = ROOT / f"data/ml_models/volatility_scorer_candidate_{stamp}.pkl"
         train_model(data_path, new_model)
 
         # 3. 对比并替换
-        production = Path(args.model_output)
         promoted, new_auc, old_auc = promote_if_better(new_model, production)
         report["new_auc"] = new_auc
         report["old_auc"] = old_auc

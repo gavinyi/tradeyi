@@ -800,12 +800,19 @@ def portfolio_stress_check(broker, store, alerts, tenant_id) -> None:
 
 
 def maybe_trigger_auto_retrain(store) -> bool:
-    """P2-4：自动月度重训（**默认关闭**，需用户明确开启后才生效）。
+    """P2-4：自动重训（**默认关闭**，需用户明确开启后才生效）。
 
     设计要点：
     - 交给**独立子进程**（wrapper）执行，绝不阻塞交易主循环 —— 训练可能跑几十分钟；
     - 默认 `ml_auto_retrain_enabled=false`：这一步会改变策略行为，必须用户拍板；
-    - 间隔按天配置（`ml_auto_retrain_interval_days`，默认 30）；
+    - **触发频率 = 每 24h 一次（日频）**：gate 在 `service_cycle` 里是
+      `due(store, "last_run:ml_auto_retrain", 24*60*60, now)`（`last_run` 键带租户段，
+      两 Worker 各一份；并发由 `data/ml_retrain.lock` 兜底，第二个拿 `SKIP:already_running`）。
+      A-4a（2026-10-27）收口：旧 docstring 曾写「`ml_auto_retrain_interval_days` 默认 30」
+      但代码从未实现该键 —— 现按实际行为明确为日频，避免下一个人按注释以为是月跑；
+    - **绝不自动 promote**（A-4a，用户 2026-10-27 拍板「promote 仍人工」）：
+      自动触发一律带 `--no-promote`，训练只落
+      `data/ml_models/volatility_scorer_candidate_auto.pkl`，生产 pkl/json 不动；
     - A5（2026-10-27）：关闭状态也要**可证** —— 每自然日发一条
       `ML_AUTO_RETRAIN_SKIPPED`（reason=disabled）观测事件，否则「没跑」不可区分。
       训练结果侧 new/old AUC 已由 `ml_retrain.py:_aucs_from_report` 回写。
@@ -840,8 +847,12 @@ def maybe_trigger_auto_retrain(store) -> bool:
         )
         return False
     try:
+        # A-4a：自动重训一律 `--no-promote` —— 只落候选，生产模型由人工决定是否替换。
         subprocess.Popen(
-            [sys.executable, str(wrapper), "--triggered-by", "scheduler", "--kind", "auto"],
+            [
+                sys.executable, str(wrapper), "--triggered-by", "scheduler", "--kind", "auto",
+                "--no-promote",
+            ],
             cwd=str(wrapper.parents[1]),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -852,7 +863,7 @@ def maybe_trigger_auto_retrain(store) -> bool:
         return False
     store.audit(
         "ML_AUTO_RETRAIN_TRIGGERED",
-        {"triggered_by": "scheduler", "wrapper": str(wrapper)},
+        {"triggered_by": "scheduler", "wrapper": str(wrapper), "no_promote": True},
         actor="scheduler:main",
     )
     return True
@@ -1447,8 +1458,10 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             lambda: run_ml_tiebreak_audit(store),
         )
         mark_run(store, "last_run:ml_tiebreak_audit", now)
-    # P2-4 自动月度重训：**默认关闭**（改策略行为，需用户拍板后才开启）。
-    # 开启后按天判定、交独立子进程跑，不阻塞主循环。
+    # P2-4 自动重训：**默认关闭**（改策略行为，需用户拍板后才开启）。
+    # 频率是**日频**（24h gate，A-4a 已把 docstring 与实现对齐；旧的
+    # `ml_auto_retrain_interval_days` 说法从未实现）。开启后交独立子进程跑
+    # （`--no-promote`：只落候选、不改生产模型），不阻塞主循环。
     if due(store, "last_run:ml_auto_retrain", 24 * 60 * 60, now):
         if maybe_trigger_auto_retrain(store):
             store.operational_event(
