@@ -48,6 +48,8 @@ from futu_quant.reconciliation import reconcile_ledgers
 from futu_quant.store import DEFAULT_DB, TradingStore
 from futu_quant.migrations import authorize_migrations
 from futu_quant.tenant import tenant_config_key_candidates
+from futu_quant.tenant import tenant_id_of_broker
+from futu_quant.strategy_equity import snapshot_strategy_equity
 from futu_quant.shadow_matching import match_shadow_orders
 from futu_quant.earnings_calendar import refresh_earnings_events, sync_campaign_events
 from futu_quant.order_push import open_order_push
@@ -1099,6 +1101,19 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                         f"{target_name} 当日持仓亏损 ${loss:,.2f} 已达到急停线 ${limit:,.2f}，该账户已自动急停（其他账户继续运行）",
                     )
             mark_run(store, "last_run:equity_snapshot", now)
+            # P1-11 批 1：按策略净值快照（只写不读）。观测写入失败**绝不**影响
+            # 权益快照任务（熔断依赖它）：内部已全量兜底，这里再包一层保险。
+            try:
+                snapshot_strategy_equity(
+                    store, alerts,
+                    tenant_id=tenant_id_of_broker(broker),
+                    total_assets=total_assets,
+                    now=now,
+                    settings=settings,
+                )
+            except Exception:  # noqa: BLE001
+                # silent-ok: 观测失败不得打断权益快照/熔断路径（内部已落 DEGRADED）
+                pass
             alerts.recover("EQUITY_SNAPSHOT_FAILED", "账户权益快照已恢复")
         except Exception as exc:
             alerts.send("ERROR", "EQUITY_SNAPSHOT_FAILED", str(exc))

@@ -276,6 +276,30 @@ MIGRATIONS = (
     Migration(20, "option_history_book_active_seconds", """
         ALTER TABLE option_history ADD COLUMN book_active_seconds REAL;
     """),
+    # P1-11 批 1（2026-10-27）：按策略维度的净值快照（**只写不读**，观测用）。
+    # 唯一键含「桶起点」as_of：同桶重试/补写走 UPSERT 覆盖，不产生重复行。
+    Migration(21, "strategy_equity_snapshots", """
+        CREATE TABLE IF NOT EXISTS strategy_equity_snapshots (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id     TEXT NOT NULL,
+            strategy_id   TEXT NOT NULL,
+            bucket        TEXT NOT NULL,
+            as_of         TEXT NOT NULL,
+            realized_pnl  REAL NOT NULL DEFAULT 0,
+            unrealized_pnl REAL,
+            attribution_status TEXT NOT NULL DEFAULT 'COMPLETE',
+            net_exposure  REAL NOT NULL DEFAULT 0,
+            market_value  REAL NOT NULL DEFAULT 0,
+            position_count INTEGER NOT NULL DEFAULT 0,
+            account_total_assets REAL,
+            attribution_diff REAL,
+            source        TEXT NOT NULL DEFAULT 'cycle',
+            created_at    TEXT NOT NULL,
+            UNIQUE(tenant_id, strategy_id, bucket, as_of)
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_equity_tenant_time
+            ON strategy_equity_snapshots(tenant_id, strategy_id, as_of);
+    """),
 )
 
 

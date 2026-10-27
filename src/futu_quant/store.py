@@ -3013,6 +3013,85 @@ class TradingStore:
                 "SELECT * FROM virtual_allocations ORDER BY strategy_id,symbol"
             ).fetchall()]
 
+    # ---- P1-11 批 1：按策略净值快照（只写不读，观测用） -------------------
+    def virtual_allocations_for_tenant(self, tenant_id: str) -> list[dict]:
+        """按租户取虚拟分配（跨租户禁止全表聚合）。"""
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM virtual_allocations WHERE tenant_id=? "
+                "ORDER BY strategy_id,symbol",
+                (str(tenant_id or ""),),
+            ).fetchall()]
+
+    def fill_ledger_rows(self, tenant_id: str) -> list[dict]:
+        """取某租户的成交流水（按时间升序；租户经 order_intents 反查）。"""
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                """
+                SELECT l.id, l.strategy_id, l.symbol, l.side, l.quantity, l.price,
+                       COALESCE(l.multiplier, 1) AS multiplier,
+                       COALESCE(l.fee_total, 0) AS fee_total, l.filled_at
+                  FROM fill_ledger l
+                  JOIN order_intents o ON o.id = l.intent_id
+                 WHERE o.tenant_id = ?
+                 ORDER BY l.filled_at, l.id
+                """,
+                (str(tenant_id or ""),),
+            ).fetchall()]
+
+    def save_strategy_equity_snapshot(self, row: dict) -> None:
+        """同桶 UPSERT：唯一键 ``(tenant_id, strategy_id, bucket, as_of)``。"""
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO strategy_equity_snapshots(
+                    tenant_id, strategy_id, bucket, as_of, realized_pnl,
+                    unrealized_pnl, attribution_status, net_exposure, market_value,
+                    position_count, account_total_assets, attribution_diff,
+                    source, created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(tenant_id, strategy_id, bucket, as_of) DO UPDATE SET
+                    realized_pnl=excluded.realized_pnl,
+                    unrealized_pnl=excluded.unrealized_pnl,
+                    attribution_status=excluded.attribution_status,
+                    net_exposure=excluded.net_exposure,
+                    market_value=excluded.market_value,
+                    position_count=excluded.position_count,
+                    account_total_assets=excluded.account_total_assets,
+                    attribution_diff=excluded.attribution_diff,
+                    source=excluded.source,
+                    created_at=excluded.created_at
+                """,
+                (
+                    row.get("tenant_id"), row.get("strategy_id"), row.get("bucket"),
+                    row.get("as_of"), row.get("realized_pnl", 0.0),
+                    row.get("unrealized_pnl"), row.get("attribution_status", "COMPLETE"),
+                    row.get("net_exposure", 0.0), row.get("market_value", 0.0),
+                    row.get("position_count", 0), row.get("account_total_assets"),
+                    row.get("attribution_diff"), row.get("source", "cycle"),
+                    row.get("created_at"),
+                ),
+            )
+
+    def strategy_equity_snapshots(
+        self, tenant_id: str | None = None, limit: int = 200,
+    ) -> list[dict]:
+        """读快照（批 1 仅测试/巡检用；页面在批 2 接入）。"""
+        with self.connection() as connection:
+            if tenant_id:
+                cursor = connection.execute(
+                    "SELECT * FROM strategy_equity_snapshots WHERE tenant_id=? "
+                    "ORDER BY as_of DESC, strategy_id LIMIT ?",
+                    (str(tenant_id), int(limit)),
+                )
+            else:
+                cursor = connection.execute(
+                    "SELECT * FROM strategy_equity_snapshots "
+                    "ORDER BY as_of DESC, strategy_id LIMIT ?",
+                    (int(limit),),
+                )
+            return [dict(row) for row in cursor.fetchall()]
+
     def delete_virtual_allocation(self, strategy_id: str, symbol: str) -> None:
         with self.connection() as connection:
             connection.execute(
