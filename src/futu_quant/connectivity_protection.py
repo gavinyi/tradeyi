@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import date, datetime, timezone
 import json
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from .option_lifecycle import parse_option_code
+
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+def _today_new_york() -> date:
+    return datetime.now(NEW_YORK).date()
 
 
 PROTECTION_EVENT_TYPES = {
@@ -57,7 +64,13 @@ def active_protected_option_positions(store) -> list[dict]:
     ):
         for item in items:
             symbol = str(item.get("symbol") or item.get("code") or "")
-            if parse_option_code(symbol) is None:
+            contract = parse_option_code(symbol)
+            if contract is None:
+                continue
+            if contract.expiration < _today_new_york():
+                # 已到期合约不可能还有持仓，也不需要「实时退出管理」。
+                # 2026-10-27 事故：账本残留 9 张 8 月到期的合约，导致每次 OpenD 抖动
+                # 都被判成「有未平期权」→ 触发持仓保护模式 → 暂停新开仓 + 重启整个服务。
                 continue
             try:
                 quantity = float(item.get("quantity") or item.get("qty") or 0)

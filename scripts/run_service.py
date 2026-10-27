@@ -225,18 +225,56 @@ BROKER_CRITICAL_TASKS = {
 }
 
 
+def _preflight_scope(tenant) -> "tuple[str, dict[str, str]]":
+    """预检作用域：返回 ``(tenant_id, 券商环境覆盖)``。
+
+    **为什么预检必须按租户走**（2026-10-27 22:38 事故）：
+    预检原先固定用全局 `Settings`（`FUTU_TRADING_ENV` + `REAL_ACCOUNT_ID`，指向实盘账户），
+    **完全不看 tenant**。实盘账户从券商侧消失后，模拟租户的 Worker 也拿实盘账户做预检 →
+    一起失败 → `service_cycle` 直接 `return` → 模拟盘「没进度」。
+    一个账号出问题，全部连坐。
+    """
+    if tenant is None:
+        return "", {}
+    tenant_id = str(getattr(tenant, "tenant_id", "") or "").strip()
+    overrides: dict[str, str] = {}
+    trading_env = str(getattr(tenant, "trading_env", "") or "").strip().upper()
+    if trading_env in {"SIMULATE", "REAL"}:
+        overrides["FUTU_TRADING_ENV"] = trading_env
+    account_id = str(getattr(tenant, "account_id", "") or "").strip()
+    if account_id:
+        overrides["REAL_ACCOUNT_ID"] = account_id
+    firm = str(getattr(tenant, "security_firm", "") or "").strip().upper()
+    if firm:
+        overrides["FUTU_SECURITY_FIRM"] = firm
+    return tenant_id, overrides
+
+
+def _tenant_scoped_setting(base_key: str, tenant_id: str) -> str:
+    """租户级设置键；无租户时保持原无前缀键（单实例与界面兼容）。"""
+    if not tenant_id:
+        return base_key
+    tenant_key, legacy = tenant_config_key_candidates(tenant_id, base_key)
+    return tenant_key or legacy
+
+
 def futu_sdk_preflight(
     store: TradingStore, alerts: AlertManager, settings: Settings,
     *, force: bool = False, heartbeat_name: str = "trading_service",
+    tenant: Any | None = None,
 ) -> bool:
     now = datetime.now(NY)
+    tenant_id, env_overrides = _preflight_scope(tenant)
+    success_key = _tenant_scoped_setting("opend_last_preflight_success_at", tenant_id)
+    degraded_key = _tenant_scoped_setting("connectivity_degraded", tenant_id)
     cache_seconds = max(5, int(os.getenv("FUTU_SDK_PREFLIGHT_CACHE_SECONDS", "30")))
     if not force and _seconds_since(
-        store.get_setting("opend_last_preflight_success_at", ""), now,
+        store.get_setting(success_key, ""), now,
     ) < cache_seconds:
         return True
     timeout = max(3.0, float(os.getenv("FUTU_SDK_PREFLIGHT_TIMEOUT_SECONDS", "12")))
     env = os.environ.copy()
+    env.update(env_overrides)
     if sys.platform == "win32":
         env.setdefault("APPDATA", str(Path(__file__).resolve().parents[1] / "data" / "appdata"))
     try:
@@ -254,20 +292,27 @@ def futu_sdk_preflight(
         # P1-21：心跳名必须与成功路径一致（带租户），否则全局 trading_service 行
         # 永远停在 DEGRADED —— 恢复后也不会变回 HEALTHY 的假故障。
         store.heartbeat(heartbeat_name, "DEGRADED", message, os.getpid())
-        record_broker_failure(store, alerts, "trading_service", message)
+        store.set_setting(degraded_key, "true")
+        if tenant is None:
+            store.set_setting("connectivity_degraded", "true")
+        record_broker_failure(store, alerts, "trading_service", message, tenant=tenant)
         alerts.send("CRITICAL", "OPEND_DISCONNECTED", message, incident_key="OPEND_DISCONNECTED")
         return False
     if result.returncode != 0:
         message = f"富途 OpenD 网关掉线或未启动 (预检退出码 {result.returncode})，系统已自动暂停新开仓并保持持仓保护状态"
         store.heartbeat(heartbeat_name, "DEGRADED", message, os.getpid())
-        record_broker_failure(store, alerts, "trading_service", message)
+        store.set_setting(degraded_key, "true")
+        if tenant is None:
+            store.set_setting("connectivity_degraded", "true")
+        record_broker_failure(store, alerts, "trading_service", message, tenant=tenant)
         alerts.send("CRITICAL", "OPEND_DISCONNECTED", message, incident_key="OPEND_DISCONNECTED")
         return False
-    store.set_setting("opend_last_preflight_success_at", now.isoformat())
-    store.set_setting("opend_consecutive_failures", "0")
+    store.set_setting(success_key, now.isoformat())
+    store.set_setting(degraded_key, "false")
+    store.set_setting(_tenant_scoped_setting("opend_consecutive_failures", tenant_id), "0")
     alerts.recover("OPEND_DISCONNECTED", "富途 OpenD 网关连接已恢复正常，交易与行情调度链路恢复就绪", incident_key="OPEND_DISCONNECTED")
-    if store.get_setting("strategy_interrupted", "false").lower() == "true":
-        store.set_setting("strategy_interrupted", "false")
+    if store.get_setting(_tenant_scoped_setting("strategy_interrupted", tenant_id), "false").lower() == "true":
+        store.set_setting(_tenant_scoped_setting("strategy_interrupted", tenant_id), "false")
         store.set_setting("strategy_recovered_at", now.isoformat())
         store.operational_event(
             "protective_mode", "PROTECTIVE_RECOVERY_CONFIRMED", "HEALTHY",
@@ -306,6 +351,7 @@ def _seconds_since(raw: str, now: datetime) -> float:
 
 def request_service_self_restart(
     store: TradingStore, alerts: AlertManager, reason: str,
+    tenant: Any | None = None,
 ) -> None:
     if RESTART_FILE.exists() or STOP_EVENT.is_set():
         return
@@ -318,8 +364,15 @@ def request_service_self_restart(
     env = os.environ.copy()
     if sys.platform == "win32":
         env.setdefault("APPDATA", str(Path(__file__).resolve().parents[1] / "data" / "appdata"))
+    _handoff_cmd = [
+        sys.executable, "-m", "futu_quant.service_control", "handoff", str(os.getpid()),
+    ]
+    _tenant_id = str(getattr(tenant, "tenant_id", "") or "").strip() if tenant else ""
+    if _tenant_id:
+        # 重启必须带上租户，否则新进程没有租户上下文（2026-10-27 事故）。
+        _handoff_cmd.append(_tenant_id)
     subprocess.Popen(  # noqa: S603
-        [sys.executable, "-m", "futu_quant.service_control", "handoff", str(os.getpid())],
+        _handoff_cmd,
         cwd=Path(__file__).resolve().parents[1],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -431,6 +484,7 @@ def request_protective_radar_restart(
 def activate_protective_recovery(
     store: TradingStore, alerts: AlertManager, strategy_id: str,
     message: str, failures: int, now: datetime,
+    tenant: Any | None = None,
 ) -> None:
     session = MARKET_CALENDAR.session(now)
     if not (session.is_session and session.extended_open(now)):
@@ -455,7 +509,10 @@ def activate_protective_recovery(
     min_interval = max(60, int(os.getenv("PROTECTIVE_SERVICE_RESTART_MIN_INTERVAL_SECONDS", "180")))
     if _seconds_since(store.get_setting("protective_service_last_restart_at", ""), now) < min_interval:
         return
-    store.set_setting("strategy_interrupted", "true")
+    _tid = str(getattr(tenant, "tenant_id", "") or "").strip() if tenant else ""
+    store.set_setting(_tenant_scoped_setting("strategy_interrupted", _tid), "true")
+    if tenant is None:
+        store.set_setting("strategy_interrupted", "true")
     store.set_setting("strategy_interrupted_at", now.isoformat())
     store.set_setting("strategy_interrupted_message", message[:500])
     store.set_setting("protective_service_last_restart_at", now.isoformat())
@@ -475,18 +532,34 @@ def activate_protective_recovery(
         f"检测到未平期权 {len(positions)} 张时券商/行情连接连续失败，已进入持仓保护恢复：{message}",
         incident_key="STRATEGY_INTERRUPTED_WITH_OPEN_OPTIONS",
     )
-    request_protective_radar_restart(store, alerts, message, now)
-    request_service_self_restart(store, alerts, f"持仓保护模式：{message}")
+    if tenant is None:
+        request_protective_radar_restart(store, alerts, message, now)
+        request_service_self_restart(store, alerts, f"持仓保护模式：{message}")
+    else:
+        # 多租户模式：**绝不重启共享进程**。重启会连带杀掉其它租户的 Worker
+        # 与共享雷达 —— 2026-10-27 事故里「实盘一个账号出问题、模拟盘也没进度」
+        # 的另一半根因就在这里。本租户只标记保护，等自己的预检恢复即可。
+        store.operational_event(
+            "protective_mode", "PROTECTIVE_RESTART_SKIPPED", "DEGRADED",
+            {
+                "tenant_id": _tid,
+                "open_option_count": len(positions),
+                "reason": "多租户模式：仅本租户进入持仓保护，不重启共享雷达与服务",
+            },
+        )
 
 
 def record_broker_failure(
     store: TradingStore, alerts: AlertManager, strategy_id: str, message: str,
+    tenant: Any | None = None,
 ) -> None:
     if not opend_failure_message(message):
         return
     now = datetime.now(NY)
-    failures = int(store.get_setting("opend_consecutive_failures", "0") or 0) + 1
-    store.set_setting("opend_consecutive_failures", str(failures))
+    tenant_id = str(getattr(tenant, "tenant_id", "") or "").strip() if tenant else ""
+    failures_key = _tenant_scoped_setting("opend_consecutive_failures", tenant_id)
+    failures = int(store.get_setting(failures_key, "0") or 0) + 1
+    store.set_setting(failures_key, str(failures))
     store.set_setting("opend_last_failure_at", now.isoformat())
     store.set_setting("opend_last_failure_task", strategy_id)
     store.set_setting("opend_last_failure_message", message[:500])
@@ -498,7 +571,7 @@ def record_broker_failure(
         "opend", "BROKER_CONNECTIVITY_FAILURE", "DEGRADED",
         {"task": strategy_id, "failures": failures, "message": message},
     )
-    activate_protective_recovery(store, alerts, strategy_id, message, failures, now)
+    activate_protective_recovery(store, alerts, strategy_id, message, failures, now, tenant=tenant)
     session = MARKET_CALENDAR.session(now)
     if failures >= opend_threshold and session.is_session and session.extended_open(now):
         maybe_restart_opend(store, alerts, message, now)
@@ -961,8 +1034,11 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             store, alerts, WEEKLY_UNIVERSE_RECALL_TASK.task_id,
             lambda: run_weekly_universe_recall(store, now=china_now),
         )
-    if not futu_sdk_preflight(store, alerts, settings, heartbeat_name=service_heartbeat_name):
-        store.set_setting("connectivity_degraded", "true")
+    if not futu_sdk_preflight(
+        store, alerts, settings, heartbeat_name=service_heartbeat_name, tenant=tenant,
+    ):
+        if tenant is None:
+            store.set_setting("connectivity_degraded", "true")
         return
     if tenant:
         broker = FutuPaperBroker(
@@ -1678,7 +1754,7 @@ def main() -> None:
             return FutuPaperBroker(settings)
 
         try:
-            if futu_sdk_preflight(store, AlertManager(store), settings, force=True):
+            if futu_sdk_preflight(store, AlertManager(store), settings, force=True, tenant=tenant_profile):
                 try:
                     push_context = open_order_push(_make_broker(), store)
                 except Exception as exc:
@@ -1703,7 +1779,7 @@ def main() -> None:
                 )
             while not STOP_EVENT.is_set():
                 if push_context is None:
-                    if futu_sdk_preflight(store, AlertManager(store), settings):
+                    if futu_sdk_preflight(store, AlertManager(store), settings, tenant=tenant_profile):
                         try:
                             push_context = open_order_push(_make_broker(), store)
                         except Exception as exc:

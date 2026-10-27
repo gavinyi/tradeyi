@@ -115,6 +115,21 @@ class RiskDecision:
     breaker_would_block: bool = False
 
 
+def connectivity_degraded_for(store: TradingStore, broker) -> bool:
+    """连接降级判定：**本租户键优先**，键缺失才回落无前缀全局键。
+
+    2026-10-27 事故：实盘账户从券商侧消失 → 全局 `connectivity_degraded=true` →
+    模拟租户的 BUY 也被拦（一个账号出问题、全部连坐）。租户键存在即以其为准；
+    无前缀全局键只用于界面横幅与迁移期兜底。
+    """
+    tenant_id, _ = tenant_of_broker(broker, strict=False)
+    if tenant_id:
+        scoped = store.get_setting(f"connectivity_degraded:{tenant_id}", "")
+        if str(scoped) != "":
+            return str(scoped).strip().lower() == "true"
+    return store.get_setting("connectivity_degraded", "false") == "true"
+
+
 class RiskEngine:
     def __init__(
         self,
@@ -456,7 +471,7 @@ class RiskEngine:
             return RiskDecision(False, "数量和限价必须大于 0", 0)
         broker_acc = getattr(broker, "account_id", None)
         acc_prefix = f"{broker_acc}:" if broker_acc else ""
-        if side == "BUY" and self.store.get_setting("connectivity_degraded", "false") == "true":
+        if side == "BUY" and connectivity_degraded_for(self.store, broker):
             return RiskDecision(False, "连接恢复尚未完成对账，暂时禁止新增风险", 0)
         # 精细化对账风控隔离：仅当具体标的或具体策略自身存在对账差异时拦截，严禁全系统一刀切误伤独立策略
         if side == "BUY" and execution_mode != "SHADOW":

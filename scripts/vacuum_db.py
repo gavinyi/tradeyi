@@ -17,6 +17,7 @@ import os
 import shutil
 import sqlite3
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from futu_quant.filelock import FileLockError, lock_exclusive, unlock_exclusive
@@ -76,6 +77,42 @@ def _service_running(root: Path) -> list[str]:
     return running
 
 
+@contextmanager
+def _hold_service_locks(root: Path):
+    """VACUUM 全程**真实持有**服务锁：探测与执行用同一把锁，中途绝不释放。
+
+    2026-10-27 事故（`ac32dd3` 是半个修复）：原先只做「抢锁探测 → 立刻释放」，
+    探测与 VACUUM 之间存在一段**无锁窗口**。服务恰好在这段里启动，就会对活库执行
+    VACUUM —— 阻塞对账/下单，甚至写坏 1.6 GB 生产库。这里把锁一直拿到 VACUUM 结束。
+    """
+    handles = []
+    data_dir = root / "data"
+    try:
+        for pattern in ("trading-service*.lock", "volatility-radar.lock"):
+            for path in sorted(data_dir.glob(pattern)):
+                try:
+                    handle = path.open("a+b")
+                except OSError as exc:
+                    raise RuntimeError(f"无法打开锁文件 {path.name}：{exc}") from exc
+                try:
+                    lock_exclusive(handle, blocking=False)
+                except FileLockError as exc:
+                    handle.close()
+                    raise RuntimeError(f"服务锁仍被持有：{path.name}") from exc
+                handles.append(handle)
+        yield
+    finally:
+        for handle in handles:
+            try:
+                unlock_exclusive(handle)
+            except Exception:  # noqa: BLE001 - 释放失败不掩盖主流程异常
+                pass
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _stats(db: Path) -> dict:
     connection = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
     try:
@@ -128,11 +165,17 @@ def main() -> int:
     os.environ["TEMP"] = str(qa_dir)
     os.environ["TMP"] = str(qa_dir)
 
-    connection = sqlite3.connect(str(db))
     try:
-        connection.execute("VACUUM")
-    finally:
-        connection.close()
+        with _hold_service_locks(ROOT):
+            connection = sqlite3.connect(str(db))
+            try:
+                connection.execute("VACUUM")
+            finally:
+                connection.close()
+    except RuntimeError as exc:
+        _print_safe(f"❌ {exc}")
+        print("   请先双击 stop.bat，确认进程全部退出后再执行。")
+        return 3
     after = _stats(db)
     _print_safe(f"✅ VACUUM 完成：{stats['size_mb']} MB -> {after['size_mb']} MB")
     return 0

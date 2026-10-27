@@ -132,7 +132,7 @@ def status() -> ServiceStatus:
         return ServiceStatus(False, message="服务未运行")
 
 
-def start() -> ServiceStatus:
+def start(tenant: str | None = None) -> ServiceStatus:
     current = status()
     if current.running:
         try:
@@ -163,8 +163,14 @@ def start() -> ServiceStatus:
         env.setdefault("ENABLE_PAPER_ORDERS", "true")
     flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if sys.platform == "win32" else 0
     service_out = open(LOG_FILE, "a", encoding="utf-8")
+    # 2026-10-27 事故：自重启原先**丢掉 `--tenant`**，重启出来的进程没有租户上下文
+    # → `last_run:*` 等键全部回落到无前缀全局键（日志刷 tenant_id 为空 570+ 次），
+    # 而且两个租户互相顶掉。重启必须把租户一起带上。
+    _cmd = [sys.executable, str(ROOT / "scripts" / "run_service.py")]
+    if tenant:
+        _cmd.extend(["--tenant", str(tenant)])
     process = subprocess.Popen(  # noqa: S603
-        [sys.executable, str(ROOT / "scripts" / "run_service.py")], cwd=ROOT,
+        _cmd, cwd=ROOT,
         stdout=service_out, stderr=service_out,
         env=env, creationflags=flags,
     )
@@ -250,7 +256,7 @@ def restart() -> ServiceStatus:
     return start()
 
 
-def _handoff(previous_pid: int, timeout_seconds: float = 180) -> ServiceStatus:
+def _handoff(previous_pid: int, timeout_seconds: float = 180, tenant: str | None = None) -> ServiceStatus:
     """Wait for the previous singleton to exit, then start exactly one successor."""
     deadline = time.monotonic() + max(10, timeout_seconds)
     while time.monotonic() < deadline and _pid_alive(previous_pid):
@@ -263,12 +269,13 @@ def _handoff(previous_pid: int, timeout_seconds: float = 180) -> ServiceStatus:
     PID_FILE.unlink(missing_ok=True)
     STOP_FILE.unlink(missing_ok=True)
     RESTART_FILE.unlink(missing_ok=True)
-    return start()
+    return start(tenant)
 
 
 def _main() -> None:
-    if len(sys.argv) == 3 and sys.argv[1] == "handoff":
-        _handoff(int(sys.argv[2]))
+    if len(sys.argv) >= 3 and sys.argv[1] == "handoff":
+        _tenant = sys.argv[3] if len(sys.argv) > 3 else None
+        _handoff(int(sys.argv[2]), tenant=_tenant)
 
 
 if __name__ == "__main__":

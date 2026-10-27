@@ -351,6 +351,8 @@ class AlertManager:
             result["escalations"].append("PROBE_ROW_MISSING")
             return result
 
+        _status = self.channel_status()
+        any_configured = bool(_status.get("webhook") or _status.get("feishu"))
         for channel, key in (("webhook", "webhook_delivered"), ("feishu", "feishu_delivered")):
             try:
                 state = int(row.get(key, -1))
@@ -360,8 +362,23 @@ class AlertManager:
             if state == 1:
                 continue
             if state == -1:
-                event_type, severity = ALERT_CHANNEL_NOT_CONFIGURED, "ERROR"
-                message = f"{channel} 通道未配置（未尝试投递），告警只能依赖另一通道"
+                if not any_configured:
+                    event_type, severity = ALERT_CHANNEL_NOT_CONFIGURED, "ERROR"
+                    message = f"{channel} 通道未配置（未尝试投递），且没有任何告警通道可用"
+                else:
+                    # 该通道**本来就没启用**，而另一通道已配置（并在上面以 state==1 证明送达）。
+                    # 2026-10-27 事故：`FEISHU_WEBHOOK_URL` 空、业务告警实际走飞书应用通道且
+                    # 一直送达正常，但探针每次都把「未启用的第二通道」升级成 ERROR，
+                    # 造成长期假告警，把真问题淹掉。这里只留审计痕迹、不升级告警。
+                    # **安全底线不变**：一个通道都没配 → 仍报 ERROR；已配置通道投递失败 → 仍报 CRITICAL。
+                    self.store.operational_event(
+                        "alerts", "ALERT_CHANNEL_UNUSED", "INFO",
+                        {"channel": channel, "state": state,
+                         "other_channel_configured": True,
+                         "note": "该通道未启用；另一通道已送达，不升级"},
+                    )
+                    result["escalations"].append(f"UNUSED:{channel}")
+                    continue
             else:
                 event_type, severity = ALERT_DELIVERY_FAILED, "CRITICAL"
                 message = f"{channel} 通道投递失败（已尝试但未成功）"

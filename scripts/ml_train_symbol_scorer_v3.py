@@ -64,6 +64,19 @@ except (ImportError, OSError) as e:
         _print_safe("    解决: brew install libomp 或继续使用RandomForest")
 
 
+def sample_weights_from_pnl(pnl) -> pd.Series:
+    """样本收益对数加权（规格 `docs/ml_v3_2_convexity_and_odds_tuning_spec.md:46`）。
+
+    ``w_i = ln(1 + |window_net_pnl_i|)``，外加一条**显式零点护栏** ``+ 1.0``：
+    纯对数公式在盈亏为 0 时给 w=0，会把「不赚不亏」的负样本整条丢掉。
+
+    2026-10-27：去掉此前未记录在规格里的 ``* 10`` 放大系数 —— 它在对数内部放大小额
+    盈亏，压缩了大肉单的相对优势，与规格「大肉单权重提升 5~8 倍」的目标相反。
+    """
+    values = pd.Series(pnl, dtype="float64").fillna(0.0).abs()
+    return 1.0 + np.log1p(values)
+
+
 def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[pd.DataFrame, pd.Series, list[str], pd.Series]:
     """
     准备训练特征、标签和样本收益凸性权重
@@ -110,10 +123,15 @@ def prepare_features(df: pd.DataFrame, feature_selection: bool = True) -> tuple[
     X = df[feature_cols].copy()
     y = df['is_profitable'].copy()
     
-    # 样本收益对数加权：彻底解决期权 Long Gamma 场景下的胜率陷阱
-    # 使得捕捉到大肉单的样本权重显著提升，强迫模型重视非对称爆发性标的
-    pnl = df['window_net_pnl'].fillna(0).abs() if 'window_net_pnl' in df.columns else pd.Series(0.0, index=df.index)
-    sample_weights = pd.Series(1.0 + np.log1p(pnl.values * 10.0), index=df.index)
+    # 样本收益对数加权（规格：docs/ml_v3_2_convexity_and_odds_tuning_spec.md:46）
+    #   规格公式  w_i = ln(1 + |window_net_pnl_i|)
+    # 本实现保留一个**显式**的零点护栏 `+ 1.0`：纯 ln(1+|pnl|) 在 pnl=0 时给出 w=0，
+    # 等于把「不赚不亏」的样本整条丢掉 —— 而那正是「不值得开仓」负样本的主体。
+    # 2026-10-27 修（Reviewer 未签项）：**去掉未记录在规格里的 `* 10` 放大系数**。
+    # 它在对数内部放大小额盈亏，反而压缩了大肉单的相对优势，与规格「大肉单权重提升
+    # 5~8 倍」的目标相反。另：`abs` 与规格一致，不是缺陷（规格原文就是 |window_net_pnl|）。
+    pnl = df['window_net_pnl'] if 'window_net_pnl' in df.columns else pd.Series(0.0, index=df.index)
+    sample_weights = sample_weights_from_pnl(pnl).set_axis(df.index)
 
     # 特征工程 v3.2（凸性与无量纲化）：口径与推理侧共用 `futu_quant.ml_scorer` 的
     # `moneyness_ratio` / `gamma_to_theta_ratio`，且**只认真实行情**。

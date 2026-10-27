@@ -62,6 +62,15 @@ class FakeStore:
             return self.mute_list
         return default
 
+    def operational_event(self, component, event_type, status, payload=None):
+        """未启用通道只留审计痕迹、不升级告警时会被调用（2026-10-27）。"""
+        self.events = getattr(self, "events", [])
+        self.events.append(
+            {"component": component, "event_type": event_type,
+             "status": status, "payload": payload or {}}
+        )
+        return len(self.events)
+
     def add_alert(self, severity, event_type, message, delivered=False, **kwargs):
         # 与真实 `TradingStore.add_alert` 同口径：给了三态就由三态推导 `delivered`。
         # 桩必须和真身同语义 —— 否则测的是桩的行为，不是生产的行为。
