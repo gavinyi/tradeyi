@@ -29,6 +29,43 @@ from .execution_mode import strategy_execution_mode_override
 
 logger = logging.getLogger("futu_quant.execution")
 
+#: 我方发过撤单的审计事件名（`cancel_stale_orders` 写 `STALE_ORDER_CANCELLED`；
+#: 另外两个是历史/手工撤单路径，一并认，避免证据漏认）。
+CANCEL_AUDIT_EVENTS = frozenset({
+    "STALE_ORDER_CANCELLED", "CANCEL_REQUESTED", "ORDER_CANCEL_REQUESTED",
+})
+
+
+def resolve_cancel_aware_status(
+    raw_status: str,
+    *,
+    filled_quantity: float,
+    submitted: bool,
+    cancel_requested: bool,
+) -> str:
+    """券商 `FAILED` 的**按证据改判**（2026-10-27 缺陷修复，纯函数便于守卫）。
+
+    缺陷：券商把我方**撤单成功**也回报成 `FAILED`，本地直接记 `FAILED` →
+    「主动撤单」与「券商拒绝」在账上无法区分（实测：券商 FAILED、成交 0 股、
+    我方 5.3s 撤单成功，本地 status=FAILED）。
+
+    改判规则（**只有满足全部条件才改判**，其余一律保持 FAILED）：
+
+    - `submitted and cancel_requested and filled == 0` → `CANCELLED`（主动撤单）；
+    - `submitted and cancel_requested and filled > 0` → `CANCELLED_PART`（部分成交后撤单）；
+    - 未提交（券商直接拒绝/交易前检查失败）→ 保持 `FAILED`；
+    - 非 `FAILED` 的券商状态一律原样返回（本函数只管 FAILED 这一种歧义）。
+    """
+    status = str(raw_status or "").strip().upper()
+    if status != "FAILED":
+        return status
+    try:
+        filled = float(filled_quantity or 0)
+    except (TypeError, ValueError):
+        filled = 0.0
+    if not submitted or not cancel_requested:
+        return "FAILED"
+    return "CANCELLED_PART" if filled > 0 else "CANCELLED"
 
 
 
@@ -499,6 +536,62 @@ class ExecutionManager:
             "CANCELLED_PART": "CANCELLED_PART", "FAILED": "FAILED",
         }.get(status, status)
 
+    def _cancel_evidence(self, broker_order_id: str) -> tuple[bool, bool]:
+        """本地是否「已提交」且「我方发过撤单」——用于区分主动撤单与券商拒绝。
+
+        券商把**我方撤单成功**也回报成 `FAILED`（2026-10-27 实盘 $0.01 探针实测：
+        券商侧 FAILED、成交 0 股、我方 5.3s 撤单成功，本地却记 FAILED）。
+        只看券商状态无法区分「主动撤单」与「券商拒绝」，必须结合本地证据：
+
+        - **已提交**：`order_intents` 里存在该 `broker_order_id` 的行（券商受理过）；
+        - **我方发过撤单**：该 intent 状态为 `CANCEL_REQUESTED`（`cancel_stale_orders`
+          在发撤单请求前写入），或审计里有该 intent 的撤单事件（兜底：别的推送路径
+          先把状态推到终态时，intent.status 已不可信）。
+
+        返回 `(submitted, cancel_requested)`。读库失败一律按「无证据」处理（fail-safe：
+        宁可保留 FAILED，也不把券商拒绝误记成主动撤单）。
+        """
+        order_id = str(broker_order_id or "").strip()
+        if not order_id:
+            return False, False
+        try:
+            intent = self.store.intent_by_broker_order(order_id)
+        except Exception as exc:  # noqa: BLE001 - 证据读取失败不得打断对账
+            logger.error("撤单证据读取失败（按无证据处理）：%s", exc)
+            return False, False
+        if not intent:
+            return False, False
+        if str(intent.get("status") or "").upper() == "CANCEL_REQUESTED":
+            return True, True
+        intent_id = intent.get("id")
+        try:
+            events = self.store.audit_events(limit=500)
+        except Exception as exc:  # noqa: BLE001 - 同上，审计读不到就按无撤单证据
+            logger.error("撤单审计读取失败（按无证据处理）：%s", exc)
+            return True, False
+        for event in events:
+            if str(event.get("event_type") or "") not in CANCEL_AUDIT_EVENTS:
+                continue
+            try:
+                payload = json.loads(event.get("payload_json") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if intent_id is not None and str(payload.get("intent_id")) == str(intent_id):
+                return True, True
+        return True, False
+
+    def resolve_status_with_cancel_evidence(
+        self, broker_order_id: str, raw_status: str, filled_quantity: float,
+    ) -> str:
+        """把券商 `FAILED` 按本地证据改判（纯逻辑见 `resolve_cancel_aware_status`）。"""
+        submitted, cancel_requested = self._cancel_evidence(broker_order_id)
+        return resolve_cancel_aware_status(
+            raw_status,
+            filled_quantity=filled_quantity,
+            submitted=submitted,
+            cancel_requested=cancel_requested,
+        )
+
     def reconcile(self) -> int:
         frames = [self.broker.orders()]
         try:
@@ -531,6 +624,13 @@ class ExecutionManager:
                 seen_order_ids.add(str(order["order_id"]))
                 status = self.normalize_status(order["order_status"])
                 filled = float(order.get("dealt_qty", 0) or 0)
+                if status == "FAILED":
+                    # 券商把我方撤单成功也回报成 FAILED：只有「已提交 + 我方发过撤单」
+                    # 才改判为主动撤单；券商拒绝仍保持 FAILED（2026-10-27 修复）。
+                    # 证据查询只在 FAILED 这一支做，正常订单零额外开销。
+                    status = self.resolve_status_with_cancel_evidence(
+                        str(order["order_id"]), status, filled,
+                    )
                 average = float(order.get("dealt_avg_price", 0) or 0)
                 fees = float(order.get("commission", 0) or 0)
                 if filled > 0 and fees <= 0:
