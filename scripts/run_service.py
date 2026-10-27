@@ -47,6 +47,7 @@ from futu_quant.health import maintenance
 from futu_quant.reconciliation import reconcile_ledgers
 from futu_quant.store import DEFAULT_DB, TradingStore
 from futu_quant.migrations import authorize_migrations
+from futu_quant.tenant import resolve_tenant_active
 from futu_quant.tenant import tenant_config_key_candidates
 from futu_quant.tenant import tenant_id_of_broker
 from futu_quant.strategy_equity import snapshot_strategy_equity
@@ -258,11 +259,35 @@ def _tenant_scoped_setting(base_key: str, tenant_id: str) -> str:
     return tenant_key or legacy
 
 
+def _real_trading_disabled_for(tenant: Any | None, settings: Settings) -> bool:
+    """实盘租户但实盘交易未启用 → 该租户**是故意不交易的**，不是网关掉线。
+
+    2026-10-28 事故：`REAL_TRADING_ENABLED=false` 后，实盘 Worker 的预检
+    （`check_connection.py`，带 `FUTU_TRADING_ENV=REAL`）在 `Settings.load()` 里
+    直接抛「实盘环境已选择，但 REAL_TRADING_ENABLED 未开启」→ 退出码 1 →
+    被判成「OpenD 掉线」→ `opend_consecutive_failures` 43 次、每次推送
+    CRITICAL、`service_cycle` 直接 return（实盘零决策）。纯误报。
+    """
+    if tenant is None:
+        return False
+    if str(getattr(tenant, "trading_env", "") or "").strip().upper() != "REAL":
+        return False
+    return not bool(getattr(settings, "real_trading_enabled", False))
+
+
 def futu_sdk_preflight(
     store: TradingStore, alerts: AlertManager, settings: Settings,
     *, force: bool = False, heartbeat_name: str = "trading_service",
     tenant: Any | None = None,
 ) -> bool:
+    if _real_trading_disabled_for(tenant, settings):
+        # 不预检、不告警、不置 connectivity_degraded：租户保持 IDLE，
+        # 由 `tenant_active:<id>` 开关决定它到底该不该有 Worker。
+        store.heartbeat(
+            heartbeat_name, "IDLE",
+            "实盘交易未启用（REAL_TRADING_ENABLED=false），跳过 OpenD 预检", os.getpid(),
+        )
+        return False
     now = datetime.now(NY)
     tenant_id, env_overrides = _preflight_scope(tenant)
     success_key = _tenant_scoped_setting("opend_last_preflight_success_at", tenant_id)
@@ -1735,6 +1760,25 @@ def main() -> None:
             service_name, "PROCESS_START", "STARTING",
             {"pid": os.getpid(), "tenant_id": getattr(tenant_profile, "tenant_id", None), "approval_runtime_manifest": runtime_manifest},
         )
+        # 2026-10-28 用户裁定「开了几个就跑几个」：开关关掉的租户**不得**空转，
+        # 否则会照旧拉预检、刷误报、占一个进程位。命中即立刻退出（finally 清 pid 文件）。
+        if tenant_profile is not None and not resolve_tenant_active(
+            tenant_profile.tenant_id, store=store,
+        ):
+            store.operational_event(
+                service_name, "PROCESS_SKIPPED", "STOPPED",
+                {
+                    "reason": "租户已停用（tenant_active=false）",
+                    "tenant_id": tenant_profile.tenant_id,
+                    "hint": "由 start.bat/launch_workers 决定起几个 Worker；本进程不再启动",
+                },
+            )
+            store.heartbeat(
+                service_name, "STOPPED",
+                f"租户已停用（tenant_active:{tenant_profile.tenant_id}=false），本 Worker 退出",
+                os.getpid(),
+            )
+            return
         try:
             from futu_quant.radar_control import start as start_radar
             start_radar()
@@ -1754,7 +1798,9 @@ def main() -> None:
             return FutuPaperBroker(settings)
 
         try:
-            if futu_sdk_preflight(store, AlertManager(store), settings, force=True, tenant=tenant_profile):
+            # 懒加载：启动时**不再强制**预检（原 force=True 会在 OpenD 抖动时把
+            # 启动恢复也一并挡掉）。用缓存（30s）语义，真正需要时由调度循环再确认。
+            if futu_sdk_preflight(store, AlertManager(store), settings, tenant=tenant_profile):
                 try:
                     push_context = open_order_push(_make_broker(), store)
                 except Exception as exc:

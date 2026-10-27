@@ -10,9 +10,16 @@ from launch_workers import get_active_tenants, is_pid_alive
 from run_service import service_files
 
 
-def test_get_active_tenants_filters_disabled():
-    active = get_active_tenants()
-    active_ids = {t.tenant_id for t in active}
+def test_get_active_tenants_filters_disabled(monkeypatch):
+    """开关缺省时按注册表默认值：实盘 + 模拟盘启用，moomoo 备用停用。"""
+    import launch_workers
+
+    monkeypatch.setattr(
+        launch_workers,
+        "_read_tenant_switch_settings",
+        lambda: launch_workers._ReadOnlySettings({}),
+    )
+    active_ids = {t.tenant_id for t in get_active_tenants()}
 
     # 1. 默认启用的实盘与模拟沙盒租户必须在活跃列表中
     assert "futu_real_master" in active_ids
@@ -20,6 +27,30 @@ def test_get_active_tenants_filters_disabled():
 
     # 2. 默认禁用的备用专户 moomoo_real 绝不得被误启动
     assert "moomoo_real" not in active_ids
+
+
+def test_get_active_tenants_follows_switch(monkeypatch):
+    """2026-10-28：开关（tenant_active:<id>）优先于注册表常量——开了几个就跑几个。"""
+    import launch_workers
+
+    monkeypatch.setattr(
+        launch_workers,
+        "_read_tenant_switch_settings",
+        lambda: launch_workers._ReadOnlySettings({"tenant_active:futu_real_master": "false"}),
+    )
+    assert {t.tenant_id for t in get_active_tenants()} == {"futu_paper_sandbox"}
+    assert {t.tenant_id for t in launch_workers.get_disabled_tenants()} == {
+        "futu_real_master",
+        "moomoo_real",
+    }
+
+    # 非法值按关闭处理（fail-closed：宁可不启动，也不凭空多起一个真金 Worker）
+    monkeypatch.setattr(
+        launch_workers,
+        "_read_tenant_switch_settings",
+        lambda: launch_workers._ReadOnlySettings({"tenant_active:futu_paper_sandbox": "maybe"}),
+    )
+    assert "futu_paper_sandbox" not in {t.tenant_id for t in get_active_tenants()}
 
 
 def test_is_pid_alive_contract():

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 
 class TenantConfigKeyError(ValueError):
@@ -373,15 +373,68 @@ def tenant_config_key_candidates(
     return tenant_key, legacy
 
 
-def active_tenants(registry: dict[str, TenantProfile] | None = None) -> list[TenantProfile]:
-    """返回 ``is_active=True`` 的租户，按 ``tenant_id`` 排序（确定性顺序）。
+TENANT_ACTIVE_KEY_PREFIX = "tenant_active"
+
+
+def tenant_active_key(tenant_id: str) -> str:
+    """租户启用开关的配置键（``system_settings``）。"""
+    return f"{TENANT_ACTIVE_KEY_PREFIX}:{str(tenant_id or '').strip()}"
+
+
+def resolve_tenant_active(
+    tenant_id: str,
+    *,
+    store: Any | None = None,
+    registry: dict[str, TenantProfile] | None = None,
+) -> bool:
+    """租户是否启用：**配置键优先，缺省回落注册表默认值**。
+
+    2026-10-28 用户裁定：租户启用必须由开关决定，「开了几个就跑几个」。
+    原先 `TenantProfile.is_active` 是 `tenant.py` 里的代码常量，界面上关掉实盘
+    账号并不会改变它 → `launch_workers.get_active_tenants()` 永远拉起两个 Worker
+    （实盘租户仍按 REAL 走预检，实盘交易已关闭 → 预检必然失败 → 误报
+    「OpenD 掉线」并推送 CRITICAL）。
+
+    约定：键缺失（``""``）→ 用注册表默认值；键存在 → 以其为准，非法值按 **关闭**
+    处理（fail-closed：宁可少起一个 Worker，也不要凭空多起一个真金 Worker）。
+    """
+    reg = registry if registry is not None else DEFAULT_TENANTS
+    profile = reg.get(str(tenant_id or "").strip())
+    default = bool(getattr(profile, "is_active", False))
+    if store is None:
+        return default
+    raw = store.get_setting(tenant_active_key(tenant_id), "")
+    text = str(raw or "").strip().lower()
+    if text == "":
+        return default
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return False
+
+
+def active_tenants(
+    registry: dict[str, TenantProfile] | None = None,
+    store: Any | None = None,
+) -> list[TenantProfile]:
+    """返回启用的租户，按 ``tenant_id`` 排序（确定性顺序）。
 
     #2 雷达扇出的入口：共享市场层跑一次，然后**按此列表逐租户扇出**。
     顺序确定是为了让日志、审计、指标可复现（同一次运行两次结果一致）。
+
+    ``store`` 给出时按 `resolve_tenant_active`（配置键优先）判定，否则沿用注册表
+    默认值 —— 保持既有调用方（无 store 的纯函数用法）行为不变。
     """
     reg = registry if registry is not None else DEFAULT_TENANTS
-    return sorted((profile for profile in reg.values() if profile.is_active),
-                  key=lambda profile: profile.tenant_id)
+    return sorted(
+        (
+            profile
+            for profile in reg.values()
+            if resolve_tenant_active(profile.tenant_id, store=store, registry=reg)
+        ),
+        key=lambda profile: profile.tenant_id,
+    )
 
 
 def campaigns_config_key_lenient(tenant_id: str | None) -> tuple[str, bool]:

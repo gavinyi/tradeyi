@@ -17,7 +17,7 @@ if sys.platform == "win32":
     _local_appdata.mkdir(parents=True, exist_ok=True)
     os.environ["APPDATA"] = str(_local_appdata)
 
-from futu_quant.tenant import DEFAULT_TENANTS, TenantProfile
+from futu_quant.tenant import DEFAULT_TENANTS, TenantProfile, resolve_tenant_active
 from run_service import service_files
 
 
@@ -80,9 +80,63 @@ def is_pid_alive(pid: int) -> bool:
         return False
 
 
+class _ReadOnlySettings:
+    """只读设置视图：让 `resolve_tenant_active` 走同一份判定逻辑。
+
+    启动器**不得**构造 `TradingStore`（会触发 initialize/迁移副作用），
+    所以这里用 sqlite3 只读连接读 `system_settings`，再包成 `get_setting`。
+    """
+
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    def get_setting(self, key: str, default: str = "") -> str:  # noqa: D401
+        return self._values.get(key, default)
+
+
+def _read_tenant_switch_settings() -> _ReadOnlySettings:
+    import sqlite3
+
+    from futu_quant.store import DEFAULT_DB
+
+    values: dict[str, str] = {}
+    try:
+        if not Path(DEFAULT_DB).exists():
+            return _ReadOnlySettings(values)
+        con = sqlite3.connect(f"file:{DEFAULT_DB}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "select key, value from system_settings where key like 'tenant_active:%'"
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 - 读不到开关就回落注册表默认值（不阻断启动）
+        return _ReadOnlySettings(values)
+    for key, value in rows:
+        values[str(key)] = "" if value is None else str(value)
+    return _ReadOnlySettings(values)
+
+
 def get_active_tenants() -> list[TenantProfile]:
-    """获取所有处于启用状态的租户"""
-    return [prof for prof in DEFAULT_TENANTS.values() if prof.is_active]
+    """返回**开关启用**的租户（`tenant_active:<id>` 优先，缺省回落注册表默认值）。
+
+    2026-10-28 用户裁定：「开了几个就跑几个」。原先只认 `TenantProfile.is_active`
+    这个代码常量，界面上关掉实盘账号也照旧拉起实盘 Worker。
+    """
+    settings = _read_tenant_switch_settings()
+    return [
+        profile
+        for profile in DEFAULT_TENANTS.values()
+        if resolve_tenant_active(profile.tenant_id, store=settings)
+    ]
+
+
+def get_disabled_tenants() -> list[TenantProfile]:
+    """开关关闭的租户（启动时打印一行，便于核对「为什么只起了一个」）。"""
+    active_ids = {profile.tenant_id for profile in get_active_tenants()}
+    return [
+        profile for profile in DEFAULT_TENANTS.values() if profile.tenant_id not in active_ids
+    ]
 
 
 def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tuple[bool, int | None, str]:
@@ -152,6 +206,10 @@ def main() -> None:
     args = parser.parse_args()
 
     active_tenants = get_active_tenants()
+    disabled = get_disabled_tenants()
+    if disabled:
+        names = ", ".join(f"{p.tenant_id}（{p.display_name}）" for p in disabled)
+        print(f"[*] 开关关闭、不启动: {names}")
     if not active_tenants:
         print("[!] 警告：注册表中未发现任何处于启用状态 (is_active=True) 的租户。")
         sys.exit(1)
