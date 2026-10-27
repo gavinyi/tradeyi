@@ -10,6 +10,27 @@ import pandas as pd
 from .gamma_risk import market_number, normalize_iv, realized_volatility
 
 
+def _bounded_campaign_float(
+    value, *, default: float, low: float, high: float,
+) -> float:
+    """读 campaign 里的数值字段并夹到 ``[low, high]``；缺失/非法回落默认值。
+
+    用于「策略门槛类」参数（`min_return_cost_ratio`、`fee_slippage_allowance_pct`）：
+    - 缺失或非数值 → ``default``（保持既有行为，不给老 campaign 制造新拦截）
+    - 越界 → 夹到边界，并在越界方向取**更保守**的一端（门槛向上夹、allowance 向上夹）
+      由调用方按语义传入 low/high，这里只负责「不炸、不静默变成离谱值」
+    """
+    number = market_number(value, default)
+    if number <= 0:
+        # 显式写 0 / 负数一律视为「没配」：既不当作「关掉闸门」，也不当作「零成本」
+        return default
+    if number < low:
+        return low
+    if number > high:
+        return high
+    return number
+
+
 def volatility_signal_state(
     state: dict, campaign_state: dict, strategy_id: str, underlying: str, code: str,
     tenant_id: str = "",
@@ -413,16 +434,35 @@ def volatility_entry_quality_allowed(
     if expected_return is not None and expected < min_expected:
         failed.append(f"模型预期收益 {expected:.2%} 低于 {min_expected:.2%}")
     cost_multiple = market_number(campaign.get("expected_return_to_cost", campaign.get("model_expected_return_to_cost")), 0.0)
+    # 费用/滑点 allowance：往返口径的固定加项，可按券商真实费率配置。
+    # 原先写死 0.01（1%）；对低价合约占比过大，但**不能随手调小**——它代表
+    # 佣金+交易所费用+滑点的真实成本，调小等于放宽净亏交易。
+    allowance = _bounded_campaign_float(
+        campaign.get("fee_slippage_allowance_pct"),
+        default=0.01, low=0.0, high=0.05,
+    )
     estimated_cost = market_number(campaign.get("estimated_total_cost_pct"), 0.0)
     if estimated_cost <= 0:
         # Fail closed when a campaign has no explicit cost estimate: use the
-        # quoted percentage spread plus a conservative 1% round-trip fee/slippage allowance.
-        estimated_cost = spread / 100.0 + 0.01
+        # quoted percentage spread plus the round-trip fee/slippage allowance.
+        estimated_cost = spread / 100.0 + allowance
     cost_multiple = expected / estimated_cost if estimated_cost > 0 else 0.0
+    # 预期收益/成本倍数：campaign 可配，默认 2.0（= 行业 2× 往返成本口径，不降默认）。
+    # 下限 1.5 是安全底线（低于它等于放行「edge 撑不过一次往返」的交易）；
+    # 上限 4.0 防止误配成极端值把策略锁死。非法/缺省一律回落 2.0（fail-closed 到默认）。
+    min_return_cost_ratio = _bounded_campaign_float(
+        campaign.get("min_return_cost_ratio"),
+        default=2.0, low=1.5, high=4.0,
+    )
     checks["expected_return_to_cost"] = cost_multiple
     checks["estimated_total_cost_pct"] = estimated_cost
-    if expected < estimated_cost * 2.0:
-        failed.append(f"预期收益 {expected:.2%} 未达到预计总成本 {estimated_cost:.2%} 的2倍")
+    checks["min_return_cost_ratio"] = min_return_cost_ratio
+    checks["fee_slippage_allowance_pct"] = allowance
+    if expected < estimated_cost * min_return_cost_ratio:
+        failed.append(
+            f"预期收益 {expected:.2%} 未达到预计总成本 {estimated_cost:.2%} 的"
+            f"{min_return_cost_ratio:g}倍"
+        )
     if spread > max_spread:
         failed.append(f"价差 {spread:.1f}% 超过 {max_spread:.1f}%")
     if oi < min_oi:
