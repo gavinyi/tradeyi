@@ -251,6 +251,31 @@ def _preflight_scope(tenant) -> "tuple[str, dict[str, str]]":
     return tenant_id, overrides
 
 
+def modified_tracked_files(root: Path | str | None = None) -> list[str]:
+    """生产工作区里**已跟踪文件**的未提交改动（用于启动前的流程门禁）。
+
+    2026-10-28 用户裁定：改动必须先走 `feat/*` 或 `fix/*` 分支，**不动生产**。
+    但当晚生产目录里出现过 9 个文件未提交就被 Worker 加载运行（含 `risk.py`、
+    `alerts.py` 这种红区/告警口径文件）——代码没进分支、没审、没测就上了生产。
+    这道门禁把「生产工作区必须干净」变成硬约束：脏了就拒绝启动，而不是默默跑野代码。
+
+    只算**已跟踪文件**（`--untracked-files=no`）：`data/`、`.env`、日志、测试副本
+    都是 gitignore 的运行期产物，不该拦住启动。git 不可用/超时一律返回空列表
+    （fail-open 到「不拦」）：门禁本身不得成为新的启动单点故障。
+    """
+    base = Path(root) if root is not None else Path(__file__).resolve().parents[1]
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["git", "-C", str(base), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except Exception:  # noqa: BLE001 - git 不可用不拦启动
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+
+
 def _tenant_scoped_setting(base_key: str, tenant_id: str) -> str:
     """租户级设置键；无租户时保持原无前缀键（单实例与界面兼容）。"""
     if not tenant_id:
@@ -1717,6 +1742,20 @@ def main() -> None:
     settings = Settings.load(refresh=True)
     if not settings.enable_paper_orders:
         raise RuntimeError("ENABLE_PAPER_ORDERS=false; automatic paper execution is disabled")
+
+    # 流程门禁（2026-10-28 用户裁定「先 feat/fix 分支，不动生产」）：
+    # 生产工作区有未提交的已跟踪文件改动 → 说明代码没走分支流程，拒绝启动。
+    # 逃生阀 TRADEYI_ALLOW_DIRTY_TREE=1 仅供故障排查时短时使用，用完必须清掉。
+    dirty = modified_tracked_files()
+    if dirty:
+        if os.getenv("TRADEYI_ALLOW_DIRTY_TREE", "").strip() == "1":
+            print(f"[!] 生产工作区有 {len(dirty)} 个未提交改动，已按 TRADEYI_ALLOW_DIRTY_TREE=1 放行")
+        else:
+            raise RuntimeError(
+                "生产工作区存在未提交的已跟踪文件改动，拒绝启动。"
+                "改动必须先走 feat/* 或 fix/* 分支，合入 master 后再部署：\n  "
+                + "\n  ".join(dirty[:10])
+            )
 
     tenant_profile = None
     if args.tenant:
