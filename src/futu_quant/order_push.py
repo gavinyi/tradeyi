@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from futu import RET_OK, TradeDealHandlerBase, TradeOrderHandlerBase
 
+from .broker_order_error import format_broker_order_error, error_details_json
 from .fee_model import estimate_fees
 from .tenant import campaigns_config_key_lenient
 from .volatility_orphans import volatility_write_state_key
@@ -96,10 +97,18 @@ class OrderPushHandler(TradeOrderHandlerBase):
             filled = float(row.get("dealt_qty", 0) or 0)
             average = float(row.get("dealt_avg_price", 0) or 0)
             fees = estimate_fees(str(row.get("code", "")), str(row.get("trd_side", "BUY")), filled, average) if filled else 0
+            # 券商 FAILED 时把原始错误原文落库（2026-10-27 探针事故：FAILED 但 error 为空，
+            # 失败原因完全丢失）。只在 FAILED 时提取，正常订单零额外开销。
+            broker_error = format_broker_order_error(row) if status == "FAILED" else None
             self.store.update_by_broker_order(
                 str(row["order_id"]), status, filled, average, fees, source="BROKER_PUSH",
+                error=broker_error,
             )
-            self.store.operational_event("order_push", "ORDER_UPDATE", "HEALTHY", row.to_dict())
+            self.store.operational_event(
+                "order_push", "ORDER_UPDATE", "HEALTHY",
+                {**row.to_dict(),
+                 "broker_error_detail": json.loads(error_details_json(row))} if broker_error else row.to_dict(),
+            )
         self.store.heartbeat(
             "order_push", "HEALTHY",
             # E：文案与实际不符 —— 现在 REAL 也走这条路（10-22 起去掉了 SIMULATE 过滤）

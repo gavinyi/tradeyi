@@ -45,9 +45,9 @@ def resolve_cancel_aware_status(
 ) -> str:
     """券商 `FAILED` 的**按证据改判**（2026-10-27 缺陷修复，纯函数便于守卫）。
 
-    缺陷：券商把我方**撤单成功**也回报成 `FAILED`，本地直接记 `FAILED` →
-    「主动撤单」与「券商拒绝」在账上无法区分（实测：券商 FAILED、成交 0 股、
-    我方 5.3s 撤单成功，本地 status=FAILED）。
+    缺陷：券商回报 `FAILED` 时本地无法区分「我方主动撤单」与「券商拒绝」——
+    `audit_events` / `order_state_events` 里查无 CANCEL 实据，故改判逻辑
+    以「本地是否发出过撤单请求」为唯一证据来源，不依赖任何未证实的时序归因。
 
     改判规则（**只有满足全部条件才改判**，其余一律保持 FAILED）：
 
@@ -539,8 +539,9 @@ class ExecutionManager:
     def _cancel_evidence(self, broker_order_id: str) -> tuple[bool, bool]:
         """本地是否「已提交」且「我方发过撤单」——用于区分主动撤单与券商拒绝。
 
-        券商把**我方撤单成功**也回报成 `FAILED`（2026-10-27 实盘 $0.01 探针实测：
-        券商侧 FAILED、成交 0 股、我方 5.3s 撤单成功，本地却记 FAILED）。
+        券商回报 `FAILED` 时，本地无法区分「我方主动撤单」与「券商拒绝」——
+        库内 `audit_events` / `order_state_events` 均无 CANCEL 实据，故以本地
+        是否发出过撤单请求为准（不依赖任何未证实的时序归因）。
         只看券商状态无法区分「主动撤单」与「券商拒绝」，必须结合本地证据：
 
         - **已提交**：`order_intents` 里存在该 `broker_order_id` 的行（券商受理过）；

@@ -1456,6 +1456,7 @@ class TradingStore:
     def update_by_broker_order(
         self, broker_order_id: str, status: str, filled_quantity: float = 0,
         average_fill_price: float = 0, fees: float = 0, source: str = "BROKER_POLL",
+        error: str | None = None,
     ) -> None:
         with self.connection() as connection:
             previous = connection.execute(
@@ -1474,8 +1475,9 @@ class TradingStore:
                     return
             connection.execute(
                 """UPDATE order_intents SET status=?,filled_quantity=?,average_fill_price=?,fees=?,
-                last_broker_update=?,updated_at=? WHERE broker_order_id=?""",
-                (status, filled_quantity, average_fill_price, fees, self.now(), self.now(), str(broker_order_id)),
+                last_broker_update=?,updated_at=?,error=COALESCE(?,error) WHERE broker_order_id=?""",
+                (status, filled_quantity, average_fill_price, fees, self.now(), self.now(),
+                 error if error else None, str(broker_order_id)),
             )
             delta = float(filled_quantity or 0) - previous_qty
             if previous and delta > 0:
