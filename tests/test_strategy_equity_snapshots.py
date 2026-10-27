@@ -145,14 +145,14 @@ def test_snapshot_written_for_tenant(store):
         )
         connection.execute(
             "INSERT INTO fill_ledger(intent_id, strategy_id, symbol, side, quantity, "
-            "price, multiplier, fee_total, filled_at) "
-            "VALUES(9001,'core_satellite','US.SPY','BUY',2,10.0,1,0,?)",
+            "price, multiplier, fee_total, filled_at, source) "
+            "VALUES(9001,'core_satellite','US.SPY','BUY',2,10.0,1,0,?,'BROKER_DEAL')",
             ("2026-10-27T13:00:00+00:00",),
         )
         connection.execute(
             "INSERT INTO fill_ledger(intent_id, strategy_id, symbol, side, quantity, "
-            "price, multiplier, fee_total, filled_at) "
-            "VALUES(9001,'core_satellite','US.SPY','SELL',1,15.0,1,0,?)",
+            "price, multiplier, fee_total, filled_at, source) "
+            "VALUES(9001,'core_satellite','US.SPY','SELL',1,15.0,1,0,?,'BROKER_DEAL')",
             ("2026-10-27T13:30:00+00:00",),
         )
     written = se.snapshot_strategy_equity(
