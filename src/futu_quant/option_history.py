@@ -16,7 +16,7 @@ from .quote_liveness import BookActivityTracker
 _BOOK_ACTIVITY = BookActivityTracker()
 
 
-def configured_option_contracts(broker=None) -> tuple[str, ...]:
+def configured_option_contracts(broker=None, store=None) -> tuple[str, ...]:
     # #1 键级分区：**故意读全局**（含各租户键）—— 期权历史是回测/研究数据源，
     # 本就该看全量合约；且这里**只读**，不参与清理、不写键。
     codes: set[str] = set()
@@ -34,6 +34,23 @@ def configured_option_contracts(broker=None) -> tuple[str, ...]:
             code = str(leg.get("code", "")).upper()
             if parse_option_code(code):
                 codes.add(code)
+    # 2026-10-27 修复（根因）：引擎每轮「期权表达复核」会把 campaign **roll 成新合约**，
+    # 而新 code 不写回 campaigns 配置 → 采集清单看不到它 → 该合约永远没有
+    # `option_history` 行 → A14「无历史行即 fail-closed」永远拦住入场
+    # （今晚实盘/模拟有 BUY 却零成交、以及 10-22 之后连续 0 单的直接原因）。
+    # 修法：把「运行时已选中的活跃合约」并入采集清单（只读 campaign_state，不写键），
+    # 下一采集周期起该合约就有盘口观测，A14 有据可依；保护强度不变（仍要求真实观测）。
+    if store is not None:
+        try:
+            for key, value in store.campaign_states().items():
+                if not str(key).startswith("volatility_long_gamma"):
+                    continue
+                active = str((value or {}).get("active_contract_code") or "").upper()
+                if parse_option_code(active):
+                    codes.add(active)
+        except Exception:  # noqa: BLE001
+            # silent-ok: 采集清单降级不得打断采集；读不到状态就沿用配置清单
+            pass
     if broker is not None:
         positions = broker.positions()
         if not positions.empty and "code" in positions:
@@ -45,7 +62,7 @@ def configured_option_contracts(broker=None) -> tuple[str, ...]:
 
 
 def collect_option_snapshots(broker, store) -> dict:
-    contracts = configured_option_contracts(broker)
+    contracts = configured_option_contracts(broker, store)
     if not contracts:
         return {"contracts": 0, "stored": 0, "good": 0, "degraded": 0}
     parsed = {code: parse_option_code(code) for code in contracts}
