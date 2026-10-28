@@ -15,6 +15,32 @@ STRUCTURE_LABELS = {
     "PUT_BACKSPREAD": "认沽比例反向价差",
 }
 
+# 入场 IV 历史百分位上限：campaign 可配，默认 0.75（与历史硬编码一致）。
+# 边界 0.5–0.95；配错（缺失/非数字/越上界）一律 fail-closed 回落 0.75，
+# 只允许「收紧」（<0.5 夹到 0.5），不允许因配错就放开闸门。
+DEFAULT_IV_CAP = 0.75
+IV_CAP_MIN = 0.5
+IV_CAP_MAX = 0.95
+
+
+def resolve_iv_percentile_cap(campaign: dict | None) -> float:
+    """从 campaign 读入场 IV 百分位上限，非法回落默认 0.75（fail-closed）。
+
+    - 缺失 / 非数字 → 0.75
+    - < 0.5 → 夹到 0.5（只允许收紧，更安全）
+    - > 0.95 → 回落 0.75（上限外太松，不应放行）
+    """
+    raw = (campaign or {}).get("maximum_entry_iv_percentile")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_IV_CAP
+    if value < IV_CAP_MIN:
+        return IV_CAP_MIN
+    if value > IV_CAP_MAX:
+        return DEFAULT_IV_CAP
+    return value
+
 
 def automatic_combo_id(strategy_id: str, campaign: dict, cycle: int = 0) -> str:
     identity = (
@@ -37,6 +63,7 @@ def _package(
     *,
     minimum_expected_return: float,
     premium_budget: float,
+    iv_cap: float,
 ) -> dict[str, object]:
     entry_debit = 0.0
     exit_value = 0.0
@@ -84,7 +111,7 @@ def _package(
         and worst_spread <= 6.0
         and minimum_oi >= 800
         and minimum_volume >= 10
-        and maximum_iv_percentile <= .75
+        and maximum_iv_percentile <= iv_cap
         and maximum_iv_rv <= iv_rv_limit
     )
     reasons = []
@@ -104,8 +131,10 @@ def _package(
         reasons.append(f"最小未平仓量 {minimum_oi:.0f} 低于 800")
     if minimum_volume < 10:
         reasons.append(f"最小成交量 {minimum_volume:.0f} 低于 10")
-    if maximum_iv_percentile > .75:
-        reasons.append(f"最高腿 IV 百分位 {maximum_iv_percentile:.0%} 超过 75%")
+    if maximum_iv_percentile > iv_cap:
+        reasons.append(
+            f"最高腿 IV 百分位 {maximum_iv_percentile:.0%} 超过 {iv_cap:.0%}"
+        )
     if maximum_iv_rv > iv_rv_limit:
         reasons.append(f"最高腿 IV/RV {maximum_iv_rv:.2f} 超过 {iv_rv_limit:.2f}")
     primary = next(row for row, side, _, _ in legs if side == "BUY")
@@ -140,8 +169,37 @@ def build_volatility_structure_candidates(
     *,
     minimum_expected_return: float,
     premium_budget: float,
+    campaign: dict | None = None,
+    store: object | None = None,
+    strategy_id: str | None = None,
 ) -> pd.DataFrame:
-    """Route a directional signal across single-leg and defined-risk expressions."""
+    """Route a directional signal across single-leg and defined-risk expressions.
+
+    ``campaign`` / ``store`` / ``strategy_id`` 用于入场 IV 百分位上限的
+    campaign 级配置与审计留痕：生效值 > 默认 0.75 时写一条 ``audit_events``，
+    让「放宽风控闸门」可追溯（谁、什么时候、放宽到多少）。
+    UI 旧调用点不传这些参数 → 走默认 0.75、不审计。
+    """
+    iv_cap = resolve_iv_percentile_cap(campaign)
+    # 放宽闸门必须留痕：生效值高于默认 0.75 才记，收紧（<=0.75）不记。
+    if store is not None and iv_cap > DEFAULT_IV_CAP:
+        try:
+            store.audit(
+                "VOLATILITY_IV_CAP_RELAXED",
+                {
+                    "tenant_id": str((campaign or {}).get("tenant_id") or ""),
+                    "campaign_id": str(
+                        (campaign or {}).get("campaign_id", (campaign or {}).get("code", ""))
+                    ),
+                    "effective_iv_cap": iv_cap,
+                    "default_iv_cap": DEFAULT_IV_CAP,
+                    "raw_value": (campaign or {}).get("maximum_entry_iv_percentile"),
+                },
+                strategy_id,
+                actor="service:volatility",
+            )
+        except Exception:  # noqa: BLE001 - 留痕失败不阻断选结构
+            pass
     if candidates.empty:
         return pd.DataFrame()
     direction = str(direction).upper()
@@ -183,12 +241,14 @@ def build_volatility_structure_candidates(
             [(near, "BUY", 1, "PROTECTIVE"), (wing, "SELL", 1, "RISK")],
             minimum_expected_return=minimum_expected_return,
             premium_budget=premium_budget,
+            iv_cap=iv_cap,
         ))
         rows.append(_package(
             f"{direction}_BACKSPREAD",
             [(near, "SELL", 1, "RISK"), (wing, "BUY", 2, "PROTECTIVE")],
             minimum_expected_return=minimum_expected_return,
             premium_budget=premium_budget,
+            iv_cap=iv_cap,
         ))
     result = pd.DataFrame(rows)
     if result.empty:

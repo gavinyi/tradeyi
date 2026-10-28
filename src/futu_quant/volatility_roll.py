@@ -244,6 +244,9 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         candidates, direction,
         minimum_expected_return=minimum_expected_return,
         premium_budget=premium_budget,
+        campaign=campaign,
+        store=store,
+        strategy_id="volatility_long_gamma",
     )
     eligible = structures[structures["volatility_eligible"]] if not structures.empty else structures
     if eligible.empty:
