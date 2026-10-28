@@ -165,3 +165,35 @@ def test_iv_facts_are_recorded_but_not_judged(tmp_path):
     assert "iv_gate_pass" not in payload["checks"]
 
 
+def test_iv_coverage_is_never_silently_absent(tmp_path):
+    """不变量：payload 必须**要么**带 IV 相关字段、**要么**显式 `iv_gate_covered=False`。
+
+    防回归成「两者都没有」——那正是 2026-10-28 误判的成因：
+    记录里看不到 IV，却有人拿 allowed=true 去推断 IV 闸门放行。
+    绝不允许留空。
+    """
+    store = TradingStore(tmp_path / "t.db")
+    # 有 IV 事实的 campaign
+    volatility_entry_quality_allowed(
+        _campaign(iv_history_percentile=0.5, iv_history_samples=100,
+                  iv_percentile_status="HISTORICAL"),
+        store=store,
+    )
+    # 完全没有 IV 字段的 campaign
+    volatility_entry_quality_allowed(_campaign(), store=store)
+
+    rows = _records(store)
+    assert len(rows) == 2
+    for item in rows:
+        payload = json.loads(item["payload_json"])
+        has_iv_fields = any(
+            payload.get(key) is not None
+            for key in ("iv_history_percentile", "maximum_iv_percentile")
+        )
+        marked_black_box = payload.get("iv_gate_covered") is False
+        assert has_iv_fields or marked_black_box, (
+            "payload 既没有 IV 字段也没有 iv_gate_covered=False —— 会让人误以为覆盖了 IV 闸门"
+        )
+
+
+
