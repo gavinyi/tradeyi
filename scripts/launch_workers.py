@@ -17,6 +17,7 @@ if sys.platform == "win32":
     _local_appdata.mkdir(parents=True, exist_ok=True)
     os.environ["APPDATA"] = str(_local_appdata)
 
+from futu_quant.subprocess_env import subprocess_env
 from futu_quant.tenant import DEFAULT_TENANTS, TenantProfile, resolve_tenant_active
 from run_service import service_files
 
@@ -171,13 +172,11 @@ def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tu
 
     root_dir = Path(__file__).resolve().parents[1]
     cmd = [py, "-u", str(root_dir / "scripts" / "run_service.py"), "--tenant", tenant.tenant_id]
-    sub_env = os.environ.copy()
-    sub_env["PYTHONUTF8"] = "1"
-    sub_env["PYTHONIOENCODING"] = "utf-8"
-    # Unbuffered stdout (belt and braces with the "-u" above): Python block-buffers
-    # stdout when it is a file, which freezes the worker log and makes a running
-    # worker invisible.
-    sub_env["PYTHONUNBUFFERED"] = "1"
+    # 子进程环境统一走 subprocess_env：注入 src 到 PYTHONPATH + UTF8，
+    # 避免 venv 缺 editable .pth 时 worker 起不来（2026-10-28 假红根因）。
+    sub_env = subprocess_env(extra={
+        "PYTHONUNBUFFERED": "1",  # 与上面的 -u 双保险：stdout 重定向到文件时会块缓冲
+    })
 
     try:
         proc = subprocess.Popen(

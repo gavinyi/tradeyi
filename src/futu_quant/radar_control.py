@@ -9,6 +9,7 @@ import sys
 import time
 
 from .process_utils import pid_alive, request_stop
+from .subprocess_env import subprocess_env
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -100,7 +101,7 @@ def start() -> RadarStatus:
         return current
     STOP_FILE.unlink(missing_ok=True)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
+    env = subprocess_env()
     env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
     flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS) if sys.platform == "win32" else 0
     radar_out = open(LOG_FILE, "a", encoding="utf-8")

@@ -9,6 +9,7 @@ import sys
 import time
 
 from .process_utils import pid_alive, request_stop
+from .subprocess_env import subprocess_env
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -157,7 +158,7 @@ def start(tenant: str | None = None) -> ServiceStatus:
                 return current
     # Close the parent descriptor immediately; otherwise Windows keeps the live
     # service log locked across UI/service control operations.
-    env = os.environ.copy()
+    env = subprocess_env()
     env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
     if os.getenv("TRADEYI_ENV") == "test":
         env.setdefault("ENABLE_PAPER_ORDERS", "true")
@@ -240,7 +241,7 @@ def restart() -> ServiceStatus:
     if stopped.running:
         # Handoff waits for the old service to release the log. Keep the
         # child detached from service.log so Windows can replace it safely.
-        env = os.environ.copy()
+        env = subprocess_env()
         env.setdefault("APPDATA", str(ROOT / "data" / "appdata"))
         subprocess.Popen(  # noqa: S603
             [sys.executable, "-m", "futu_quant.service_control", "handoff", str(current.pid)],
