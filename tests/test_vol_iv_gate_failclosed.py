@@ -136,3 +136,22 @@ def test_audit_marks_missing_as_null_not_zero(tmp_path):
     )
     assert payload["iv_percentile_live"] is None
     assert payload["passed"] is False
+
+
+def test_audit_only_records_blocked_candidates(tmp_path):
+    """契约 7（Reviewer 条件）：放行的候选不写 `VOLATILITY_IV_GATE`。
+
+    审计在逐候选循环内，若放行也写会日增数千条、压垮 audit 表；
+    放行的候选已有 `VOLATILITY_ENTRY_QUALITY` 覆盖，不重复。
+    """
+    store = TradingStore(tmp_path / "t.db")
+    # 必过：IV 百分位 0.50 <= 0.75 → 不该写审计
+    _rank(_candidate(iv_history_percentile=0.50), store=store)
+    assert [r for r in store.audit_events()
+            if r["event_type"] == "VOLATILITY_IV_GATE"] == []
+
+    # 被拦：0.97 > 0.75 → 必须写
+    _rank(_candidate(iv_history_percentile=0.97), store=store)
+    assert len([r for r in store.audit_events()
+                if r["event_type"] == "VOLATILITY_IV_GATE"]) == 1
+

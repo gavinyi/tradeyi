@@ -1164,7 +1164,9 @@ def rank_volatility_contracts(
         # 必要性（2026-10-29 Ops 指出）：`VOLATILITY_ENTRY_QUALITY` 里照录的是
         # campaign 选定时存下的旧值（如 NVDA 0.7382），而 `:87`/此处拦的是
         # 候选**此刻**的值（88%~97%）——不记实时值，0 单真因永远是黑箱。
-        if store is not None:
+        # 只在**被拦下**时记（Reviewer 2026-10-29 条件）：放行的候选已有
+        # `VOLATILITY_ENTRY_QUALITY` 覆盖；逐候选全量写会日增数千条、属热路径写放大。
+        if store is not None and not iv_percentile_ok:
             try:
                 store.audit(
                     "VOLATILITY_IV_GATE",
