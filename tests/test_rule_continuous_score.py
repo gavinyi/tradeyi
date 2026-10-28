@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import pickle
 import subprocess
 import sys
@@ -230,6 +231,8 @@ def test_A8_no_sklearn_dependency():
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True,
         cwd=ROOT, timeout=120, encoding="utf-8", errors="replace",
+        # 子进程要 import 本仓包，必须显式给 PYTHONPATH（不依赖 venv 的 editable .pth）
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
     )
     assert "RULE_OK" in (result.stdout or ""), result.stderr[-800:]
 

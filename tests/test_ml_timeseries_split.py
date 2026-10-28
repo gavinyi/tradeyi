@@ -175,6 +175,9 @@ def _training_csv(tmp_path: Path) -> Path:
 def _run_training(csv_path: Path, model_path: Path, *, extra_env: dict | None = None,
                   split_mode: str = "timeseries") -> subprocess.CompletedProcess:
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    # 子进程要 import 本仓包，必须显式注入 PYTHONPATH，不能依赖 venv 的 editable .pth。
+    # 2026-10-28 实测：缺此项时本文件两条假红（ModuleNotFoundError: No module named 'futu_quant'）。
+    env["PYTHONPATH"] = str(ROOT / "src")
     if extra_env:
         env.update(extra_env)
     return subprocess.run(

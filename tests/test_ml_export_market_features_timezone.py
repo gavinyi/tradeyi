@@ -162,6 +162,7 @@ def test_export_entrypoint_survives_gbk_stdout(tmp_path):
     """Step 2 是**手工跑导出**：GBK 控制台下打印 emoji 不得 UnicodeEncodeError。"""
     script = ROOT / "scripts" / "ml_export_training_data_v3.py"
     env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src")  # 子进程要 import 本仓包
     env["PYTHONIOENCODING"] = "gbk"  # 强制复现 Windows 控制台 GBK 场景
     env.pop("PYTHONUTF8", None)
 
