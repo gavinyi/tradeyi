@@ -491,7 +491,14 @@ def volatility_entry_quality_allowed(
                 # 它与 `volatility_structures.py` 的 **IV 百分位闸门**是两道不同的闸，
                 # 这里通过**不代表** IV 闸门放行（2026-10-28 曾据此误判，特此留痕）。
                 "gate": "ENTRY_QUALITY",
-                "covers_iv_percentile": False,
+                # 本函数**不覆盖** `volatility_structures.py` 的 IV 百分位闸门。
+                # 显式写 False 而不是留空：今晚正是因为「看见 allowed=true 就以为全覆盖」，
+                # 拿质量分闸门去否决 IV 闸门，属越界外推。留空 = 让人再犯一次。
+                "iv_gate_covered": False,
+                "iv_gate_note": (
+                    "IV 百分位闸门在 volatility_structures.py 的 _package 内逐候选判定"
+                    "（取各腿 maximum_iv_percentile 的最大值）；本记录不含该判定结果。"
+                ),
                 # 存量 campaign 选定时留下的 IV 事实（原值照录，**不做任何判定**）。
                 # 目的：让 `volatility_structures.py` 的 IV 百分位闸门不再是全黑箱 ——
                 # 至少能看到「这张 campaign 当初的 IV 百分位是多少、什么口径、多少样本」。

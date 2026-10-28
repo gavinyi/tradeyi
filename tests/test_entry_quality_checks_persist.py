@@ -140,7 +140,8 @@ def test_payload_declares_gate_identity_and_iv_coverage(tmp_path):
     volatility_entry_quality_allowed(_campaign(), store=store)
     payload = json.loads(_records(store)[0]["payload_json"])
     assert payload["gate"] == "ENTRY_QUALITY"
-    assert payload["covers_iv_percentile"] is False
+    assert payload["iv_gate_covered"] is False
+    assert "volatility_structures" in payload["iv_gate_note"]
 
 
 def test_iv_facts_are_recorded_but_not_judged(tmp_path):
