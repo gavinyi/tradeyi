@@ -492,6 +492,14 @@ def volatility_entry_quality_allowed(
                 # 这里通过**不代表** IV 闸门放行（2026-10-28 曾据此误判，特此留痕）。
                 "gate": "ENTRY_QUALITY",
                 "covers_iv_percentile": False,
+                # 存量 campaign 选定时留下的 IV 事实（原值照录，**不做任何判定**）。
+                # 目的：让 `volatility_structures.py` 的 IV 百分位闸门不再是全黑箱 ——
+                # 至少能看到「这张 campaign 当初的 IV 百分位是多少、什么口径、多少样本」。
+                # 刻意不在这里算 pass/fail：阈值唯一来源是 `resolve_iv_percentile_cap`，
+                # 在此复制一份 0.75 就是类 1「阈值重复」缺陷复发。
+                "iv_history_percentile": campaign.get("iv_history_percentile"),
+                "iv_history_samples": campaign.get("iv_history_samples"),
+                "iv_percentile_status": campaign.get("iv_percentile_status"),
                 "tenant_id": str(tenant_id or campaign.get("tenant_id") or ""),
                 "strategy_id": str(strategy_id or campaign.get("strategy_id") or ""),
                 "symbol": str(symbol or campaign.get("symbol") or ""),

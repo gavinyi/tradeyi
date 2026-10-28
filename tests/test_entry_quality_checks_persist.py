@@ -142,3 +142,25 @@ def test_payload_declares_gate_identity_and_iv_coverage(tmp_path):
     assert payload["gate"] == "ENTRY_QUALITY"
     assert payload["covers_iv_percentile"] is False
 
+
+def test_iv_facts_are_recorded_but_not_judged(tmp_path):
+    """IV 百分位闸门（`volatility_structures.py:87`）不在本函数里，但它的输入事实要留痕。
+
+    这里只照录 campaign 存的原值，**不产生 pass/fail** —— 阈值唯一来源是
+    `resolve_iv_percentile_cap`，在 payload 里再判一次等于复制阈值。
+    """
+    store = TradingStore(tmp_path / "t.db")
+    volatility_entry_quality_allowed(
+        _campaign(iv_history_percentile=0.7382, iv_history_samples=3751,
+                  iv_percentile_status="HISTORICAL"),
+        store=store,
+    )
+    payload = json.loads(_records(store)[0]["payload_json"])
+    assert payload["iv_history_percentile"] == 0.7382
+    assert payload["iv_history_samples"] == 3751
+    assert payload["iv_percentile_status"] == "HISTORICAL"
+    # 不产生任何 IV 判定结论
+    assert "iv_gate_pass" not in payload
+    assert "iv_gate_pass" not in payload["checks"]
+
+
