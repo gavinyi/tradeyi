@@ -108,3 +108,37 @@ def test_missing_fields_and_bad_store_never_raise(tmp_path):
 
     ok3, _r3, _c3 = volatility_entry_quality_allowed(_campaign(), store=Boom())
     assert ok3 is True
+
+
+def test_call_path_distinguishes_entry_from_review(tmp_path):
+    """入场路径与复核路径必须可区分。
+
+    复核循环每 300 秒无条件写一条；若不区分，真出现 BUY 时入场那条会被
+    复核记录淹没，恰好丢掉要回答的问题。
+    """
+    store = TradingStore(tmp_path / "t.db")
+    volatility_entry_quality_allowed(_campaign(), store=store, call_path="review")
+    volatility_entry_quality_allowed(_campaign(), store=store, call_path="entry")
+
+    rows = _records(store)
+    assert len(rows) == 2
+    paths = [json.loads(item["payload_json"])["call_path"] for item in rows]
+    assert set(paths) == {"review", "entry"}
+    # 能按 call_path 精确筛出入场那条
+    entry = [json.loads(i["payload_json"]) for i in rows
+             if json.loads(i["payload_json"])["call_path"] == "entry"]
+    assert len(entry) == 1
+
+
+def test_payload_declares_gate_identity_and_iv_coverage(tmp_path):
+    """留痕必须自带闸门身份：这是质量分闸门，**不覆盖 IV 百分位闸门**。
+
+    2026-10-28 曾拿 `allowed=true` 去否决 `volatility_structures.py:87`
+    的 IV 闸门，属越界外推；payload 里写死标识防止后人重犯。
+    """
+    store = TradingStore(tmp_path / "t.db")
+    volatility_entry_quality_allowed(_campaign(), store=store)
+    payload = json.loads(_records(store)[0]["payload_json"])
+    assert payload["gate"] == "ENTRY_QUALITY"
+    assert payload["covers_iv_percentile"] is False
+

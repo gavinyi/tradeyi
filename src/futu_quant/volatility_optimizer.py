@@ -382,6 +382,7 @@ def volatility_entry_quality_allowed(
     tenant_id: str | None = None,
     symbol: str | None = None,
     code: str | None = None,
+    call_path: str = "review",
 ) -> tuple[bool, str, dict[str, float]]:
     """Final pre-trade quality gate for saved volatility campaigns.
 
@@ -482,6 +483,15 @@ def volatility_entry_quality_allowed(
     if store is not None:
         try:
             payload = {
+                # 调用路径：`entry` = 真实下单前的入场判定（回答「这张合约为什么没下单」），
+                # `review` = 每 300 秒无条件跑的存量表达复核（只说明存量 campaign 仍过闸门）。
+                # 两者必须可区分，否则真出现 BUY 时入场记录会被复核记录淹没。
+                "call_path": str(call_path or "review"),
+                # 闸门身份：本函数是**质量分闸门**，只管质量分/预期收益/价差/OI/量/成本倍数。
+                # 它与 `volatility_structures.py` 的 **IV 百分位闸门**是两道不同的闸，
+                # 这里通过**不代表** IV 闸门放行（2026-10-28 曾据此误判，特此留痕）。
+                "gate": "ENTRY_QUALITY",
+                "covers_iv_percentile": False,
                 "tenant_id": str(tenant_id or campaign.get("tenant_id") or ""),
                 "strategy_id": str(strategy_id or campaign.get("strategy_id") or ""),
                 "symbol": str(symbol or campaign.get("symbol") or ""),

@@ -1848,6 +1848,7 @@ def run_campaign(
                 tenant_id=_campaign_tenant,
                 symbol=code,
                 code=code,
+                call_path="entry",
             )
             if not quality_allowed:
                 record_pretrade_block("ENTRY_QUALITY", quality_reason, {

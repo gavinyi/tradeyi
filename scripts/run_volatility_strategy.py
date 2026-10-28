@@ -544,6 +544,7 @@ def run_once(
             tenant_id=str(campaign.get("tenant_id") or _tenant_id),
             symbol=underlying,
             code=current_code,
+            call_path="review",
         )
         needs_quality_replacement = bool(
             campaign.get("optimizer_version") == 2
