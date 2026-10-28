@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .gamma_risk import market_number, normalize_iv, realized_volatility
+from .volatility_structures import DEFAULT_IV_CAP, resolve_iv_percentile_cap
 
 
 def _bounded_campaign_float(
@@ -382,7 +383,7 @@ def volatility_entry_quality_allowed(
     tenant_id: str | None = None,
     symbol: str | None = None,
     code: str | None = None,
-    call_path: str = "review",
+    call_path: str = "unknown",
 ) -> tuple[bool, str, dict[str, float]]:
     """Final pre-trade quality gate for saved volatility campaigns.
 
@@ -486,7 +487,7 @@ def volatility_entry_quality_allowed(
                 # 调用路径：`entry` = 真实下单前的入场判定（回答「这张合约为什么没下单」），
                 # `review` = 每 300 秒无条件跑的存量表达复核（只说明存量 campaign 仍过闸门）。
                 # 两者必须可区分，否则真出现 BUY 时入场记录会被复核记录淹没。
-                "call_path": str(call_path or "review"),
+                "call_path": str(call_path or "unknown"),
                 # 闸门身份：本函数是**质量分闸门**，只管质量分/预期收益/价差/OI/量/成本倍数。
                 # 它与 `volatility_structures.py` 的 **IV 百分位闸门**是两道不同的闸，
                 # 这里通过**不代表** IV 闸门放行（2026-10-28 曾据此误判，特此留痕）。
@@ -1053,6 +1054,7 @@ def rank_volatility_contracts(
     *, signal_active: bool = False, strong_signal: bool = False,
     max_premium_per_stage: float | None = None, contracts_per_stage: int = 1,
     store=None,
+    campaign: dict | None = None,
 ) -> pd.DataFrame:
     if candidates.empty:
         result = candidates.copy()
@@ -1107,12 +1109,13 @@ def rank_volatility_contracts(
         min_oi = 800 if strong_signal else 1000
         min_volume = 10 if strong_signal else 15
         liquid = spread <= max_spread and oi >= min_oi and volume >= min_volume
-        # Missing history must be visible as insufficient evidence, but must not
-        # be silently converted into a fake 100th percentile rejection. The
-        # scanner normally supplies a real-history or same-chain proxy value.
-        cost_ok = iv_rv <= iv_rv_limit and (
-            not has_iv_percentile or row_iv_percentile <= .75
-        )
+        # 入场 IV 百分位上限：与 `volatility_structures._package` 共用同一解析器，
+        # 避免同一道闸门出现两个真值源（此处原先写死 .75）。
+        iv_cap = resolve_iv_percentile_cap(campaign)
+        # 闸门一律 fail-closed：**字段缺失 = 证据不足 = 拦**，但原因必须写明是
+        # 「缺失」而不是伪装成「超限」（旧实现把缺失当放行，是唯一一处 fail-open）。
+        iv_percentile_ok = has_iv_percentile and row_iv_percentile <= iv_cap
+        cost_ok = iv_rv <= iv_rv_limit and iv_percentile_ok
         delta_ok = .30 <= delta <= .80
         delta_score = max(0.0, 30 - abs(delta - .525) * 100)
         dte_score = 25 if 7 <= dte <= 21 else 15 if 2 <= dte <= 30 else 5
@@ -1145,14 +1148,44 @@ def rank_volatility_contracts(
             reason_parts.append(
                 f"IV/RV {iv_rv:.2f} 超过{risk_tier}门槛 {iv_rv_limit:.2f}"
             )
-        if has_iv_percentile and row_iv_percentile > .75:
+        if not has_iv_percentile:
+            reason_parts.append(
+                f"IV 百分位缺失（证据不足，按 fail-closed 拦下，生效上限 {iv_cap:.0%}）"
+            )
+        elif row_iv_percentile > iv_cap:
             source_label = (
                 "历史" if str(row.get("iv_percentile_status")) == "HISTORICAL"
                 else "期权链代理"
             )
             reason_parts.append(
-                f"IV{source_label}百分位 {row_iv_percentile:.0%} 超过 75%"
+                f"IV{source_label}百分位 {row_iv_percentile:.0%} 超过 {iv_cap:.0%}"
             )
+        # 实时 IV 闸门观测：记录**当前候选**的实时百分位与生效阈值。
+        # 必要性（2026-10-29 Ops 指出）：`VOLATILITY_ENTRY_QUALITY` 里照录的是
+        # campaign 选定时存下的旧值（如 NVDA 0.7382），而 `:87`/此处拦的是
+        # 候选**此刻**的值（88%~97%）——不记实时值，0 单真因永远是黑箱。
+        if store is not None:
+            try:
+                store.audit(
+                    "VOLATILITY_IV_GATE",
+                    {
+                        "tenant_id": str((campaign or {}).get("tenant_id") or ""),
+                        "strategy_id": str((campaign or {}).get("strategy_id") or ""),
+                        "code": str(row.get("code") or ""),
+                        "iv_percentile_live": (
+                            None if not has_iv_percentile else float(row_iv_percentile)
+                        ),
+                        "iv_percentile_status": str(row.get("iv_percentile_status") or ""),
+                        "iv_cap_effective": float(iv_cap),
+                        "iv_cap_is_default": bool(iv_cap == DEFAULT_IV_CAP),
+                        "iv_percentile_ok": bool(iv_percentile_ok),
+                        "passed": bool(iv_percentile_ok),
+                    },
+                    str((campaign or {}).get("strategy_id") or "") or None,
+                    actor="service:volatility",
+                )
+            except Exception:  # noqa: BLE001 - 观测失败不得阻断选合约
+                pass
         if not delta_ok:
             reason_parts.append(f"Delta {delta:.2f} 不在 0.30–0.80")
         if not expected_return_ok:

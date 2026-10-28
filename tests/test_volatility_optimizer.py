@@ -119,6 +119,9 @@ def _adaptive_candidate(**overrides):
         "option_implied_volatility": .57, "option_gamma": .02,
         "option_theta": -.05, "model_expected_return": .08,
         "ask_price": 5, "option_contract_multiplier": 100,
+        # 2026-10-29：IV 百分位闸门改为 fail-closed（缺失=拦），fixture 必须显式给值。
+        # 这些用例测的是 iv_rv 分档 / 预期收益分档 / 预算替代，不该被 IV 闸门干扰。
+        "iv_history_percentile": .50, "iv_percentile_status": "HISTORICAL",
     }
     row.update(overrides)
     return pd.DataFrame([row])

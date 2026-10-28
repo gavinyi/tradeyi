@@ -378,6 +378,8 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         "entry_gamma_theta_efficiency": float(selected_contract.get("gamma_theta_efficiency", 0)),
         "regime_profile": regime, "optimizer_version": 2, "enabled": True,
         "adaptive_risk_tier": str(selected.get("adaptive_risk_tier", "常规")),
+        # 入场快照（只写不读，供事后审计「入场时 IV/RV 与当时阈值是多少」）。
+        # 不参与任何判定；改动它们不会改变行为——不要误当成可调阈值。
         "entry_iv_rv": float(selected.get("iv_rv", 0)),
         "entry_iv_rv_limit": float(selected.get("iv_rv_limit", 1.5)),
         "volatility_quality_score": float(selected.get("volatility_quality_score", 0)),

@@ -72,6 +72,7 @@ def _package(
     minimum_oi = float("inf")
     minimum_volume = float("inf")
     maximum_iv_percentile = 0.0
+    iv_percentile_missing = False
     maximum_iv_rv = 0.0
     iv_rv_limit = float("inf")
     strikes: list[float] = []
@@ -86,8 +87,13 @@ def _package(
         worst_spread = max(worst_spread, market_number(row.get("spread_pct"), 100))
         minimum_oi = min(minimum_oi, market_number(row.get("option_open_interest")))
         minimum_volume = min(minimum_volume, market_number(row.get("volume")))
+        raw_iv_pct = row.get("iv_history_percentile")
+        if raw_iv_pct is None or (isinstance(raw_iv_pct, float) and pd.isna(raw_iv_pct)):
+            # 记录「缺失」这件事本身：缺省值 1 只用于 fail-closed 判定，
+            # 但原因文案必须说「缺失」，不能伪装成「100% 超限」误导排查。
+            iv_percentile_missing = True
         maximum_iv_percentile = max(
-            maximum_iv_percentile, market_number(row.get("iv_history_percentile"), 1)
+            maximum_iv_percentile, market_number(raw_iv_pct, 1)
         )
         maximum_iv_rv = max(maximum_iv_rv, market_number(row.get("iv_rv"), 99))
         iv_rv_limit = min(iv_rv_limit, market_number(row.get("iv_rv_limit"), 1.5))
@@ -131,7 +137,11 @@ def _package(
         reasons.append(f"最小未平仓量 {minimum_oi:.0f} 低于 800")
     if minimum_volume < 10:
         reasons.append(f"最小成交量 {minimum_volume:.0f} 低于 10")
-    if maximum_iv_percentile > iv_cap:
+    if iv_percentile_missing:
+        reasons.append(
+            f"最高腿 IV 百分位缺失（证据不足，按 fail-closed 拦下，生效上限 {iv_cap:.0%}）"
+        )
+    elif maximum_iv_percentile > iv_cap:
         reasons.append(
             f"最高腿 IV 百分位 {maximum_iv_percentile:.0%} 超过 {iv_cap:.0%}"
         )
