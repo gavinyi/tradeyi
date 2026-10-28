@@ -1843,6 +1843,11 @@ def run_campaign(
                 default_min_expected_return=float(
                     campaign.get("minimum_model_expected_return", .02)
                 ),
+                store=executor.store,
+                strategy_id=strategy_id,
+                tenant_id=_campaign_tenant,
+                symbol=code,
+                code=code,
             )
             if not quality_allowed:
                 record_pretrade_block("ENTRY_QUALITY", quality_reason, {

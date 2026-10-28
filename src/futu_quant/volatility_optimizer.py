@@ -377,6 +377,11 @@ def volatility_entry_quality_allowed(
     *,
     default_min_score: float = 70.0,
     default_min_expected_return: float = 0.02,
+    store: object | None = None,
+    strategy_id: str | None = None,
+    tenant_id: str | None = None,
+    symbol: str | None = None,
+    code: str | None = None,
 ) -> tuple[bool, str, dict[str, float]]:
     """Final pre-trade quality gate for saved volatility campaigns.
 
@@ -469,9 +474,42 @@ def volatility_entry_quality_allowed(
         failed.append(f"未平仓量 {oi:.0f} 低于 {min_oi:.0f}")
     if volume < min_volume:
         failed.append(f"成交量 {volume:.0f} 低于 {min_volume:.0f}")
+    allowed = not failed
+    reason = ("入场质量闸门未通过：" + "；".join(failed)) if failed else "入场质量闸门通过"
+    # 观测落库：每次判定写一条结构化 checks，直接回答「这张合约卡在哪一条」，
+    # 而不是从中文 reason 字符串里猜。不新建表，复用 audit_events。
+    # 缺字段/留痕失败一律不抛异常——观测不能反噬交易。
+    if store is not None:
+        try:
+            payload = {
+                "tenant_id": str(tenant_id or campaign.get("tenant_id") or ""),
+                "strategy_id": str(strategy_id or campaign.get("strategy_id") or ""),
+                "symbol": str(symbol or campaign.get("symbol") or ""),
+                "code": str(code or campaign.get("code") or ""),
+                "campaign_id": str(campaign.get("campaign_id", code or campaign.get("code", ""))),
+                "allowed": allowed,
+                "reason": reason,
+                "checks": checks,
+                "effective_thresholds": {
+                    "minimum_quality_score": min_score,
+                    "minimum_model_expected_return": min_expected,
+                    "maximum_spread_pct": max_spread,
+                    "minimum_open_interest": min_oi,
+                    "minimum_volume": min_volume,
+                    "min_return_cost_ratio": min_return_cost_ratio,
+                },
+            }
+            store.audit(
+                "VOLATILITY_ENTRY_QUALITY",
+                payload,
+                payload["strategy_id"] or None,
+                actor="service:volatility",
+            )
+        except Exception:  # noqa: BLE001 - 观测失败不能阻断交易
+            pass
     if failed:
-        return False, "入场质量闸门未通过：" + "；".join(failed), checks
-    return True, "入场质量闸门通过", checks
+        return False, reason, checks
+    return True, reason, checks
 
 
 def volatility_combo_entry_allowed(

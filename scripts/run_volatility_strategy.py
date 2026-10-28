@@ -539,6 +539,11 @@ def run_once(
             default_min_expected_return=float(
                 campaign.get("minimum_model_expected_return", .02)
             ),
+            store=executor.store,
+            strategy_id="volatility_long_gamma",
+            tenant_id=str(campaign.get("tenant_id") or _tenant_id),
+            symbol=underlying,
+            code=current_code,
         )
         needs_quality_replacement = bool(
             campaign.get("optimizer_version") == 2
