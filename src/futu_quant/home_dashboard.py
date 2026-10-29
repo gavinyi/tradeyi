@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from .account_metrics import account_pnl_metrics
-from .connectivity_protection import PROTECTION_EVENT_TYPES
+from .connectivity_protection import PROTECTION_EVENT_TYPES, RECOVERY_EVENT_TYPES
 from .option_lifecycle import parse_option_code
 from .radar_control import status as radar_status
 from .service_control import status as service_status
@@ -308,7 +308,19 @@ def _opend_incident(alerts: pd.DataFrame, account_ok: bool = True) -> dict[str, 
     }
 
 
-def latest_strategy_interruption_from_frame(events: pd.DataFrame) -> dict[str, Any] | None:
+def latest_strategy_interruption_from_frame(
+    events: pd.DataFrame, account_ok: bool = True,
+) -> dict[str, Any] | None:
+    """Summarize the latest strategy interruption window.
+
+    `account_ok` 兜底的理由与 `_opend_incident` 相同：能实时读到富途账户，
+    就证明链路现在是通的。没有它，单次短暂断线（失败 1 次、从未升级到
+    `strategy_interrupted`）会留下一条**没有配对的失败事件** —— 恢复路径
+    当时只在"升级过"时才写 `PROTECTIVE_RECOVERY_CONFIRMED`（见
+    `run_service.futu_sdk_preflight`）。首页找不到恢复事件，就按"仍在中断"
+    一直红着，时间持续累加，直到 48 小时窗口过期。2026-10-29 22:57 那次
+    实际只断了 4 秒，横幅却挂了近一小时。
+    """
     if events.empty or not {"event_type", "created_at"}.issubset(events.columns):
         return None
     frame = events.copy()
@@ -322,13 +334,7 @@ def latest_strategy_interruption_from_frame(events: pd.DataFrame) -> dict[str, A
         return None
     event_type = frame["event_type"].astype(str).str.upper()
     start_mask = event_type.isin(PROTECTION_EVENT_TYPES) | event_type.eq("BROKER_CONNECTIVITY_FAILURE")
-    # 服务重启后会先完成账户/订单对账并写入 STARTUP_RECOVERY；这同样证明此前的
-    # OpenD 链路中断已恢复，不能继续将历史故障展示为“当前中断”。
-    recovery_mask = event_type.isin({
-        "PROTECTIVE_RECOVERY_CONFIRMED",
-        "BROKER_CONNECTIVITY_RECOVERED",
-        "STARTUP_RECOVERY",
-    })
+    recovery_mask = event_type.isin(RECOVERY_EVENT_TYPES)
     candidates = frame[start_mask].sort_values("_ts")
     if candidates.empty:
         return None
@@ -346,7 +352,17 @@ def latest_strategy_interruption_from_frame(events: pd.DataFrame) -> dict[str, A
             failures += 1
     recoveries = frame[recovery_mask & frame["_ts"].gt(latest_ts)].sort_values("_ts")
     recovered = not recoveries.empty
-    end_ts = recoveries.iloc[0]["_ts"] if recovered else pd.Timestamp.now(tz=UTC)
+    recovery_ts = recoveries.iloc[0]["_ts"] if recovered else pd.NaT
+    age_hours = (pd.Timestamp.now(tz=UTC) - latest_ts).total_seconds() / 3600
+    if account_ok:
+        # 账户读得到 = 链路现在通。超过 1 小时的旧中断不再占用首页（与
+        # `_opend_incident` 同一口径）；1 小时内按“已恢复”渲染成黄色历史条。
+        if age_hours > 1.0:
+            return None
+        if not recovered:
+            recovered = True
+            recovery_ts = pd.Timestamp.now(tz=UTC)
+    end_ts = recovery_ts if recovered else pd.Timestamp.now(tz=UTC)
     payload = _json_loads(latest.get("payload_json"))
     return {
         "started_at_china": _to_china_label(start_ts),
@@ -389,7 +405,9 @@ def _render_attention_center(
 ) -> None:
     """Put actionable exceptions above normal dashboard analytics."""
     incident = _opend_incident(snapshot["alerts"], account_ok=account["ok"])
-    interruption = latest_strategy_interruption_from_frame(snapshot["events"])
+    interruption = latest_strategy_interruption_from_frame(
+        snapshot["events"], account_ok=account["ok"],
+    )
     current_broker_fault = not account["ok"]
     open_incidents = len(snapshot["incidents"])
     needs_attention = (

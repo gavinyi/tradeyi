@@ -366,10 +366,39 @@ def futu_sdk_preflight(
         record_broker_failure(store, alerts, "trading_service", message, tenant=tenant)
         alerts.send("CRITICAL", "OPEND_DISCONNECTED", message, incident_key="OPEND_DISCONNECTED")
         return False
+    # 恢复事件必须与失败事件**对称**。
+    #
+    # 事故形态（10-29 22:57）：预检失败 1 次 → 写入 `BROKER_CONNECTIVITY_FAILURE`
+    # 与 `PROTECTIVE_MODE_ACTIVE`（两者都是首页的"中断起点"），2 秒后连接恢复。
+    # 但恢复路径只在 `strategy_interrupted == true`（失败 ≥3 次、真正升级过）
+    # 时才写 `PROTECTIVE_RECOVERY_CONFIRMED` —— 单次短暂断线**什么恢复事件都不写**。
+    # 首页据此判定"仍在中断"，红条一直挂到 48 小时自动过期，时间还继续累加。
+    #
+    # 所以判据不能是"升级过没有"，而是"**这次成功之前是不是失败态**"：
+    # 只要本轮进过失败态，成功时就必须留下一条恢复记录。
+    #
+    # 不能无条件每次都写：预检缓存 30 秒、监控周期 9–20 秒，一天上万条
+    # `operational_events`（该表已 17 万行）会把真实事件淹掉。
+    failures_key = _tenant_scoped_setting("opend_consecutive_failures", tenant_id)
+    was_degraded = store.get_setting(degraded_key, "false").lower() == "true"
+    try:
+        prior_failures = int(store.get_setting(failures_key, "0") or 0)
+    except (TypeError, ValueError):
+        prior_failures = 0
     store.set_setting(success_key, now.isoformat())
     store.set_setting(degraded_key, "false")
-    store.set_setting(_tenant_scoped_setting("opend_consecutive_failures", tenant_id), "0")
+    store.set_setting(failures_key, "0")
     alerts.recover("OPEND_DISCONNECTED", "富途 OpenD 网关连接已恢复正常，交易与行情调度链路恢复就绪", incident_key="OPEND_DISCONNECTED")
+    if was_degraded or prior_failures > 0:
+        store.operational_event(
+            "opend", "BROKER_CONNECTIVITY_RECOVERED", "HEALTHY",
+            {
+                "tenant_id": tenant_id,
+                "failures_before_recovery": prior_failures,
+                "was_degraded": was_degraded,
+                "message": "OpenD 预检恢复成功，券商连接恢复正常",
+            },
+        )
     if store.get_setting(_tenant_scoped_setting("strategy_interrupted", tenant_id), "false").lower() == "true":
         store.set_setting(_tenant_scoped_setting("strategy_interrupted", tenant_id), "false")
         store.set_setting("strategy_recovered_at", now.isoformat())

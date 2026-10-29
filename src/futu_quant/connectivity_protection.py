@@ -23,6 +23,18 @@ PROTECTION_EVENT_TYPES = {
     "PROTECTIVE_MODE_ACTIVE",
 }
 
+# 中断窗口的“解除”事件。**单一事实源**：此前本模块与
+# `home_dashboard.latest_strategy_interruption_from_frame` 各写一份白名单，
+# 前者漏了 `STARTUP_RECOVERY` —— 同一条历史故障，两处判定可能给出相反结论。
+# 任何新增的恢复类事件都必须加在这里。
+RECOVERY_EVENT_TYPES = {
+    "PROTECTIVE_RECOVERY_CONFIRMED",
+    "BROKER_CONNECTIVITY_RECOVERED",
+    # 服务重启后会先完成账户/订单对账并写入 STARTUP_RECOVERY；这同样证明
+    # 此前的 OpenD 链路中断已恢复，不能继续把历史故障当成“当前中断”。
+    "STARTUP_RECOVERY",
+}
+
 
 @dataclass(frozen=True)
 class StrategyInterruption:
@@ -130,10 +142,7 @@ def latest_strategy_interruption(store, *, hours: int = 48) -> StrategyInterrupt
     event_type = frame["event_type"].astype(str).str.upper()
     start_mask = event_type.isin(PROTECTION_EVENT_TYPES)
     broker_mask = event_type.eq("BROKER_CONNECTIVITY_FAILURE")
-    recovery_mask = event_type.isin({
-        "PROTECTIVE_RECOVERY_CONFIRMED",
-        "BROKER_CONNECTIVITY_RECOVERED",
-    })
+    recovery_mask = event_type.isin(RECOVERY_EVENT_TYPES)
     candidates = frame[start_mask | broker_mask].sort_values("_ts")
     if candidates.empty:
         return None
