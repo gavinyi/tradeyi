@@ -378,6 +378,12 @@ def _maybe_create_tenant_campaign(
             tenant_id=str(tenant_id or ""),
         )
         if broken:
+            # **这里才是真断链，保留 ERROR 与 BROKEN 命名。**
+            # 判据见 `campaign_intent_chain_status`：campaign 已创建且超过超时窗口，
+            # 但既没有订单意图、也没有任何 BLOCKED/CLOSED/HOLD 门禁留痕 ——
+            # 说明决策链在 campaign 与下单之间**静默断裂**，属于必须排查的故障。
+            # 与之相对，候选被入场过滤器拒绝（下方 `VOLATILITY_CANDIDATE_FILTERED`）
+            # 是设计内行为，两者不可共用同一个告警名。
             trace_id = existing_campaign.get("activation_trace_id")
             AlertManager(store).send(
                 "ERROR", "VOLATILITY_SIGNAL_CHAIN_BROKEN",
@@ -666,10 +672,18 @@ def _maybe_create_tenant_campaign(
             "diagnostics": diagnostics, "tenant_id": tenant_id,
             "trace_id": trace_id,
         }, "volatility_scanner", actor="service:radar")
+        # 这是**入场过滤器按设计拒单**，不是故障：IV/RV 超门槛、价差过宽、
+        # 流动性不足、权利金超预算都属于「评估后决定不买」。
+        #
+        # 原实现标成 ERROR + `VOLATILITY_SIGNAL_CHAIN_BROKEN`，与真正的断链
+        # （`campaign_intent_chain_status` 判定：campaign 已建但既无订单意图、
+        # 也无门禁留痕）共用同一个名字，首页和告警列表根本分不出「系统坏了」
+        # 和「今天不买」。2026-10-29 恢复后 AMZN 被 IV 百分位 94% 拦下，
+        # 却推了一条 ERROR 叫「信号链断裂」—— 典型的术语与级别双误。
         AlertManager(store).send(
-            "ERROR", "VOLATILITY_SIGNAL_CHAIN_BROKEN",
-            f"{symbol} scanner 已触发 BUY，但未形成 campaign：{roll_reason}（trace_id={trace_id}）",
-            incident_key=f"volatility-signal-chain:{tenant_id}:{symbol}",
+            "WARNING", "VOLATILITY_CANDIDATE_FILTERED",
+            f"{symbol} 触发 BUY 但候选全部被入场过滤器拒绝（非故障）：{roll_reason}（trace_id={trace_id}）",
+            incident_key=f"volatility-candidate-filtered:{tenant_id}:{symbol}",
         )
         store.set_setting(rejection_key, fingerprint)
 

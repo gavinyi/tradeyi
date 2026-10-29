@@ -400,6 +400,9 @@ def _strategy_interruptions(store, window: DiagnosticWindow) -> pd.DataFrame:
             "状态": str(row.get("status") or ""),
             "任务": TASK_LABELS.get(str(payload.get("task") or payload.get("trigger_task") or row.get("component") or ""), str(payload.get("task") or payload.get("trigger_task") or row.get("component") or "")),
             "未平期权数": int(payload.get("open_option_count") or 0),
+            # 2026-10-30 起保护范围含券商侧正股；此处必须一并展示，
+            # 否则复盘表会显示“期权 0 张”而看不出当时其实有正股敞口。
+            "正股持仓数": int(payload.get("open_stock_count") or 0),
             "失败次数": int(payload.get("failures") or 0),
             "说明": str(payload.get("message") or payload.get("reason") or row.get("message") or ""),
         })

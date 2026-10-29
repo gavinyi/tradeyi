@@ -376,11 +376,12 @@ def latest_strategy_interruption_from_frame(
             recovery_evidence = "broker_snapshot"
     end_ts = recovery_ts if recovered else pd.Timestamp.now(tz=UTC)
     payload = _json_loads(latest.get("payload_json"))
-    # 保护模式看的是**策略账本**（虚拟盘 virtual / 影子盘 shadow），不是券商实盘持仓
-    # —— `connectivity_protection.active_protected_option_positions` 的数据源就是这两个。
-    # 但页面只写“存在 N 个未平期权”，读起来像实盘有 N 张裸奔。
-    # 2026-10-29 16:00 那次报的 2 张（AMD/QQQ）全是 `sources: ["virtual"]`，
-    # 而实盘当天 14:54 就已平仓归零。
+    # 保护范围自 2026-10-30 起同时覆盖**券商侧**持仓：
+    #   期权 = 策略账本（virtual / shadow）+ 券商实盘快照（broker）
+    #   正股 = 仅券商快照（`stock_positions`），单独计数
+    # 在此之前只读策略账本，页面写「存在 N 个未平期权」读起来像实盘有 N 张裸奔
+    # —— 2026-10-29 16:00 报的 2 张（AMD/QQQ）全是 `sources: ["virtual"]`，
+    # 实盘当天 14:54 就已平仓归零。
     option_sources = sorted({
         str(source)
         for position in (payload.get("positions") or [])
@@ -395,6 +396,7 @@ def latest_strategy_interruption_from_frame(
         "recovery_evidence": recovery_evidence,
         "failures": max(failures, int(_number(payload.get("failures"), 0))),
         "open_option_count": int(_number(payload.get("open_option_count"), 0)),
+        "open_stock_count": int(_number(payload.get("open_stock_count"), 0)),
         "option_sources": option_sources,
         "task": str(payload.get("task") or payload.get("trigger_task") or ""),
         "message": str(payload.get("message") or payload.get("reason") or ""),
@@ -406,8 +408,28 @@ def _option_scope_label(sources: list[str]) -> str:
     """把保护仓的来源翻成人话，避免把策略账本读成券商实盘敞口。"""
     if not sources:
         return ""
-    names = {"virtual": "虚拟盘", "shadow": "影子盘", "real": "实盘"}
+    names = {
+        "virtual": "虚拟盘",
+        "shadow": "影子盘",
+        "broker": "券商实盘",
+        "real": "券商实盘",
+    }
     return "，".join(names.get(source, source) for source in sources) + "账本"
+
+
+def _positions_phrase(option_count: int, stock_count: int, sources: list[str]) -> str:
+    """把「当时手上有什么仓」说清楚，期权和正股分开讲。
+
+    分开的原因：期权有到期日、需要实时退出管理；正股只是暂时不能止损。
+    混成一句「有 N 个持仓」会让两个风险量级完全不同的事看起来一样重。
+    """
+    parts: list[str] = []
+    if option_count:
+        scope = _option_scope_label(sources)
+        parts.append(f"{scope}有 {option_count} 个未平期权" if scope else f"有 {option_count} 个未平期权")
+    if stock_count:
+        parts.append(f"券商侧另有 {stock_count} 只正股")
+    return "、".join(parts) if parts else "无持仓"
 
 
 def _large_loss_positions(positions: pd.DataFrame) -> pd.DataFrame:
@@ -462,17 +484,19 @@ def _render_attention_center(
             )
         if interruption is not None:
             duration_label = _duration_label(interruption["duration_minutes"])
-            open_options = interruption["open_option_count"]
+            positions_text = _positions_phrase(
+                interruption["open_option_count"],
+                interruption.get("open_stock_count", 0),
+                interruption.get("option_sources") or [],
+            )
             task = interruption["task"] or "券商/行情链路"
-            scope = _option_scope_label(interruption.get("option_sources") or [])
-            scope_note = f"（{scope}）" if scope else ""
             if interruption["recovered"]:
                 evidence = interruption.get("recovery_evidence", "connectivity")
                 if interruption.get("duration_is_trustworthy", True):
                     st.warning(
                         f"策略中断已恢复：{interruption['started_at_china']} 开始，"
                         f"最后异常 {interruption['last_at_china']}，影响 {duration_label}。"
-                        f"当时策略账本{scope_note}有 {open_options} 个未平期权，触发来源：{task}。",
+                        f"当时{positions_text}，触发来源：{task}。",
                         icon=":material/history:",
                     )
                 else:
@@ -483,14 +507,14 @@ def _render_attention_center(
                     st.info(
                         f"策略中断已恢复（由{confirmed_by}确认）：{interruption['started_at_china']} "
                         f"有连接异常，最后异常 {interruption['last_at_china']}。"
-                        f"当时策略账本{scope_note}有 {open_options} 个未平期权，触发来源：{task}。"
+                        f"当时{positions_text}，触发来源：{task}。"
                         f"真实断线时长未记录，此前的“持续中”计时不可当真。",
                         icon=":material/history:",
                     )
             else:
                 st.error(
                     f"策略中断：自 {interruption['started_at_china']} 起，券商/行情连接异常已持续 "
-                    f"{duration_label}；当时策略账本{scope_note}有 {open_options} 个未平期权，"
+                    f"{duration_label}；当时{positions_text}，"
                     f"系统已进入持仓保护恢复。",
                     icon=":material/report:",
                 )

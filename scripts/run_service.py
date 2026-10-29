@@ -65,7 +65,7 @@ from futu_quant.correlation_risk import update_correlation_clusters
 from futu_quant.core_validation import load_core_daily_validation
 from futu_quant.config import load_gamma_campaigns, load_volatility_campaigns, upsert_campaign
 from futu_quant.campaign_cleanup import cleanup_expired_campaigns
-from futu_quant.connectivity_protection import active_protected_option_positions
+from futu_quant.connectivity_protection import protected_position_summary
 from futu_quant.account_metrics import account_pnl_metrics
 from futu_quant.risk import RiskLimits, ny_trading_day_start_utc
 from futu_quant.option_lifecycle import execute_disposition_plans, monitor_option_lifecycle
@@ -577,20 +577,44 @@ def activate_protective_recovery(
     session = MARKET_CALENDAR.session(now)
     if not (session.is_session and session.extended_open(now)):
         return
-    positions = active_protected_option_positions(store)
-    if not positions:
+    # 保护范围必须包含**券商侧**持仓。原先只读 `virtual_positions()` /
+    # `shadow_open_positions()`（策略账本），实盘仓位完全不可见 ——
+    # 2026-10-30 实测：断线 28 分钟，保护事件写「2 个未平期权」，
+    # 那 2 张全是虚拟盘；同时实盘 NVDA 6 股 + GLD 2.43 股（约 $2,175）
+    # 一张都没提。用户读到的「有仓被保护」和真实的「有仓没人管」是两件事。
+    trading_env = str(getattr(tenant, "trading_env", "") or "").strip().upper() or "REAL"
+    summary = protected_position_summary(store, trading_env=trading_env)
+    options = summary["options"]
+    stocks = summary["stocks"]
+    if not options and not stocks:
         return
+    # 升级（暂停开新仓 + 重启）仍只由**期权**触发：正股无到期日，若也计入升级，
+    # 长期持有的底仓会让每一次 OpenD 抖动都升级成「策略中断」。正股进入可见性
+    # 与告警，但不抬升升级门槛 —— 这是刻意的非对称。
+    escalatable = bool(options)
+    position_scope = {
+        "open_option_count": len(options),
+        "open_stock_count": len(stocks),
+        "option_sources": summary["option_sources"],
+        "broker_snapshot_at": summary["broker_snapshot_at"],
+    }
     threshold = max(1, int(os.getenv("PROTECTIVE_RESTART_ON_FAILURES", "3")))
-    if failures < threshold:
+    if failures < threshold or not escalatable:
+        # 只有正股时永远不会升级，若每轮都写事件就是无限刷屏
+        # （预检缓存 30 秒，28 分钟的断线会留下 50+ 条一样的记录）。
+        # 只在本次断线的第一条留痕：够证明「看见了这些正股」，又不淹没日志。
+        if not escalatable and failures > 1:
+            return
         store.operational_event(
             "protective_mode", "PROTECTIVE_MODE_ACTIVE", "DEGRADED",
             {
                 "trigger_task": strategy_id,
                 "failures": failures,
-                "open_option_count": len(positions),
-                "positions": positions[:20],
+                "positions": options[:20],
+                "stock_positions": stocks[:20],
+                **position_scope,
                 "message": message,
-                "waiting_for_failures": threshold,
+                "waiting_for_failures": threshold if escalatable else None,
             },
         )
         return
@@ -609,15 +633,18 @@ def activate_protective_recovery(
         {
             "trigger_task": strategy_id,
             "failures": failures,
-            "open_option_count": len(positions),
-            "positions": positions[:20],
+            "positions": options[:20],
+            "stock_positions": stocks[:20],
+            **position_scope,
             "message": message,
             "action": "restart_radar_and_trading_service",
         },
     )
     alerts.send(
         "ERROR", "STRATEGY_INTERRUPTED_WITH_OPEN_OPTIONS",
-        f"检测到未平期权 {len(positions)} 张时券商/行情连接连续失败，已进入持仓保护恢复：{message}",
+        f"检测到未平期权 {len(options)} 张"
+        + (f"、正股 {len(stocks)} 只" if stocks else "")
+        + f" 时券商/行情连接连续失败，已进入持仓保护恢复：{message}",
         incident_key="STRATEGY_INTERRUPTED_WITH_OPEN_OPTIONS",
     )
     if tenant is None:
@@ -631,7 +658,7 @@ def activate_protective_recovery(
             "protective_mode", "PROTECTIVE_RESTART_SKIPPED", "DEGRADED",
             {
                 "tenant_id": _tid,
-                "open_option_count": len(positions),
+                **position_scope,
                 "reason": "多租户模式：仅本租户进入持仓保护，不重启共享雷达与服务",
             },
         )
