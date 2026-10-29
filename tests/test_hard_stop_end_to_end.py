@@ -145,8 +145,10 @@ class _RecordingExecutor:
         return None
 
 
-def test_hard_stop_submits_exit_order_end_to_end(tmp_path, monkeypatch):
-    """端到端：亏损超线的 VOLATILITY campaign，最终必须真的提交一张退出单。"""
+def test_hard_stop_submits_exit_order_end_to_end_without_activation_evidence(
+    tmp_path, monkeypatch,
+):
+    """无 scanner 激活证据时，亏损超线的持仓仍必须提交硬止损退出单。"""
     rg = _load_gamma()
 
     store = TradingStore(tmp_path / "hs.db")
@@ -155,6 +157,7 @@ def test_hard_stop_submits_exit_order_end_to_end(tmp_path, monkeypatch):
     # 时间衰减未生效（刚开仓），让硬止损成为唯一触发条件
     monkeypatch.setattr(rg, "volatility_signal_state", lambda *a, **k: {})
     monkeypatch.setattr(rg, "sync_volatility_position_cycle", lambda *a, **k: None)
+    monkeypatch.setattr(rg, "volatility_near_expiry_itm_exit_reason", lambda *a, **k: None)
     # 绕过"市场未开盘"门禁 —— 本用例只关心硬止损守护，不关心交易时段
     monkeypatch.setattr(
         rg.MARKET_CALENDAR, "session",
@@ -289,6 +292,7 @@ def test_normal_volatility_decision_is_not_affected(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rg, "volatility_signal_state", lambda *a, **k: {})
     monkeypatch.setattr(rg, "sync_volatility_position_cycle", lambda *a, **k: None)
+    monkeypatch.setattr(rg, "volatility_near_expiry_itm_exit_reason", lambda *a, **k: None)
     monkeypatch.setattr(
         rg.MARKET_CALENDAR, "session",
         lambda _now: type("S", (), {"regular_open": staticmethod(lambda _n: True)})(),

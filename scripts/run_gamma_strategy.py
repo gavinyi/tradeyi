@@ -44,7 +44,7 @@ from futu_quant.volatility_optimizer import (
     loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
-    complete_volatility_activation,
+    complete_volatility_activation, volatility_regime, volatility_threshold_profile,
 )
 from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.volatility_activation import load_activation_evidence
@@ -1154,7 +1154,9 @@ def run_campaign(
             )
             print(f"{code}: SELL ({reason}) [硬止损绕过冷却]")
     regime = None
-    if trigger_mode == "VOLATILITY":
+    if trigger_mode == "VOLATILITY" and quantity <= 0:
+        # 激活证据与入场二次确认只约束新开仓。已有持仓的 SELL（尤其硬止损）
+        # 绝不能因为 scanner 证据缺失/过期而被提前 return 阻断。
         # P0 单一激活判定：scanner 是唯一生产者；campaign 只消费同一份不可变证据，
         # 禁止再以 campaign/adaptive 的 min() 重算并制造第二真值源。
         evidence, evidence_reason = load_activation_evidence(
@@ -1253,6 +1255,16 @@ def run_campaign(
         event_time = (
             safe_datetime(signal_started_at, now) if signal_started_at else now
         ) + timedelta(hours=int(campaign.get("entry_hours", 6)))
+    elif trigger_mode == "VOLATILITY":
+        # 已有持仓仍需最新波动率状态供退出逻辑使用，但不得读取 scanner 入场证据。
+        adaptive = volatility_threshold_profile(underlying_bars)
+        regime = volatility_regime(
+            owner,
+            underlying_bars,
+            float(adaptive["entry_zscore"]),
+            float(adaptive["minimum_underlying_move"]),
+        )
+        regime["adaptive_profile"] = adaptive
     nondirectional = campaign.get("structure") in {"LONG_STRADDLE", "LONG_STRANGLE"}
     if nondirectional:
         direction_ok, direction_reason, direction_metrics = True, "非方向性结构，无需强制判断涨跌方向", {}
