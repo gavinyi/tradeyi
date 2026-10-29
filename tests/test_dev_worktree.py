@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -61,11 +62,27 @@ def test_verify_env_points_test_db_and_real_prod_db(tmp_path):
     assert env["PYTHONPATH"] == str(test_root / "src")
 
 
-def test_verify_env_temp_stays_inside_test_root(tmp_path):
+def test_verify_env_temp_prefers_qa_and_never_production(tmp_path):
     test_root = tmp_path / "trade-test"
     env = dw.verify_env(test_root=test_root, prod_db=tmp_path / "p.db")
-    assert Path(env["TEMP"]).is_relative_to(test_root)
-    assert Path(env["TMP"]).is_relative_to(test_root)
+    temp = env.get("TEMP")
+    assert temp, "必须给出可用 TEMP，否则 pytest capture 起不来"
+    assert Path(temp) == (test_root / "data" / "qa") or temp == os.environ.get("TEMP")
+    assert not Path(temp).is_relative_to(dw.PRODUCTION_ROOT)
+    assert env["TMP"] == env["TEMP"]
+
+
+def test_pick_tempdir_skips_unwritable_candidate(tmp_path):
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a dir", encoding="utf-8")  # 同名文件让 mkdir 失败
+    good = tmp_path / "good"
+    assert dw.pick_tempdir([blocked, good]) == good
+
+
+def test_pick_tempdir_returns_none_when_all_blocked(tmp_path):
+    blocked = tmp_path / "blocked"
+    blocked.write_text("x", encoding="utf-8")
+    assert dw.pick_tempdir([blocked]) is None
 
 
 def test_stamp_matches_requires_same_sha_and_ok_flag():

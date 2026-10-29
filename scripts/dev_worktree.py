@@ -67,23 +67,45 @@ def worktree_path(slug: str) -> Path:
     return DEV_ROOT / f"wt-{name}"
 
 
+def _writable_dir(path: Path) -> bool:
+    """目录能否真正建文件：tempfile.gettempdir() 只认「能创建成功」的候选。"""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".dw_probe_{os.getpid()}"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def pick_tempdir(candidates: list[Path] | None = None) -> Path | None:
+    """按优先级挑一个真正可写的临时目录，全不可用则返回 None（交给系统默认）。"""
+    for path in candidates or []:
+        if path and _writable_dir(path):
+            return path
+    return None
+
+
 def verify_env(test_root: Path | None = None, prod_db: Path | None = None) -> dict[str, str]:
     """测试区跑全量回归的环境：标记 test、独立 DB/TEMP、显式指真生产库。"""
     base = (test_root or TEST_ROOT).resolve()
     db = (prod_db or PROD_DB).resolve()
     qa = base / "data" / "qa"
-    # TEMP 指向这里就必须先存在：tempfile 不会替你创建，缺目录会直接抛
-    # FileNotFoundError: No usable temporary directory（pytest capture 首当其冲）。
-    qa.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["TRADEYI_ENV"] = "test"
     env["TRADEYI_TEST_ROOT"] = str(base)
     env["TRADEYI_DB_PATH"] = str(base / "data" / "trading.db")
     # 关键：不带这一项，指纹守卫会拿测试库与自身比对，假绿。
     env["TRADEYI_PROD_DB_PATH"] = str(db)
-    env["TEMP"] = str(qa)
-    env["TMP"] = str(qa)
     env["PYTHONPATH"] = str(base / "src")
+
+    # TEMP/TMP：优先测试区自己的 qa 目录，但它必须真的可写（受限环境/杀软会拦），
+    # 否则 pytest 的 capture 会在收集阶段直接崩在 tempfile.gettempdir()。
+    tempdir = pick_tempdir([qa, Path(os.environ.get("TEMP", "")) if os.environ.get("TEMP") else None])
+    if tempdir is not None:
+        env["TEMP"] = str(tempdir)
+        env["TMP"] = str(tempdir)
     return env
 
 
