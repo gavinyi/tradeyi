@@ -241,6 +241,9 @@ def scan_market_layer(
                 continue
             bars = _timed_call(lambda: broker.candles(symbol, count=120))
             profile = volatility_threshold_profile(bars)
+            if _scanner_tenant:
+                from .volatility_trigger_config import resolve_volatility_trigger_profile
+                profile = resolve_volatility_trigger_profile(store, _scanner_tenant, profile)
             regime = complete_volatility_activation(owner, bars, profile, market_move)
             relative_strength = float(
                 regime.get("relative_strength", float(regime["intraday_return"]) - market_move)

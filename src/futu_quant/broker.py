@@ -465,6 +465,29 @@ class FutuPaperBroker:
         return self._cached(f"orders:{historical}", load)
 
     @_read_with_reconnect("quote")
+    def quote_snapshot(self, symbols: list[str]) -> list[dict]:
+        """Return authoritative Futu snapshots as records for feature consumers.
+
+        This compatibility surface deliberately delegates to ``snapshots`` so it
+        inherits US-symbol validation, API throttling and reconnect handling.
+        """
+        return self.snapshots(symbols).to_dict("records")
+
+    @_read_with_reconnect("quote")
+    def get_history_kline(
+        self, symbol: str, start: str, end: str, ktype: str = "K_DAY",
+    ) -> list[dict]:
+        """Return a bounded Futu history range as records.
+
+        Research feature code historically used the SDK-shaped method name.
+        Keep Futu as the sole source and fail closed on unsupported bar types.
+        """
+        normalized = str(ktype).upper()
+        if normalized != "K_DAY":
+            raise BrokerError(f"Unsupported history ktype: {ktype}")
+        return self.candles_range(symbol, start, end).to_dict("records")
+
+    @_read_with_reconnect("quote")
     def candles(self, symbol: str, count: int = 120) -> pd.DataFrame:
         if not symbol.startswith("US."):
             raise BrokerError("Safety lock: only US.* symbols are allowed")

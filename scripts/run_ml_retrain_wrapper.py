@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from futu_quant.alerts import AlertManager  # noqa: E402
 from futu_quant.ml_retrain import run_retrain  # noqa: E402
 from futu_quant.store import TradingStore  # noqa: E402
 
@@ -36,16 +37,24 @@ def main() -> int:
         "--no-promote", action="store_true",
         help="只训练并落候选模型，绝不覆盖生产模型（自动重训必须带）",
     )
+    parser.add_argument("--start-date", default=None, help="训练数据起始日期（YYYY-MM-DD）")
     args = parser.parse_args()
 
     store = TradingStore()
     result = run_retrain(
         store, triggered_by=args.triggered_by, trigger_kind=args.kind,
-        timeout_seconds=args.timeout, no_promote=args.no_promote,
+        timeout_seconds=args.timeout, no_promote=args.no_promote, start_date=args.start_date,
     )
     print(f"[ML-RETRAIN] status={result.get('status')} reason={result.get('reason', '')}")
+    status = str(result.get("status", ""))
+    if status in {"FAILED", "TIMEOUT"}:
+        AlertManager(store).send(
+            "ERROR", "ML_RETRAIN_FAILED",
+            f"ML 重训{status}：{result.get('reason', '无错误详情')}；run_id={result.get('run_id')}",
+            incident_key=f"ml-retrain:{args.kind}",
+        )
     # SKIP 也是正常结论（缺依赖/已在跑），返回 0 让调用方不要把它当失败
-    return 0 if result.get("status") in {"SUCCESS", "SKIP"} else 1
+    return 0 if status in {"SUCCESS", "SKIP"} else 1
 
 
 if __name__ == "__main__":

@@ -78,6 +78,7 @@ def run_retrain(
     lock_path: Path | None = None,
     runner: Any = None,
     no_promote: bool = False,
+    start_date: str | None = None,
 ) -> dict:
     """跑一次重训，返回 {status, reason, run_id, ...}。**永不抛出**。
 
@@ -91,6 +92,8 @@ def run_retrain(
     command = [sys.executable, str(run_script)]
     if no_promote:
         command.append("--no-promote")
+    if start_date:
+        command.extend(["--start-date", str(start_date)])
 
     def _skip(reason: str) -> dict:
         run_id = store.record_ml_retrain_run(
@@ -146,9 +149,17 @@ def run_retrain(
             new_auc, old_auc = _aucs_from_report(report)
             if completed.returncode == 0:
                 status, reason = "SUCCESS", ""
-                if no_promote:
-                    # 留痕：这次只落候选，生产模型未动（人工 promote 仍待做）
-                    reason = "candidate_only（未替换生产模型，promote 待人工）"
+                report_status = str((report or {}).get("status", ""))
+                if not report_path or not isinstance(report, dict):
+                    status, reason = "FAILED", "训练进程返回成功但未生成有效报告"
+                elif no_promote:
+                    candidate = Path(str(report.get("candidate_model", "")))
+                    if report_status != "CANDIDATE_ONLY" or not candidate.is_file():
+                        status = "FAILED"
+                        reason = "自动重训未生成可验证候选模型产物"
+                    else:
+                        # 留痕：这次只落候选，生产模型未动（人工 promote 仍待做）
+                        reason = "candidate_only（未替换生产模型，promote 待人工）"
             else:
                 tail = (completed.stderr or completed.stdout or "").strip()[-500:]
                 status, reason = "FAILED", f"返回码 {completed.returncode}：{tail}"

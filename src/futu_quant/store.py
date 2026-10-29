@@ -3078,21 +3078,39 @@ class TradingStore:
     def strategy_equity_snapshots(
         self, tenant_id: str | None = None, limit: int = 200,
     ) -> list[dict]:
-        """读快照（批 1 仅测试/巡检用；页面在批 2 接入）。"""
+        """读快照；生产读取必须传 ``tenant_id``，防止跨租户混合展示。"""
+        if not tenant_id:
+            raise ValueError("strategy_equity_snapshots 读取必须指定 tenant_id")
         with self.connection() as connection:
-            if tenant_id:
-                cursor = connection.execute(
-                    "SELECT * FROM strategy_equity_snapshots WHERE tenant_id=? "
-                    "ORDER BY as_of DESC, strategy_id LIMIT ?",
-                    (str(tenant_id), int(limit)),
-                )
-            else:
-                cursor = connection.execute(
-                    "SELECT * FROM strategy_equity_snapshots "
-                    "ORDER BY as_of DESC, strategy_id LIMIT ?",
-                    (int(limit),),
-                )
+            cursor = connection.execute(
+                "SELECT * FROM strategy_equity_snapshots WHERE tenant_id=? "
+                "ORDER BY as_of DESC, strategy_id LIMIT ?",
+                (str(tenant_id), int(limit)),
+            )
             return [dict(row) for row in cursor.fetchall()]
+
+    def latest_strategy_equity(self, tenant_id: str, *, bucket: str = "5m") -> list[dict]:
+        """P1-11 读链：返回指定租户、指定桶中每个策略的最新快照。"""
+        tenant = str(tenant_id or "").strip()
+        if not tenant:
+            raise ValueError("latest_strategy_equity 读取必须指定 tenant_id")
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT s.* FROM strategy_equity_snapshots s
+                JOIN (
+                    SELECT strategy_id, MAX(as_of) AS latest_as_of
+                    FROM strategy_equity_snapshots
+                    WHERE tenant_id=? AND bucket=?
+                    GROUP BY strategy_id
+                ) latest
+                  ON latest.strategy_id=s.strategy_id AND latest.latest_as_of=s.as_of
+                WHERE s.tenant_id=? AND s.bucket=?
+                ORDER BY s.strategy_id
+                """,
+                (tenant, str(bucket), tenant, str(bucket)),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def delete_virtual_allocation(self, strategy_id: str, symbol: str) -> None:
         with self.connection() as connection:

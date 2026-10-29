@@ -85,6 +85,7 @@ def test_auto_trigger_spawns_wrapper_with_no_promote(monkeypatch):
     command = commands[0]
     assert AUTO_CMD_MARKER in command, "自动重训未带 --no-promote → 会每日自动覆盖生产模型"
     assert "--kind" in command and "auto" in command
+    assert "--start-date" in command, "租户训练窗口没有传入真实导出链路"
     assert store.audits and store.audits[-1][1].get("no_promote") is True
 
 
@@ -116,6 +117,14 @@ def test_run_retrain_passes_no_promote_flag_to_script(tmp_path, monkeypatch):
         return _Completed()
 
     monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
+    candidate = tmp_path / "candidate.pkl"
+    candidate.write_bytes(b"model")
+    monkeypatch.setattr(
+        ml_retrain, "_newest_report",
+        lambda: ("reports/retrain_x.json", {
+            "status": "CANDIDATE_ONLY", "candidate_model": str(candidate),
+        }),
+    )
     store = _FakeStore()
 
     result = ml_retrain.run_retrain(
@@ -128,6 +137,26 @@ def test_run_retrain_passes_no_promote_flag_to_script(tmp_path, monkeypatch):
     assert AUTO_CMD_MARKER in captured[0]
     assert result["status"] == "SUCCESS"
     assert any("candidate_only" in str(item.get("reason") or "") for item in store.finished)
+
+
+def test_run_retrain_passes_start_date_to_training_script(tmp_path, monkeypatch):
+    captured: list[list[str]] = []
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
+    ml_retrain.run_retrain(
+        _FakeStore(), triggered_by="scheduler", trigger_kind="auto",
+        script=tmp_path / "fake_retrain.py", lock_path=tmp_path / "retrain.lock",
+        runner=lambda cmd, **kwargs: (captured.append(list(cmd)), _Completed())[1],
+        no_promote=True, start_date="2026-09-01",
+    )
+    command = captured[0]
+    index = command.index("--start-date")
+    assert command[index + 1] == "2026-09-01"
 
 
 def test_run_retrain_manual_keeps_old_semantics(tmp_path, monkeypatch):
@@ -227,6 +256,23 @@ def test_interval_defaults_to_one_day_without_key():
 def test_interval_reads_configured_days():
     store = _FakeStore({run_service.AUTO_RETRAIN_INTERVAL_KEY: "7"})
     assert run_service.auto_retrain_interval_seconds(store) == 7 * 24 * 60 * 60
+
+
+def test_auto_trigger_uses_tenant_training_window(monkeypatch):
+    commands: list[list[str]] = []
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            commands.append(list(cmd))
+
+    monkeypatch.setattr(run_service.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(run_service, "resolve_ml_factor", lambda store, tenant, name: 59)
+    store = _FakeStore({"ml_auto_retrain_enabled": "true"})
+    assert run_service.maybe_trigger_auto_retrain(store, "tenant-real") is True
+    command = commands[0]
+    assert command[command.index("--start-date") + 1]
+    assert store.audits[-1][1]["train_window_days"] == 59
+    assert store.audits[-1][1]["tenant_id"] == "tenant-real"
 
 
 @pytest.mark.parametrize("bad_value", ["abc", "0", "-3", "400", "1.5e99"])

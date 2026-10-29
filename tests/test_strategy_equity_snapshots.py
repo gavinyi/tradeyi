@@ -39,7 +39,7 @@ def _row(tenant="futu_real_master", strategy="core_satellite", as_of="2026-10-27
 def test_table_created_by_migration_21(store):
     versions = [row["version"] for row in store.schema_migrations()] \
         if hasattr(store, "schema_migrations") else []
-    rows = store.strategy_equity_snapshots(limit=5)
+    rows = store.strategy_equity_snapshots("futu_real_master", limit=5)
     assert rows == []
     if versions:
         assert 21 in versions
@@ -53,6 +53,27 @@ def test_two_tenants_same_strategy_are_isolated(store):
     assert len(real) == 1 and len(paper) == 1
     assert real[0]["realized_pnl"] == pytest.approx(1.0)
     assert paper[0]["realized_pnl"] == pytest.approx(2.0)
+
+
+def test_strategy_equity_read_requires_tenant(store):
+    with pytest.raises(ValueError, match="tenant_id"):
+        store.strategy_equity_snapshots()
+
+
+def test_latest_strategy_equity_returns_each_strategy_latest_bucket(store):
+    store.save_strategy_equity_snapshot(_row(strategy="s1", realized=1.0))
+    store.save_strategy_equity_snapshot(_row(
+        strategy="s1", realized=2.0, as_of="2026-10-27T14:05:00+00:00",
+    ))
+    store.save_strategy_equity_snapshot(_row(strategy="s2", realized=3.0))
+    store.save_strategy_equity_snapshot(_row(
+        strategy="s1", realized=99.0, bucket="close",
+        as_of="2026-10-27T20:00:00+00:00",
+    ))
+    rows = store.latest_strategy_equity("futu_real_master")
+    assert [(row["strategy_id"], row["realized_pnl"]) for row in rows] == [
+        ("s1", pytest.approx(2.0)), ("s2", pytest.approx(3.0)),
+    ]
 
 
 def test_same_bucket_retry_upserts_single_row(store):

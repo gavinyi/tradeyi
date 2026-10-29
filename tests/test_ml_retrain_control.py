@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -98,6 +99,54 @@ def test_success_records_aucs_from_report(tmp_path, monkeypatch):
     assert result["new_auc"] == pytest.approx(0.71) and result["old_auc"] == pytest.approx(0.63)
     rows = store.ml_retrain_runs(limit=5)
     assert rows[0]["status"] == "SUCCESS" and rows[0]["report_path"].endswith(".json")
+
+
+def test_auto_success_requires_candidate_artifact(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
+    monkeypatch.setattr(ml_retrain, "exclusive_lock", lambda handle, blocking=True: None)
+    monkeypatch.setattr(ml_retrain, "unlock_exclusive", lambda handle: None)
+    missing = tmp_path / "candidate.pkl"
+    monkeypatch.setattr(
+        ml_retrain, "_newest_report",
+        lambda: ("reports/retrain_x.json", {
+            "status": "CANDIDATE_ONLY", "candidate_model": str(missing),
+        }),
+    )
+
+    result = ml_retrain.run_retrain(
+        store, triggered_by="scheduler", trigger_kind="auto", no_promote=True,
+        lock_path=tmp_path / "lock", script=Path("x.py"),
+        runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["status"] == "FAILED"
+    assert "候选模型" in result["reason"]
+    assert any(e["event_type"] == "ML_RETRAIN_FAILED" for e in store.operational_events(limit=20))
+
+
+def test_auto_success_records_verified_candidate_artifact(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
+    monkeypatch.setattr(ml_retrain, "exclusive_lock", lambda handle, blocking=True: None)
+    monkeypatch.setattr(ml_retrain, "unlock_exclusive", lambda handle: None)
+    candidate = tmp_path / "candidate.pkl"
+    candidate.write_bytes(b"model")
+    monkeypatch.setattr(
+        ml_retrain, "_newest_report",
+        lambda: ("reports/retrain_x.json", {
+            "status": "CANDIDATE_ONLY", "candidate_model": str(candidate),
+        }),
+    )
+
+    result = ml_retrain.run_retrain(
+        store, triggered_by="scheduler", trigger_kind="auto", no_promote=True,
+        lock_path=tmp_path / "lock", script=Path("x.py"),
+        runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert result["report_path"].endswith(".json")
 
 
 def test_failed_run_is_visible(tmp_path, monkeypatch):

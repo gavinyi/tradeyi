@@ -43,11 +43,17 @@ from futu_quant.config import Settings
 from futu_quant.execution import ExecutionManager
 from futu_quant.volatility_orphans import volatility_write_state_key
 from futu_quant.market_calendar import USMarketCalendar
-from futu_quant.health import maintenance
+from futu_quant.health import (
+    database_integrity_check,
+    retention_cleanup,
+    system_health,
+    verified_backup,
+)
 from futu_quant.reconciliation import reconcile_ledgers
 from futu_quant.store import DEFAULT_DB, TradingStore
 from futu_quant.migrations import authorize_migrations
 from futu_quant.tenant import resolve_tenant_active
+from futu_quant.ml_config import resolve_ml_factor
 from futu_quant.tenant import tenant_config_key_candidates
 from futu_quant.tenant import tenant_id_of_broker
 from futu_quant.strategy_equity import snapshot_strategy_equity
@@ -207,7 +213,10 @@ TASK_TIMEOUTS = {
     "volatility_long_gamma": 120,
     "core_satellite": 120,
     "campaign_cleanup": 45,
-    "system_health": 90,
+    "system_health": 30,
+    "database_integrity": 180,
+    "database_backup": 300,
+    "retention_cleanup": 180,
     "earnings_calendar": 180,
     "daily_report": 60,
     "daily_strategy_review": 60,
@@ -958,7 +967,7 @@ def auto_retrain_interval_seconds(store) -> int:
     return days * 24 * 60 * 60
 
 
-def maybe_trigger_auto_retrain(store) -> bool:
+def maybe_trigger_auto_retrain(store, tenant_id: str | None = None) -> bool:
     """P2-4：自动重训（**默认关闭**，需用户明确开启后才生效）。
 
     设计要点：
@@ -1006,11 +1015,15 @@ def maybe_trigger_auto_retrain(store) -> bool:
         )
         return False
     try:
+        # 训练窗口是租户级行为参数；自动任务必须把解析后的窗口真实传到导出链路，
+        # 不能只在 UI 保存一个永远无人读取的键。
+        window_days = int(resolve_ml_factor(store, tenant_id, "train_window_days"))
+        start_date = (datetime.now(NY).date() - timedelta(days=window_days)).isoformat()
         # A-4a：自动重训一律 `--no-promote` —— 只落候选，生产模型由人工决定是否替换。
         subprocess.Popen(
             [
                 sys.executable, str(wrapper), "--triggered-by", "scheduler", "--kind", "auto",
-                "--no-promote",
+                "--no-promote", "--start-date", start_date,
             ],
             cwd=str(wrapper.parents[1]),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1022,7 +1035,11 @@ def maybe_trigger_auto_retrain(store) -> bool:
         return False
     store.audit(
         "ML_AUTO_RETRAIN_TRIGGERED",
-        {"triggered_by": "scheduler", "wrapper": str(wrapper), "no_promote": True},
+        {
+            "triggered_by": "scheduler", "wrapper": str(wrapper), "no_promote": True,
+            "tenant_id": str(tenant_id or ""), "train_window_days": window_days,
+            "start_date": start_date,
+        },
         actor="scheduler:main",
     )
     return True
@@ -1492,9 +1509,18 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 "调度循环完成（全局兼容行，不用于判故障）", os.getpid(),
             )
         mark_run(store, "last_run:heartbeat:trading_service", now)
-    if due(store, "last_run:maintenance", 300, now):
-        run_task(store, alerts, "system_health", lambda: maintenance(store, broker))
-        mark_run(store, "last_run:maintenance", now)
+    if due(store, "last_run:system_health", 300, now):
+        run_task(store, alerts, "system_health", lambda: system_health(store, broker))
+        mark_run(store, "last_run:system_health", now)
+    if due(store, "last_run:database_integrity", 20 * 60 * 60, now):
+        run_task(store, alerts, "database_integrity", lambda: database_integrity_check(store))
+        mark_run(store, "last_run:database_integrity", now)
+    if due(store, "last_run:database_backup", 20 * 60 * 60, now):
+        run_task(store, alerts, "database_backup", lambda: verified_backup(store))
+        mark_run(store, "last_run:database_backup", now)
+    if due(store, "last_run:retention_cleanup", 20 * 60 * 60, now):
+        run_task(store, alerts, "retention_cleanup", lambda: retention_cleanup(store))
+        mark_run(store, "last_run:retention_cleanup", now)
     if due(store, "last_run:campaign_cleanup", 300, now):
         run_task(
             store, alerts, "campaign_cleanup",
@@ -1637,7 +1663,7 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
     # 间隔由 `ml_auto_retrain_interval_days` 决定（默认 1 天 = 24h，A-4a 前的硬编码行为）；
     # 开启后交独立子进程跑（`--no-promote`：只落候选、不改生产模型），不阻塞主循环。
     if due(store, "last_run:ml_auto_retrain", auto_retrain_interval_seconds(store), now):
-        if maybe_trigger_auto_retrain(store):
+        if maybe_trigger_auto_retrain(store, tenant_id):
             store.operational_event(
                 "ml_retrain", "ML_AUTO_RETRAIN_DISPATCHED", "HEALTHY", {},
             )

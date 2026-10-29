@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -206,6 +207,84 @@ def _action_value_node(node: ast.Assign):
                     if isinstance(value, ast.Tuple) and index < len(value.elts):
                         return value.elts[index]
     return None
+
+
+@pytest.mark.parametrize(
+    ("path", "reason_fragment"),
+    [
+        ("hard_stop", "单笔硬止损触发"),
+        ("profit_target", "止盈目标"),
+        ("trailing_stop", "盈利保护触发"),
+        ("max_hold", "最长持有退出"),
+        ("iv_crush", "隐含波动率"),
+        ("near_expiry", "临近到期"),
+    ],
+)
+def test_six_exit_paths_reach_submit_limit_end_to_end(
+    tmp_path, monkeypatch, path, reason_fragment,
+):
+    """六条退出均须走到最终 ``submit_limit``，不能只证明纯函数返回 SELL。"""
+    rg = _load_gamma()
+    store = TradingStore(tmp_path / f"exit-{path}.db")
+    executor = _RecordingExecutor(store)
+    campaign = _campaign()
+    bid = COST
+    state = {}
+
+    monkeypatch.setattr(rg, "volatility_signal_state", lambda *a, **k: {})
+    monkeypatch.setattr(rg, "sync_volatility_position_cycle", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rg.MARKET_CALENDAR, "session",
+        lambda _now: type("S", (), {"regular_open": staticmethod(lambda _n: True)})(),
+    )
+    # 每个场景只保留一条退出理由，防止别的 SELL 分支让守卫假绿。
+    monkeypatch.setattr(rg, "volatility_hard_loss_exit_reason", lambda *a, **k: None)
+    monkeypatch.setattr(rg, "volatility_partial_exit_plan", lambda **k: (0, None, None))
+    monkeypatch.setattr(rg, "volatility_exit_reason", lambda *a, **k: None)
+    monkeypatch.setattr(rg, "volatility_near_expiry_itm_exit_reason", lambda *a, **k: None)
+
+    if path == "hard_stop":
+        bid = BID
+        monkeypatch.setattr(
+            rg, "volatility_hard_loss_exit_reason",
+            lambda *a, **k: "单笔硬止损触发：测试路径",
+        )
+    elif path == "profit_target":
+        bid = COST * 1.55
+        campaign["partial_profit_enabled"] = False
+        campaign["tiered_profit_lock_enabled"] = False
+    elif path == "trailing_stop":
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        bid = COST * 1.05
+        campaign["tiered_profit_lock_enabled"] = False
+        state[f"volatility_long_gamma:{CODE}"] = {
+            "peak": COST * 1.50,
+            "position_opened_at": (_dt.now(_tz.utc) - _td(hours=2)).isoformat(),
+        }
+    elif path == "max_hold":
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        state[f"volatility_long_gamma:{CODE}"] = {
+            "position_opened_at": (_dt.now(_tz.utc) - _td(hours=25)).isoformat(),
+        }
+    elif path == "iv_crush":
+        campaign["minimum_hold_minutes"] = 0
+        monkeypatch.setattr(rg, "volatility_exit_reason", lambda *a, **k: "隐含波动率坍塌退出")
+    elif path == "near_expiry":
+        monkeypatch.setattr(
+            rg, "volatility_near_expiry_itm_exit_reason",
+            lambda *a, **k: "临近到期且价内，提前退出",
+        )
+
+    rg.run_campaign(
+        _LossBroker(bid=bid), executor, campaign, state,
+        strategy_id="volatility_long_gamma",
+    )
+
+    sells = [call for call in executor.submitted if call["side"] == "SELL"]
+    assert len(sells) == 1, f"{path} 未形成唯一 SELL submit_limit：{executor.submitted}"
+    assert sells[0]["symbol"] == CODE
+    assert sells[0]["quantity"] == 1
+    assert reason_fragment in str(sells[0]["metadata"].get("reason"))
 
 
 def test_no_branch_downgrades_sell_after_hard_loss_layer():

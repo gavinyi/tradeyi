@@ -55,6 +55,11 @@ def test_alert_manager_dispatches_feishu_card(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 
+def test_task_timeout_warning_is_whitelisted():
+    """WARNING 级任务超时必须进入强制投递白名单，禁止只落库不通知。"""
+    assert "TASK_TIMEOUT" in FEISHU_GROUP_ALERT_WHITELIST
+
+
 def test_hard_stop_limit_invalid_is_whitelisted():
     """P1-1 之一：事件必须在推送白名单里。
 
