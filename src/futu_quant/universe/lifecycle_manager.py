@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import logging
 
-from futu_quant.config import DEFAULT_VOLATILITY_SYMBOLS, save_volatility_symbols
+from futu_quant.config import DEFAULT_VOLATILITY_SYMBOLS
 from futu_quant.store import TradingStore
 from .recall_scanner import INDUSTRY_MAPPING
 
@@ -16,8 +16,11 @@ logger = logging.getLogger(__name__)
 class LifecycleManager:
     """标的晋级准入、迟滞防抖与秒踢仲裁器"""
 
-    def __init__(self, store: TradingStore | None = None):
+    def __init__(
+        self, store: TradingStore | None = None, tenant_id: str = "futu_paper_sandbox",
+    ):
         self.store = store or TradingStore()
+        self.tenant_id = tenant_id
 
     def evaluate_promotions(
         self,
@@ -39,7 +42,7 @@ class LifecycleManager:
         now = datetime.now(timezone.utc)
         expires = (now + timedelta(days=duration_days)).isoformat()
 
-        current_active_rows = self.store.active_promoted_symbols()
+        current_active_rows = self.store.active_promoted_symbols(self.tenant_id)
         current_active = [r["symbol"] for r in current_active_rows]
         promoted: list[str] = list(current_active)
 
@@ -71,7 +74,9 @@ class LifecycleManager:
             # 3. 自适应外援容量: 允许动态扩充至最多 10 只
             if len(promoted) < max_capacity:
                 industry = INDUSTRY_MAPPING.get(candidate, "OTHER")
-                self.store.promote_universe_symbol(candidate, score, expires, industry)
+                self.store.promote_universe_symbol(
+                    self.tenant_id, candidate, score, expires, industry,
+                )
                 self.store.record_universe_lifecycle_event(
                     event_type="PROMOTION",
                     symbol=candidate,
@@ -92,11 +97,15 @@ class LifecycleManager:
                 if score >= lowest_current * 1.10 and score >= 0.80:
                     # 替换最低分现任
                     lowest_sym = min(active_scores, key=active_scores.get)
-                    self.store.evict_promoted_symbol(lowest_sym, f"被更高分候选 {candidate} 优胜劣汰替换")
+                    self.store.evict_promoted_symbol(
+                        self.tenant_id, lowest_sym, f"被更高分候选 {candidate} 优胜劣汰替换",
+                    )
                     promoted.remove(lowest_sym)
                     
                     industry = INDUSTRY_MAPPING.get(candidate, "OTHER")
-                    self.store.promote_universe_symbol(candidate, score, expires, industry)
+                    self.store.promote_universe_symbol(
+                    self.tenant_id, candidate, score, expires, industry,
+                )
                     promoted.append(candidate)
                     self.store.record_universe_lifecycle_event(
                         event_type="PROMOTION",
@@ -124,7 +133,7 @@ class LifecycleManager:
         底仓 13 只标的绝对不在此列。
         """
         now_iso = datetime.now(timezone.utc).isoformat()
-        active_promoted = self.store.active_promoted_symbols()
+        active_promoted = self.store.active_promoted_symbols(self.tenant_id)
         evicted: list[str] = []
 
         hard_stops = hard_stop_symbols or set()
@@ -145,7 +154,7 @@ class LifecycleManager:
                 reason = "授权周期到期自然清退"
 
             if reason:
-                self.store.evict_promoted_symbol(symbol, reason)
+                self.store.evict_promoted_symbol(self.tenant_id, symbol, reason)
                 self.store.record_universe_lifecycle_event(
                     event_type="FAST_EVICTION" if "秒踢" in reason else "DEMOTION",
                     symbol=symbol,
@@ -157,14 +166,10 @@ class LifecycleManager:
         return evicted
 
     def sync_to_runtime_universe(self) -> tuple[str, ...]:
-        """
-        合并公式: 永久核心底仓 (13只) ∪ 当前有效晋级外援 (3~5只)
-        原子回写至 SQLite runtime_config 与环境变量，实现全系统秒级热生效。
-        """
-        active_promoted = [r["symbol"] for r in self.store.active_promoted_symbols()]
+        """按请求租户只读合并核心池与投放池；禁止回写全局符号键。"""
+        active_promoted = [r["symbol"] for r in self.store.active_promoted_symbols(self.tenant_id)]
         merged = tuple(dict.fromkeys(list(DEFAULT_VOLATILITY_SYMBOLS) + active_promoted))
 
-        save_volatility_symbols(merged)
         self.store.record_universe_lifecycle_event(
             event_type="SYNC_RUNTIME",
             symbol="ALL",

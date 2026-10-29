@@ -29,7 +29,8 @@ broker = FutuPaperBroker(settings)
 # KPI 统计行
 candidates = store.candidate_symbols()
 incubator_rows = store.all_incubator_symbols()
-promoted_rows = store.active_promoted_symbols()
+delivery_tenant_id = "futu_paper_sandbox"
+promoted_rows = store.active_promoted_symbols(delivery_tenant_id)
 core_symbols = list(DEFAULT_VOLATILITY_SYMBOLS)
 
 with st.container(horizontal=True):
@@ -98,8 +99,8 @@ with tab_active:
                 target_evict = st.selectbox("选择要手动清退的外援标的", [p["symbol"] for p in promoted_rows], key="select_evict")
                 evict_reason = st.text_input("清退理由", value="管理员手动移出外援", key="input_evict_reason")
                 if st.button("确认清退该外援", type="secondary", icon=":material/delete_forever:"):
-                    mgr = LifecycleManager(store=store)
-                    store.evict_promoted_symbol(target_evict, evict_reason)
+                    mgr = LifecycleManager(store=store, tenant_id=delivery_tenant_id)
+                    store.evict_promoted_symbol(delivery_tenant_id, target_evict, evict_reason)
                     mgr.sync_to_runtime_universe()
                     st.success(f"外援标的 {target_evict} 已从实盘池安全清退！")
                     st.rerun()

@@ -97,6 +97,13 @@ ACTOR_CLASS_KIND = {
     "test": "machine",
 }
 
+#: 共享管理员密码签发 REAL 投放批准时**唯一允许**的审计 actor。
+#:
+#: 密码只能证明「持有共享凭证」，不能证明输入者的个人身份；因此该值不随调用方变化，
+#: 也不接受任何参数传入（Reviewer 2026-10-29 阻塞项）。表上 CHECK 约束、
+#: 审计 payload 的 ``actor_authority`` 均以本常量为准。
+SHARED_ADMIN_CREDENTIAL_ACTOR = "streamlit_admin:shared_admin_credential"
+
 
 class AuditActorError(ValueError):
     """`actor` 格式非法（空 / 缺失 / 无冒号）—— **fail-closed：拒写 + 抛错**。
@@ -3698,10 +3705,91 @@ class TradingStore:
                 ).fetchall()
             return [dict(r) for r in rows]
 
-    def upsert_incubator_metrics(self, symbol: str, metrics: dict) -> None:
+    def open_incubator_virtual_position(
+        self, symbol: str, signal_key: str, entry_price: float, opened_at: str, settle_after: str,
+    ) -> bool:
+        """幂等创建孵化虚拟仓；仅落本地账本，绝不触发券商订单。"""
         now = self.now()
         with self.connection() as connection:
-            connection.execute(
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO incubator_virtual_positions
+                (symbol,signal_key,opened_at,entry_price,quantity,settle_after,status,created_at,updated_at)
+                VALUES(?,?,?,?,1,?,'OPEN',?,?)""",
+                (symbol, signal_key, opened_at, float(entry_price), settle_after, now, now),
+            )
+            return cursor.rowcount == 1
+
+    def open_incubator_virtual_positions(self, due_at: str | None = None) -> list[dict]:
+        with self.connection() as connection:
+            if due_at is None:
+                rows = connection.execute(
+                    "SELECT * FROM incubator_virtual_positions WHERE status='OPEN' ORDER BY id"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM incubator_virtual_positions
+                    WHERE status='OPEN' AND settle_after<=? ORDER BY id""", (due_at,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+
+    def settle_incubator_virtual_position(
+        self, position_id: int, exit_price: float, settled_at: str,
+    ) -> dict | None:
+        """原子结算虚拟仓并累计共享赛马指标；任一步失败整笔事务回滚。"""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM incubator_virtual_positions WHERE id=? AND status='OPEN'",
+                (position_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            position = dict(row)
+            symbol = str(position["symbol"])
+            entry = float(position["entry_price"])
+            quantity = float(position["quantity"])
+            pnl = (float(exit_price) - entry) * quantity
+            ratio = (float(exit_price) / entry - 1.0) if entry > 0 else 0.0
+            metric_row = connection.execute(
+                "SELECT * FROM shadow_incubator WHERE symbol=?", (symbol,),
+            ).fetchone()
+            metrics = dict(metric_row) if metric_row else {
+                "symbol": symbol, "first_observed_at": position["opened_at"],
+                "observation_days": 1, "signal_triggers": 1, "simulated_wins": 0,
+                "simulated_losses": 0, "simulated_pnl_usd": 0.0,
+                "simulated_max_dd": 0.0, "avg_slippage_pct": 0.0,
+                "volume_retention_ratio": 1.0, "latest_ml_score": 0.5,
+                "promotion_eligible": 0,
+            }
+            metrics["simulated_wins" if pnl > 0 else "simulated_losses"] = (
+                int(metrics.get("simulated_wins" if pnl > 0 else "simulated_losses", 0)) + 1
+            )
+            previous_pnl = float(metrics.get("simulated_pnl_usd", 0.0))
+            metrics["simulated_pnl_usd"] = previous_pnl + pnl
+            peak = max(0.0, previous_pnl, previous_pnl + pnl)
+            if peak > previous_pnl + pnl:
+                metrics["simulated_max_dd"] = max(
+                    float(metrics.get("simulated_max_dd", 0.0)),
+                    (peak - previous_pnl - pnl) / (5000.0 + peak),
+                )
+            self._write_incubator_metrics(connection, symbol, metrics)
+            cursor = connection.execute(
+                """UPDATE incubator_virtual_positions SET status='SETTLED',settled_at=?,
+                exit_price=?,pnl_usd=?,return_ratio=?,updated_at=?
+                WHERE id=? AND status='OPEN'""",
+                (settled_at, float(exit_price), pnl, ratio, self.now(), position_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"虚拟仓 {position_id} 结算状态竞争")
+            position.update(exit_price=float(exit_price), pnl_usd=pnl, return_ratio=ratio,
+                            metrics=metrics)
+            return position
+
+    def _write_incubator_metrics(
+        self, connection: sqlite3.Connection, symbol: str, metrics: dict,
+    ) -> None:
+        now = self.now()
+        connection.execute(
                 """INSERT INTO shadow_incubator
                 (symbol, first_observed_at, observation_days, signal_triggers,
                  simulated_wins, simulated_losses, simulated_pnl_usd, simulated_max_dd,
@@ -3731,6 +3819,10 @@ class TradingStore:
                  str(metrics.get("track_mode", "STANDARD")), now, now),
             )
 
+    def upsert_incubator_metrics(self, symbol: str, metrics: dict) -> None:
+        with self.connection() as connection:
+            self._write_incubator_metrics(connection, symbol, metrics)
+
     def incubator_symbol(self, symbol: str) -> dict | None:
         with self.connection() as connection:
             row = connection.execute(
@@ -3750,41 +3842,136 @@ class TradingStore:
                 ).fetchall()
             return [dict(r) for r in rows]
 
+    def create_real_universe_delivery_approval(
+        self, tenant_id: str, symbol: str, expires_at: str,
+        evidence: str, reason: str, *, admin_password: str, note: str = "",
+    ) -> int:
+        """仅在重新校验管理员密码后创建 REAL 投放批准。
+
+        **签名不接受 ``approved_by``**（Reviewer 2026-10-29 阻塞项）：共享管理员密码
+        只能证明「持有共享凭证」，不能证明输入者的个人身份。审计 actor 固定写
+        ``streamlit_admin:shared_admin_credential``，表上 CHECK 约束同样只允许该值；
+        个人姓名只能作为 ``note`` 非权威备注，审计 payload 明确标注
+        ``actor_identity_verified=False``，禁止把备注读成身份认证。
+        """
+        from futu_quant.admin_auth import configured as admin_configured, verify as verify_admin
+        from futu_quant.tenant import resolve_tenant
+
+        if not admin_configured() or not verify_admin(admin_password):
+            raise PermissionError("REAL 投放批准签发来源未经管理员认证")
+        tenant = resolve_tenant(tenant_id, strict=True)
+        if tenant.trading_env != "REAL":
+            raise ValueError("REAL 投放批准只能签发给 REAL 租户")
+        evidence = str(evidence or "").strip()
+        reason = str(reason or "").strip()
+        note = str(note or "").strip()
+        if not evidence or not reason:
+            raise ValueError("REAL 投放批准必须包含证据和原因")
+        now = self.now()
+        if expires_at <= now:
+            raise ValueError("REAL 投放批准有效期必须晚于当前时间")
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """INSERT INTO real_universe_delivery_approvals
+                (tenant_id,symbol,approved_by,approved_at,expires_at,evidence,reason,note,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    tenant_id, symbol, SHARED_ADMIN_CREDENTIAL_ACTOR, now, expires_at,
+                    evidence, reason, note, now,
+                ),
+            )
+            approval_id = int(cursor.lastrowid)
+            connection.execute(
+                """INSERT INTO audit_events
+                (event_type,strategy_id,payload_json,created_at,actor) VALUES(?,?,?,?,?)""",
+                ("REAL_UNIVERSE_DELIVERY_APPROVED", None, _json_dumps({
+                    "approval_id": approval_id, "tenant_id": tenant_id, "symbol": symbol,
+                    "expires_at": expires_at, "evidence": evidence, "reason": reason,
+                    "actor_authority": "shared_admin_credential",
+                    "actor_identity_verified": False,
+                    "approval_note": note,
+                }), now, SHARED_ADMIN_CREDENTIAL_ACTOR),
+            )
+        return approval_id
+
     def promote_universe_symbol(
-        self, symbol: str, promotion_score: float, expires_at: str, industry: str = "OTHER",
+        self, tenant_id: str, symbol: str, promotion_score: float, expires_at: str,
+        industry: str = "OTHER", *, approval_id: int | None = None,
     ) -> None:
+        """投放研究成果；REAL 必须原子校验并消费一条持久化批准记录。"""
+        from futu_quant.tenant import resolve_tenant
+
+        tenant = resolve_tenant(tenant_id, strict=True)
         now = self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            approval = None
+            if tenant.trading_env == "REAL":
+                if approval_id is None:
+                    raise PermissionError("REAL 租户投放缺少独立批准记录")
+                approval = connection.execute(
+                    """SELECT * FROM real_universe_delivery_approvals
+                    WHERE id=? AND tenant_id=? AND symbol=? AND consumed_at IS NULL
+                      AND expires_at>?""",
+                    (int(approval_id), tenant_id, symbol, now),
+                ).fetchone()
+                if approval is None:
+                    raise PermissionError("REAL 投放批准缺失、过期、已消费或租户/标的不匹配")
             connection.execute(
                 """INSERT INTO promoted_universe
-                (symbol, promoted_at, expires_at, promotion_score, industry, status, created_at, updated_at)
-                VALUES(?,?,?,?,?,'ACTIVE',?,?)
-                ON CONFLICT(symbol) DO UPDATE SET
-                promoted_at=excluded.promoted_at,
-                expires_at=excluded.expires_at,
-                promotion_score=excluded.promotion_score,
-                industry=excluded.industry,
-                status='ACTIVE',
-                eviction_reason='',
-                updated_at=excluded.updated_at""",
-                (symbol, now, expires_at, float(promotion_score), industry, now, now),
+                (tenant_id,symbol,promoted_at,expires_at,promotion_score,industry,status,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,'ACTIVE',?,?)
+                ON CONFLICT(tenant_id,symbol) DO UPDATE SET
+                promoted_at=excluded.promoted_at, expires_at=excluded.expires_at,
+                promotion_score=excluded.promotion_score, industry=excluded.industry,
+                status='ACTIVE', eviction_reason='', updated_at=excluded.updated_at""",
+                (tenant_id, symbol, now, expires_at, float(promotion_score), industry, now, now),
             )
+            if approval is not None:
+                connection.execute(
+                    "UPDATE real_universe_delivery_approvals SET consumed_at=? WHERE id=?",
+                    (now, int(approval_id)),
+                )
+                connection.execute(
+                    """INSERT INTO audit_events
+                    (event_type,strategy_id,payload_json,created_at,actor) VALUES(?,?,?,?,?)""",
+                    ("REAL_UNIVERSE_DELIVERY_APPROVAL_CONSUMED", None, _json_dumps({
+                        "approval_id": int(approval_id), "tenant_id": tenant_id,
+                        "symbol": symbol, "promotion_score": float(promotion_score),
+                    }), now, str(approval["approved_by"])),
+                )
 
-    def active_promoted_symbols(self) -> list[dict]:
+    def active_promoted_symbols(self, tenant_id: str) -> list[dict]:
+        if not tenant_id:
+            raise ValueError("读取租户投放池必须显式传 tenant_id")
         now = self.now()
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM promoted_universe WHERE status='ACTIVE' AND expires_at >= ? ORDER BY promotion_score DESC",
-                (now,),
+                """SELECT * FROM promoted_universe WHERE tenant_id=? AND status='ACTIVE'
+                AND expires_at >= ? ORDER BY promotion_score DESC""", (tenant_id, now),
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def evict_promoted_symbol(self, symbol: str, reason: str) -> None:
+    def all_active_promoted_symbols(self) -> list[dict]:
+        """跨租户 ACTIVE 投放的只读并集，仅供无租户上下文的展示与共享市场层扫描。
+
+        **禁止用于下单、风控或任何租户级判定** —— 租户级读取必须走
+        :meth:`active_promoted_symbols`（未传租户即抛错）。
+        """
+        now = self.now()
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM promoted_universe WHERE status='ACTIVE'
+                AND expires_at >= ? ORDER BY promotion_score DESC""", (now,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def evict_promoted_symbol(self, tenant_id: str, symbol: str, reason: str) -> None:
         now = self.now()
         with self.connection() as connection:
             connection.execute(
-                "UPDATE promoted_universe SET status='EVICTED', eviction_reason=?, updated_at=? WHERE symbol=?",
-                (reason, now, symbol),
+                """UPDATE promoted_universe SET status='EVICTED', eviction_reason=?, updated_at=?
+                WHERE tenant_id=? AND symbol=?""", (reason, now, tenant_id, symbol),
             )
 
     def record_universe_lifecycle_event(self, event_type: str, symbol: str, details: dict) -> None:
