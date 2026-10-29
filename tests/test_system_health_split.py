@@ -58,6 +58,10 @@ def test_heavy_maintenance_has_independent_tasks_and_intervals():
     assert 'run_task(store, alerts, "database_integrity"' in SERVICE
     assert 'run_task(store, alerts, "database_backup"' in SERVICE
     assert 'run_task(store, alerts, "retention_cleanup"' in SERVICE
+    for task in ("database_integrity", "database_backup", "retention_cleanup"):
+        assert f'if run_task(store, alerts, "{task}"' in SERVICE
+        block = SERVICE.split(f'if due(store, "last_run:{task}"', 1)[1].split("\n    if due(", 1)[0]
+        assert block.index("if run_task(") < block.index(f'mark_run(store, "last_run:{task}"')
 
 
 def test_lightweight_function_contains_no_heavy_database_operations():

@@ -1513,14 +1513,14 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
         run_task(store, alerts, "system_health", lambda: system_health(store, broker))
         mark_run(store, "last_run:system_health", now)
     if due(store, "last_run:database_integrity", 20 * 60 * 60, now):
-        run_task(store, alerts, "database_integrity", lambda: database_integrity_check(store))
-        mark_run(store, "last_run:database_integrity", now)
+        if run_task(store, alerts, "database_integrity", lambda: database_integrity_check(store)):
+            mark_run(store, "last_run:database_integrity", now)
     if due(store, "last_run:database_backup", 20 * 60 * 60, now):
-        run_task(store, alerts, "database_backup", lambda: verified_backup(store))
-        mark_run(store, "last_run:database_backup", now)
+        if run_task(store, alerts, "database_backup", lambda: verified_backup(store)):
+            mark_run(store, "last_run:database_backup", now)
     if due(store, "last_run:retention_cleanup", 20 * 60 * 60, now):
-        run_task(store, alerts, "retention_cleanup", lambda: retention_cleanup(store))
-        mark_run(store, "last_run:retention_cleanup", now)
+        if run_task(store, alerts, "retention_cleanup", lambda: retention_cleanup(store)):
+            mark_run(store, "last_run:retention_cleanup", now)
     if due(store, "last_run:campaign_cleanup", 300, now):
         run_task(
             store, alerts, "campaign_cleanup",

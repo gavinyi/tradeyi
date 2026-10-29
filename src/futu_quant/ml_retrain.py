@@ -89,6 +89,8 @@ def run_retrain(
     run_script = Path(script or RETRAIN_SCRIPT)
     lock_file = Path(lock_path or LOCK_PATH)
     run_subprocess = runner or subprocess.run
+    # 安全边界必须由控制器自身强制，不能依赖 scheduler/UI 调用方记得传参。
+    no_promote = bool(no_promote or trigger_kind == "auto")
     command = [sys.executable, str(run_script)]
     if no_promote:
         command.append("--no-promote")
@@ -118,6 +120,15 @@ def run_retrain(
         except (FileLockError, OSError):
             return _skip("already_running")
         try:
+            # 固化启动前产物基线；本次 SUCCESS 必须对应新报告及（自动任务）新候选。
+            baseline_report_path, _ = _newest_report()
+            baseline_candidate_path = ""
+            if baseline_report_path:
+                try:
+                    baseline_payload = json.loads(Path(baseline_report_path).read_text(encoding="utf-8"))
+                    baseline_candidate_path = str(baseline_payload.get("candidate_model", ""))
+                except Exception:  # noqa: BLE001 - 损坏旧报告只作为不可复用基线
+                    pass
             run_id = store.record_ml_retrain_run(
                 triggered_by=triggered_by, trigger_kind=trigger_kind, status="RUNNING",
             )
@@ -150,11 +161,20 @@ def run_retrain(
             if completed.returncode == 0:
                 status, reason = "SUCCESS", ""
                 report_status = str((report or {}).get("status", ""))
-                if not report_path or not isinstance(report, dict):
-                    status, reason = "FAILED", "训练进程返回成功但未生成有效报告"
+                if (
+                    not report_path
+                    or not isinstance(report, dict)
+                    or report_path == baseline_report_path
+                ):
+                    status, reason = "FAILED", "训练进程返回成功但未生成本次有效报告"
                 elif no_promote:
-                    candidate = Path(str(report.get("candidate_model", "")))
-                    if report_status != "CANDIDATE_ONLY" or not candidate.is_file():
+                    candidate_path = str(report.get("candidate_model", ""))
+                    candidate = Path(candidate_path)
+                    if (
+                        report_status != "CANDIDATE_ONLY"
+                        or not candidate.is_file()
+                        or candidate_path == baseline_candidate_path
+                    ):
                         status = "FAILED"
                         reason = "自动重训未生成可验证候选模型产物"
                     else:

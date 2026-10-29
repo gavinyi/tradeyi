@@ -84,10 +84,11 @@ def test_success_records_aucs_from_report(tmp_path, monkeypatch):
     monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
     monkeypatch.setattr(ml_retrain, "exclusive_lock", lambda handle, blocking=True: None)
     monkeypatch.setattr(ml_retrain, "unlock_exclusive", lambda handle: None)
-    monkeypatch.setattr(
-        ml_retrain, "_newest_report",
-        lambda: ("reports/retrain_x.json", {"steps": {"s3": {"new_auc": 0.71, "old_auc": 0.63}}}),
-    )
+    reports = iter([
+        ("", None),
+        ("reports/retrain_x.json", {"steps": {"s3": {"new_auc": 0.71, "old_auc": 0.63}}}),
+    ])
+    monkeypatch.setattr(ml_retrain, "_newest_report", lambda: next(reports))
 
     result = ml_retrain.run_retrain(
         store, triggered_by="panel", lock_path=tmp_path / "lock",
@@ -107,12 +108,13 @@ def test_auto_success_requires_candidate_artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(ml_retrain, "exclusive_lock", lambda handle, blocking=True: None)
     monkeypatch.setattr(ml_retrain, "unlock_exclusive", lambda handle: None)
     missing = tmp_path / "candidate.pkl"
-    monkeypatch.setattr(
-        ml_retrain, "_newest_report",
-        lambda: ("reports/retrain_x.json", {
+    reports = iter([
+        ("", None),
+        ("reports/retrain_x.json", {
             "status": "CANDIDATE_ONLY", "candidate_model": str(missing),
         }),
-    )
+    ])
+    monkeypatch.setattr(ml_retrain, "_newest_report", lambda: next(reports))
 
     result = ml_retrain.run_retrain(
         store, triggered_by="scheduler", trigger_kind="auto", no_promote=True,
@@ -132,12 +134,13 @@ def test_auto_success_records_verified_candidate_artifact(tmp_path, monkeypatch)
     monkeypatch.setattr(ml_retrain, "unlock_exclusive", lambda handle: None)
     candidate = tmp_path / "candidate.pkl"
     candidate.write_bytes(b"model")
-    monkeypatch.setattr(
-        ml_retrain, "_newest_report",
-        lambda: ("reports/retrain_x.json", {
+    reports = iter([
+        ("", None),
+        ("reports/retrain_x.json", {
             "status": "CANDIDATE_ONLY", "candidate_model": str(candidate),
         }),
-    )
+    ])
+    monkeypatch.setattr(ml_retrain, "_newest_report", lambda: next(reports))
 
     result = ml_retrain.run_retrain(
         store, triggered_by="scheduler", trigger_kind="auto", no_promote=True,
@@ -147,6 +150,53 @@ def test_auto_success_records_verified_candidate_artifact(tmp_path, monkeypatch)
 
     assert result["status"] == "SUCCESS"
     assert result["report_path"].endswith(".json")
+
+
+def test_old_report_cannot_make_empty_run_success(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
+    monkeypatch.setattr(ml_retrain, "exclusive_lock", lambda handle, blocking=True: None)
+    monkeypatch.setattr(ml_retrain, "unlock_exclusive", lambda handle: None)
+    old = tmp_path / "retrain_old.json"
+    old.write_text('{"status":"SUCCESS"}', encoding="utf-8")
+    monkeypatch.setattr(ml_retrain, "_newest_report", lambda: (str(old), {"status": "SUCCESS"}))
+
+    result = ml_retrain.run_retrain(
+        store, triggered_by="panel", lock_path=tmp_path / "lock", script=tmp_path / "x.py",
+        runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["status"] == "FAILED"
+    assert "本次有效报告" in result["reason"]
+
+
+def test_auto_trigger_forces_no_promote_inside_controller(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
+    monkeypatch.setattr(ml_retrain, "exclusive_lock", lambda handle, blocking=True: None)
+    monkeypatch.setattr(ml_retrain, "unlock_exclusive", lambda handle: None)
+    candidate = tmp_path / "candidate-new.pkl"
+    candidate.write_bytes(b"model")
+    reports = iter([
+        ("", None),
+        (str(tmp_path / "new.json"), {
+            "status": "CANDIDATE_ONLY", "candidate_model": str(candidate),
+        }),
+    ])
+    monkeypatch.setattr(ml_retrain, "_newest_report", lambda: next(reports))
+    seen = {}
+
+    def runner(command, **kwargs):
+        seen["command"] = command
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    result = ml_retrain.run_retrain(
+        store, triggered_by="scheduler", trigger_kind="auto", no_promote=False,
+        lock_path=tmp_path / "lock", script=tmp_path / "x.py", runner=runner,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert "--no-promote" in seen["command"]
 
 
 def test_failed_run_is_visible(tmp_path, monkeypatch):

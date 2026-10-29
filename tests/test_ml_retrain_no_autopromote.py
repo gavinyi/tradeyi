@@ -119,12 +119,13 @@ def test_run_retrain_passes_no_promote_flag_to_script(tmp_path, monkeypatch):
     monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
     candidate = tmp_path / "candidate.pkl"
     candidate.write_bytes(b"model")
-    monkeypatch.setattr(
-        ml_retrain, "_newest_report",
-        lambda: ("reports/retrain_x.json", {
+    reports = iter([
+        ("", None),
+        ("reports/retrain_x.json", {
             "status": "CANDIDATE_ONLY", "candidate_model": str(candidate),
         }),
-    )
+    ])
+    monkeypatch.setattr(ml_retrain, "_newest_report", lambda: next(reports))
     store = _FakeStore()
 
     result = ml_retrain.run_retrain(
