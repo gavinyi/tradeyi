@@ -72,6 +72,17 @@ class Migration:
         return hashlib.sha256(self.sql.encode()).hexdigest()
 
 
+#: 迁移 24 需要识别「核心池」以只迁非核心自定义项。迁移 SQL 无法 import config
+#: （config → store → migrations 循环依赖），故在此以字面量声明；
+#: 与 `config.DEFAULT_VOLATILITY_SYMBOLS` 的一致性由测试守卫，禁止两处各改一处。
+_LEGACY_CORE_SYMBOLS: tuple[str, ...] = (
+    "US.COIN", "US.AMD", "US.NVDA", "US.AVGO", "US.AAPL",
+    "US.META", "US.AMZN", "US.GOOG", "US.MSFT", "US.TSM",
+    "US.QQQ", "US.SPY", "US.GLD",
+)
+_DEFAULT_CORE_SYMBOL_SQL = ",".join(f"'{symbol}'" for symbol in _LEGACY_CORE_SYMBOLS)
+
+
 MIGRATIONS = (
     Migration(1, "baseline_sqlite_schema", "SELECT 1"),
     Migration(2, "infrastructure_indexes", """
@@ -349,36 +360,48 @@ MIGRATIONS = (
         CREATE INDEX idx_promoted_active
             ON promoted_universe(tenant_id, status, expires_at);
     """),
-    # 旧版同步曾把已晋级外援混进全局 VOLATILITY_SYMBOLS。只删除能由存量投放表
-    # 精确证明为外援的符号；其余核心和人工配置原样保留，禁止粗暴重置整项配置。
-    Migration(24, "incubator_delivery_approval_and_legacy_cleanup", """
-        UPDATE runtime_config
-        SET value_json = COALESCE((
-                SELECT json_group_array(value)
-                FROM json_each(runtime_config.value_json)
-                WHERE value NOT IN (
-                    SELECT symbol FROM promoted_universe
-                    WHERE tenant_id='futu_paper_sandbox'
-                )
-            ), '[]'),
-            version = version + 1,
-            updated_at = datetime('now')
-        WHERE config_key='VOLATILITY_SYMBOLS'
-          AND json_valid(value_json)
-          AND json_type(value_json)='array';
-        CREATE TABLE real_universe_delivery_approvals (
+    # 旧版同步曾把已晋级外援混进全局 VOLATILITY_SYMBOLS。**迁移不删除全局键任何标的**：
+    # 同一符号可能既是历史投放、又被人工纳入核心池，仅凭旧投放表无法证明来源，
+    # 删除会误伤人工配置（Reviewer 阻塞项）。因此全局键原样保留，只做只读遗留视图；
+    # 无法证明来源的非核心自定义项保守迁入 PAPER 投放层 —— PAPER Worker 仍可用，
+    # REAL Worker 只取 DEFAULT_VOLATILITY_SYMBOLS + 自身已批准投放，不会继承历史外援。
+    # 核心清单与 config.DEFAULT_VOLATILITY_SYMBOLS 的一致性由
+    # tests/test_universe_incubator.py::test_legacy_core_symbol_list_matches_config 守卫。
+    Migration(24, "incubator_delivery_approval_and_legacy_cleanup", f"""
+        INSERT OR IGNORE INTO promoted_universe
+        (tenant_id,symbol,promoted_at,expires_at,promotion_score,industry,
+         live_trades_count,live_realized_pnl,consecutive_hard_stops,status,
+         eviction_reason,created_at,updated_at)
+        SELECT 'futu_paper_sandbox', j.value,
+               strftime('%Y-%m-%dT%H:%M:%S+00:00','now'),
+               strftime('%Y-%m-%dT%H:%M:%S+00:00','now','+3650 day'),
+               0.0, 'OTHER', 0, 0.0, 0, 'ACTIVE',
+               'legacy:global_sync_unproven',
+               strftime('%Y-%m-%dT%H:%M:%S+00:00','now'),
+               strftime('%Y-%m-%dT%H:%M:%S+00:00','now')
+        FROM runtime_config rc, json_each(rc.value_json) AS j
+        WHERE rc.config_key='VOLATILITY_SYMBOLS'
+          AND json_valid(rc.value_json)
+          AND json_type(rc.value_json)='array'
+          AND j.type='text'
+          AND j.value NOT IN ({_DEFAULT_CORE_SYMBOL_SQL});
+        CREATE TABLE IF NOT EXISTS real_universe_delivery_approvals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tenant_id TEXT NOT NULL,
             symbol TEXT NOT NULL,
-            approved_by TEXT NOT NULL,
+            -- 共享管理员密码只能证明「持有共享凭证」，不能证明个人身份。
+            -- actor 由调用方之外的常量固定写入，CHECK 约束禁止伪造个人姓名。
+            approved_by TEXT NOT NULL
+                CHECK (approved_by='streamlit_admin:shared_admin_credential'),
             approved_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             evidence TEXT NOT NULL,
             reason TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
             consumed_at TEXT,
             created_at TEXT NOT NULL
         );
-        CREATE INDEX idx_real_delivery_approval_lookup
+        CREATE INDEX IF NOT EXISTS idx_real_delivery_approval_lookup
             ON real_universe_delivery_approvals(tenant_id, symbol, consumed_at, expires_at);
     """),
 )

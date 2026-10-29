@@ -201,7 +201,12 @@ def test_delivery_pool_is_tenant_isolated_and_real_auto_promotion_is_denied(tmp_
         config.ENV_FILE = monkey_env
 
 
-def test_upgrade_removes_only_proven_legacy_promotions_from_global_pool(tmp_path):
+def test_upgrade_keeps_global_pool_and_migrates_unproven_symbols_to_paper(tmp_path):
+    """迁移 24 不删除全局键任何标的；无法证明来源的非核心项保守迁入 PAPER 投放层。
+
+    覆盖 Reviewer 阻塞场景：同一标的（US.PLTR）既在全局键、又在旧投放表 ——
+    既不能删全局键（可能同时是人工核心配置），也不能覆盖旧投放记录（保留原评分）。
+    """
     from futu_quant.migrations import MIGRATIONS, apply_migrations
 
     db_path = tmp_path / "legacy.db"
@@ -227,19 +232,59 @@ def test_upgrade_removes_only_proven_legacy_promotions_from_global_pool(tmp_path
     )
     connection.commit()
     assert apply_migrations(connection, actor="service:test") == [23, 24]
+    # 全局键一个符号都不能丢：同名双重来源（US.PLTR）也保留，迁移不猜测来源。
     symbols = json.loads(connection.execute(
         "SELECT value_json FROM runtime_config WHERE config_key='VOLATILITY_SYMBOLS'"
     ).fetchone()[0])
-    assert symbols == ["US.AAPL", "US.CUSTOM"]
-    paper = connection.execute(
-        "SELECT symbol FROM promoted_universe WHERE tenant_id='futu_paper_sandbox'"
-    ).fetchall()
+    assert symbols == ["US.AAPL", "US.PLTR", "US.CUSTOM"]
+    paper = {
+        row[0]: row[1] for row in connection.execute(
+            "SELECT symbol, promotion_score FROM promoted_universe "
+            "WHERE tenant_id='futu_paper_sandbox'"
+        ).fetchall()
+    }
     real = connection.execute(
         "SELECT symbol FROM promoted_universe WHERE tenant_id='futu_real_master'"
     ).fetchall()
-    assert paper == [("US.PLTR",)]
+    # 旧投放记录保留原评分（INSERT OR IGNORE 不覆盖）；非核心自定义项 CUSTOM 被承接。
+    assert paper == {"US.PLTR": .9, "US.CUSTOM": 0.0}
+    # REAL 不继承任何历史投放（含全局键来源）。
     assert real == []
     connection.close()
+
+
+def test_legacy_core_symbol_list_matches_config():
+    """迁移 24 的核心清单必须与 config.DEFAULT_VOLATILITY_SYMBOLS 完全一致。"""
+    from futu_quant.config import DEFAULT_VOLATILITY_SYMBOLS
+    from futu_quant.migrations import _LEGACY_CORE_SYMBOLS
+
+    assert _LEGACY_CORE_SYMBOLS == DEFAULT_VOLATILITY_SYMBOLS
+
+
+def test_worker_pool_is_default_core_plus_tenant_deliveries_only(tmp_path, monkeypatch):
+    """全局键里的人工自定义项/历史外援不得进入 REAL 池；PAPER 只拿迁移承接项。"""
+    from futu_quant import config
+    import futu_quant.store as store_module
+
+    store = TradingStore(str(tmp_path / "pool.db"))
+    store.set_runtime_config(
+        "VOLATILITY_SYMBOLS", ["US.AAPL", "US.LEGACY", "US.CUSTOM"], "test:seed",
+    )
+    expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    store.promote_universe_symbol("futu_paper_sandbox", "US.CUSTOM", 0.0, expires)
+
+    monkeypatch.setattr(config, "ENV_FILE", config.DEFAULT_ENV_FILE)
+    monkeypatch.setattr(store_module, "TradingStore", lambda: store)
+
+    real_pool = config.load_volatility_symbols("futu_real_master")
+    paper_pool = config.load_volatility_symbols("futu_paper_sandbox")
+    shared_pool = config.load_volatility_symbols()
+
+    assert real_pool == config.DEFAULT_VOLATILITY_SYMBOLS
+    assert "US.LEGACY" not in real_pool and "US.CUSTOM" not in real_pool
+    assert "US.CUSTOM" in paper_pool
+    assert "US.LEGACY" not in paper_pool  # 全局键不再是基础池来源
+    assert "US.CUSTOM" in shared_pool  # 无租户上下文只做展示并集
 
 
 def test_real_delivery_requires_matching_unexpired_single_use_approval(tmp_path):
@@ -249,12 +294,24 @@ def test_real_delivery_requires_matching_unexpired_single_use_approval(tmp_path)
     from futu_quant.admin_auth import hash_password
 
     password = "correct-admin-password"
+    note = "申请人自称 Chief（非权威备注）"
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setenv("ADMIN_PASSWORD_HASH", hash_password(password, iterations=1_000))
         approval_id = store.create_real_universe_delivery_approval(
-            "futu_real_master", "US.PLTR", "streamlit_admin:chief", valid_until,
-            "ticket:REAL-PLTR-001", "独立评审通过", admin_password=password,
+            "futu_real_master", "US.PLTR", valid_until,
+            "ticket:REAL-PLTR-001", "独立评审通过",
+            admin_password=password, note=note,
         )
+    assert [row["symbol"] for row in store.active_promoted_symbols("futu_real_master")] == []
+    with store.connection() as connection:
+        stored = connection.execute(
+            "SELECT approved_by, note FROM real_universe_delivery_approvals WHERE id=?",
+            (approval_id,),
+        ).fetchone()
+    from futu_quant.store import SHARED_ADMIN_CREDENTIAL_ACTOR
+
+    assert stored["approved_by"] == SHARED_ADMIN_CREDENTIAL_ACTOR
+    assert stored["note"] == note
     with pytest.raises(PermissionError, match="不匹配"):
         store.promote_universe_symbol(
             "futu_real_master", "US.NVDA", .9, delivery_until, approval_id=approval_id,
@@ -272,6 +329,39 @@ def test_real_delivery_requires_matching_unexpired_single_use_approval(tmp_path)
     events = {row["event_type"] for row in store.audit_events()}
     assert "REAL_UNIVERSE_DELIVERY_APPROVED" in events
     assert "REAL_UNIVERSE_DELIVERY_APPROVAL_CONSUMED" in events
+    approval_event = next(
+        row for row in store.audit_events()
+        if row["event_type"] == "REAL_UNIVERSE_DELIVERY_APPROVED"
+    )
+    payload = json.loads(approval_event["payload_json"])
+    assert approval_event["actor"] == SHARED_ADMIN_CREDENTIAL_ACTOR
+    assert payload["actor_identity_verified"] is False
+    assert payload["actor_authority"] == "shared_admin_credential"
+    assert payload["approval_note"] == note
+
+
+def test_real_approval_rejects_caller_supplied_identity(tmp_path, monkeypatch):
+    """审计 actor 不可由调用方指定：关键字参数与数据库直写都必须被拒。"""
+    from futu_quant.admin_auth import hash_password
+
+    store = TradingStore(str(tmp_path / "incubator.db"))
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    password = "correct-admin-password"
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", hash_password(password, iterations=1_000))
+    with pytest.raises(TypeError):
+        store.create_real_universe_delivery_approval(
+            "futu_real_master", "US.PLTR", expires, "ticket:x", "评审通过",
+            admin_password=password, approved_by="streamlit_admin:chief",
+        )
+    # 即便绕过 API 直接写库，CHECK 约束也不接受伪造的个人身份。
+    with pytest.raises(sqlite3.IntegrityError):
+        with store.connection() as connection:
+            connection.execute(
+                """INSERT INTO real_universe_delivery_approvals
+                (tenant_id,symbol,approved_by,approved_at,expires_at,evidence,reason,created_at)
+                VALUES('futu_real_master','US.PLTR','streamlit_admin:chief',?,?,?,?,?)""",
+                (store.now(), expires, "ticket:x", "评审通过", store.now()),
+            )
 
 
 def test_worker_cannot_self_sign_or_use_expired_real_approval(tmp_path, monkeypatch):
@@ -283,7 +373,7 @@ def test_worker_cannot_self_sign_or_use_expired_real_approval(tmp_path, monkeypa
     monkeypatch.setenv("ADMIN_PASSWORD_HASH", hash_password(password, iterations=1_000))
     with pytest.raises(PermissionError, match="未经管理员认证"):
         store.create_real_universe_delivery_approval(
-            "futu_real_master", "US.PLTR", "service:worker",
+            "futu_real_master", "US.PLTR",
             (now + timedelta(hours=1)).isoformat(), "self", "self",
             admin_password="worker-self-signed",
         )
@@ -291,7 +381,7 @@ def test_worker_cannot_self_sign_or_use_expired_real_approval(tmp_path, monkeypa
     expired_at = (now - timedelta(seconds=1)).isoformat()
     with pytest.raises(ValueError, match="有效期必须晚于"):
         store.create_real_universe_delivery_approval(
-            "futu_real_master", "US.PLTR", "streamlit_admin:chief",
+            "futu_real_master", "US.PLTR",
             expired_at, "ticket:expired", "超时测试", admin_password=password,
         )
 

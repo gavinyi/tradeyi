@@ -77,7 +77,7 @@ class FakeBroker:
 def test_scanner_defaults_to_configured_volatility_symbols(monkeypatch):
     broker = FakeBroker()
     store = FakeStore()
-    monkeypatch.setattr(scanner, "load_volatility_symbols", lambda: ("US.NVDA",))
+    monkeypatch.setattr(scanner, "load_volatility_symbols", lambda *_a, **_k: ("US.NVDA",))
     monkeypatch.setattr(
         scanner, "volatility_threshold_profile",
         lambda _bars: {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
@@ -112,7 +112,7 @@ def test_active_signal_creates_campaign_and_enables_auto_monitor(monkeypatch):
         def send(self, *_args, **_kwargs):
             return None
 
-    monkeypatch.setattr(scanner, "load_volatility_symbols", lambda: ("US.AMD",))
+    monkeypatch.setattr(scanner, "load_volatility_symbols", lambda *_a, **_k: ("US.AMD",))
     monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda *_a, **_k: [])
     monkeypatch.setattr(scanner, "AlertManager", FakeAlertManager)
     monkeypatch.setattr(
@@ -257,6 +257,8 @@ def test_scanner_limits_broker_snapshot_to_scanned_symbols(monkeypatch):
     monkeypatch.setenv("RADAR_MAX_SYMBOLS_PER_SCAN", "5")
     symbols = tuple(f"US.TEST{i}" for i in range(10))
     monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda *_a, **_k: [])
+    # 显式扫描集由调用方给定；租户池收窄按本测试意图对齐（否则 TEST 符号不在默认池会被过滤）
+    monkeypatch.setattr(scanner, "load_volatility_symbols", lambda *_a, **_k: symbols)
     monkeypatch.setattr(scanner, "volatility_threshold_profile", lambda _: {
         "entry_zscore": 2.0, "minimum_underlying_move": .02,
     })

@@ -97,6 +97,13 @@ ACTOR_CLASS_KIND = {
     "test": "machine",
 }
 
+#: 共享管理员密码签发 REAL 投放批准时**唯一允许**的审计 actor。
+#:
+#: 密码只能证明「持有共享凭证」，不能证明输入者的个人身份；因此该值不随调用方变化，
+#: 也不接受任何参数传入（Reviewer 2026-10-29 阻塞项）。表上 CHECK 约束、
+#: 审计 payload 的 ``actor_authority`` 均以本常量为准。
+SHARED_ADMIN_CREDENTIAL_ACTOR = "streamlit_admin:shared_admin_credential"
+
 
 class AuditActorError(ValueError):
     """`actor` 格式非法（空 / 缺失 / 无冒号）—— **fail-closed：拒写 + 抛错**。
@@ -3836,10 +3843,17 @@ class TradingStore:
             return [dict(r) for r in rows]
 
     def create_real_universe_delivery_approval(
-        self, tenant_id: str, symbol: str, approved_by: str, expires_at: str,
-        evidence: str, reason: str, *, admin_password: str,
+        self, tenant_id: str, symbol: str, expires_at: str,
+        evidence: str, reason: str, *, admin_password: str, note: str = "",
     ) -> int:
-        """仅在重新校验管理员密码后创建 REAL 批准；会话布尔值和 actor 均不可信。"""
+        """仅在重新校验管理员密码后创建 REAL 投放批准。
+
+        **签名不接受 ``approved_by``**（Reviewer 2026-10-29 阻塞项）：共享管理员密码
+        只能证明「持有共享凭证」，不能证明输入者的个人身份。审计 actor 固定写
+        ``streamlit_admin:shared_admin_credential``，表上 CHECK 约束同样只允许该值；
+        个人姓名只能作为 ``note`` 非权威备注，审计 payload 明确标注
+        ``actor_identity_verified=False``，禁止把备注读成身份认证。
+        """
         from futu_quant.admin_auth import configured as admin_configured, verify as verify_admin
         from futu_quant.tenant import resolve_tenant
 
@@ -3848,21 +3862,23 @@ class TradingStore:
         tenant = resolve_tenant(tenant_id, strict=True)
         if tenant.trading_env != "REAL":
             raise ValueError("REAL 投放批准只能签发给 REAL 租户")
-        approved_by = str(approved_by or "").strip()
         evidence = str(evidence or "").strip()
         reason = str(reason or "").strip()
-        if not approved_by or not evidence or not reason:
-            raise ValueError("REAL 投放批准必须包含审批人、证据和原因")
-        validate_actor(approved_by)
+        note = str(note or "").strip()
+        if not evidence or not reason:
+            raise ValueError("REAL 投放批准必须包含证据和原因")
         now = self.now()
         if expires_at <= now:
             raise ValueError("REAL 投放批准有效期必须晚于当前时间")
         with self.connection() as connection:
             cursor = connection.execute(
                 """INSERT INTO real_universe_delivery_approvals
-                (tenant_id,symbol,approved_by,approved_at,expires_at,evidence,reason,created_at)
-                VALUES(?,?,?,?,?,?,?,?)""",
-                (tenant_id, symbol, approved_by, now, expires_at, evidence, reason, now),
+                (tenant_id,symbol,approved_by,approved_at,expires_at,evidence,reason,note,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    tenant_id, symbol, SHARED_ADMIN_CREDENTIAL_ACTOR, now, expires_at,
+                    evidence, reason, note, now,
+                ),
             )
             approval_id = int(cursor.lastrowid)
             connection.execute(
@@ -3871,7 +3887,10 @@ class TradingStore:
                 ("REAL_UNIVERSE_DELIVERY_APPROVED", None, _json_dumps({
                     "approval_id": approval_id, "tenant_id": tenant_id, "symbol": symbol,
                     "expires_at": expires_at, "evidence": evidence, "reason": reason,
-                }), now, approved_by),
+                    "actor_authority": "shared_admin_credential",
+                    "actor_identity_verified": False,
+                    "approval_note": note,
+                }), now, SHARED_ADMIN_CREDENTIAL_ACTOR),
             )
         return approval_id
 
@@ -3930,6 +3949,20 @@ class TradingStore:
             rows = connection.execute(
                 """SELECT * FROM promoted_universe WHERE tenant_id=? AND status='ACTIVE'
                 AND expires_at >= ? ORDER BY promotion_score DESC""", (tenant_id, now),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def all_active_promoted_symbols(self) -> list[dict]:
+        """跨租户 ACTIVE 投放的只读并集，仅供无租户上下文的展示与共享市场层扫描。
+
+        **禁止用于下单、风控或任何租户级判定** —— 租户级读取必须走
+        :meth:`active_promoted_symbols`（未传租户即抛错）。
+        """
+        now = self.now()
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM promoted_universe WHERE status='ACTIVE'
+                AND expires_at >= ? ORDER BY promotion_score DESC""", (now,),
             ).fetchall()
             return [dict(r) for r in rows]
 
