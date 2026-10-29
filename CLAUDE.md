@@ -165,4 +165,5 @@ exponential backoff on failure, and heartbeat/status writes. **Single-instance e
 - 合入 master 前必须在 `trade-test` 跑全量回归并通过：`TRADEYI_ENV=test` + `TRADEYI_PROD_DB_PATH=E:\Thisyi\trade\data\trading.db` + `python -m pytest -q`（带生产库路径才会做指纹比对，不带就是拿测试库和自己比，等于没验）。
 - 服务停摆等紧急情况可走 hotfix 直接合 master，但必须**当场说明是 hotfix**，事后补 trade-test 验证或回滚重走。
 - 新建开发工作树的固定姿势：`git worktree add E:\Thisyi\trade-dev\wt-<slug> -b fix/<slug> master`。
+- 以上三步用 `scripts/dev_worktree.py` 串起来：`new <slug>` 建树 → `verify --ref <branch>` 在测试区跑全量并写绿戳 → `merge <branch>` 校验绿戳后 ff 合入并推送；`release` 等于 verify+merge。**没有对应 commit 的绿戳时 `merge` 直接拒绝**，`--force` 仅用于 hotfix 并在提交说明里写清原因。
 - 详见 `docs/test_environment_runtime.md`（测试区启停与验收清单）。
