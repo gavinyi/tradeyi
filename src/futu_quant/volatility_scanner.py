@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 import logging
 from typing import Callable
@@ -16,6 +16,8 @@ from .config import (
     resolve_volatility_radar_budget, upsert_campaign,
 )
 from .volatility_optimizer import volatility_regime, volatility_threshold_profile
+from .volatility_activation import build_activation_evidence, save_activation_evidence
+from .volatility_chain import campaign_intent_chain_status
 from .volatility_orphans import retain_campaign_if_at_risk
 from .volatility_roll import roll_campaign
 from .tenant import campaigns_config_key_lenient, tenant_id_of_broker
@@ -207,6 +209,8 @@ def scan_market_layer(
 
     results: dict[str, "MarketSymbolResult"] = {}
     rows: list[dict] = []
+    scan_started_at = datetime.now(NY)
+    scan_trace_id = f"radar-{scan_started_at.astimezone(ZoneInfo('UTC')).strftime('%Y%m%dT%H%M%S%fZ')}"
     total_symbols = len(scan_symbols)
     # A3（2026-10-27）：扫描层决策也要归户。市场层本身不碰账户，但**决策留痕**需要
     # 租户（否则 decision_logs 空租户刷屏、审计无法归户）。由 broker 账户/环境解析，
@@ -249,6 +253,12 @@ def scan_market_layer(
                 regime["reason"] = (
                     f"主要随大盘同步波动：相对SPY仅 {relative_strength:+.2%}，目标绝对值≥0.50%"
                 )
+            evidence = build_activation_evidence(
+                symbol, regime, profile,
+                observed_at=scan_started_at,
+                trace_id=f"{scan_trace_id}:{symbol}",
+            )
+            save_activation_evidence(store, evidence)
             row = {
                 "symbol": symbol, "active": bool(regime["active"]),
                 "reason": regime["reason"], "checks": regime["checks"],
@@ -256,6 +266,8 @@ def scan_market_layer(
                 "market_return": market_move,
                 "relative_strength": relative_strength,
                 "profile": profile,
+                "activation_trace_id": evidence["trace_id"],
+                "activation_observed_at": evidence["observed_at"],
                 "intraday_return": regime["intraday_return"],
                 "zscore_20d": regime["zscore_20d"], "atr_ratio": regime["atr_ratio"],
                 "volume_ratio": regime["volume_ratio"], "direction_score": regime["direction_score"],
@@ -348,7 +360,26 @@ def _maybe_create_tenant_campaign(
             "symbol": symbol, "regime": item.regime, "tenant_id": tenant_id,
         }, "volatility_scanner", actor="service:radar")
     campaigns = load_volatility_campaigns(tenant_id)
-    if any(entry.get("underlying") == symbol and entry.get("enabled", True) for entry in campaigns):
+    existing_campaign = next(
+        (entry for entry in campaigns
+         if entry.get("underlying") == symbol and entry.get("enabled", True)),
+        None,
+    )
+    if existing_campaign is not None:
+        broken, chain_reason = campaign_intent_chain_status(
+            existing_campaign,
+            now=datetime.now(timezone.utc),
+            intents=store.intents(limit=2000, tenant_id=tenant_id),
+            decisions=store.decisions(limit=5000),
+            tenant_id=str(tenant_id or ""),
+        )
+        if broken:
+            trace_id = existing_campaign.get("activation_trace_id")
+            AlertManager(store).send(
+                "ERROR", "VOLATILITY_SIGNAL_CHAIN_BROKEN",
+                f"{symbol} {chain_reason}",
+                incident_key=f"volatility-campaign-intent:{tenant_id}:{symbol}:{trace_id}",
+            )
         return
     retry_until_raw = store.get_setting(
         _tenant_scoped_setting_key("volatility_candidate_retry_until", tenant_id, symbol), "",
@@ -379,6 +410,8 @@ def _maybe_create_tenant_campaign(
     seed = {
         "underlying": symbol, "code": symbol, "event_date": datetime.now(NY).date().isoformat(),
         "event_session": "行情触发", "trigger_mode": "VOLATILITY",
+        "activation_trace_id": row.get("activation_trace_id"),
+        "activation_observed_at": row.get("activation_observed_at"),
         "minimum_underlying_move": item.profile["minimum_underlying_move"],
         "entry_zscore": item.profile["entry_zscore"],
         "contracts_per_stage": int(store.get_setting("volatility_default_contracts_per_stage", "2")),
@@ -548,6 +581,9 @@ def _maybe_create_tenant_campaign(
             **rolled,
             # 显式带租户（同上）：雷达写入方必须与 ADOPT 用同一身份口径。
             "tenant_id": tenant_id,
+            "activation_trace_id": row.get("activation_trace_id"),
+            "activation_observed_at": row.get("activation_observed_at"),
+            "auto_created_at": datetime.now(timezone.utc).isoformat(),
         })
         # 启用键必须落到**本租户**：写全局 `strategy_enabled:Volatility Long Gamma`
         # 等于把整个策略对**所有租户**置为启用 —— 雷达给某一个租户建单只是该租户的
@@ -569,6 +605,7 @@ def _maybe_create_tenant_campaign(
             "underlying": symbol, "code": rolled["code"], "reason": roll_reason,
             "execution_mode": execution_mode, "auto_monitor_enabled": True,
             "tenant_id": tenant_id,
+            "trace_id": row.get("activation_trace_id"),
         }, "volatility_scanner", actor="service:radar")
         row.update({
             "campaign_created": True,
@@ -606,10 +643,17 @@ def _maybe_create_tenant_campaign(
             "volatility_scanner", symbol, "CANDIDATE_BLOCKED", roll_reason, row,
             tenant_id=tenant_id,
         )
+        trace_id = row.get("activation_trace_id")
         store.audit("VOLATILITY_AUTO_CAMPAIGN_REJECTED", {
             "underlying": symbol, "reason": roll_reason,
             "diagnostics": diagnostics, "tenant_id": tenant_id,
+            "trace_id": trace_id,
         }, "volatility_scanner", actor="service:radar")
+        AlertManager(store).send(
+            "ERROR", "VOLATILITY_SIGNAL_CHAIN_BROKEN",
+            f"{symbol} scanner 已触发 BUY，但未形成 campaign：{roll_reason}（trace_id={trace_id}）",
+            incident_key=f"volatility-signal-chain:{tenant_id}:{symbol}",
+        )
         store.set_setting(rejection_key, fingerprint)
 
 

@@ -40,12 +40,14 @@ from futu_quant.volatility_optimizer import (
     volatility_profit_protection_profile,
     volatility_direction_size_factor, volatility_entry_confirmation,
     volatility_signal_state, volatility_cooldown_reentry_allowed,
-    volatility_entry_quality_allowed, volatility_entry_tier, volatility_regime,
-    volatility_threshold_profile, loss_adaptive_premium_budget,
+    volatility_entry_quality_allowed, volatility_entry_tier,
+    loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
+    volatility_regime,
 )
 from futu_quant.volatility_structures import automatic_combo_id
+from futu_quant.volatility_activation import load_activation_evidence
 from futu_quant.volatility_orphans import (
     volatility_write_state_key,
     without_legacy_signal_state_keys,
@@ -1149,18 +1151,76 @@ def run_campaign(
             print(f"{code}: SELL ({reason}) [硬止损绕过冷却]")
     regime = None
     if trigger_mode == "VOLATILITY":
-        adaptive = volatility_threshold_profile(underlying_bars)
-        effective_z = min(
-            float(campaign.get("entry_zscore", 2.0)), adaptive["entry_zscore"]
+        # P0 单一激活判定：scanner 是唯一生产者；campaign 只消费同一份不可变证据，
+        # 禁止再以 campaign/adaptive 的 min() 重算并制造第二真值源。
+        evidence, evidence_reason = load_activation_evidence(
+            executor.store, campaign["underlying"], now=now,
         )
-        effective_move = min(
-            float(campaign.get("minimum_underlying_move", .02)),
-            adaptive["minimum_underlying_move"],
-        )
-        regime = volatility_regime(
-            owner, underlying_bars, effective_z, effective_move,
-        )
-        regime["adaptive_profile"] = adaptive
+        if evidence is None or not evidence.get("active", False):
+            reason = evidence_reason if evidence is None else (
+                f"scanner 激活证据为 inactive：{evidence.get('reason', '')}"
+            )
+            executor.store.decision_if_changed(
+                strategy_id, code, "BLOCKED", reason,
+                {
+                    "activation_trace_id": (
+                        evidence.get("trace_id") if evidence else campaign.get("activation_trace_id")
+                    ),
+                    "activation_evidence": evidence,
+                    "pre_trade_check": "SCANNER_ACTIVATION_EVIDENCE",
+                },
+                repeat_after_seconds=300,
+                tenant_id=_campaign_tenant,
+            )
+            print(f"{code}: BLOCKED ({reason})")
+            return
+        # 第二次确认不能照抄 scanner 的旧 active 结果：使用 scanner 固化的同一阈值快照，
+        # 对本轮最新正股行情和 K 线复用同一纯函数重新计算。这样既避免阈值双真值源，
+        # 又保留“发现候选→入场前复核”的两次独立确认。
+        profile = dict(evidence.get("profile") or {})
+        try:
+            entry_zscore = float(profile["entry_zscore"])
+            minimum_move = float(profile["minimum_underlying_move"])
+        except (KeyError, TypeError, ValueError):
+            reason = "scanner 激活证据缺少有效阈值快照，入场二次确认 fail-closed"
+            executor.store.decision_if_changed(
+                strategy_id, code, "BLOCKED", reason, {
+                    "activation_trace_id": evidence.get("trace_id"),
+                    "activation_evidence": evidence,
+                    "pre_trade_check": "CAMPAIGN_RECONFIRMATION",
+                }, repeat_after_seconds=300, tenant_id=_campaign_tenant,
+            )
+            print(f"{code}: BLOCKED ({reason})")
+            return
+        regime = volatility_regime(owner, underlying_bars, entry_zscore, minimum_move)
+        regime.update({
+            "adaptive_profile": profile,
+            "activation_trace_id": evidence.get("trace_id"),
+            "activation_observed_at": evidence.get("observed_at"),
+            "reconfirmed_at": now.astimezone(timezone.utc).isoformat(),
+            "scanner_metrics": dict(evidence.get("metrics") or {}),
+        })
+        if not regime.get("active", False):
+            reason = f"入场二次确认未通过：{regime.get('reason', '当前行情不再满足激活条件')}"
+            executor.store.decision_if_changed(
+                strategy_id, code, "BLOCKED", reason, {
+                    "activation_trace_id": evidence.get("trace_id"),
+                    "scanner_observed_at": evidence.get("observed_at"),
+                    "reconfirmed_at": regime["reconfirmed_at"],
+                    "threshold_profile": profile,
+                    "scanner_metrics": regime["scanner_metrics"],
+                    "reconfirmation_metrics": {
+                        key: regime.get(key) for key in (
+                            "intraday_return", "zscore_20d", "atr_ratio", "volume_ratio",
+                            "direction_score", "trigger_confirmed", "volume_confirmed",
+                            "direction_gate",
+                        )
+                    },
+                    "pre_trade_check": "CAMPAIGN_RECONFIRMATION",
+                }, repeat_after_seconds=300, tenant_id=_campaign_tenant,
+            )
+            print(f"{code}: BLOCKED ({reason})")
+            return
         # A13（2026-10-27）：单轮 inactive 不再清零确认计时；连续 inactive 超过
         # `entry_confirmation_inactive_tolerance_cycles`（默认 1，即连续 2 轮）才结束 epoch。
         update_signal_epoch_state(
@@ -1837,8 +1897,19 @@ def run_campaign(
             executor.store,
         )
         if trigger_mode == "VOLATILITY":
+            # 入场质量必须使用本轮 Futu 权威快照，不能继续消费 campaign 生成时保存的
+            # spread/OI/volume。行情缺失或过期已由上方 refreshed_trade_quotes fail-closed。
+            live_quality_campaign = {
+                **campaign,
+                "spread_pct": float(quote_check["spread_pct"]),
+                "option_open_interest": market_number(option.get("option_open_interest"), 0.0),
+                "volume": market_number(option.get("volume"), 0.0),
+                "entry_quote_observed_at": now.isoformat(),
+                "entry_quote_age_seconds": float(quote_check["option_age_seconds"]),
+                "activation_trace_id": regime.get("activation_trace_id") if regime else None,
+            }
             quality_allowed, quality_reason, quality_checks = volatility_entry_quality_allowed(
-                campaign,
+                live_quality_campaign,
                 default_min_score=float(campaign.get("minimum_entry_quality_score", 70) or 70),
                 default_min_expected_return=float(
                     campaign.get("minimum_model_expected_return", .02)
