@@ -273,6 +273,19 @@ def _sync_test(ref: str) -> str:
     name = ref.rstrip("/").split("/")[-1] or "head"
     verify_branch = f"verify/{name}"
     git(TEST_ROOT, "checkout", "-B", verify_branch, sha)
+
+    # checkout 可能只更新 HEAD/index 而没把文件落到工作树（杀软/同步盘/受限权限下
+    # 出现过：新增与被改文件全部显示为 D）。这里自愈一次，仍不干净就中止。
+    if dirty_tracked(TEST_ROOT):
+        stale = len(dirty_tracked(TEST_ROOT))
+        git(TEST_ROOT, "checkout", "--", ".")
+        remaining = dirty_tracked(TEST_ROOT)
+        if remaining:
+            raise SystemExit(
+                f"拒绝：测试区切换后仍不干净（{remaining[:3]}...），工作树可能被占用或权限受限，"
+                "请人工检查后再跑验证"
+            )
+        print(f"（已修复 {stale} 个未落地的文件）")
     print(f"测试区已切到 {verify_branch} -> {sha[:8]}")
     return sha
 
