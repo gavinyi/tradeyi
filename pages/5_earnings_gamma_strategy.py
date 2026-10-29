@@ -703,13 +703,29 @@ with config_tab:
             peer_contracts=candidates,
         )
         with st.container(horizontal=True):
+            _pct_type = str(risk_analysis.get("IV百分位类型") or "UNAVAILABLE")
+            _pct_label = {
+                "HISTORICAL": "IV 历史百分位",
+                "CHAIN_PROXY": "IV 链内排名（非历史）",
+            }.get(_pct_type, "IV 历史百分位")
+            _pct_value = (
+                f"{risk_analysis['IV历史百分位']:.1%}"
+                if risk_analysis["IV百分位可用"] else "样本不足"
+            )
+            if _pct_type == "CHAIN_PROXY" and risk_analysis["IV百分位可用"]:
+                _pct_value = f"{risk_analysis['IV历史百分位']:.0%}（链内）"
             st.metric(
-                "IV 历史百分位",
-                f"{risk_analysis['IV历史百分位']:.1%}" if risk_analysis["IV百分位可用"] else "样本不足",
+                _pct_label,
+                _pct_value,
                 help=(
                     f"样本来源：{risk_analysis['IV样本来源']}；"
                     f"样本数：{risk_analysis['IV历史样本数']}；"
                     f"置信度：{risk_analysis['IV样本置信度']}。"
+                    + (
+                        " 该数值是同一快照内同类合约的横截面排名，"
+                        "不代表当前 IV 处于自身历史高位，不参与历史百分位闸门。"
+                        if _pct_type == "CHAIN_PROXY" else ""
+                    )
                 ),
                 border=True,
             )

@@ -240,22 +240,37 @@ with service_tab:
         global_paused = store.get_setting("strategies_paused", "false")
         paused = (tenant_paused or global_paused).lower() == "true"
         mode = str(execution_mode_setting).upper()
-        is_real_env = getattr(settings, "trading_env", "SIMULATE") == "REAL"
-        mode_options = ["SHADOW", "PAPER", "REAL"] if is_real_env else ["SHADOW", "PAPER"]
-        default_mode = mode if mode in mode_options else ("REAL" if is_real_env else "PAPER")
-        selected_mode = st.segmented_control(
-            "全局执行模式", mode_options, default=default_mode,
-            help="SHADOW 不向富途提交订单；PAPER 提交到富途模拟盘；REAL 执行真金实盘交易。",
-            disabled=not admin, key="automation_global_execution_mode",
-        )
-        if selected_mode and selected_mode != mode:
-            store.set_setting("execution_mode", selected_mode)
+        # 选项恒含三态：此前按 `settings.trading_env` 裁剪，而 settings 在面板进程内是
+        # 启动时的快照（Settings.load 默认不覆盖已存在的环境变量）。改完 .env 未重启面板时，
+        # REAL 不在选项里 → default 回落 PAPER → 下面「selected != mode」把 PAPER 写回库，
+        # **仅打开页面就会把 REAL 静默降级成 PAPER**（10-29 13:59:46 实际发生过一次）。
+        mode_options = ["SHADOW", "PAPER", "REAL"]
+        default_mode = mode if mode in mode_options else "PAPER"
+
+        def _persist_global_mode() -> None:
+            """只在**用户真正改动**时落库（on_change 回调），渲染期不再自动写入。"""
+            new_mode = str(st.session_state.get("automation_global_execution_mode") or "").upper()
+            if not new_mode or new_mode not in mode_options:
+                return
+            current = str(store.get_setting("execution_mode", "PAPER")).upper()
+            if new_mode == current:
+                return
+            store.set_setting("execution_mode", new_mode)
             store.audit(
                 "EXECUTION_MODE_CHANGED",
                 {"actor": "streamlit_admin", "source": "automation_control_center",
-                 "before": mode, "after": selected_mode},
+                 "before": current, "after": new_mode},
              actor="streamlit_admin:panel")
-            st.rerun()
+
+        st.segmented_control(
+            "全局执行模式", mode_options, default=default_mode,
+            help=(
+                "SHADOW 不向富途提交订单；PAPER 提交到富途模拟盘；REAL 执行真金实盘交易。"
+                "REAL 需要券商连接环境为 REAL（FUTU_TRADING_ENV），否则下单会被实盘闸门拒绝。"
+            ),
+            disabled=not admin, key="automation_global_execution_mode",
+            on_change=_persist_global_mode,
+        )
         if st.button(
             "恢复全部策略" if paused else "暂停全部策略",
             disabled=not admin, key="automation_pause_all",

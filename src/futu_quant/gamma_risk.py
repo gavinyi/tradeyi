@@ -86,12 +86,22 @@ def contract_analysis(
         sum(value <= iv for value in sample_values) / len(sample_values)
         if percentile_ready else 0.5
     )
+    # 口径必须显式区分：只有「同一合约自身历史」才算历史百分位；
+    # 样本不足时回落的同类合约横截面只是**链内排名**，与历史高低无关。
+    # 把两者混为一谈会让新合约/0DTE 拿到 90%+ 的假「历史高位」，把可做标的挡死。
+    if not percentile_ready:
+        percentile_type = "UNAVAILABLE"
+    elif len(history) >= 20:
+        percentile_type = "HISTORICAL"
+    else:
+        percentile_type = "CHAIN_PROXY"
     if store and symbol and iv > 0:
         store.record_metric(symbol, "iv", iv)
     return {
         "隐含波动率": iv, "历史实现波动率": realized_vol,
         "IV/RV": iv / realized_vol if realized_vol > 0 else 0,
         "IV历史百分位": percentile,
+        "IV百分位类型": percentile_type,
         "IV历史样本数": len(sample_values),
         "IV百分位可用": percentile_ready,
         "IV样本来源": sample_source if percentile_ready else "样本不足",
@@ -121,9 +131,20 @@ def iv_entry_allowed(analysis: dict, trigger_mode: str = "EARNINGS") -> tuple[bo
         return False, f"隐含波动率 {iv:.1%} 超过绝对上限 {max_absolute_iv:.1%}，期权溢价过高易遭剧烈磨损"
     if analysis.get("IV/RV", 0) > max_ratio:
         return False, f"IV/RV {analysis['IV/RV']:.2f} 超过 {max_ratio:.2f}，IV Crush 风险过高"
-    if analysis.get("IV历史百分位", 0) > max_percentile:
-        return False, f"IV 百分位 {analysis['IV历史百分位']:.1%} 过高"
-    return True, f"{'波动行情' if volatility else '财报事件'} IV 风控通过"
+    # 百分位闸门只认**同一合约历史**口径。链内横截面排名（新合约/0DTE 无历史时的回落）
+    # 与「当前 IV 处于自身历史什么位置」无关，拿来比 75% 上限会系统性误杀，
+    # 因此这里不参与判定，但要在返回文案里写明「未启用」，便于排查时不误读为通过。
+    percentile_type = str(analysis.get("IV百分位类型") or "").upper()
+    percentile_note = ""
+    if percentile_type == "HISTORICAL":
+        if analysis.get("IV历史百分位", 0) > max_percentile:
+            return False, f"IV 历史百分位 {analysis['IV历史百分位']:.1%} 过高（上限 {max_percentile:.0%}）"
+    else:
+        percentile_note = (
+            f"；IV 历史百分位闸门未启用（{percentile_type or '类型未知'}："
+            f"无同一合约历史样本，链内横截面排名不作为历史百分位使用）"
+        )
+    return True, f"{'波动行情' if volatility else '财报事件'} IV 风控通过{percentile_note}"
 
 
 def portfolio_greeks(positions: pd.DataFrame, quotes: pd.DataFrame) -> dict:

@@ -1117,7 +1117,14 @@ def rank_volatility_contracts(
         iv = normalize_iv(row.get("option_implied_volatility", 0))
         raw_iv_percentile = row.get("iv_history_percentile", iv_percentile)
         row_iv_percentile = market_number(raw_iv_percentile, float("nan"))
-        has_iv_percentile = pd.notna(row_iv_percentile)
+        # 口径：只有「同一合约自身历史」算出的百分位才可比历史上限。
+        # option_expectancy 在历史样本不足时会回落成链内横截面排名（CHAIN_PROXY），
+        # 那是「本合约在当前期权链里贵不贵」，与自身历史位置无关 —— 拿它比 75% 上限
+        # 会把所有新合约/0DTE 系统性挡死（10-29 实测 90%~96% 全部属此类）。
+        row_iv_status = str(row.get("iv_percentile_status") or "").upper()
+        iv_value_present = bool(pd.notna(row_iv_percentile))
+        historical_percentile = bool(iv_value_present and row_iv_status == "HISTORICAL")
+        has_iv_percentile = iv_value_present
         iv_rv = iv / rv if rv > 0 else 99.0
         expected_return = market_number(row.get("model_expected_return"), -99.0)
         expected_return_ok = expected_return >= min_expected_return
@@ -1135,9 +1142,12 @@ def rank_volatility_contracts(
         # 入场 IV 百分位上限：与 `volatility_structures._package` 共用同一解析器，
         # 避免同一道闸门出现两个真值源（此处原先写死 .75）。
         iv_cap = resolve_iv_percentile_cap(campaign)
-        # 闸门一律 fail-closed：**字段缺失 = 证据不足 = 拦**，但原因必须写明是
-        # 「缺失」而不是伪装成「超限」（旧实现把缺失当放行，是唯一一处 fail-open）。
-        iv_percentile_ok = has_iv_percentile and row_iv_percentile <= iv_cap
+        # 闸门 fail-closed：**字段缺失 = 证据不足 = 拦**；但历史样本不足时的链内代理
+        # 不是「历史高位」，只跳过百分位这一道，IV/RV 与绝对 IV 上限仍然生效。
+        iv_percentile_ok = bool(
+            iv_value_present
+            and (not historical_percentile or row_iv_percentile <= iv_cap)
+        )
         cost_ok = iv_rv <= iv_rv_limit and iv_percentile_ok
         delta_ok = .30 <= delta <= .80
         delta_score = max(0.0, 30 - abs(delta - .525) * 100)
@@ -1175,13 +1185,9 @@ def rank_volatility_contracts(
             reason_parts.append(
                 f"IV 百分位缺失（证据不足，按 fail-closed 拦下，生效上限 {iv_cap:.0%}）"
             )
-        elif row_iv_percentile > iv_cap:
-            source_label = (
-                "历史" if str(row.get("iv_percentile_status")) == "HISTORICAL"
-                else "期权链代理"
-            )
+        elif historical_percentile and row_iv_percentile > iv_cap:
             reason_parts.append(
-                f"IV{source_label}百分位 {row_iv_percentile:.0%} 超过 {iv_cap:.0%}"
+                f"IV历史百分位 {row_iv_percentile:.0%} 超过 {iv_cap:.0%}"
             )
         # 实时 IV 闸门观测：记录**当前候选**的实时百分位与生效阈值。
         # 必要性（2026-10-29 Ops 指出）：`VOLATILITY_ENTRY_QUALITY` 里照录的是

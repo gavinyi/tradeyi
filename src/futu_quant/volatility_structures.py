@@ -72,6 +72,9 @@ def _package(
     minimum_oi = float("inf")
     minimum_volume = float("inf")
     maximum_iv_percentile = 0.0
+    historical_percentile_legs = 0
+    proxy_percentile_legs = 0
+    unknown_percentile_legs = 0
     iv_percentile_missing = False
     maximum_iv_rv = 0.0
     iv_rv_limit = float("inf")
@@ -88,13 +91,24 @@ def _package(
         minimum_oi = min(minimum_oi, market_number(row.get("option_open_interest")))
         minimum_volume = min(minimum_volume, market_number(row.get("volume")))
         raw_iv_pct = row.get("iv_history_percentile")
+        percentile_status = str(row.get("iv_percentile_status") or "").upper()
         if raw_iv_pct is None or (isinstance(raw_iv_pct, float) and pd.isna(raw_iv_pct)):
             # 记录「缺失」这件事本身：缺省值 1 只用于 fail-closed 判定，
             # 但原因文案必须说「缺失」，不能伪装成「100% 超限」误导排查。
             iv_percentile_missing = True
-        maximum_iv_percentile = max(
-            maximum_iv_percentile, market_number(raw_iv_pct, 1)
-        )
+        elif percentile_status == "HISTORICAL":
+            # 只有同一合约自身历史算出的百分位才参与上限判定
+            historical_percentile_legs += 1
+            maximum_iv_percentile = max(
+                maximum_iv_percentile, market_number(raw_iv_pct, 1)
+            )
+        elif percentile_status == "CHAIN_PROXY":
+            # 新合约/0DTE 无历史样本时，option_expectancy 回落的链内横截面排名。
+            # 它衡量「本合约在当前期权链里贵不贵」，不是「当前 IV 处于自身历史什么位置」，
+            # 拿它比历史百分位上限会系统性误杀（10-29 实测 90%~96% 全来自这一类）。
+            proxy_percentile_legs += 1
+        else:
+            unknown_percentile_legs += 1
         maximum_iv_rv = max(maximum_iv_rv, market_number(row.get("iv_rv"), 99))
         iv_rv_limit = min(iv_rv_limit, market_number(row.get("iv_rv_limit"), 1.5))
         strikes.append(market_number(row.get("strike_price")))
@@ -109,6 +123,10 @@ def _package(
     # Preserve the prior configurable tier threshold; risk containment is handled
     # by max-loss budget and the combo rollback/naked-exposure guards.
     risk_reward_ok = expected_return >= float(minimum_expected_return)
+    percentile_gate_ok = (
+        not iv_percentile_missing
+        and (historical_percentile_legs == 0 or maximum_iv_percentile <= iv_cap)
+    )
     eligible = bool(
         entry_debit > 0
         and max_loss <= premium_budget
@@ -117,7 +135,7 @@ def _package(
         and worst_spread <= 6.0
         and minimum_oi >= 800
         and minimum_volume >= 10
-        and maximum_iv_percentile <= iv_cap
+        and percentile_gate_ok
         and maximum_iv_rv <= iv_rv_limit
     )
     reasons = []
@@ -141,9 +159,15 @@ def _package(
         reasons.append(
             f"最高腿 IV 百分位缺失（证据不足，按 fail-closed 拦下，生效上限 {iv_cap:.0%}）"
         )
-    elif maximum_iv_percentile > iv_cap:
+    elif historical_percentile_legs and maximum_iv_percentile > iv_cap:
         reasons.append(
-            f"最高腿 IV 百分位 {maximum_iv_percentile:.0%} 超过 {iv_cap:.0%}"
+            f"最高腿 IV 历史百分位 {maximum_iv_percentile:.0%} 超过 {iv_cap:.0%}"
+        )
+    elif historical_percentile_legs == 0 and (proxy_percentile_legs or unknown_percentile_legs):
+        reasons.append(
+            f"IV 历史百分位闸门未启用（链内横截面代理 {proxy_percentile_legs} 腿 / "
+            f"口径未知 {unknown_percentile_legs} 腿：无同一合约历史样本，"
+            f"代理排名不作为历史百分位判定）"
         )
     if maximum_iv_rv > iv_rv_limit:
         reasons.append(f"最高腿 IV/RV {maximum_iv_rv:.2f} 超过 {iv_rv_limit:.2f}")
@@ -164,6 +188,11 @@ def _package(
         "option_open_interest": float(minimum_oi),
         "volume": float(minimum_volume),
         "iv_history_percentile": float(maximum_iv_percentile),
+        "iv_percentile_status": (
+            "HISTORICAL" if historical_percentile_legs
+            else ("CHAIN_PROXY" if proxy_percentile_legs else ("UNKNOWN" if unknown_percentile_legs else "MISSING"))
+        ),
+        "iv_percentile_applicable": bool(historical_percentile_legs),
         "iv_rv": float(maximum_iv_rv),
         "iv_rv_limit": float(iv_rv_limit),
         "volatility_eligible": eligible,

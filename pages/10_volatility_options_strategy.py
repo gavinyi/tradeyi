@@ -88,7 +88,13 @@ with st.container(border=True):
         _current_enabled = store.get_setting("strategy_enabled:Volatility Long Gamma", "false") == "true"
         st.metric("执行模式", _current_mode, border=True)
         st.metric("自动调度", "已启用" if _current_enabled else "已关闭", border=True)
-        st.metric("交易范围", "仅模拟盘", border=True)
+        # 交易范围跟随执行模式单源，不再写死「仅模拟盘」（实盘接入后该文案已失真）。
+        _scope = {
+            "REAL": "实盘（白名单策略，受额度限制）",
+            "PAPER": "仅模拟盘",
+            "SHADOW": "仅信号，不向券商下单",
+        }.get(_current_mode, "未识别（检查执行模式配置）")
+        st.metric("交易范围", _scope, border=True)
 
 admin = render_admin_login()
 
@@ -1253,13 +1259,28 @@ with config_tab:
             peer_contracts=candidates,
         )
         with st.container(horizontal=True):
+            _pct_type = str(analysis.get("IV百分位类型") or "UNAVAILABLE")
+            _pct_label = {
+                "HISTORICAL": "IV 历史百分位",
+                "CHAIN_PROXY": "IV 链内排名（非历史）",
+            }.get(_pct_type, "IV 历史百分位")
+            _pct_value = (
+                f"{analysis['IV历史百分位']:.1%}" if analysis["IV百分位可用"] else "样本不足"
+            )
+            if _pct_type == "CHAIN_PROXY" and analysis["IV百分位可用"]:
+                _pct_value = f"{analysis['IV历史百分位']:.0%}（链内）"
             st.metric(
-                "IV 历史百分位",
-                f"{analysis['IV历史百分位']:.1%}" if analysis["IV百分位可用"] else "样本不足",
+                _pct_label,
+                _pct_value,
                 help=(
                     f"样本来源：{analysis['IV样本来源']}；"
                     f"样本数：{analysis['IV历史样本数']}；"
                     f"置信度：{analysis['IV样本置信度']}。"
+                    + (
+                        " 该数值是同一快照内同类合约的横截面排名，"
+                        "不代表当前 IV 处于自身历史高位，不参与历史百分位闸门。"
+                        if _pct_type == "CHAIN_PROXY" else ""
+                    )
                 ),
                 border=True,
             )
