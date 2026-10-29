@@ -290,12 +290,36 @@ def _sync_test(ref: str) -> str:
     return sha
 
 
+def _ensure_test_interpreter() -> None:
+    """测试区对本解释器不可写时，改用测试区 venv 重跑自己。
+
+    Windows「受控文件夹访问」/杀软可能只放行特定解释器：现象是生产 venv 的 python
+    及其 git 子进程在 `trade-test` 里 `Permission denied`（连 checkout 都写不进去），
+    而测试区自己的 venv 正常。与其让用户记住该用哪个 python，不如自动换过去。
+    """
+    if os.environ.get("DW_REEXEC") == "1":
+        return
+    if _writable_dir(TEST_ROOT / "data" / "qa"):
+        return
+    if not TEST_PYTHON.exists():
+        return
+    if Path(sys.executable).resolve() == TEST_PYTHON.resolve():
+        return
+    env = dict(os.environ)
+    env["DW_REEXEC"] = "1"
+    print(f"测试区对 {Path(sys.executable).name} 不可写，改用测试区解释器重跑：{TEST_PYTHON}")
+    code = subprocess.run([str(TEST_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]], env=env).returncode
+    raise SystemExit(code)
+
+
 def cmd_sync_test(args: argparse.Namespace) -> int:
+    _ensure_test_interpreter()
     _sync_test(args.ref)
     return 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
+    _ensure_test_interpreter()
     ref = args.ref
     sha = _sync_test(ref)
     python = TEST_PYTHON if TEST_PYTHON.exists() else Path(sys.executable)
@@ -357,7 +381,9 @@ def cmd_merge(args: argparse.Namespace) -> int:
         return 0
     push = git(PRODUCTION_ROOT, "push", "origin", "master", check=False)
     if push.returncode != 0:
-        print(f"推送失败，本地已合入，需手工处理：\n{push.stderr.strip()}")
+        detail = (push.stderr or push.stdout).strip().splitlines()
+        print(f"推送失败，本地已合入 {after[:8]}，未推送。原因：{detail[-1] if detail else '未知'}")
+        print("可在能读凭据的终端里补一次：git -C E:\\Thisyi\\trade push origin master")
         return 3
     print("已推送 origin/master")
     return 0
