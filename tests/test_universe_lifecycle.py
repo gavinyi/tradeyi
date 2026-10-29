@@ -38,7 +38,7 @@ def test_promotion_and_eviction_lifecycle():
         assert "US.PLTR" in promoted
         assert "US.ARM" in promoted
 
-        active_promoted = store.active_promoted_symbols()
+        active_promoted = store.active_promoted_symbols("futu_paper_sandbox")
         assert len(active_promoted) == 2
 
         # 2. 验证同步至运行时标的池 (核心 13 只 + 外援 2 只)

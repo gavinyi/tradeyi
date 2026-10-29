@@ -198,7 +198,12 @@ def main() -> None:
                     symbols: tuple[str, ...] = ()
                     scan_started = time.monotonic()
                     try:
-                        symbols = load_volatility_symbols()
+                        profiles = _active_tenant_profiles()
+                        symbols = tuple(dict.fromkeys(
+                            symbol
+                            for profile in profiles
+                            for symbol in load_volatility_symbols(profile.tenant_id)
+                        ))
                         if not symbols:
                             consecutive_errors = 0
                             state = RadarScheduleState.build(

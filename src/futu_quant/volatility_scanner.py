@@ -314,12 +314,17 @@ def fan_out_to_tenant(
             },
         )
     campaigns = load_volatility_campaigns(tenant_id)
+    # 共享市场层可扫描所有启用租户的并集；账户扇出层必须再次收窄到本租户授权池。
+    tenant_symbols = set(load_volatility_symbols(tenant_id))
     active_underlyings = {
         str(item.get("underlying", "")) for item in campaigns
         if item.get("enabled", True)
     }
     # 本租户优先处理自己已有仓位的标的（顺序只影响处理次序，不影响结果）
-    ordered = tuple(sorted(market.symbols, key=lambda item: (item not in active_underlyings, item)))
+    ordered = tuple(sorted(
+        (item for item in market.symbols if item in tenant_symbols),
+        key=lambda item: (item not in active_underlyings, item),
+    ))
     outcome = TenantScanResult(tenant_id=tenant_id)
     for symbol in ordered:
         item = market.results.get(symbol)
@@ -739,7 +744,15 @@ def _monitor_sandbox_incubator_candidates(broker, store) -> None:
             spread_pct = (ask - bid) / ((ask + bid) / 2) if (ask + bid) > 0 else 0.025
 
             if intraday >= 0.015:
-                engine.record_simulated_signal(sym, z_score=round(intraday * 100, 2), volume_ratio=1.2, spread_pct=spread_pct)
+                observed_at = datetime.now(timezone.utc).isoformat()
+                engine.record_simulated_signal(
+                    sym, z_score=round(intraday * 100, 2), volume_ratio=1.2,
+                    spread_pct=spread_pct, triggered_at=observed_at,
+                )
+                engine.open_virtual_position(
+                    sym, entry_price=last,
+                    signal_key=f"scanner:{sym}:{observed_at[:13]}", opened_at=observed_at,
+                )
                 store.record_universe_lifecycle_event(
                     event_type="SANDBOX_SIGNAL_CAPTURED",
                     symbol=sym,

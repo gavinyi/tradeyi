@@ -61,8 +61,11 @@ def test_probe_sizing_for_new_promoted_symbols():
         store = TradingStore(str(db_path))
 
         # 1. 录入新晋外援标的 (live_trades_count = 0)
-        store.promote_universe_symbol("US.PLTR", 0.88, "2026-11-12T00:00:00+00:00", "AI_BIGDATA")
-        row = store.active_promoted_symbols()[0]
+        store.promote_universe_symbol(
+            "futu_paper_sandbox", "US.PLTR", 0.88,
+            "2026-11-12T00:00:00+00:00", "AI_BIGDATA",
+        )
+        row = store.active_promoted_symbols("futu_paper_sandbox")[0]
         assert row["symbol"] == "US.PLTR"
         assert row["live_trades_count"] == 0
 
@@ -76,7 +79,7 @@ def test_probe_sizing_for_new_promoted_symbols():
         with store.connection() as conn:
             conn.execute("UPDATE promoted_universe SET live_trades_count=1, live_realized_pnl=250.0 WHERE symbol='US.PLTR'")
 
-        row2 = store.active_promoted_symbols()[0]
+        row2 = store.active_promoted_symbols("futu_paper_sandbox")[0]
         trades2 = int(row2.get("live_trades_count", 0))
         pnl2 = float(row2.get("live_realized_pnl", 0.0))
         is_probe2 = (trades2 == 0 or pnl2 <= 0)

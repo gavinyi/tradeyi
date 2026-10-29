@@ -3698,10 +3698,91 @@ class TradingStore:
                 ).fetchall()
             return [dict(r) for r in rows]
 
-    def upsert_incubator_metrics(self, symbol: str, metrics: dict) -> None:
+    def open_incubator_virtual_position(
+        self, symbol: str, signal_key: str, entry_price: float, opened_at: str, settle_after: str,
+    ) -> bool:
+        """幂等创建孵化虚拟仓；仅落本地账本，绝不触发券商订单。"""
         now = self.now()
         with self.connection() as connection:
-            connection.execute(
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO incubator_virtual_positions
+                (symbol,signal_key,opened_at,entry_price,quantity,settle_after,status,created_at,updated_at)
+                VALUES(?,?,?,?,1,?,'OPEN',?,?)""",
+                (symbol, signal_key, opened_at, float(entry_price), settle_after, now, now),
+            )
+            return cursor.rowcount == 1
+
+    def open_incubator_virtual_positions(self, due_at: str | None = None) -> list[dict]:
+        with self.connection() as connection:
+            if due_at is None:
+                rows = connection.execute(
+                    "SELECT * FROM incubator_virtual_positions WHERE status='OPEN' ORDER BY id"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT * FROM incubator_virtual_positions
+                    WHERE status='OPEN' AND settle_after<=? ORDER BY id""", (due_at,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+
+    def settle_incubator_virtual_position(
+        self, position_id: int, exit_price: float, settled_at: str,
+    ) -> dict | None:
+        """原子结算虚拟仓并累计共享赛马指标；任一步失败整笔事务回滚。"""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM incubator_virtual_positions WHERE id=? AND status='OPEN'",
+                (position_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            position = dict(row)
+            symbol = str(position["symbol"])
+            entry = float(position["entry_price"])
+            quantity = float(position["quantity"])
+            pnl = (float(exit_price) - entry) * quantity
+            ratio = (float(exit_price) / entry - 1.0) if entry > 0 else 0.0
+            metric_row = connection.execute(
+                "SELECT * FROM shadow_incubator WHERE symbol=?", (symbol,),
+            ).fetchone()
+            metrics = dict(metric_row) if metric_row else {
+                "symbol": symbol, "first_observed_at": position["opened_at"],
+                "observation_days": 1, "signal_triggers": 1, "simulated_wins": 0,
+                "simulated_losses": 0, "simulated_pnl_usd": 0.0,
+                "simulated_max_dd": 0.0, "avg_slippage_pct": 0.0,
+                "volume_retention_ratio": 1.0, "latest_ml_score": 0.5,
+                "promotion_eligible": 0,
+            }
+            metrics["simulated_wins" if pnl > 0 else "simulated_losses"] = (
+                int(metrics.get("simulated_wins" if pnl > 0 else "simulated_losses", 0)) + 1
+            )
+            previous_pnl = float(metrics.get("simulated_pnl_usd", 0.0))
+            metrics["simulated_pnl_usd"] = previous_pnl + pnl
+            peak = max(0.0, previous_pnl, previous_pnl + pnl)
+            if peak > previous_pnl + pnl:
+                metrics["simulated_max_dd"] = max(
+                    float(metrics.get("simulated_max_dd", 0.0)),
+                    (peak - previous_pnl - pnl) / (5000.0 + peak),
+                )
+            self._write_incubator_metrics(connection, symbol, metrics)
+            cursor = connection.execute(
+                """UPDATE incubator_virtual_positions SET status='SETTLED',settled_at=?,
+                exit_price=?,pnl_usd=?,return_ratio=?,updated_at=?
+                WHERE id=? AND status='OPEN'""",
+                (settled_at, float(exit_price), pnl, ratio, self.now(), position_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"虚拟仓 {position_id} 结算状态竞争")
+            position.update(exit_price=float(exit_price), pnl_usd=pnl, return_ratio=ratio,
+                            metrics=metrics)
+            return position
+
+    def _write_incubator_metrics(
+        self, connection: sqlite3.Connection, symbol: str, metrics: dict,
+    ) -> None:
+        now = self.now()
+        connection.execute(
                 """INSERT INTO shadow_incubator
                 (symbol, first_observed_at, observation_days, signal_triggers,
                  simulated_wins, simulated_losses, simulated_pnl_usd, simulated_max_dd,
@@ -3731,6 +3812,10 @@ class TradingStore:
                  str(metrics.get("track_mode", "STANDARD")), now, now),
             )
 
+    def upsert_incubator_metrics(self, symbol: str, metrics: dict) -> None:
+        with self.connection() as connection:
+            self._write_incubator_metrics(connection, symbol, metrics)
+
     def incubator_symbol(self, symbol: str) -> dict | None:
         with self.connection() as connection:
             row = connection.execute(
@@ -3751,40 +3836,45 @@ class TradingStore:
             return [dict(r) for r in rows]
 
     def promote_universe_symbol(
-        self, symbol: str, promotion_score: float, expires_at: str, industry: str = "OTHER",
+        self, tenant_id: str, symbol: str, promotion_score: float, expires_at: str,
+        industry: str = "OTHER", *, allow_real: bool = False,
     ) -> None:
+        """投放研究成果到指定租户；REAL 必须由显式人工批准路径调用。"""
+        from futu_quant.tenant import resolve_tenant
+
+        tenant = resolve_tenant(tenant_id, strict=True)
+        if tenant.trading_env == "REAL" and not allow_real:
+            raise PermissionError("REAL 租户禁止自动继承孵化晋级，须独立批准")
         now = self.now()
         with self.connection() as connection:
             connection.execute(
                 """INSERT INTO promoted_universe
-                (symbol, promoted_at, expires_at, promotion_score, industry, status, created_at, updated_at)
-                VALUES(?,?,?,?,?,'ACTIVE',?,?)
-                ON CONFLICT(symbol) DO UPDATE SET
-                promoted_at=excluded.promoted_at,
-                expires_at=excluded.expires_at,
-                promotion_score=excluded.promotion_score,
-                industry=excluded.industry,
-                status='ACTIVE',
-                eviction_reason='',
-                updated_at=excluded.updated_at""",
-                (symbol, now, expires_at, float(promotion_score), industry, now, now),
+                (tenant_id,symbol,promoted_at,expires_at,promotion_score,industry,status,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,'ACTIVE',?,?)
+                ON CONFLICT(tenant_id,symbol) DO UPDATE SET
+                promoted_at=excluded.promoted_at, expires_at=excluded.expires_at,
+                promotion_score=excluded.promotion_score, industry=excluded.industry,
+                status='ACTIVE', eviction_reason='', updated_at=excluded.updated_at""",
+                (tenant_id, symbol, now, expires_at, float(promotion_score), industry, now, now),
             )
 
-    def active_promoted_symbols(self) -> list[dict]:
+    def active_promoted_symbols(self, tenant_id: str) -> list[dict]:
+        if not tenant_id:
+            raise ValueError("读取租户投放池必须显式传 tenant_id")
         now = self.now()
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM promoted_universe WHERE status='ACTIVE' AND expires_at >= ? ORDER BY promotion_score DESC",
-                (now,),
+                """SELECT * FROM promoted_universe WHERE tenant_id=? AND status='ACTIVE'
+                AND expires_at >= ? ORDER BY promotion_score DESC""", (tenant_id, now),
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def evict_promoted_symbol(self, symbol: str, reason: str) -> None:
+    def evict_promoted_symbol(self, tenant_id: str, symbol: str, reason: str) -> None:
         now = self.now()
         with self.connection() as connection:
             connection.execute(
-                "UPDATE promoted_universe SET status='EVICTED', eviction_reason=?, updated_at=? WHERE symbol=?",
-                (reason, now, symbol),
+                """UPDATE promoted_universe SET status='EVICTED', eviction_reason=?, updated_at=?
+                WHERE tenant_id=? AND symbol=?""", (reason, now, tenant_id, symbol),
             )
 
     def record_universe_lifecycle_event(self, event_type: str, symbol: str, details: dict) -> None:

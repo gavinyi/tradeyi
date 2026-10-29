@@ -61,16 +61,19 @@ class RankingPipeline:
             logger.warning("标的 %s 调用模型打分异常，使用平滑默认值: %s", symbol, e)
             base_score = 0.50
 
-        # 沙盒胜率与回撤加权微调:
-        # 胜率每高于 50% 额外奖励最高 0.15，回撤大于 15% 实施惩罚
+        # 至少三笔真实虚拟结算后，以赛马实绩为主（60%），模型先验为辅（40%）。
+        # 这使长期固定 0.5 的缺模型场景也能凭可审计胜负/PnL 形成差异化评分。
         wins = int(incubator.get("simulated_wins", 0))
         losses = int(incubator.get("simulated_losses", 0))
         total = wins + losses
         if total >= 3:
             win_rate = wins / total
             max_dd = float(incubator.get("simulated_max_dd", 0.0))
-            score_adj = (win_rate - 0.50) * 0.30 - max(0.0, max_dd - 0.15) * 0.50
-            final_score = max(0.05, min(0.98, base_score * 0.7 + (0.50 + score_adj) * 0.3))
+            pnl = float(incubator.get("simulated_pnl_usd", 0.0))
+            pnl_score = max(0.0, min(1.0, 0.50 + pnl / 100.0))
+            race_score = win_rate * 0.7 + pnl_score * 0.3
+            dd_penalty = max(0.0, max_dd - 0.15) * 0.50
+            final_score = max(0.05, min(0.98, base_score * 0.3 + race_score * 0.7 - dd_penalty))
         else:
             final_score = base_score
 

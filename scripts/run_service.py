@@ -1086,14 +1086,6 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
             ),
         )
     if store.get_setting(
-        timer_enabled_setting_key(DAILY_UNIVERSE_RANKING_TASK),
-        str(timer_default_enabled(DAILY_UNIVERSE_RANKING_TASK)).lower(),
-    ) == "true" and _timer_due(store, DAILY_UNIVERSE_RANKING_TASK, china_now):
-        run_task(
-            store, alerts, DAILY_UNIVERSE_RANKING_TASK.task_id,
-            lambda: run_daily_universe_ranking(store, now=china_now),
-        )
-    if store.get_setting(
         timer_enabled_setting_key(WEEKLY_UNIVERSE_RECALL_TASK),
         str(timer_default_enabled(WEEKLY_UNIVERSE_RECALL_TASK)).lower(),
     ) == "true" and _timer_due(store, WEEKLY_UNIVERSE_RECALL_TASK, china_now):
@@ -1115,6 +1107,14 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
         )
     else:
         broker = FutuPaperBroker(settings)
+    if store.get_setting(
+        timer_enabled_setting_key(DAILY_UNIVERSE_RANKING_TASK),
+        str(timer_default_enabled(DAILY_UNIVERSE_RANKING_TASK)).lower(),
+    ) == "true" and _timer_due(store, DAILY_UNIVERSE_RANKING_TASK, china_now):
+        run_task(
+            store, alerts, DAILY_UNIVERSE_RANKING_TASK.task_id,
+            lambda: run_daily_universe_ranking(store, now=china_now, broker=broker),
+        )
     executor = ExecutionManager(broker, store, tenant=tenant)
     if store.get_setting("order_push_connected", "false") == "true" and due(
         store, "last_run:heartbeat:order_push", 60, now,

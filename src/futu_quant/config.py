@@ -261,7 +261,7 @@ DEFAULT_VOLATILITY_SYMBOLS: tuple[str, ...] = (
 )
 
 
-def load_volatility_symbols() -> tuple[str, ...]:
+def load_volatility_symbols(tenant_id: str | None = None) -> tuple[str, ...]:
     value = _load_runtime_value("VOLATILITY_SYMBOLS", DEFAULT_VOLATILITY_SYMBOLS)
     if isinstance(value, str):
         value = value.split(",")
@@ -273,7 +273,7 @@ def load_volatility_symbols() -> tuple[str, ...]:
         if ENV_FILE == DEFAULT_ENV_FILE:
             from .store import TradingStore
             store = TradingStore()
-            promoted_rows = store.active_promoted_symbols()
+            promoted_rows = store.active_promoted_symbols(tenant_id) if tenant_id else []
             if promoted_rows:
                 symbols.extend(r["symbol"] for r in promoted_rows if r.get("symbol"))
     except Exception:

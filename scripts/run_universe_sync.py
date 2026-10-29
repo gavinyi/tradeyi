@@ -9,9 +9,10 @@ from futu_quant.universe.lifecycle_manager import LifecycleManager
 
 def main() -> None:
     store = TradingStore()
-    manager = LifecycleManager(store=store)
+    tenant_id = "futu_paper_sandbox"
+    manager = LifecycleManager(store=store, tenant_id=tenant_id)
     merged = manager.sync_to_runtime_universe()
-    promoted = store.active_promoted_symbols()
+    promoted = store.active_promoted_symbols(tenant_id)
 
     print(f"=== 标的池同步成功 (共 {len(merged)} 只) ===")
     print("生效列表:", merged)

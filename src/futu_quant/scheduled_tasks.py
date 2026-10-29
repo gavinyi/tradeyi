@@ -370,7 +370,7 @@ def deliver_pending_im_review(
 
 
 def run_daily_universe_ranking(
-    store: TradingStore | None = None, now: datetime | None = None,
+    store: TradingStore | None = None, now: datetime | None = None, broker=None,
 ) -> str:
     """每日离线执行标的沙盒自评、ML精排打分与外援轮换仲裁。"""
     from futu_quant.universe.diversity_filter import DiversityFilter
@@ -389,14 +389,49 @@ def run_daily_universe_ranking(
         return "当前无活跃候选标的"
 
     symbols = [c["symbol"] for c in candidates]
-    for s in symbols:
-        incubator.evaluate_daily_metrics(s)
+    settled_count = 0
+    if broker is not None:
+        open_positions = incubator.store.open_incubator_virtual_positions(
+            due_at=(now or datetime.now(CHINA)).astimezone(ZoneInfo("UTC")).isoformat()
+        )
+        due_symbols = sorted({str(row["symbol"]) for row in open_positions})
+        if due_symbols:
+            frame = broker.snapshots_tolerant(due_symbols)
+            prices = {
+                str(row.get("code", "")): float(row.get("last_price", 0) or 0)
+                for _, row in frame.iterrows()
+            } if frame is not None and not frame.empty else {}
+            settled_count = len(incubator.settle_due_positions(
+                prices, settled_at=(now or datetime.now(CHINA)).astimezone(ZoneInfo("UTC")).isoformat(),
+            ))
 
-    ranked_df = ranking.rank_candidates(symbols)
+    # 先用已结算胜负/PnL 重算分数，再以新分数评估晋级资格。
+    ranked_df = ranking.rank_candidates(symbols, broker=broker)
+    for s in symbols:
+        # 到期仓缺行情时 fail-closed：研究评分可更新，但不得产生新的投放资格。
+        has_deferred = any(
+            row["symbol"] == s for row in incubator.store.open_incubator_virtual_positions(
+                due_at=(now or datetime.now(CHINA)).astimezone(ZoneInfo("UTC")).isoformat()
+            )
+        )
+        if has_deferred:
+            profile = store.incubator_symbol(s)
+            if profile:
+                profile["promotion_eligible"] = 0
+                store.upsert_incubator_metrics(s, profile)
+        else:
+            incubator.evaluate_daily_metrics(s)
+    # 缺行情的到期仓必须从本轮晋级输入彻底剔除；仅清 eligible 不足以阻止高分旁路。
+    due_open_symbols = {
+        str(row["symbol"]) for row in incubator.store.open_incubator_virtual_positions(
+            due_at=(now or datetime.now(CHINA)).astimezone(ZoneInfo("UTC")).isoformat()
+        )
+    }
+    promotable_df = ranked_df[~ranked_df["symbol"].isin(due_open_symbols)].copy()
     # 自适应弹性容量: 优质标的充沛时自动扩容至最多 10 只
-    diverse_top = diversity.select_diverse_portfolio(ranked_df, adaptive_capacity=True)
-    effective_cap = diversity.resolve_capacity(ranked_df)
-    candidate_scores = dict(zip(ranked_df["symbol"], ranked_df["ml_score"]))
+    diverse_top = diversity.select_diverse_portfolio(promotable_df, adaptive_capacity=True)
+    effective_cap = diversity.resolve_capacity(promotable_df)
+    candidate_scores = dict(zip(promotable_df["symbol"], promotable_df["ml_score"]))
 
     promoted = lifecycle.evaluate_promotions(
         diverse_top,
@@ -409,7 +444,25 @@ def run_daily_universe_ranking(
     if now is not None:
         store.set_setting(_task_timer_key(DAILY_UNIVERSE_RANKING_TASK), now.isoformat())
 
-    return f"ML 标的精排与轮换完成，当前生效池共 {len(active_pool)} 只，其中外援 {len(promoted)} 只。"
+    # 长期有信号却无结算/晋级必须显式留痕，避免再次“页面成功、链路空转”。
+    signal_total = sum(int((store.incubator_symbol(s) or {}).get("signal_triggers", 0)) for s in symbols)
+    trade_total = sum(
+        int((store.incubator_symbol(s) or {}).get("simulated_wins", 0))
+        + int((store.incubator_symbol(s) or {}).get("simulated_losses", 0)) for s in symbols
+    )
+    if signal_total >= 10 and trade_total == 0:
+        message = f"孵化池已有 {signal_total} 次信号但仍无虚拟结算"
+        if not store.alert_recently_exists("ERROR", "INCUBATOR_ZERO_SETTLEMENT", message, 86400):
+            store.add_alert("ERROR", "INCUBATOR_ZERO_SETTLEMENT", message)
+    if signal_total >= 20 and not store.active_promoted_symbols("futu_paper_sandbox"):
+        message = f"孵化池已有 {signal_total} 次信号但仍无标的晋级"
+        if not store.alert_recently_exists("WARNING", "INCUBATOR_ZERO_PROMOTION", message, 86400):
+            store.add_alert("WARNING", "INCUBATOR_ZERO_PROMOTION", message)
+
+    return (
+        f"ML 标的精排与轮换完成，结算 {settled_count} 笔；"
+        f"当前生效池共 {len(active_pool)} 只，其中外援 {len(promoted)} 只。"
+    )
 
 
 def run_weekly_universe_recall(

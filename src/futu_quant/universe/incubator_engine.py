@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any
 
@@ -67,6 +67,57 @@ class IncubatorEngine:
             float(current.get("avg_slippage_pct", spread_pct)) * 0.8 + spread_pct * 0.2
         )
         self.store.upsert_incubator_metrics(symbol, current)
+
+    def open_virtual_position(
+        self, symbol: str, entry_price: float, signal_key: str, opened_at: str | None = None,
+        holding_hours: int = 24,
+    ) -> bool:
+        """按真实快照价幂等建立本地虚拟仓；不经过任何券商下单接口。"""
+        if entry_price <= 0:
+            return False
+        opened = datetime.fromisoformat(opened_at) if opened_at else datetime.now(timezone.utc)
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        created = self.store.open_incubator_virtual_position(
+            symbol=symbol,
+            signal_key=signal_key,
+            entry_price=entry_price,
+            opened_at=opened.isoformat(),
+            settle_after=(opened + timedelta(hours=holding_hours)).isoformat(),
+        )
+        if created:
+            self.store.record_universe_lifecycle_event(
+                "VIRTUAL_POSITION_OPENED", symbol,
+                {"signal_key": signal_key, "entry_price": entry_price},
+            )
+        return created
+
+    def settle_due_positions(
+        self, prices: dict[str, float], settled_at: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """按最新真实行情幂等结算到期虚拟仓并回写赛马指标。"""
+        now = settled_at or datetime.now(timezone.utc).isoformat()
+        settled: list[dict[str, Any]] = []
+        for position in self.store.open_incubator_virtual_positions(due_at=now):
+            exit_price = float(prices.get(str(position["symbol"]), 0.0) or 0.0)
+            if exit_price <= 0:
+                self.store.record_universe_lifecycle_event(
+                    "VIRTUAL_SETTLEMENT_DEFERRED_NO_QUOTE", str(position["symbol"]),
+                    {"position_id": position["id"], "reason": "缺少有效结算行情，保持 OPEN"},
+                )
+                continue
+            result = self.store.settle_incubator_virtual_position(position["id"], exit_price, now)
+            if result is None:
+                continue
+            metrics = result["metrics"]
+            self.store.record_universe_lifecycle_event(
+                "VIRTUAL_POSITION_SETTLED", str(result["symbol"]),
+                {"position_id": result["id"], "pnl_usd": result["pnl_usd"],
+                 "return_ratio": result["return_ratio"]},
+            )
+            result["metrics"] = metrics
+            settled.append(result)
+        return settled
 
     def update_simulated_trade(
         self,

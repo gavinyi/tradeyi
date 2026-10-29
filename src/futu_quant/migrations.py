@@ -300,6 +300,55 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_strategy_equity_tenant_time
             ON strategy_equity_snapshots(tenant_id, strategy_id, as_of);
     """),
+    Migration(22, "incubator_virtual_positions", """
+        CREATE TABLE IF NOT EXISTS incubator_virtual_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            signal_key TEXT NOT NULL UNIQUE,
+            opened_at TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            quantity REAL NOT NULL DEFAULT 1,
+            settle_after TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'OPEN',
+            settled_at TEXT,
+            exit_price REAL,
+            pnl_usd REAL,
+            return_ratio REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_incubator_virtual_open
+            ON incubator_virtual_positions(status, settle_after);
+    """),
+    # 研究/赛马数据全局共享；只有实际投放层按租户隔离。存量投放保守归入 PAPER，
+    # 禁止历史研究晋级记录被 REAL Worker 自动继承。
+    Migration(23, "promoted_universe_tenant_delivery", """
+        ALTER TABLE promoted_universe RENAME TO promoted_universe_legacy;
+        CREATE TABLE promoted_universe (
+            tenant_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            promoted_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            promotion_score REAL NOT NULL,
+            industry TEXT NOT NULL DEFAULT 'OTHER',
+            live_trades_count INTEGER NOT NULL DEFAULT 0,
+            live_realized_pnl REAL NOT NULL DEFAULT 0.0,
+            consecutive_hard_stops INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            eviction_reason TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(tenant_id, symbol)
+        );
+        INSERT INTO promoted_universe
+        SELECT 'futu_paper_sandbox', symbol, promoted_at, expires_at, promotion_score,
+               industry, live_trades_count, live_realized_pnl, consecutive_hard_stops,
+               status, eviction_reason, created_at, updated_at
+        FROM promoted_universe_legacy;
+        DROP TABLE promoted_universe_legacy;
+        CREATE INDEX idx_promoted_active
+            ON promoted_universe(tenant_id, status, expires_at);
+    """),
 )
 
 
