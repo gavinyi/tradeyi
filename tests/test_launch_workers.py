@@ -246,7 +246,7 @@ def test_supervisor_stale_pid_is_replaced_and_runs(monkeypatch, tmp_path):
     stop_file.write_text("stop", encoding="utf-8")
     monkeypatch.setattr(launch_workers, "SUPERVISOR_PID_FILE", pid_file)
     monkeypatch.setattr(launch_workers, "SUPERVISOR_STOP_FILE", stop_file)
-    monkeypatch.setattr(launch_workers, "_pid_matches", lambda pid, markers: False)
+    monkeypatch.setattr(launch_workers, "SUPERVISOR_LOCK_FILE", tmp_path / "supervisor.lock")
     monkeypatch.setattr(launch_workers, "reconcile_tenant_workers", lambda **kwargs: stop_file.write_text("stop"))
     monkeypatch.setattr(launch_workers.time, "sleep", lambda _seconds: None)
 
@@ -256,18 +256,68 @@ def test_supervisor_stale_pid_is_replaced_and_runs(monkeypatch, tmp_path):
     assert not pid_file.exists()
 
 
-def test_supervisor_single_instance_checks_exact_identity(monkeypatch, tmp_path):
+def test_supervisor_lock_competitor_has_zero_pid_side_effects(monkeypatch, tmp_path):
     import launch_workers
+    from futu_quant.filelock import FileLockError
 
     pid_file = tmp_path / "supervisor.pid"
     stop_file = tmp_path / "supervisor.stop"
     pid_file.write_text("456", encoding="utf-8")
+    stop_file.write_text("owner", encoding="utf-8")
     monkeypatch.setattr(launch_workers, "SUPERVISOR_PID_FILE", pid_file)
     monkeypatch.setattr(launch_workers, "SUPERVISOR_STOP_FILE", stop_file)
-    monkeypatch.setattr(launch_workers, "_pid_matches", lambda pid, markers: True)
+
+    class BusyLock:
+        def __enter__(self):
+            raise FileLockError("busy")
+
+        def __exit__(self, *_args):
+            raise AssertionError("未持锁者不得执行退出清理")
+
+    monkeypatch.setattr(launch_workers, "exclusive_lock", lambda *_args, **_kwargs: BusyLock())
 
     with pytest.raises(RuntimeError, match="已运行"):
         launch_workers.run_supervisor(poll_seconds=0.1)
+    assert pid_file.read_text(encoding="utf-8") == "456"
+    assert stop_file.read_text(encoding="utf-8") == "owner"
+
+
+def test_two_supervisor_starts_only_lock_holder_reconciles(monkeypatch, tmp_path):
+    import launch_workers
+    from futu_quant.filelock import FileLockError
+
+    pid_file = tmp_path / "supervisor.pid"
+    stop_file = tmp_path / "supervisor.stop"
+    monkeypatch.setattr(launch_workers, "SUPERVISOR_PID_FILE", pid_file)
+    monkeypatch.setattr(launch_workers, "SUPERVISOR_STOP_FILE", stop_file)
+    entries = 0
+    reconciles = 0
+
+    class RacingLock:
+        def __enter__(self):
+            nonlocal entries
+            entries += 1
+            if entries > 1:
+                raise FileLockError("busy")
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(launch_workers, "exclusive_lock", lambda *_args, **_kwargs: RacingLock())
+
+    def reconcile(**_kwargs):
+        nonlocal reconciles
+        reconciles += 1
+        with pytest.raises(RuntimeError, match="已运行"):
+            launch_workers.run_supervisor(poll_seconds=0.1)
+        stop_file.write_text("stop", encoding="utf-8")
+
+    monkeypatch.setattr(launch_workers, "reconcile_tenant_workers", reconcile)
+    monkeypatch.setattr(launch_workers.time, "sleep", lambda _seconds: None)
+    launch_workers.run_supervisor(poll_seconds=0.1)
+
+    assert reconciles == 1
 
 
 def test_reconcile_failure_isolated_and_alerted(monkeypatch):

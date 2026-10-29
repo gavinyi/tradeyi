@@ -19,6 +19,7 @@ if sys.platform == "win32":
     _local_appdata.mkdir(parents=True, exist_ok=True)
     os.environ["APPDATA"] = str(_local_appdata)
 
+from futu_quant.filelock import FileLockError, exclusive_lock
 from futu_quant.process_watchdog import cmdline_matches
 from futu_quant.subprocess_env import subprocess_env
 from futu_quant.tenant import DEFAULT_TENANTS, TenantProfile, resolve_tenant_active
@@ -27,6 +28,7 @@ from run_service import service_files
 logger = logging.getLogger("tenant_worker_supervisor")
 SUPERVISOR_PID_FILE = Path(__file__).resolve().parents[1] / "data" / "tenant-worker-supervisor.pid"
 SUPERVISOR_STOP_FILE = Path(__file__).resolve().parents[1] / "data" / "tenant-worker-supervisor.stop"
+SUPERVISOR_LOCK_FILE = Path(__file__).resolve().parents[1] / "data" / "tenant-worker-supervisor.lock"
 RETRY_BASE_SECONDS = 5.0
 RETRY_MAX_SECONDS = 300.0
 _RETRY_STATE: dict[str, tuple[int, float]] = {}
@@ -325,27 +327,32 @@ def _alert_notify(severity: str, event_type: str, message: str) -> None:
 
 
 def run_supervisor(*, py_exe: str | None = None, poll_seconds: float = 5.0) -> None:
-    """持续对账租户开关；精确身份单实例、幂等拉起、租户级退避。"""
+    """持续对账租户开关；OS 独占锁覆盖完整生命周期，杜绝并发双实例。"""
     SUPERVISOR_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
-        existing_pid = int(SUPERVISOR_PID_FILE.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        existing_pid = 0
-    markers = ("launch_workers.py", "--supervise")
-    if existing_pid and existing_pid != os.getpid() and _pid_matches(existing_pid, markers):
-        raise RuntimeError(f"租户 Worker supervisor 已运行 (PID: {existing_pid})")
-    SUPERVISOR_STOP_FILE.unlink(missing_ok=True)
-    SUPERVISOR_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        lock_context = exclusive_lock(SUPERVISOR_LOCK_FILE, blocking=False)
+        lock_context.__enter__()
+    except (FileLockError, OSError) as exc:
+        # 未持锁者对 PID/stop 文件没有任何写删权限。
+        raise RuntimeError("租户 Worker supervisor 已运行") from exc
+
     try:
-        while not SUPERVISOR_STOP_FILE.exists():
-            try:
-                reconcile_tenant_workers(py_exe=py_exe, notify=_alert_notify)
-            except Exception:  # noqa: BLE001 - supervisor 必须存活并在下一轮重试
-                logger.exception("租户 Worker 动态对账失败")
-            time.sleep(max(0.1, poll_seconds))
-    finally:
-        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        # 锁内处理陈旧 PID；锁本身才是单实例权威，PID 仅供运维观察。
         SUPERVISOR_STOP_FILE.unlink(missing_ok=True)
+        SUPERVISOR_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        try:
+            while not SUPERVISOR_STOP_FILE.exists():
+                try:
+                    reconcile_tenant_workers(py_exe=py_exe, notify=_alert_notify)
+                except Exception:  # noqa: BLE001 - supervisor 必须存活并在下一轮重试
+                    logger.exception("租户 Worker 动态对账失败")
+                time.sleep(max(0.1, poll_seconds))
+        finally:
+            # 只有锁持有者能进入此路径，因此不会删除另一实例的 PID。
+            SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+            SUPERVISOR_STOP_FILE.unlink(missing_ok=True)
+    finally:
+        lock_context.__exit__(None, None, None)
 
 
 def main() -> None:
