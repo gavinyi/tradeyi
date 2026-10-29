@@ -150,3 +150,19 @@ exponential backoff on failure, and heartbeat/status writes. **Single-instance e
 - **Validation is defensive and explicit**: `Settings.load()` raises `RuntimeError` with a Chinese message on
   any bad value; mirror that style for new config knobs.
 - Architecture/design docs live under `docs/` (Chinese) — update the relevant one when behavior changes.
+
+## Branch & environment flow (user-mandated, 2026-10-29)
+
+三个目录是**同一仓库的三个 worktree**，不是三个仓库。代码只能按 `dev → test → master` 单向流动：
+
+| 区 | 路径 | 分支约定 | 角色 |
+|---|---|---|---|
+| 生产 | `E:\Thisyi\trade` | `master`（只合入，不直接改文件） | 生产 Worker + 面板（8501）从这里跑 |
+| 开发 | `E:\Thisyi\trade-dev\wt-<slug>` | `feat/<slug>` 或 `fix/<slug>`，每个分支一个 worktree | 所有编码、提交发生在这里 |
+| 测试 | `E:\Thisyi\trade-test` | 基于候选提交拉 `verify/<slug>` | 独立 `data/`、端口 8601、`TRADEYI_ENV=test` |
+
+- **禁止在 `E:\Thisyi\trade` 里开发**：生产主工作树必须常驻 master 且保持干净，否则 `run_service` 的生产守卫会拒绝启动。
+- 合入 master 前必须在 `trade-test` 跑全量回归并通过：`TRADEYI_ENV=test` + `TRADEYI_PROD_DB_PATH=E:\Thisyi\trade\data\trading.db` + `python -m pytest -q`（带生产库路径才会做指纹比对，不带就是拿测试库和自己比，等于没验）。
+- 服务停摆等紧急情况可走 hotfix 直接合 master，但必须**当场说明是 hotfix**，事后补 trade-test 验证或回滚重走。
+- 新建开发工作树的固定姿势：`git worktree add E:\Thisyi\trade-dev\wt-<slug> -b fix/<slug> master`。
+- 详见 `docs/test_environment_runtime.md`（测试区启停与验收清单）。
