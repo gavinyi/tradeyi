@@ -1,6 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+echo stop> "data\tenant-worker-supervisor.stop"
 set "ELEVATED=%~1"
 
 rem ================================================================

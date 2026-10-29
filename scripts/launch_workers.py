@@ -7,9 +7,11 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import logging
 import subprocess
 import sys
 import time
+from typing import Callable
 
 # 确保在导入 futu_quant 之前重定向 APPDATA 避免沙箱权限问题
 if sys.platform == "win32":
@@ -17,9 +19,17 @@ if sys.platform == "win32":
     _local_appdata.mkdir(parents=True, exist_ok=True)
     os.environ["APPDATA"] = str(_local_appdata)
 
+from futu_quant.process_watchdog import cmdline_matches
 from futu_quant.subprocess_env import subprocess_env
 from futu_quant.tenant import DEFAULT_TENANTS, TenantProfile, resolve_tenant_active
 from run_service import service_files
+
+logger = logging.getLogger("tenant_worker_supervisor")
+SUPERVISOR_PID_FILE = Path(__file__).resolve().parents[1] / "data" / "tenant-worker-supervisor.pid"
+SUPERVISOR_STOP_FILE = Path(__file__).resolve().parents[1] / "data" / "tenant-worker-supervisor.stop"
+RETRY_BASE_SECONDS = 5.0
+RETRY_MAX_SECONDS = 300.0
+_RETRY_STATE: dict[str, tuple[int, float]] = {}
 
 
 def _win_process_image_name(pid: int) -> str:
@@ -198,11 +208,157 @@ def launch_tenant_worker(tenant: TenantProfile, py_exe: str | None = None) -> tu
         return False, None, f"启动失败: {exc}"
 
 
+def _process_cmdline(pid: int) -> str | None:
+    """读取进程命令行；读取失败即不信任该 PID。"""
+    if sys.platform != "win32":
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_text(errors="replace").replace("\0", " ")
+        except OSError:
+            return None
+    command = (
+        f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' "
+        "-ErrorAction SilentlyContinue).CommandLine"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
+        )
+    except Exception:
+        return None
+    return (result.stdout or "").strip() or None
+
+
+def _pid_matches(pid: int, markers: tuple[str, ...]) -> bool:
+    return is_pid_alive(pid) and cmdline_matches(_process_cmdline(pid), markers)
+
+
+def _worker_pid(tenant_id: str) -> int | None:
+    pid_file = service_files(tenant_id)["pid"]
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    markers = ("run_service.py", f"--tenant {tenant_id}")
+    return pid if _pid_matches(pid, markers) else None
+
+
+def request_tenant_worker_stop(tenant: TenantProfile) -> tuple[bool, str]:
+    """通过租户独立 stop 文件安全停机，绝不直接杀其他租户进程。"""
+    files = service_files(tenant.tenant_id)
+    pid = _worker_pid(tenant.tenant_id)
+    if pid is None:
+        files["pid"].unlink(missing_ok=True)
+        files["stop"].unlink(missing_ok=True)
+        return True, "租户已停止"
+    try:
+        files["stop"].parent.mkdir(parents=True, exist_ok=True)
+        files["stop"].write_text("tenant disabled\n", encoding="utf-8")
+        return True, f"已请求安全停机 (PID: {pid})"
+    except OSError as exc:
+        return False, f"写入租户停止标记失败: {exc}"
+
+
+def reconcile_tenant_workers(
+    *,
+    py_exe: str | None = None,
+    notify: Callable[[str, str, str], None] | None = None,
+    now: float | None = None,
+) -> dict[str, list[str]]:
+    """将运行中的 Worker 与动态租户开关收敛一致。
+
+    本函数只管理 Worker 进程；绝不写 ``REAL_TRADING_ENABLED``，也不改变任何
+    下单/确认/额度门禁。单租户失败被隔离并告警，不影响其他租户。
+    """
+    active_ids = {tenant.tenant_id for tenant in get_active_tenants()}
+    current = time.monotonic() if now is None else float(now)
+    result: dict[str, list[str]] = {
+        "started": [], "stopping": [], "unchanged": [], "backoff": [], "failed": [],
+    }
+    for tenant in DEFAULT_TENANTS.values():
+        running = _worker_pid(tenant.tenant_id) is not None
+        if tenant.tenant_id in active_ids:
+            if running:
+                _RETRY_STATE.pop(tenant.tenant_id, None)
+                result["unchanged"].append(tenant.tenant_id)
+                continue
+            failures, retry_at = _RETRY_STATE.get(tenant.tenant_id, (0, 0.0))
+            if current < retry_at:
+                result["backoff"].append(tenant.tenant_id)
+                continue
+            # 清除过去停机留下的租户 stop 标记，否则新进程会立即退出。
+            service_files(tenant.tenant_id)["stop"].unlink(missing_ok=True)
+            ok, _pid, message = launch_tenant_worker(tenant, py_exe=py_exe)
+            bucket = "started" if ok else "failed"
+            result[bucket].append(tenant.tenant_id)
+            if ok:
+                _RETRY_STATE.pop(tenant.tenant_id, None)
+            else:
+                failures += 1
+                delay = min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * (2 ** (failures - 1)))
+                _RETRY_STATE[tenant.tenant_id] = (failures, current + delay)
+                if notify:
+                    notify("ERROR", "TENANT_WORKER_START_FAILED", f"{tenant.tenant_id}: {message}")
+        elif running:
+            _RETRY_STATE.pop(tenant.tenant_id, None)
+            ok, message = request_tenant_worker_stop(tenant)
+            bucket = "stopping" if ok else "failed"
+            result[bucket].append(tenant.tenant_id)
+            if not ok and notify:
+                notify("ERROR", "TENANT_WORKER_STOP_FAILED", f"{tenant.tenant_id}: {message}")
+        else:
+            result["unchanged"].append(tenant.tenant_id)
+    return result
+
+
+def _alert_notify(severity: str, event_type: str, message: str) -> None:
+    """失败通过统一告警链投递；告警自身失败不击穿 supervisor。"""
+    try:
+        from futu_quant.alerts import AlertManager
+        from futu_quant.store import TradingStore
+
+        AlertManager(TradingStore()).send(
+            severity, event_type, message, incident_key=f"tenant-worker-supervisor:{event_type}"
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("租户 Worker supervisor 告警投递失败: %s", message)
+
+
+def run_supervisor(*, py_exe: str | None = None, poll_seconds: float = 5.0) -> None:
+    """持续对账租户开关；精确身份单实例、幂等拉起、租户级退避。"""
+    SUPERVISOR_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_pid = int(SUPERVISOR_PID_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        existing_pid = 0
+    markers = ("launch_workers.py", "--supervise")
+    if existing_pid and existing_pid != os.getpid() and _pid_matches(existing_pid, markers):
+        raise RuntimeError(f"租户 Worker supervisor 已运行 (PID: {existing_pid})")
+    SUPERVISOR_STOP_FILE.unlink(missing_ok=True)
+    SUPERVISOR_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        while not SUPERVISOR_STOP_FILE.exists():
+            try:
+                reconcile_tenant_workers(py_exe=py_exe, notify=_alert_notify)
+            except Exception:  # noqa: BLE001 - supervisor 必须存活并在下一轮重试
+                logger.exception("租户 Worker 动态对账失败")
+            time.sleep(max(0.1, poll_seconds))
+    finally:
+        SUPERVISOR_PID_FILE.unlink(missing_ok=True)
+        SUPERVISOR_STOP_FILE.unlink(missing_ok=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Adaptive Multi-Tenant Worker Orchestrator")
     parser.add_argument("--check", action="store_true", help="仅检查所有启用租户状态，不拉起")
+    parser.add_argument("--supervise", action="store_true", help="持续监听租户开关并运行时启停 Worker")
+    parser.add_argument("--poll", type=float, default=5.0, help="supervisor 对账间隔秒数")
     parser.add_argument("--py", type=str, default=None, help="自定义 Python 解释器路径")
     args = parser.parse_args()
+
+    if args.supervise:
+        run_supervisor(py_exe=args.py, poll_seconds=args.poll)
+        return
 
     active_tenants = get_active_tenants()
     disabled = get_disabled_tenants()

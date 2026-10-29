@@ -117,6 +117,200 @@ def test_launch_tenant_worker_skips_alive_pid(monkeypatch, tmp_path):
     assert "已在运行中" in msg
 
 
+def test_reconcile_runtime_enables_only_target_tenant(monkeypatch, tmp_path):
+    """关闭→启用只拉起目标 Worker；不写 REAL_TRADING_ENABLED、不重复拉起。"""
+    import launch_workers
+
+    real = launch_workers.DEFAULT_TENANTS["futu_real_master"]
+    paper = launch_workers.DEFAULT_TENANTS["futu_paper_sandbox"]
+    launched: list[str] = []
+    settings = launch_workers._ReadOnlySettings({
+        "tenant_active:futu_real_master": "true",
+        "tenant_active:futu_paper_sandbox": "true",
+    })
+    monkeypatch.setattr(launch_workers, "_read_tenant_switch_settings", lambda: settings)
+    monkeypatch.setattr(
+        launch_workers, "_worker_pid",
+        lambda tenant_id: 101 if tenant_id == paper.tenant_id else None,
+    )
+    monkeypatch.setattr(
+        launch_workers, "service_files",
+        lambda tenant_id: {
+            "pid": tmp_path / f"{tenant_id}.pid", "stop": tmp_path / f"{tenant_id}.stop",
+            "log": tmp_path / f"{tenant_id}.log", "lock": tmp_path / f"{tenant_id}.lock",
+            "restart": tmp_path / f"{tenant_id}.restart",
+        },
+    )
+    monkeypatch.setattr(
+        launch_workers, "launch_tenant_worker",
+        lambda tenant, py_exe=None: (launched.append(tenant.tenant_id) or True, 202, "ok"),
+    )
+
+    result = launch_workers.reconcile_tenant_workers()
+
+    assert launched == [real.tenant_id]
+    assert result["started"] == [real.tenant_id]
+    # 编排器只读 tenant_active；不得调用设置写接口去打开真金总门禁。
+    source = Path(launch_workers.__file__).read_text(encoding="utf-8")
+    assert "set_setting(" not in source
+    assert "save_setting(" not in source
+
+
+def test_reconcile_runtime_disable_uses_tenant_stop_only(monkeypatch, tmp_path):
+    """启用→停用只写本租户 stop 文件，不杀进程、不波及 paper。"""
+    import launch_workers
+
+    real_id = "futu_real_master"
+    paper_id = "futu_paper_sandbox"
+    monkeypatch.setattr(
+        launch_workers, "_read_tenant_switch_settings",
+        lambda: launch_workers._ReadOnlySettings({
+            f"tenant_active:{real_id}": "false", f"tenant_active:{paper_id}": "true",
+        }),
+    )
+    monkeypatch.setattr(
+        launch_workers, "_worker_pid",
+        lambda tenant_id: 303 if tenant_id == real_id else 404 if tenant_id == paper_id else None,
+    )
+    monkeypatch.setattr(
+        launch_workers, "service_files",
+        lambda tenant_id: {
+            "pid": tmp_path / f"{tenant_id}.pid", "stop": tmp_path / f"{tenant_id}.stop",
+            "log": tmp_path / f"{tenant_id}.log", "lock": tmp_path / f"{tenant_id}.lock",
+            "restart": tmp_path / f"{tenant_id}.restart",
+        },
+    )
+
+    result = launch_workers.reconcile_tenant_workers()
+
+    assert result["stopping"] == [real_id]
+    assert (tmp_path / f"{real_id}.stop").exists()
+    assert not (tmp_path / f"{paper_id}.stop").exists()
+
+
+def test_worker_pid_rejects_reused_or_other_tenant_pid(monkeypatch, tmp_path):
+    import launch_workers
+
+    pid_file = tmp_path / "worker.pid"
+    pid_file.write_text("123", encoding="utf-8")
+    monkeypatch.setattr(
+        launch_workers, "service_files",
+        lambda _tenant_id: {"pid": pid_file},
+    )
+    monkeypatch.setattr(launch_workers, "is_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        launch_workers, "_process_cmdline",
+        lambda _pid: "python.exe scripts/run_service.py --tenant futu_paper_sandbox",
+    )
+
+    assert launch_workers._worker_pid("futu_real_master") is None
+
+
+def test_failed_start_uses_per_tenant_exponential_backoff(monkeypatch, tmp_path):
+    import launch_workers
+
+    launch_workers._RETRY_STATE.clear()
+    monkeypatch.setattr(
+        launch_workers, "_read_tenant_switch_settings",
+        lambda: launch_workers._ReadOnlySettings({
+            "tenant_active:futu_real_master": "true",
+            "tenant_active:futu_paper_sandbox": "false",
+        }),
+    )
+    monkeypatch.setattr(launch_workers, "_worker_pid", lambda _tenant_id: None)
+    monkeypatch.setattr(
+        launch_workers, "service_files",
+        lambda tenant_id: {
+            "pid": tmp_path / f"{tenant_id}.pid", "stop": tmp_path / f"{tenant_id}.stop",
+        },
+    )
+    attempts: list[str] = []
+    monkeypatch.setattr(
+        launch_workers, "launch_tenant_worker",
+        lambda tenant, py_exe=None: (attempts.append(tenant.tenant_id) and False, None, "boom"),
+    )
+
+    assert launch_workers.reconcile_tenant_workers(now=100)["failed"] == ["futu_real_master"]
+    assert launch_workers.reconcile_tenant_workers(now=104)["backoff"] == ["futu_real_master"]
+    assert launch_workers.reconcile_tenant_workers(now=105)["failed"] == ["futu_real_master"]
+    assert launch_workers.reconcile_tenant_workers(now=114)["backoff"] == ["futu_real_master"]
+    assert len(attempts) == 2
+
+
+def test_supervisor_stale_pid_is_replaced_and_runs(monkeypatch, tmp_path):
+    import launch_workers
+
+    pid_file = tmp_path / "supervisor.pid"
+    stop_file = tmp_path / "supervisor.stop"
+    pid_file.write_text("456", encoding="utf-8")
+    stop_file.write_text("stop", encoding="utf-8")
+    monkeypatch.setattr(launch_workers, "SUPERVISOR_PID_FILE", pid_file)
+    monkeypatch.setattr(launch_workers, "SUPERVISOR_STOP_FILE", stop_file)
+    monkeypatch.setattr(launch_workers, "_pid_matches", lambda pid, markers: False)
+    monkeypatch.setattr(launch_workers, "reconcile_tenant_workers", lambda **kwargs: stop_file.write_text("stop"))
+    monkeypatch.setattr(launch_workers.time, "sleep", lambda _seconds: None)
+
+    launch_workers.run_supervisor(poll_seconds=0.1)
+
+    # 正常退出会清理自身文件；关键是陈旧 PID 没有阻止函数进入循环。
+    assert not pid_file.exists()
+
+
+def test_supervisor_single_instance_checks_exact_identity(monkeypatch, tmp_path):
+    import launch_workers
+
+    pid_file = tmp_path / "supervisor.pid"
+    stop_file = tmp_path / "supervisor.stop"
+    pid_file.write_text("456", encoding="utf-8")
+    monkeypatch.setattr(launch_workers, "SUPERVISOR_PID_FILE", pid_file)
+    monkeypatch.setattr(launch_workers, "SUPERVISOR_STOP_FILE", stop_file)
+    monkeypatch.setattr(launch_workers, "_pid_matches", lambda pid, markers: True)
+
+    with pytest.raises(RuntimeError, match="已运行"):
+        launch_workers.run_supervisor(poll_seconds=0.1)
+
+
+def test_reconcile_failure_isolated_and_alerted(monkeypatch):
+    import launch_workers
+
+    launch_workers._RETRY_STATE.clear()
+    monkeypatch.setattr(
+        launch_workers, "_read_tenant_switch_settings",
+        lambda: launch_workers._ReadOnlySettings({
+            "tenant_active:futu_real_master": "true",
+            "tenant_active:futu_paper_sandbox": "false",
+        }),
+    )
+    monkeypatch.setattr(launch_workers, "_worker_pid", lambda _tenant_id: None)
+    monkeypatch.setattr(
+        launch_workers, "launch_tenant_worker",
+        lambda tenant, py_exe=None: (False, None, "boom"),
+    )
+    alerts: list[tuple[str, str, str]] = []
+
+    result = launch_workers.reconcile_tenant_workers(notify=lambda *args: alerts.append(args))
+
+    assert result["failed"] == ["futu_real_master"]
+    assert alerts == [("ERROR", "TENANT_WORKER_START_FAILED", "futu_real_master: boom")]
+
+
+def test_start_and_stop_scripts_manage_persistent_supervisor():
+    encoding = "cp936"
+    start = Path("start.bat").read_bytes().decode(encoding)
+    stop = Path("stop.bat").read_bytes().decode(encoding)
+
+    assert "launch_workers.py --supervise" in start
+    assert "`r`n" not in start
+    lines = start.splitlines()
+    assert any("launch_workers.py --py" in line and "--supervise" not in line for line in lines)
+    assert any("launch_workers.py --supervise" in line for line in lines)
+    assert "tenant-worker-supervisor.pid" not in start
+    assert "if not exist" not in next(
+        line for line in lines if "launch_workers.py --supervise" in line
+    ).lower()
+    assert "tenant-worker-supervisor.stop" in stop
+
+
 def test_launch_tenant_worker_fault_isolation(monkeypatch, tmp_path):
     """测试单个租户拉起异常时优雅捕获，实现故障隔离"""
     from launch_workers import launch_tenant_worker

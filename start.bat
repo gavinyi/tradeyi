@@ -31,6 +31,7 @@ netstat -ano | findstr /R /C:":8501 .*LISTENING" >nul
 if errorlevel 1 start "TradeFuto Streamlit UI" /b "%STREAMLIT%" run app.py --server.port 8501
 echo [2/3] Launching Adaptive Active Tenant Workers ...
 "%PY%" -u scripts\launch_workers.py --py "%PY%"
+start "TradeFuto Tenant Worker Supervisor" /b "%PY%" -u scripts\launch_workers.py --supervise --py "%PY%" >> "%DATA%\tenant-worker-supervisor.log" 2>&1
 :service_done
 call :pid_alive "%RADAR_PID%" "run_radar_service"
 if "!PID_ALIVE!"=="1" goto radar_done
