@@ -143,7 +143,7 @@ def test_auto_success_records_verified_candidate_artifact(tmp_path, monkeypatch)
     monkeypatch.setattr(ml_retrain, "_newest_report", lambda: next(reports))
 
     def runner(*args, **kwargs):
-        candidate.touch()
+        candidate.write_bytes(b"new-model")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     result = ml_retrain.run_retrain(
@@ -219,7 +219,7 @@ def test_auto_trigger_forces_no_promote_inside_controller(tmp_path, monkeypatch)
 
     def runner(command, **kwargs):
         seen["command"] = command
-        candidate.touch()
+        candidate.write_bytes(b"new-model")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     result = ml_retrain.run_retrain(

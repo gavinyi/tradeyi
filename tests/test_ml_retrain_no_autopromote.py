@@ -114,7 +114,7 @@ def test_run_retrain_passes_no_promote_flag_to_script(tmp_path, monkeypatch):
 
     def _runner(cmd, **kwargs):
         captured.append(list(cmd))
-        candidate.touch()
+        candidate.write_bytes(b"new-model")
         return _Completed()
 
     monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)

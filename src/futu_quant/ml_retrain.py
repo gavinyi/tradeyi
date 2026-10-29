@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -52,6 +53,12 @@ def _newest_report() -> tuple[str, dict | None]:
         return str(newest), json.loads(newest.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - 报告损坏不能把重训结论变成崩溃
         return str(newest), None
+
+
+def _artifact_signature(path: Path) -> tuple[int, str]:
+    """返回纳秒时间戳与内容指纹；mtime 粒度不足时仍能证明产物真实更新。"""
+    payload = path.read_bytes()
+    return path.stat().st_mtime_ns, hashlib.sha256(payload).hexdigest()
 
 
 def _aucs_from_report(report: dict | None) -> tuple[float | None, float | None]:
@@ -125,7 +132,7 @@ def run_retrain(
             baseline_report_path, _ = _newest_report()
             try:
                 candidate_baseline = {
-                    str(path.resolve()): path.stat().st_mtime_ns
+                    str(path.resolve()): _artifact_signature(path)
                     for path in MODEL_DIR.glob("*candidate*.pkl")
                     if path.is_file()
                 }
@@ -174,13 +181,13 @@ def run_retrain(
                     candidate = Path(candidate_path)
                     try:
                         resolved_candidate = str(candidate.resolve())
-                        candidate_mtime_ns = candidate.stat().st_mtime_ns
+                        candidate_signature = _artifact_signature(candidate)
                     except OSError:
-                        resolved_candidate, candidate_mtime_ns = "", 0
-                    baseline_mtime_ns = candidate_baseline.get(resolved_candidate)
+                        resolved_candidate, candidate_signature = "", (0, "")
+                    baseline_signature = candidate_baseline.get(resolved_candidate)
                     candidate_is_current = (
-                        baseline_mtime_ns is None
-                        or candidate_mtime_ns > baseline_mtime_ns
+                        baseline_signature is None
+                        or candidate_signature != baseline_signature
                     )
                     if (
                         report_status != "CANDIDATE_ONLY"

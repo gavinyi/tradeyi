@@ -115,6 +115,8 @@ def test_child_process_cannot_inherit_authorization(tmp_path):
     assert migrations_allowed() is True
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT / "src")
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     env["TRADEYI_ALLOW_MIGRATION"] = "1"  # 继承环境变量的旧攻击面：必须无效
     result = subprocess.run(
         [sys.executable, "-c",
@@ -441,6 +443,8 @@ def test_bootstrap_ignores_environment_variable(tmp_path):
     path = tmp_path / "env_only.db"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT / "src")
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     env["TRADEYI_ALLOW_BOOTSTRAP"] = "1"
     result = subprocess.run(
         [sys.executable, "-c",
