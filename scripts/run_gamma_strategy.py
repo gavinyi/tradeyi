@@ -1945,6 +1945,11 @@ def run_campaign(
             if not quality_allowed:
                 record_pretrade_block("ENTRY_QUALITY", quality_reason, {
                     "entry_quality_checks": quality_checks,
+                    "entry_quote_source": live_quality_campaign["entry_quote_source"],
+                    "entry_quote_source_time": live_quality_campaign["entry_quote_source_time"],
+                    "entry_quote_captured_at": live_quality_campaign["entry_quote_captured_at"],
+                    "entry_quote_age_seconds": live_quality_campaign["entry_quote_age_seconds"],
+                    "entry_quote_spread_pct": live_quality_campaign["spread_pct"],
                 })
                 print(f"{code}: BLOCKED ({quality_reason})")
                 return

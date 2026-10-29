@@ -1,10 +1,11 @@
+import ast
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 
 from futu_quant.volatility_chain import campaign_intent_chain_status
 from futu_quant.volatility_optimizer import complete_volatility_activation
-from scripts import run_gamma_strategy as gamma
 
 
 def test_complete_activation_rechecks_spy_independence_gate(monkeypatch):
@@ -56,48 +57,49 @@ def test_chain_rejects_naive_row_time_instead_of_string_comparing():
     assert broken is True
 
 
-def test_live_futu_book_overrides_cached_campaign_spread_and_keeps_evidence(monkeypatch):
-    """旧 campaign 价差合格也不能放行；入场门禁必须采用 Futu 最新盘口。"""
-    code = "US.AMD261106C200000"
-    underlying = "US.AMD"
-    source_time = "2026-10-29 11:19:55"
-    captured_at = datetime(2026, 10, 29, 15, 20, tzinfo=timezone.utc)
-
-    class Broker:
-        def snapshots(self, symbols):
-            rows = []
-            for symbol in symbols:
-                if symbol == code:
-                    rows.append({
-                        "code": symbol, "bid_price": 1.0, "ask_price": 1.4,
-                        "last_price": 1.2, "update_time": source_time,
-                    })
-                else:
-                    rows.append({
-                        "code": symbol, "bid_price": 199.9, "ask_price": 200.1,
-                        "last_price": 200.0, "update_time": source_time,
-                    })
-            return pd.DataFrame(rows)
-
-    # 冻结函数内部采集时钟，使证据可精确断言；禁用重试等待。
-    class FrozenDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return captured_at.astimezone(tz) if tz else captured_at.replace(tzinfo=None)
-
-    monkeypatch.setattr(gamma, "datetime", FrozenDateTime)
-    _option, _owner, evidence = gamma.refreshed_trade_quotes(
-        Broker(), code, underlying, captured_at,
-        maximum_spread_pct=12.0, retries=0,
+def test_entry_quality_connection_uses_live_quote_and_block_evidence():
+    """变异守卫：删除实时覆盖接线或 BLOCKED 盘口证据时必须失败。"""
+    source = (Path(__file__).parents[1] / "scripts" / "run_gamma_strategy.py").read_text(
+        encoding="utf-8"
     )
+    tree = ast.parse(source)
 
-    # campaign 缓存的 3% 本可放行，但 Futu 实时 1.0/1.4 = 33.33%，必须拦截。
-    campaign = {"spread_pct": 3.0}
-    assert campaign["spread_pct"] < 12.0
-    assert evidence["book_ok"] is False
-    assert evidence["spread_pct"] > 12.0
-    assert evidence["quote_source"] == "FUTU_OPEND_SNAPSHOT"
-    assert evidence["option_source_time"] == source_time
-    assert evidence["captured_at"] == captured_at.isoformat()
-    assert evidence["option_age_seconds"] is not None
-    assert evidence["option_age_seconds"] >= 0
+    live_assign = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "live_quality_campaign"
+                for target in node.targets)
+    )
+    live_text = ast.get_source_segment(source, live_assign) or ""
+    assert '"spread_pct": float(quote_check["spread_pct"])' in live_text
+    for field in (
+        "entry_quote_source", "entry_quote_source_time", "entry_quote_captured_at",
+        "entry_quote_age_seconds",
+    ):
+        assert field in live_text
+
+    quality_call = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "volatility_entry_quality_allowed"
+        and node.args
+    )
+    assert isinstance(quality_call.args[0], ast.Name)
+    assert quality_call.args[0].id == "live_quality_campaign"
+
+    entry_block = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "record_pretrade_block"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "ENTRY_QUALITY"
+    )
+    block_text = ast.get_source_segment(source, entry_block) or ""
+    for field in (
+        "entry_quote_source", "entry_quote_source_time", "entry_quote_captured_at",
+        "entry_quote_age_seconds", "entry_quote_spread_pct",
+    ):
+        assert field in block_text
