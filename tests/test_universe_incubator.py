@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import json
+import sqlite3
 
 import pandas as pd
 import pytest
@@ -182,7 +184,7 @@ def test_delivery_pool_is_tenant_isolated_and_real_auto_promotion_is_denied(tmp_
     store.promote_universe_symbol("futu_paper_sandbox", "US.PLTR", .9, expires)
     assert [r["symbol"] for r in store.active_promoted_symbols("futu_paper_sandbox")] == ["US.PLTR"]
     assert store.active_promoted_symbols("futu_real_master") == []
-    with pytest.raises(PermissionError, match="REAL 租户禁止自动继承"):
+    with pytest.raises(PermissionError, match="缺少独立批准"):
         store.promote_universe_symbol("futu_real_master", "US.PLTR", .9, expires)
 
     from futu_quant import config
@@ -197,6 +199,101 @@ def test_delivery_pool_is_tenant_isolated_and_real_auto_promotion_is_denied(tmp_
         assert store.get_setting("VOLATILITY_SYMBOLS", None) is None
     finally:
         config.ENV_FILE = monkey_env
+
+
+def test_upgrade_removes_only_proven_legacy_promotions_from_global_pool(tmp_path):
+    from futu_quant.migrations import MIGRATIONS, apply_migrations
+
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT,checksum TEXT,applied_at TEXT)")
+    connection.execute("CREATE TABLE audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,strategy_id TEXT,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,actor TEXT NOT NULL DEFAULT '')")
+    connection.execute("CREATE TABLE runtime_config(config_key TEXT PRIMARY KEY,value_json TEXT NOT NULL,version INTEGER NOT NULL,updated_at TEXT NOT NULL)")
+    connection.execute("""CREATE TABLE promoted_universe(symbol TEXT PRIMARY KEY,promoted_at TEXT NOT NULL,expires_at TEXT NOT NULL,promotion_score REAL NOT NULL,industry TEXT NOT NULL DEFAULT 'OTHER',live_trades_count INTEGER NOT NULL DEFAULT 0,live_realized_pnl REAL NOT NULL DEFAULT 0,consecutive_hard_stops INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'ACTIVE',eviction_reason TEXT DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)""")
+    for migration in MIGRATIONS:
+        if migration.version <= 22:
+            connection.execute(
+                "INSERT INTO schema_migrations VALUES(?,?,?,datetime('now'))",
+                (migration.version, migration.name, migration.checksum),
+            )
+    now = datetime.now(timezone.utc).isoformat()
+    connection.execute(
+        "INSERT INTO promoted_universe VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("US.PLTR", now, now, .9, "TECH", 0, 0, 0, "ACTIVE", "", now, now),
+    )
+    connection.execute(
+        "INSERT INTO runtime_config VALUES('VOLATILITY_SYMBOLS',?,1,?)",
+        (json.dumps(["US.AAPL", "US.PLTR", "US.CUSTOM"]), now),
+    )
+    connection.commit()
+    assert apply_migrations(connection, actor="service:test") == [23, 24]
+    symbols = json.loads(connection.execute(
+        "SELECT value_json FROM runtime_config WHERE config_key='VOLATILITY_SYMBOLS'"
+    ).fetchone()[0])
+    assert symbols == ["US.AAPL", "US.CUSTOM"]
+    paper = connection.execute(
+        "SELECT symbol FROM promoted_universe WHERE tenant_id='futu_paper_sandbox'"
+    ).fetchall()
+    real = connection.execute(
+        "SELECT symbol FROM promoted_universe WHERE tenant_id='futu_real_master'"
+    ).fetchall()
+    assert paper == [("US.PLTR",)]
+    assert real == []
+    connection.close()
+
+
+def test_real_delivery_requires_matching_unexpired_single_use_approval(tmp_path):
+    store = TradingStore(str(tmp_path / "incubator.db"))
+    valid_until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    delivery_until = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    from futu_quant.admin_auth import hash_password
+
+    password = "correct-admin-password"
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setenv("ADMIN_PASSWORD_HASH", hash_password(password, iterations=1_000))
+        approval_id = store.create_real_universe_delivery_approval(
+            "futu_real_master", "US.PLTR", "streamlit_admin:chief", valid_until,
+            "ticket:REAL-PLTR-001", "独立评审通过", admin_password=password,
+        )
+    with pytest.raises(PermissionError, match="不匹配"):
+        store.promote_universe_symbol(
+            "futu_real_master", "US.NVDA", .9, delivery_until, approval_id=approval_id,
+        )
+    store.promote_universe_symbol(
+        "futu_real_master", "US.PLTR", .9, delivery_until, approval_id=approval_id,
+    )
+    assert [row["symbol"] for row in store.active_promoted_symbols("futu_real_master")] == [
+        "US.PLTR"
+    ]
+    with pytest.raises(PermissionError, match="已消费"):
+        store.promote_universe_symbol(
+            "futu_real_master", "US.PLTR", .9, delivery_until, approval_id=approval_id,
+        )
+    events = {row["event_type"] for row in store.audit_events()}
+    assert "REAL_UNIVERSE_DELIVERY_APPROVED" in events
+    assert "REAL_UNIVERSE_DELIVERY_APPROVAL_CONSUMED" in events
+
+
+def test_worker_cannot_self_sign_or_use_expired_real_approval(tmp_path, monkeypatch):
+    from futu_quant.admin_auth import hash_password
+
+    store = TradingStore(str(tmp_path / "incubator.db"))
+    now = datetime.now(timezone.utc)
+    password = "correct-admin-password"
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", hash_password(password, iterations=1_000))
+    with pytest.raises(PermissionError, match="未经管理员认证"):
+        store.create_real_universe_delivery_approval(
+            "futu_real_master", "US.PLTR", "service:worker",
+            (now + timedelta(hours=1)).isoformat(), "self", "self",
+            admin_password="worker-self-signed",
+        )
+
+    expired_at = (now - timedelta(seconds=1)).isoformat()
+    with pytest.raises(ValueError, match="有效期必须晚于"):
+        store.create_real_universe_delivery_approval(
+            "futu_real_master", "US.PLTR", "streamlit_admin:chief",
+            expired_at, "ticket:expired", "超时测试", admin_password=password,
+        )
 
 
 def test_atomic_settlement_rolls_back_position_when_metric_write_fails(monkeypatch, tmp_path):

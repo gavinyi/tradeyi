@@ -3835,18 +3835,69 @@ class TradingStore:
                 ).fetchall()
             return [dict(r) for r in rows]
 
+    def create_real_universe_delivery_approval(
+        self, tenant_id: str, symbol: str, approved_by: str, expires_at: str,
+        evidence: str, reason: str, *, admin_password: str,
+    ) -> int:
+        """仅在重新校验管理员密码后创建 REAL 批准；会话布尔值和 actor 均不可信。"""
+        from futu_quant.admin_auth import configured as admin_configured, verify as verify_admin
+        from futu_quant.tenant import resolve_tenant
+
+        if not admin_configured() or not verify_admin(admin_password):
+            raise PermissionError("REAL 投放批准签发来源未经管理员认证")
+        tenant = resolve_tenant(tenant_id, strict=True)
+        if tenant.trading_env != "REAL":
+            raise ValueError("REAL 投放批准只能签发给 REAL 租户")
+        approved_by = str(approved_by or "").strip()
+        evidence = str(evidence or "").strip()
+        reason = str(reason or "").strip()
+        if not approved_by or not evidence or not reason:
+            raise ValueError("REAL 投放批准必须包含审批人、证据和原因")
+        validate_actor(approved_by)
+        now = self.now()
+        if expires_at <= now:
+            raise ValueError("REAL 投放批准有效期必须晚于当前时间")
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """INSERT INTO real_universe_delivery_approvals
+                (tenant_id,symbol,approved_by,approved_at,expires_at,evidence,reason,created_at)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (tenant_id, symbol, approved_by, now, expires_at, evidence, reason, now),
+            )
+            approval_id = int(cursor.lastrowid)
+            connection.execute(
+                """INSERT INTO audit_events
+                (event_type,strategy_id,payload_json,created_at,actor) VALUES(?,?,?,?,?)""",
+                ("REAL_UNIVERSE_DELIVERY_APPROVED", None, _json_dumps({
+                    "approval_id": approval_id, "tenant_id": tenant_id, "symbol": symbol,
+                    "expires_at": expires_at, "evidence": evidence, "reason": reason,
+                }), now, approved_by),
+            )
+        return approval_id
+
     def promote_universe_symbol(
         self, tenant_id: str, symbol: str, promotion_score: float, expires_at: str,
-        industry: str = "OTHER", *, allow_real: bool = False,
+        industry: str = "OTHER", *, approval_id: int | None = None,
     ) -> None:
-        """投放研究成果到指定租户；REAL 必须由显式人工批准路径调用。"""
+        """投放研究成果；REAL 必须原子校验并消费一条持久化批准记录。"""
         from futu_quant.tenant import resolve_tenant
 
         tenant = resolve_tenant(tenant_id, strict=True)
-        if tenant.trading_env == "REAL" and not allow_real:
-            raise PermissionError("REAL 租户禁止自动继承孵化晋级，须独立批准")
         now = self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            approval = None
+            if tenant.trading_env == "REAL":
+                if approval_id is None:
+                    raise PermissionError("REAL 租户投放缺少独立批准记录")
+                approval = connection.execute(
+                    """SELECT * FROM real_universe_delivery_approvals
+                    WHERE id=? AND tenant_id=? AND symbol=? AND consumed_at IS NULL
+                      AND expires_at>?""",
+                    (int(approval_id), tenant_id, symbol, now),
+                ).fetchone()
+                if approval is None:
+                    raise PermissionError("REAL 投放批准缺失、过期、已消费或租户/标的不匹配")
             connection.execute(
                 """INSERT INTO promoted_universe
                 (tenant_id,symbol,promoted_at,expires_at,promotion_score,industry,status,created_at,updated_at)
@@ -3857,6 +3908,19 @@ class TradingStore:
                 status='ACTIVE', eviction_reason='', updated_at=excluded.updated_at""",
                 (tenant_id, symbol, now, expires_at, float(promotion_score), industry, now, now),
             )
+            if approval is not None:
+                connection.execute(
+                    "UPDATE real_universe_delivery_approvals SET consumed_at=? WHERE id=?",
+                    (now, int(approval_id)),
+                )
+                connection.execute(
+                    """INSERT INTO audit_events
+                    (event_type,strategy_id,payload_json,created_at,actor) VALUES(?,?,?,?,?)""",
+                    ("REAL_UNIVERSE_DELIVERY_APPROVAL_CONSUMED", None, _json_dumps({
+                        "approval_id": int(approval_id), "tenant_id": tenant_id,
+                        "symbol": symbol, "promotion_score": float(promotion_score),
+                    }), now, str(approval["approved_by"])),
+                )
 
     def active_promoted_symbols(self, tenant_id: str) -> list[dict]:
         if not tenant_id:

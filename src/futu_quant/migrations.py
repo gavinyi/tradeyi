@@ -349,6 +349,38 @@ MIGRATIONS = (
         CREATE INDEX idx_promoted_active
             ON promoted_universe(tenant_id, status, expires_at);
     """),
+    # 旧版同步曾把已晋级外援混进全局 VOLATILITY_SYMBOLS。只删除能由存量投放表
+    # 精确证明为外援的符号；其余核心和人工配置原样保留，禁止粗暴重置整项配置。
+    Migration(24, "incubator_delivery_approval_and_legacy_cleanup", """
+        UPDATE runtime_config
+        SET value_json = COALESCE((
+                SELECT json_group_array(value)
+                FROM json_each(runtime_config.value_json)
+                WHERE value NOT IN (
+                    SELECT symbol FROM promoted_universe
+                    WHERE tenant_id='futu_paper_sandbox'
+                )
+            ), '[]'),
+            version = version + 1,
+            updated_at = datetime('now')
+        WHERE config_key='VOLATILITY_SYMBOLS'
+          AND json_valid(value_json)
+          AND json_type(value_json)='array';
+        CREATE TABLE real_universe_delivery_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            approved_by TEXT NOT NULL,
+            approved_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            consumed_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_real_delivery_approval_lookup
+            ON real_universe_delivery_approvals(tenant_id, symbol, consumed_at, expires_at);
+    """),
 )
 
 
