@@ -15,7 +15,7 @@ from .config import (
     load_volatility_campaigns, load_volatility_symbols,
     resolve_volatility_radar_budget, upsert_campaign,
 )
-from .volatility_optimizer import volatility_regime, volatility_threshold_profile
+from .volatility_optimizer import complete_volatility_activation, volatility_threshold_profile
 from .volatility_activation import build_activation_evidence, save_activation_evidence
 from .volatility_chain import campaign_intent_chain_status
 from .volatility_orphans import retain_campaign_if_at_risk
@@ -241,18 +241,14 @@ def scan_market_layer(
                 continue
             bars = _timed_call(lambda: broker.candles(symbol, count=120))
             profile = volatility_threshold_profile(bars)
-            z_target = profile["entry_zscore"]
-            move_target = profile["minimum_underlying_move"]
-            regime = volatility_regime(owner, bars, z_target, move_target)
-            relative_strength = float(regime["intraday_return"]) - market_move
-            market_independent = (
-                abs(relative_strength) >= .005 or abs(float(regime["intraday_return"])) >= .03
+            regime = complete_volatility_activation(owner, bars, profile, market_move)
+            relative_strength = float(
+                regime.get("relative_strength", float(regime["intraday_return"]) - market_move)
             )
-            if regime["active"] and not market_independent:
-                regime["active"] = False
-                regime["reason"] = (
-                    f"主要随大盘同步波动：相对SPY仅 {relative_strength:+.2%}，目标绝对值≥0.50%"
-                )
+            market_independent = bool(regime.get(
+                "market_independent",
+                abs(relative_strength) >= .005 or abs(float(regime["intraday_return"])) >= .03,
+            ))
             evidence = build_activation_evidence(
                 symbol, regime, profile,
                 observed_at=scan_started_at,

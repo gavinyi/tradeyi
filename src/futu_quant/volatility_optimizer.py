@@ -957,6 +957,29 @@ def volatility_threshold_profile(candles: pd.DataFrame) -> dict[str, float]:
     }
 
 
+def complete_volatility_activation(
+    owner, candles: pd.DataFrame, profile: dict[str, float], market_move: float,
+) -> dict[str, object]:
+    """完整激活判定：基础波动条件 + 相对 SPY/绝对涨跌独立性门。"""
+    regime = volatility_regime(
+        owner, candles, float(profile["entry_zscore"]),
+        float(profile["minimum_underlying_move"]),
+    )
+    relative_strength = float(regime["intraday_return"]) - float(market_move)
+    market_independent = (
+        abs(relative_strength) >= .005 or abs(float(regime["intraday_return"])) >= .03
+    )
+    regime["market_return"] = float(market_move)
+    regime["relative_strength"] = relative_strength
+    regime["market_independent"] = market_independent
+    if regime["active"] and not market_independent:
+        regime["active"] = False
+        regime["reason"] = (
+            f"主要随大盘同步波动：相对SPY仅 {relative_strength:+.2%}，目标绝对值≥0.50%"
+        )
+    return regime
+
+
 def volatility_regime(
     owner, candles: pd.DataFrame, entry_z: float = 2.0,
     minimum_move: float = .02,

@@ -84,7 +84,7 @@ def test_scanner_defaults_to_configured_volatility_symbols(monkeypatch):
     )
     monkeypatch.setattr(
         scanner,
-        "volatility_regime",
+        "complete_volatility_activation",
         lambda *_args: {
             "active": False, "reason": "未触发", "checks": [],
             "intraday_return": 0.0, "zscore_20d": 0.0,
@@ -121,7 +121,7 @@ def test_active_signal_creates_campaign_and_enables_auto_monitor(monkeypatch):
     )
     monkeypatch.setattr(
         scanner,
-        "volatility_regime",
+        "complete_volatility_activation",
         lambda *_args: {
             "active": True, "reason": "全部动态波动条件已通过", "checks": [],
             "intraday_return": 0.04, "zscore_20d": 2.5,
@@ -182,7 +182,7 @@ def test_active_signal_records_visible_rejection_when_no_contract_passes(monkeyp
         lambda _bars: {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
     )
     monkeypatch.setattr(
-        scanner, "volatility_regime",
+        scanner, "complete_volatility_activation",
         lambda *_args: {
             "active": True, "reason": "全部条件通过", "checks": [],
             "intraday_return": .04, "zscore_20d": 2.5, "atr_ratio": 2,
@@ -230,7 +230,7 @@ def test_rejected_candidate_enters_cooldown_until_signal_strengthens(monkeypatch
         lambda _bars: {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
     )
     monkeypatch.setattr(
-        scanner, "volatility_regime",
+        scanner, "complete_volatility_activation",
         lambda *_args: {
             "active": True, "reason": "全部条件通过", "checks": [],
             "intraday_return": .04, "zscore_20d": 2.5, "atr_ratio": 2,
@@ -260,7 +260,7 @@ def test_scanner_limits_broker_snapshot_to_scanned_symbols(monkeypatch):
     monkeypatch.setattr(scanner, "volatility_threshold_profile", lambda _: {
         "entry_zscore": 2.0, "minimum_underlying_move": .02,
     })
-    monkeypatch.setattr(scanner, "volatility_regime", lambda *_: {
+    monkeypatch.setattr(scanner, "complete_volatility_activation", lambda *_: {
         "active": False, "reason": "等待触发", "checks": [],
         "intraday_return": .0, "zscore_20d": .0, "atr_ratio": .0,
         "volume_ratio": 1.0, "direction_score": .0,

@@ -44,7 +44,7 @@ from futu_quant.volatility_optimizer import (
     loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
-    volatility_regime,
+    complete_volatility_activation,
 )
 from futu_quant.volatility_structures import automatic_combo_id
 from futu_quant.volatility_activation import load_activation_evidence
@@ -223,6 +223,10 @@ def refreshed_trade_quotes(
             "book_ok": book_ok,
             "book_reason": book_reason,
             "spread_pct": spread_pct,
+            "quote_source": "FUTU_OPEND_SNAPSHOT",
+            "option_source_time": str(option.get("update_time") or ""),
+            "underlying_source_time": str(owner.get("update_time") or ""),
+            "captured_at": attempt_now.astimezone(timezone.utc).isoformat(),
         })
         last_option, last_owner = option, owner
         previous_option = option
@@ -1179,8 +1183,8 @@ def run_campaign(
         # 又保留“发现候选→入场前复核”的两次独立确认。
         profile = dict(evidence.get("profile") or {})
         try:
-            entry_zscore = float(profile["entry_zscore"])
-            minimum_move = float(profile["minimum_underlying_move"])
+            float(profile["entry_zscore"])
+            float(profile["minimum_underlying_move"])
         except (KeyError, TypeError, ValueError):
             reason = "scanner 激活证据缺少有效阈值快照，入场二次确认 fail-closed"
             executor.store.decision_if_changed(
@@ -1192,7 +1196,22 @@ def run_campaign(
             )
             print(f"{code}: BLOCKED ({reason})")
             return
-        regime = volatility_regime(owner, underlying_bars, entry_zscore, minimum_move)
+        try:
+            spy_quote = broker.snapshots(["US.SPY"])
+            spy_owner = spy_quote[spy_quote["code"] == "US.SPY"].iloc[0]
+            spy_last = market_number(spy_owner.get("last_price"), 0.0)
+            spy_previous = market_number(spy_owner.get("prev_close_price"), 0.0)
+            market_move = spy_last / spy_previous - 1 if spy_previous > 0 else 0.0
+        except Exception as exc:  # noqa: BLE001 - 市场独立性证据缺失必须 fail-closed
+            reason = f"入场二次确认缺少最新 SPY 权威行情：{exc}"
+            executor.store.decision_if_changed(
+                strategy_id, code, "BLOCKED", reason, {
+                    "activation_trace_id": evidence.get("trace_id"),
+                    "pre_trade_check": "CAMPAIGN_RECONFIRMATION",
+                }, repeat_after_seconds=300, tenant_id=_campaign_tenant,
+            )
+            return
+        regime = complete_volatility_activation(owner, underlying_bars, profile, market_move)
         regime.update({
             "adaptive_profile": profile,
             "activation_trace_id": evidence.get("trace_id"),
@@ -1904,7 +1923,9 @@ def run_campaign(
                 "spread_pct": float(quote_check["spread_pct"]),
                 "option_open_interest": market_number(option.get("option_open_interest"), 0.0),
                 "volume": market_number(option.get("volume"), 0.0),
-                "entry_quote_observed_at": now.isoformat(),
+                "entry_quote_source": quote_check["quote_source"],
+                "entry_quote_source_time": quote_check["option_source_time"],
+                "entry_quote_captured_at": quote_check["captured_at"],
                 "entry_quote_age_seconds": float(quote_check["option_age_seconds"]),
                 "activation_trace_id": regime.get("activation_trace_id") if regime else None,
             }
