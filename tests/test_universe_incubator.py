@@ -83,6 +83,15 @@ def test_virtual_position_open_and_settle_is_idempotent(tmp_path):
 def test_daily_chain_settles_scores_and_promotes(monkeypatch, tmp_path):
     store = TradingStore(str(tmp_path / "incubator.db"))
     now = datetime.now(timezone.utc)
+    # 本测试验证「赛马实绩拉开分数」：把模型先验钉在 0.50，避免真实模型
+    # 文件存在与否（gitignore 数据）影响最终分，使断言环境无关。
+    from futu_quant.ml_symbol_scorer import MLSymbolScorer
+
+    monkeypatch.setattr(
+        MLSymbolScorer,
+        "score_symbol",
+        lambda self, symbol, broker, store, trade_time=None, market_context=None: 0.50,
+    )
     with store.connection() as connection:
         connection.execute(
             """INSERT INTO candidate_universe

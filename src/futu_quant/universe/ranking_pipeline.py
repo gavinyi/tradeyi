@@ -55,8 +55,11 @@ class RankingPipeline:
         base_score = 0.50
         try:
             if broker and self.scorer.enabled:
-                score_dict = self.scorer.score_symbols([symbol], broker, self.store)
-                base_score = float(score_dict.get(symbol, 0.50))
+                # MLSymbolScorer 只有单数的 score_symbol(symbol, broker, store)，
+                # 返回 float | None（None=缺必需特征，需回退规则/平滑默认）。
+                ml_score = self.scorer.score_symbol(symbol, broker, self.store)
+                if ml_score is not None:
+                    base_score = float(ml_score)
         except Exception as e:
             logger.warning("标的 %s 调用模型打分异常，使用平滑默认值: %s", symbol, e)
             base_score = 0.50
