@@ -270,24 +270,33 @@ def load_volatility_symbols(tenant_id: str | None = None) -> tuple[str, ...]:
     迁移 24 因此只保留该键不动，并把非核心自定义项保守迁入 PAPER 投放层。
 
     * REAL 租户：默认核心 + 自身已消费批准记录的投放；
-    * SIMULATE 租户：默认核心 + 自身投放（含迁移承接的历史自定义项）；
-    * ``tenant_id`` 为空（页面展示 / 共享市场层扫描）：默认核心 + 各租户 ACTIVE 投放
-      的只读并集。**该并集仅用于展示与去重，禁止用于下单或风控判定。**
+    * SIMULATE 租户：默认核心 + 运行时人工配置 + 自身投放；人工配置每轮重读，
+      因此升级后继续通过既有 UI 增删即可生效；
+    * ``tenant_id`` 为空（页面展示 / 共享市场层扫描）：默认核心 + 运行时人工配置 +
+      各租户 ACTIVE 投放的只读并集。**该并集仅用于展示与去重，禁止用于下单或风控判定。**
     """
     symbols = list(DEFAULT_VOLATILITY_SYMBOLS)
 
-    # 动态并集扩展: 核心底仓 (13只) ∪ 当前有效晋级外援 (promoted_universe)
     try:
         if ENV_FILE == DEFAULT_ENV_FILE:
             from .store import TradingStore
+            from .tenant import resolve_tenant
+
             store = TradingStore()
+            # VOLATILITY_SYMBOLS 是既有 UI 的动态人工配置入口。它只能扩展 PAPER/共享扫描，
+            # REAL 明确不读取，避免未批准人工标的穿透实盘。
+            tenant = resolve_tenant(tenant_id, strict=True) if tenant_id else None
+            if tenant is None or tenant.trading_env == "SIMULATE":
+                runtime_config = store.get_runtime_config("VOLATILITY_SYMBOLS")
+                configured = runtime_config[0] if runtime_config is not None else []
+                if isinstance(configured, (list, tuple)):
+                    symbols.extend(normalize_us_symbol(item) for item in configured)
+
             if tenant_id:
                 promoted_rows = store.active_promoted_symbols(tenant_id)
             else:
                 promoted_rows = store.all_active_promoted_symbols()
-            symbols.extend(
-                row["symbol"] for row in promoted_rows if row.get("symbol")
-            )
+            symbols.extend(row["symbol"] for row in promoted_rows if row.get("symbol"))
     except Exception:
         pass
 

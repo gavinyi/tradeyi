@@ -262,7 +262,7 @@ def test_legacy_core_symbol_list_matches_config():
 
 
 def test_worker_pool_is_default_core_plus_tenant_deliveries_only(tmp_path, monkeypatch):
-    """全局键里的人工自定义项/历史外援不得进入 REAL 池；PAPER 只拿迁移承接项。"""
+    """运行时人工配置可进入 PAPER，但不得进入 REAL；租户投放仍保持隔离。"""
     from futu_quant import config
     import futu_quant.store as store_module
 
@@ -283,8 +283,32 @@ def test_worker_pool_is_default_core_plus_tenant_deliveries_only(tmp_path, monke
     assert real_pool == config.DEFAULT_VOLATILITY_SYMBOLS
     assert "US.LEGACY" not in real_pool and "US.CUSTOM" not in real_pool
     assert "US.CUSTOM" in paper_pool
-    assert "US.LEGACY" not in paper_pool  # 全局键不再是基础池来源
+    assert "US.LEGACY" in paper_pool  # 既有 UI 人工配置持续逐轮生效
+    assert "US.LEGACY" not in real_pool  # 未经独立批准不得穿透 REAL
     assert "US.CUSTOM" in shared_pool  # 无租户上下文只做展示并集
+
+
+def test_post_migration_runtime_config_changes_reach_paper_but_never_real(tmp_path, monkeypatch):
+    """升级后的既有 UI 配置入口仍逐轮生效，但未批准标的绝不进入 REAL。"""
+    from futu_quant import config
+    import futu_quant.store as store_module
+
+    store = TradingStore(str(tmp_path / "dynamic-pool.db"))
+    monkeypatch.setattr(config, "ENV_FILE", config.DEFAULT_ENV_FILE)
+    monkeypatch.setattr(config, "_mirror_env", lambda *_a, **_k: None)
+    monkeypatch.setattr(store_module, "TradingStore", lambda: store)
+
+    config.save_volatility_symbols(("US.AAPL", "US.PLTR"))
+    assert "US.PLTR" in config.load_volatility_symbols("futu_paper_sandbox")
+    assert "US.PLTR" not in config.load_volatility_symbols("futu_real_master")
+
+    # 下一次 UI 保存删除 PLTR 后，下一轮 Worker 读取必须立即去除；REAL 始终不继承。
+    config.save_volatility_symbols(("US.AAPL", "US.CUSTOM"))
+    paper_pool = config.load_volatility_symbols("futu_paper_sandbox")
+    real_pool = config.load_volatility_symbols("futu_real_master")
+    assert "US.PLTR" not in paper_pool
+    assert "US.CUSTOM" in paper_pool
+    assert "US.CUSTOM" not in real_pool
 
 
 def test_real_delivery_requires_matching_unexpired_single_use_approval(tmp_path):
