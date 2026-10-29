@@ -353,6 +353,17 @@ def latest_strategy_interruption_from_frame(
     recoveries = frame[recovery_mask & frame["_ts"].gt(latest_ts)].sort_values("_ts")
     recovered = not recoveries.empty
     recovery_ts = recoveries.iloc[0]["_ts"] if recovered else pd.NaT
+    # 恢复证据的来源决定 `duration_minutes` 能不能当“断线多久”读：
+    #   connectivity    —— 预检恢复事件，时刻就是真实恢复时刻，时长可信
+    #   restart         —— STARTUP_RECOVERY，只能证明“已经好了”，时刻是重启时间
+    #   broker_snapshot —— 账户快照兜底，同上
+    # 后两种情况若照常展示时长，会把“距失败多久”说成“断线多久”（10-29 22:57
+    # 实际断 4 秒，被算成 35.9 分钟，用户明确指出了这个误导）。
+    recovery_evidence = "connectivity"
+    if recovered:
+        recovery_type = str(recoveries.iloc[0].get("event_type", "")).upper()
+        if recovery_type not in {"PROTECTIVE_RECOVERY_CONFIRMED", "BROKER_CONNECTIVITY_RECOVERED"}:
+            recovery_evidence = "restart"
     age_hours = (pd.Timestamp.now(tz=UTC) - latest_ts).total_seconds() / 3600
     if account_ok:
         # 账户读得到 = 链路现在通。超过 1 小时的旧中断不再占用首页（与
@@ -362,18 +373,41 @@ def latest_strategy_interruption_from_frame(
         if not recovered:
             recovered = True
             recovery_ts = pd.Timestamp.now(tz=UTC)
+            recovery_evidence = "broker_snapshot"
     end_ts = recovery_ts if recovered else pd.Timestamp.now(tz=UTC)
     payload = _json_loads(latest.get("payload_json"))
+    # 保护模式看的是**策略账本**（虚拟盘 virtual / 影子盘 shadow），不是券商实盘持仓
+    # —— `connectivity_protection.active_protected_option_positions` 的数据源就是这两个。
+    # 但页面只写“存在 N 个未平期权”，读起来像实盘有 N 张裸奔。
+    # 2026-10-29 16:00 那次报的 2 张（AMD/QQQ）全是 `sources: ["virtual"]`，
+    # 而实盘当天 14:54 就已平仓归零。
+    option_sources = sorted({
+        str(source)
+        for position in (payload.get("positions") or [])
+        if isinstance(position, dict)
+        for source in (position.get("sources") or [])
+    })
     return {
         "started_at_china": _to_china_label(start_ts),
         "last_at_china": _to_china_label(latest_ts),
         "duration_minutes": max(0.0, (end_ts - start_ts).total_seconds() / 60),
+        "duration_is_trustworthy": recovery_evidence == "connectivity",
+        "recovery_evidence": recovery_evidence,
         "failures": max(failures, int(_number(payload.get("failures"), 0))),
         "open_option_count": int(_number(payload.get("open_option_count"), 0)),
+        "option_sources": option_sources,
         "task": str(payload.get("task") or payload.get("trigger_task") or ""),
         "message": str(payload.get("message") or payload.get("reason") or ""),
         "recovered": recovered,
     }
+
+
+def _option_scope_label(sources: list[str]) -> str:
+    """把保护仓的来源翻成人话，避免把策略账本读成券商实盘敞口。"""
+    if not sources:
+        return ""
+    names = {"virtual": "虚拟盘", "shadow": "影子盘", "real": "实盘"}
+    return "，".join(names.get(source, source) for source in sources) + "账本"
 
 
 def _large_loss_positions(positions: pd.DataFrame) -> pd.DataFrame:
@@ -430,17 +464,34 @@ def _render_attention_center(
             duration_label = _duration_label(interruption["duration_minutes"])
             open_options = interruption["open_option_count"]
             task = interruption["task"] or "券商/行情链路"
+            scope = _option_scope_label(interruption.get("option_sources") or [])
+            scope_note = f"（{scope}）" if scope else ""
             if interruption["recovered"]:
-                st.warning(
-                    f"策略中断已恢复：{interruption['started_at_china']} 开始，"
-                    f"最后异常 {interruption['last_at_china']}，影响 {duration_label}。"
-                    f"当时存在 {open_options} 个未平期权，触发来源：{task}。",
-                    icon=":material/history:",
-                )
+                evidence = interruption.get("recovery_evidence", "connectivity")
+                if interruption.get("duration_is_trustworthy", True):
+                    st.warning(
+                        f"策略中断已恢复：{interruption['started_at_china']} 开始，"
+                        f"最后异常 {interruption['last_at_china']}，影响 {duration_label}。"
+                        f"当时策略账本{scope_note}有 {open_options} 个未平期权，触发来源：{task}。",
+                        icon=":material/history:",
+                    )
+                else:
+                    # `duration_minutes` 在这里只是“距最后一次异常多久”，不是断线时长
+                    # —— 恢复证据来自重启/账户快照而非连接恢复事件，说成“影响 X 分钟”
+                    # 会把 4 秒的抖动讲成半小时（10-29 22:57）。
+                    confirmed_by = "服务重启" if evidence == "restart" else "券商快照"
+                    st.info(
+                        f"策略中断已恢复（由{confirmed_by}确认）：{interruption['started_at_china']} "
+                        f"有连接异常，最后异常 {interruption['last_at_china']}。"
+                        f"当时策略账本{scope_note}有 {open_options} 个未平期权，触发来源：{task}。"
+                        f"真实断线时长未记录，此前的“持续中”计时不可当真。",
+                        icon=":material/history:",
+                    )
             else:
                 st.error(
                     f"策略中断：自 {interruption['started_at_china']} 起，券商/行情连接异常已持续 "
-                    f"{duration_label}；当时存在 {open_options} 个未平期权，系统已进入持仓保护恢复。",
+                    f"{duration_label}；当时策略账本{scope_note}有 {open_options} 个未平期权，"
+                    f"系统已进入持仓保护恢复。",
                     icon=":material/report:",
                 )
         if incident is not None:

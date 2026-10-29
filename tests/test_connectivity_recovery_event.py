@@ -176,6 +176,10 @@ def test_lone_failure_renders_recovered_when_broker_reachable():
     assert out is not None
     assert out["recovered"] is True, "账户读得到却仍显示“中断中” —— 假告警"
     assert out["open_option_count"] == 2
+    assert out["recovery_evidence"] == "broker_snapshot"
+    assert out["duration_is_trustworthy"] is False, (
+        "账户快照兜底的时长来自“距失败多久”，不能当作断线时长展示"
+    )
 
 
 def test_recovered_event_makes_banner_yellow_with_real_duration():
@@ -189,6 +193,53 @@ def test_recovered_event_makes_banner_yellow_with_real_duration():
     out = latest_strategy_interruption_from_frame(frame, account_ok=True)
     assert out is not None and out["recovered"] is True
     assert out["duration_minutes"] < 1.0, "4 秒的中断被显示成十分钟 —— 时长口径错了"
+    assert out["recovery_evidence"] == "connectivity"
+    assert out["duration_is_trustworthy"] is True
+
+
+def test_startup_recovery_marks_duration_as_untrustworthy():
+    """靠重启事件兜底时，时长是「距失败多久」而非断线时长，必须标注不可信。
+
+    10-29 22:57 那次真实断线 4 秒，但恢复证据直到 23:33 重启才出现，
+    按常规口径会显示“影响 35.9 分钟”——正是用户指出的误导。
+    """
+    now = pd.Timestamp.now(tz=UTC)
+    failure_ts = now - pd.Timedelta(minutes=40)
+    frame = _frame(
+        ("BROKER_CONNECTIVITY_FAILURE", failure_ts, '{"failures":1,"open_option_count":2}'),
+        ("STARTUP_RECOVERY", now - pd.Timedelta(minutes=4), "{}"),
+    )
+    out = latest_strategy_interruption_from_frame(frame, account_ok=True)
+    assert out is not None and out["recovered"] is True
+    assert out["recovery_evidence"] == "restart"
+    assert out["duration_is_trustworthy"] is False
+
+
+def test_option_sources_expose_ledger_not_broker_positions():
+    """保护仓来自策略账本（virtual/shadow），不是券商实盘持仓。
+
+    10-29 16:00 那次报“2 个未平期权”（AMD/QQQ），实盘当天 14:54 就已平仓归零；
+    两个都是 `sources: ["virtual"]`。页面只写“存在 N 个未平期权”会被读成实盘敞口。
+    """
+    import json
+
+    from futu_quant.home_dashboard import _option_scope_label
+
+    now = pd.Timestamp.now(tz=UTC)
+    payload = json.dumps({
+        "failures": 2,
+        "open_option_count": 2,
+        "positions": [
+            {"symbol": "US.AMD261030P550000", "quantity": 1.0, "sources": ["virtual"]},
+            {"symbol": "US.QQQ261029C735000", "quantity": 1.0, "sources": ["virtual"]},
+        ],
+    })
+    frame = _frame(("PROTECTIVE_MODE_ACTIVE", now - pd.Timedelta(minutes=3), payload))
+    out = latest_strategy_interruption_from_frame(frame, account_ok=False)
+    assert out is not None
+    assert out["option_sources"] == ["virtual"]
+    assert "虚拟盘" in _option_scope_label(out["option_sources"])
+    assert "实盘" not in _option_scope_label(out["option_sources"])
 
 
 def test_active_outage_is_not_masked_when_broker_unreachable():
