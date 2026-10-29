@@ -114,11 +114,15 @@ def test_run_retrain_passes_no_promote_flag_to_script(tmp_path, monkeypatch):
 
     def _runner(cmd, **kwargs):
         captured.append(list(cmd))
+        candidate.touch()
         return _Completed()
 
     monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
-    candidate = tmp_path / "candidate.pkl"
+    candidate_dir = tmp_path / "models"
+    candidate_dir.mkdir()
+    candidate = candidate_dir / "candidate.pkl"
     candidate.write_bytes(b"model")
+    monkeypatch.setattr(ml_retrain, "MODEL_DIR", candidate_dir)
     reports = iter([
         ("", None),
         ("reports/retrain_x.json", {

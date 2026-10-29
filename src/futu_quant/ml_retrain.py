@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RETRAIN_SCRIPT = ROOT / "scripts" / "ml_retrain_monthly.py"
 LOCK_PATH = ROOT / "data" / "ml_retrain.lock"
 REPORT_DIR = ROOT / "data" / "ml_training" / "reports"
+MODEL_DIR = ROOT / "data" / "ml_models"
 DEFAULT_TIMEOUT_SECONDS = 1800
 
 
@@ -122,13 +123,14 @@ def run_retrain(
         try:
             # 固化启动前产物基线；本次 SUCCESS 必须对应新报告及（自动任务）新候选。
             baseline_report_path, _ = _newest_report()
-            baseline_candidate_path = ""
-            if baseline_report_path:
-                try:
-                    baseline_payload = json.loads(Path(baseline_report_path).read_text(encoding="utf-8"))
-                    baseline_candidate_path = str(baseline_payload.get("candidate_model", ""))
-                except Exception:  # noqa: BLE001 - 损坏旧报告只作为不可复用基线
-                    pass
+            try:
+                candidate_baseline = {
+                    str(path.resolve()): path.stat().st_mtime_ns
+                    for path in MODEL_DIR.glob("*candidate*.pkl")
+                    if path.is_file()
+                }
+            except OSError:
+                candidate_baseline = {}
             run_id = store.record_ml_retrain_run(
                 triggered_by=triggered_by, trigger_kind=trigger_kind, status="RUNNING",
             )
@@ -170,10 +172,20 @@ def run_retrain(
                 elif no_promote:
                     candidate_path = str(report.get("candidate_model", ""))
                     candidate = Path(candidate_path)
+                    try:
+                        resolved_candidate = str(candidate.resolve())
+                        candidate_mtime_ns = candidate.stat().st_mtime_ns
+                    except OSError:
+                        resolved_candidate, candidate_mtime_ns = "", 0
+                    baseline_mtime_ns = candidate_baseline.get(resolved_candidate)
+                    candidate_is_current = (
+                        baseline_mtime_ns is None
+                        or candidate_mtime_ns > baseline_mtime_ns
+                    )
                     if (
                         report_status != "CANDIDATE_ONLY"
                         or not candidate.is_file()
-                        or candidate_path == baseline_candidate_path
+                        or not candidate_is_current
                     ):
                         status = "FAILED"
                         reason = "自动重训未生成可验证候选模型产物"

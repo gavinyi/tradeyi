@@ -142,10 +142,13 @@ def test_auto_success_records_verified_candidate_artifact(tmp_path, monkeypatch)
     ])
     monkeypatch.setattr(ml_retrain, "_newest_report", lambda: next(reports))
 
+    def runner(*args, **kwargs):
+        candidate.touch()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
     result = ml_retrain.run_retrain(
         store, triggered_by="scheduler", trigger_kind="auto", no_promote=True,
-        lock_path=tmp_path / "lock", script=Path("x.py"),
-        runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        lock_path=tmp_path / "lock", script=Path("x.py"), runner=runner,
     )
 
     assert result["status"] == "SUCCESS"
@@ -170,6 +173,34 @@ def test_old_report_cannot_make_empty_run_success(tmp_path, monkeypatch):
     assert "本次有效报告" in result["reason"]
 
 
+def test_new_report_referencing_preexisting_candidate_fails(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
+    monkeypatch.setattr(ml_retrain, "exclusive_lock", lambda handle, blocking=True: None)
+    monkeypatch.setattr(ml_retrain, "unlock_exclusive", lambda handle: None)
+    candidate_dir = tmp_path / "models"
+    candidate_dir.mkdir()
+    candidate = candidate_dir / "unreferenced_old_candidate.pkl"
+    candidate.write_bytes(b"old-model")
+    monkeypatch.setattr(ml_retrain, "MODEL_DIR", candidate_dir)
+    reports = iter([
+        ("", None),
+        (str(tmp_path / "new.json"), {
+            "status": "CANDIDATE_ONLY", "candidate_model": str(candidate),
+        }),
+    ])
+    monkeypatch.setattr(ml_retrain, "_newest_report", lambda: next(reports))
+
+    result = ml_retrain.run_retrain(
+        store, triggered_by="scheduler", trigger_kind="auto",
+        lock_path=tmp_path / "lock", script=tmp_path / "x.py",
+        runner=lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["status"] == "FAILED"
+    assert "候选模型" in result["reason"]
+
+
 def test_auto_trigger_forces_no_promote_inside_controller(tmp_path, monkeypatch):
     store = _store(tmp_path)
     monkeypatch.setattr(ml_retrain, "sklearn_available", lambda: True)
@@ -188,6 +219,7 @@ def test_auto_trigger_forces_no_promote_inside_controller(tmp_path, monkeypatch)
 
     def runner(command, **kwargs):
         seen["command"] = command
+        candidate.touch()
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     result = ml_retrain.run_retrain(
