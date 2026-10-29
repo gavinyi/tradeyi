@@ -369,10 +369,17 @@ def test_profit_protection_does_not_sell_before_configured_start():
 
 
 def test_profit_protection_holds_winner_until_drawdown_threshold():
+    """棘轮止盈：回吐未到阈值前必须 HOLD，到了才 SELL。
+
+    `opened_at` 用 30 分钟而不是 60 分钟：棘轮在满 60 分钟后会再乘收紧系数
+    （`profit_ratchet_tighten_factor`），那是另一条独立断言
+    （见 `test_profit_ratchet_tightens_after_hold_window`）。这里只想验证
+    「阈值前不动手」，所以刻意避开时间收紧点。
+    """
     now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
     common = dict(
         now=now,
-        opened_at=now - timedelta(hours=1),
+        opened_at=now - timedelta(minutes=30),
         quantity=1,
         stages_filled=3,
         max_stages=3,
@@ -405,8 +412,8 @@ def test_profit_protection_holds_winner_until_drawdown_threshold():
         **common,
     )
     assert action == "SELL"
-    assert "盈利保护触发" in reason
-    assert "盈利回吐" in reason
+    assert "棘轮止盈触发" in reason
+    assert "止盈线" in reason
 
 
 def test_profit_protection_uses_profit_giveback_not_option_price_drawdown():
@@ -436,10 +443,16 @@ def test_profit_protection_uses_profit_giveback_not_option_price_drawdown():
 
 
 def test_profit_protection_minimum_locked_profit_exits_before_winner_turns_loss():
+    """峰值 22% 的仓位回落到 4% 必须出场。
+
+    `minimum_locked_profit=.08` 低于棘轮线（16.6%），所以由棘轮接管 —— 这条
+    钉住的是「赢单不许变成亏损单」。绝对锁盈线接管的情形另有一条测试
+    （`test_absolute_locked_profit_takes_over_when_above_ratchet`）。
+    """
     now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
     action, reason = decide_volatility_action(
         now=now,
-        opened_at=now - timedelta(hours=1),
+        opened_at=now - timedelta(minutes=30),
         quantity=1,
         stages_filled=1,
         max_stages=3,
@@ -459,7 +472,36 @@ def test_profit_protection_minimum_locked_profit_exits_before_winner_turns_loss(
     )
 
     assert action == "SELL"
-    assert "阶梯锁盈" in reason
+    assert "棘轮止盈触发" in reason
+
+
+def test_absolute_locked_profit_takes_over_when_above_ratchet():
+    """`minimum_locked_profit` 高于棘轮线时由它接管，reason 必须说明是哪条线。
+
+    否则运维看到 SELL 无法判断该调哪个参数（棘轮曲线 vs 绝对锁盈线）。
+    """
+    now = datetime(2026, 7, 19, 14, tzinfo=timezone.utc)
+    common = dict(
+        now=now, opened_at=now - timedelta(minutes=30), quantity=1,
+        stages_filled=1, max_stages=3, peak_pnl_ratio=.22,
+        drawdown_from_peak=.10, profit_giveback_from_peak=.10,
+        directional_confirmation=True, signal_active=True,
+        profit_target=.50, stop_loss=.40, trailing_stop=.25, max_hold_hours=24,
+        profit_protection_start=.15, profit_protection_drawdown=.25,
+    )
+    # 棘轮线 ≈ 16.6%；把绝对锁盈线抬到 20% → 由它接管
+    action, reason = decide_volatility_action(
+        pnl_ratio=.19, minimum_locked_profit=.20, **common,
+    )
+    assert action == "SELL"
+    assert "绝对锁盈线止盈触发" in reason
+    assert "锁定线20.0%" in reason
+
+    # 同价位若锁盈线低于棘轮线，则由棘轮接管
+    action, reason = decide_volatility_action(
+        pnl_ratio=.19, minimum_locked_profit=.05, **common,
+    )
+    assert action == "HOLD", "19% 仍高于棘轮线 16.6%，不该卖"
 
 
 def test_profit_protection_profile_uses_signal_tier_overrides():

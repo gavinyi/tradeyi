@@ -45,17 +45,23 @@ def test_unprotected_short_remains_naked_short():
 
 
 def test_single_contract_runner_evaluates_tier_lock_before_hold():
+    """单张持仓：止盈保护必须排在「转移动止盈后 HOLD」之前。
+
+    2026-10-29：阶梯锁盈已由棘轮止盈取代。`profit_protection_drawdown` 现在是
+    棘轮的回吐**起点**，不是「固定回吐阈值」—— 设成 .90 会让棘轮线低到 5.8%，
+    反而测不出东西，所以这里用默认量级的 .20。
+    """
     now = datetime.now(timezone.utc)
     kwargs = dict(
         now=now, opened_at=now - timedelta(minutes=20), quantity=1,
         stages_filled=1, max_stages=2, pnl_ratio=.18, peak_pnl_ratio=.35,
         drawdown_from_peak=.16, directional_confirmation=True, signal_active=True,
         profit_target=.50, stop_loss=.50, trailing_stop=.50, max_hold_hours=12,
-        profit_protection_drawdown=.90, single_contract_take_profit=.18,
+        profit_protection_drawdown=.20, single_contract_take_profit=.18,
     )
     action, reason = decide_volatility_action(**kwargs)
     assert action == "SELL"
-    assert "阶梯锁盈" in reason
+    assert "棘轮止盈" in reason
     action, _ = decide_volatility_action(**{**kwargs, "pnl_ratio": .34})
     assert action == "HOLD"  # runner must not pyramid after reaching the single-lot target
 

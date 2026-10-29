@@ -28,10 +28,20 @@ def test_page_exposes_both_limit_inputs():
     """两个限额都必须有 number_input，用户可见可改。"""
     src = _page()
     assert 'number_input(\n            "相对止损（权利金亏损比例）"' in src, "缺少相对止损输入项"
-    assert "绝对止损（单笔最大亏损，美元）" in src, "缺少绝对止损输入项"
+    # 2026-10-29：绝对项语义从「固定止损额」改为「上限」（实际值 = min(上限, 8%×权利金)），
+    # label 必须跟着改，否则用户会以为填 300 就是亏 300 才止损。
+    assert "绝对止损上限（美元）" in src, "缺少绝对止损上限输入项"
     # 默认值必须与生效口径一致（0.25 / 300），否则界面显示值会误导用户
     assert 'setting_float("volatility_default_max_position_loss_ratio", 0.25)' in src
     assert 'setting_float("volatility_default_max_position_loss_usd", 300.0)' in src
+
+
+def test_page_exposes_premium_scaled_stop_ratio():
+    """8% 缩放比例必须可见可改 —— 它决定绝对止损额的量级。"""
+    src = _page()
+    assert '"绝对止损占建仓权利金比例"' in src, "缺少权利金比例输入项"
+    assert 'setting_float("volatility_default_max_loss_premium_ratio", 0.08)' in src
+    assert '"max_loss_premium_ratio": float(max_loss_premium_ratio)' in src, "未写入 campaign"
 
 
 def test_limits_are_persisted_into_campaigns():

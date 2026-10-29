@@ -214,7 +214,7 @@ def _action_value_node(node: ast.Assign):
     [
         ("hard_stop", "单笔硬止损触发"),
         ("profit_target", "止盈目标"),
-        ("trailing_stop", "盈利保护触发"),
+        ("trailing_stop", "棘轮止盈触发"),
         ("max_hold", "最长持有退出"),
         ("iv_crush", "隐含波动率"),
         ("near_expiry", "临近到期"),

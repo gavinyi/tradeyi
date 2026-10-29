@@ -40,10 +40,12 @@ def test_hard_stop_is_evaluated_before_cooldown_block():
               if isinstance(n, ast.FunctionDef) and n.name == "run_campaign")
     body = lines[fn.lineno - 1 : fn.end_lineno]
     offset = fn.lineno - 1
-    # 锚点用共享解析器的调用点（唯一、稳定）—— 两层都走它
+    # 锚点用共享解析器的调用点（唯一、稳定）—— 两层都走它。
+    # 2026-10-29 起锚点换成 `_locked_hard_stop_limits`：绝对额要在建仓时锁定，
+    # 由它包装 `_hard_stop_limits`，两层仍共用同一处实现（守卫语义不变）。
     hard_stop_line = next(
         i + offset for i, t in enumerate(body)
-        if "_hard_stop_limits(campaign, executor, code)" in t
+        if "_locked_hard_stop_limits(" in t
     )
     cooldown_line = next(
         i + offset for i, t in enumerate(body) if "cooldown_key = f\"volatility_cooldown:" in t
@@ -178,10 +180,15 @@ def test_both_layers_share_one_limit_resolver():
 
     两层在控制流上独立，但数据上耦合 —— 共享数据源是共同失败点。
     收敛到 `_hard_stop_limits` 一处后，数据层出错不会再"两层各算一遍"。
+
+    2026-10-29：绝对额改为按建仓权利金缩放并在建仓时锁定，因此外层多了
+    `_locked_hard_stop_limits`（锁 + 比例缩减）。两层仍然只走**这一个**入口，
+    且它内部只调 `_hard_stop_limits` 一次 —— 解析实现依旧只有一份。
     """
     src = TARGET.read_text(encoding="utf-8")
-    # 两处调用点都必须走共享解析器
-    assert src.count("_hard_stop_limits(campaign, executor, code)") == 2, (
+    # 3 = 1 处定义 + 2 处调用点（两层各一）
+    assert src.count("def _locked_hard_stop_limits(") == 1, "锁定包装器被复制成多份"
+    assert src.count("_locked_hard_stop_limits(") == 3, (
         "两处硬止损判定未都走共享解析器 —— 数据层又分叉了"
     )
     # 不得再出现裸读取（各读各的 = 共同失败点）
@@ -214,9 +221,10 @@ def test_zero_or_negative_limit_is_rejected_loudly(tmp_path):
         {"max_position_loss_usd": 0, "max_position_loss_ratio": 0.25},
         _Ex(), "US.TEST",
     )
-    assert limits == {"max_loss_usd": 300.0, "max_loss_ratio": 0.25}, (
+    assert limits["max_loss_usd"] == 300.0 and limits["max_loss_ratio"] == 0.25, (
         "限额为 0 时未回落保守默认 —— 止损会静默永不触发"
     )
+    assert limits["premium_basis"] is None, "回落路径不应声称有权利金基数"
     assert _Ex.events and _Ex.events[0][0][1] == "HARD_STOP_LIMIT_INVALID", (
         "限额为 0 未记 ERROR —— 这是静默失效"
     )
@@ -227,13 +235,15 @@ def test_zero_or_negative_limit_is_rejected_loudly(tmp_path):
 
 
 def test_valid_limits_pass_through():
+    """未提供权利金基数时（老调用点/单测），上限即实际止损额。"""
     from scripts.run_gamma_strategy import _hard_stop_limits
 
     limits = _hard_stop_limits(
         {"max_position_loss_usd": 150.0, "max_position_loss_ratio": 0.20},
         None, "US.TEST",
     )
-    assert limits == {"max_loss_usd": 150.0, "max_loss_ratio": 0.20}
+    assert limits["max_loss_usd"] == 150.0
+    assert limits["max_loss_ratio"] == 0.20
 
 
 def test_layer1_precedes_layer2():

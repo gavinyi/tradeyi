@@ -481,6 +481,19 @@ def _maybe_create_tenant_campaign(
         "tiered_profit_lock_enabled": _setting_bool(
             store, "volatility_default_tiered_profit_lock_enabled", True,
         ),
+        # 方案 R：统一棘轮止盈。默认开启 —— 关掉等于回到「阶梯表不生效」的旧逻辑。
+        "profit_ratchet_enabled": _setting_bool(
+            store, "volatility_default_profit_ratchet_enabled", True,
+        ),
+        "profit_ratchet_giveback_min": _setting_float(
+            store, "volatility_default_profit_ratchet_giveback_min", .10,
+        ),
+        "profit_ratchet_full_peak": _setting_float(
+            store, "volatility_default_profit_ratchet_full_peak", 1.50,
+        ),
+        "profit_ratchet_tighten_factor": _setting_float(
+            store, "volatility_default_profit_ratchet_tighten_factor", .60,
+        ),
         "profit_time_tighten_minutes": _setting_float(
             store, "volatility_default_profit_time_tighten_minutes", 60,
         ),

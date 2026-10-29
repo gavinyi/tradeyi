@@ -620,8 +620,10 @@ with config_tab:
     trailing_stop = left.number_input("峰值回撤退出比例", 0.05, 1.0, 0.25, step=0.05)
     with st.expander("参数配置 · 独立平仓参数", expanded=False):
         st.markdown(
-            "退出优先级：到期/行权风险 → 硬止损 → 整单止盈 → 分批止盈 → "
-            "最低锁定盈利 → 盈利回吐保护 → IV/Gamma 衰减 → 方向失效/最长持有。"
+            "退出优先级：硬止损 → 整单止盈 → 分批止盈 → 软启动保护 → 棘轮止盈 → "
+            "IV/Gamma 衰减 → 方向失效/最长持有 → 到期/行权风险。\n\n"
+            "> 说明：到期/行权判定在代码中位于**最后**（它会覆盖其他分支），"
+            "但它是硬约束 —— 只要触发就一定退出。此处按实际执行顺序排列。"
         )
         exit_left, exit_middle, exit_right = st.columns(3)
         max_hold_hours = exit_left.number_input(
@@ -693,19 +695,26 @@ with config_tab:
             "盈利保护启动阈值", 0.01, 2.0,
             value=setting_float("volatility_default_profit_protection_start", 0.15),
             step=0.01,
-            help="浮盈达到这个水平后，才启用盈利回吐保护。",
+            help="峰值浮盈达到这个水平后，棘轮止盈开始工作。低于它只走「软启动保护」。",
         )
         profit_protection_drawdown = exit_middle.number_input(
-            "盈利回吐阈值", 0.01, 1.0,
+            "盈利回吐阈值（棘轮起点）", 0.01, 1.0,
             value=setting_float("volatility_default_profit_protection_drawdown", 0.25),
             step=0.01,
-            help="按峰值盈利的回吐比例计算，不是按期权价格从高点回撤计算。例如峰值盈利 26%、阈值 25%，盈利降到约 19.5% 就触发。",
+            help=(
+                "峰值刚过启动线时允许的回吐比例。峰值越高手上锁得越多，"
+                "该阈值会从这里的值线性收紧到一半（默认 25% → 12.5%）。"
+                "例：峰值 26%、起点 25% → 允许回吐约 24%，盈利跌到约 19.8% 触发。"
+            ),
         )
         minimum_locked_profit = exit_right.number_input(
             "最低锁定盈利", 0.0, 1.0,
             value=setting_float("volatility_default_minimum_locked_profit", 0.08),
             step=0.01,
-            help="盈利保护启动后，如果当前盈利跌到这条线以下，直接退出，避免盈利单变亏损单。",
+            help=(
+                "棘轮线之上的**额外**保底线：填得比棘轮线高时由它接管，"
+                "低于棘轮线则不起作用（棘轮本身已经更严）。"
+            ),
         )
         dynamic_stop_enabled = st.toggle(
             "启用时间衰减动态止损",
@@ -765,8 +774,9 @@ with config_tab:
         locked_profit_strong = strong_lock_col.number_input("强波动锁定", 0.0, 1.0, value=setting_float("volatility_default_minimum_locked_profit_strong", 0.06), step=0.01, label_visibility="collapsed")
     with st.expander("参数配置 · 分批止盈与冲高保护", expanded=False):
         st.caption(
-            "2 张以上自动分批；1 张合约达到主动落袋线会先兑现原合约，"
-            "后续由新信号/低成本表达继续做 runner。"
+            "2 张以上自动分批；1 张合约达到主动落袋线**不会卖出**，只把状态切成"
+            "「移动止盈」继续持有，由棘轮止盈与峰值回撤保护接管平仓。"
+            "（页面旧文案称「会先兑现原合约」，与实际实现不符，已修正。）"
         )
         partial_enabled = st.toggle(
             "启用分批止盈",
@@ -800,27 +810,66 @@ with config_tab:
             "单张主动落袋线", 0.05, 5.0,
             value=setting_float("volatility_default_single_contract_take_profit", 0.18),
             step=0.01,
-            help="只有 1 张期权时不能分批，达到该盈利后先卖出原合约，避免冲高回落。",
+            help="只有 1 张期权时不能分批。达到该盈利后转为移动止盈（不卖出），由棘轮止盈负责实际出场。",
+        )
+        st.markdown("**统一棘轮止盈（方案 R）**")
+        st.caption(
+            "止盈线 = 峰值盈利 × (1 − 允许回吐)，允许回吐随峰值线性收紧。"
+            "一条曲线取代原先「阶梯锁盈 + 时间收紧 + 固定回吐 + 最低锁定」四条并行规则 ——"
+            "那四条会互相遮蔽，导致阶梯表调参不生效。"
+        )
+        ratchet_on = st.toggle(
+            "启用棘轮止盈",
+            value=setting_bool("volatility_default_profit_ratchet_enabled", True),
+            help="关闭后回退到 2026-10-29 之前的旧逻辑（带阶梯锁盈缺陷），仅作线上应急。",
+        )
+        ratchet_left, ratchet_middle, ratchet_right = st.columns(3)
+        ratchet_giveback_min = ratchet_left.number_input(
+            "峰值极高时允许回吐", 0.01, 1.0,
+            value=setting_float("volatility_default_profit_ratchet_giveback_min", 0.10),
+            step=0.01,
+            help="峰值达到「回吐收敛峰值」后，只允许回吐这么多。默认 10% 表示锁住峰值盈利的 90%。",
+        )
+        ratchet_full_peak = ratchet_middle.number_input(
+            "回吐收敛峰值", 0.20, 10.0,
+            value=setting_float("volatility_default_profit_ratchet_full_peak", 1.50),
+            step=0.10,
+            help="峰值到这个水平时回吐收到最小值；中间按线性插值。",
+        )
+        ratchet_tighten_factor = ratchet_right.number_input(
+            "满仓时长收紧系数", 0.10, 1.0,
+            value=setting_float("volatility_default_profit_ratchet_tighten_factor", 0.60),
+            step=0.05,
+            help="持有超过「持仓多久后收紧」所设的分钟数后，允许回吐 × 该系数（默认 0.6 = 收紧 40%）。",
         )
         tiered_lock_enabled = st.toggle(
-            "启用阶梯锁盈",
-            value=setting_bool("volatility_default_tiered_profit_lock_enabled", True),
-            help="峰值越高，最低保留盈利越高：10%→6%、18%→12%、30%→18%、50%→30%、80%→50%。",
+            "启用阶梯锁盈（已停用，仅展示）",
+            value=False,
+            disabled=True,
+            help=(
+                "七档表（10%→6%、18%→12%、30%→18%…）的锁盈线最高只有峰值的 73.3%，"
+                "必然晚于回吐线触发，因此只改变日志文案、不改变出场时点。"
+                "已由棘轮止盈取代，此处保留开关仅作历史兼容。"
+            ),
         )
         tighten_left, tighten_middle, tighten_right = st.columns(3)
         time_tighten_minutes = tighten_left.number_input(
             "持仓多久后收紧（分钟）", 5, 360,
             value=setting_int("volatility_default_profit_time_tighten_minutes", 60),
             step=5,
-            help="持仓超过该时间且已有明显浮盈后，盈利回吐阈值自动收紧。",
+            help="棘轮的时间收紧触发点：持仓超过该时间后，允许回吐乘以收紧系数。",
         )
         time_tighten_giveback = tighten_middle.number_input(
-            "时间收紧回吐", 0.01, 1.0,
+            "时间收紧回吐（旧逻辑）", 0.01, 1.0,
             value=setting_float("volatility_default_profit_time_tighten_giveback", 0.12),
             step=0.01,
-            help="超过持仓时间后，只允许从峰值回吐这么多比例。",
+            disabled=True,
+            help="棘轮启用时不生效（已并入棘轮曲线）。仅关闭棘轮后由旧逻辑使用。",
         )
-        tighten_right.info("行业默认：18% 主动落袋，60 分钟后回吐阈值收紧到 12%。")
+        tighten_right.info(
+            "默认：峰值 20% 时允许回吐约 19%，满 60 分钟后收紧到约 12%；"
+            "峰值 100% 时只允许回吐约 14%。"
+        )
     with st.expander("按退出原因冷却与重入保护", expanded=False):
         cooldown_left, cooldown_middle, cooldown_right = st.columns(3)
         cooldown_take_profit = cooldown_left.number_input("止盈后冷却小时", 0, 168, value=setting_int("volatility_default_cooldown_take_profit_hours", 4))
@@ -846,17 +895,29 @@ with config_tab:
             ),
         )
         max_position_loss_usd = stop_right.number_input(
-            "绝对止损（单笔最大亏损，美元）", 1.0, 100_000.0,
+            "绝对止损上限（美元）", 1.0, 100_000.0,
             value=setting_float("volatility_default_max_position_loss_usd", 300.0),
             step=10.0,
             help=(
-                "兜底：单笔最大允许亏损金额，且不超过账户净值的 0.5%。"
-                "防止极端跳空下相对止损失守。"
+                "**上限**，不是固定止损额：实际绝对止损 = min(该值, 8% × 建仓权利金)，"
+                "并在建仓时锁定、不随浮盈浮亏漂移（加仓重算、减仓等比缩减）。"
+                "代码中没有「不超过账户净值 0.5%」的约束，旧文案误导，已删除。"
+            ),
+        )
+        max_loss_premium_ratio = st.number_input(
+            "绝对止损占建仓权利金比例", 0.01, 1.0,
+            value=setting_float("volatility_default_max_loss_premium_ratio", 0.08),
+            step=0.01,
+            help=(
+                "决定绝对止损额随仓位规模缩放的比例。8% 表示 $450 权利金 → $36，"
+                "$10,000 权利金 → $800 但被上面的上限截到 $300。"
             ),
         )
         st.caption(
-            "**两层取较紧者先生效（OR）**：小仓位由相对止损决定（例：$294 权利金 → 约 $75 触发）；"
-            "大仓位由绝对上限决定（例：$2,076 权利金 → $300 先触发）。不是「先相对、不够再绝对」。"
+            "**两层取较紧者先生效（OR）**：小仓位通常是比例线；大仓位是"
+            "「8% × 权利金」与上限取小值。例：$450 权利金 → 绝对线 $36（约 -8%），"
+            "$2,000 权利金 → 绝对线 $160（-8%），$10,000 → 被截到 $300（-3%）。"
+            "不是「先相对、不够再绝对」。"
         )
         st.caption(
             "⚠️ 这两个限额会**显式写入每一条波动率策略**，并在**下单前强制校验**："
@@ -904,6 +965,11 @@ with config_tab:
         "partial_profit_tier2_fraction": float(partial_tier2_fraction),
         "single_contract_take_profit": float(single_take_profit),
         "tiered_profit_lock_enabled": bool(tiered_lock_enabled),
+        # 方案 R：统一棘轮止盈（取代阶梯锁盈 / 时间收紧 / 固定回吐 / 最低锁定）
+        "profit_ratchet_enabled": bool(ratchet_on),
+        "profit_ratchet_giveback_min": float(ratchet_giveback_min),
+        "profit_ratchet_full_peak": float(ratchet_full_peak),
+        "profit_ratchet_tighten_factor": float(ratchet_tighten_factor),
         "profit_time_tighten_minutes": int(time_tighten_minutes),
         "profit_time_tighten_giveback": float(time_tighten_giveback),
         "dynamic_time_stop_enabled": bool(dynamic_stop_enabled),
@@ -921,6 +987,7 @@ with config_tab:
         # 单笔止损限额（双层口径）—— 必须显式落库，缺省即拒绝开仓
         "max_position_loss_ratio": float(max_position_loss_ratio),
         "max_position_loss_usd": float(max_position_loss_usd),
+        "max_loss_premium_ratio": float(max_loss_premium_ratio),
     }
 
     volatility_exit_default_settings = {
@@ -959,6 +1026,10 @@ with config_tab:
         "volatility_default_partial_profit_tier2_fraction": float(partial_tier2_fraction),
         "volatility_default_single_contract_take_profit": float(single_take_profit),
         "volatility_default_tiered_profit_lock_enabled": str(bool(tiered_lock_enabled)).lower(),
+        "volatility_default_profit_ratchet_enabled": str(bool(ratchet_on)).lower(),
+        "volatility_default_profit_ratchet_giveback_min": float(ratchet_giveback_min),
+        "volatility_default_profit_ratchet_full_peak": float(ratchet_full_peak),
+        "volatility_default_profit_ratchet_tighten_factor": float(ratchet_tighten_factor),
         "volatility_default_profit_time_tighten_minutes": int(time_tighten_minutes),
         "volatility_default_profit_time_tighten_giveback": float(time_tighten_giveback),
         "volatility_default_dynamic_time_stop_enabled": str(bool(dynamic_stop_enabled)).lower(),
@@ -977,6 +1048,7 @@ with config_tab:
         "volatility_default_same_contract_cooldown_hours": int(same_contract_cooldown),
         "volatility_default_max_position_loss_ratio": float(max_position_loss_ratio),
         "volatility_default_max_position_loss_usd": float(max_position_loss_usd),
+        "volatility_default_max_loss_premium_ratio": float(max_loss_premium_ratio),
     }
     with st.container(border=True):
         st.subheader("保存退出/保护参数")

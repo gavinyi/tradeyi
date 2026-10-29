@@ -92,8 +92,9 @@ VOLATILITY_EXIT_PRIORITY = [
     ("硬止损", "单笔亏损超过硬止损立即退出，不等待最短持有时间。"),
     ("整单止盈", "未启用分批或只剩 1 张时，到达目标盈利直接兑现。"),
     ("分批止盈", "2 张以上先分批落袋，至少保留 1 张继续追踪趋势。"),
-    ("最低锁定盈利", "峰值盈利达标后，不允许盈利单回落到锁定线以下。"),
-    ("盈利回吐保护", "按峰值盈利回吐比例退出，不按期权价格回撤误判。"),
+    ("软启动保护", "峰值 8%–10% 的窄带内防止小盈利回吐成亏损。"),
+    ("棘轮止盈", "峰值越高手上锁得越多：止盈线 = 峰值 ×(1 − 回吐(峰值))。"
+                 "取代原「阶梯锁盈 + 时间收紧 + 固定回吐 + 最低锁定」四条并行规则。"),
     ("IV/Gamma 衰减", "只有价格或方向也不利时，才用 IV/效率衰减退出。"),
     ("方向失效/最长持有", "方向不再支持或超过最长持有窗口后退出。"),
 ]
@@ -107,8 +108,95 @@ PROFIT_PROTECTION_DEFAULTS = {
 }
 
 
+PROFIT_RATCHET_DEFAULTS = {
+    "start": .10,            # 棘轮启动的峰值盈利（低于它走软启动）
+    "giveback_at_start": .20,  # 峰值刚过启动线时允许的回吐
+    "giveback_min": .10,       # 峰值到达 full_peak 后允许的最小回吐
+    "full_peak": 1.50,         # 回吐收敛到 giveback_min 的峰值
+    "tighten_minutes": 60.0,   # 持有超过该时长后收紧回吐
+    "tighten_factor": 0.60,    # 收紧系数（回吐 × 0.6）
+}
+
+
+def volatility_profit_ratchet_giveback(
+    peak_pnl_ratio: float,
+    *,
+    held_minutes: float | None = None,
+    start: float = .10,
+    giveback_at_start: float = .20,
+    giveback_min: float = .10,
+    full_peak: float = 1.50,
+    tighten_minutes: float = 60.0,
+    tighten_factor: float = 0.60,
+) -> float | None:
+    """方案 R：统一棘轮止盈 —— 返回当前峰值下**允许的回吐比例**。
+
+    为什么取代七档阶梯表：阶梯表的 `floor/peak` 比值最高只有 73.3%（150%→110%），
+    即锁住的部分永远低于「回吐 20%」对应的 80%，所以价格必然先穿过 80% 那条线，
+    阶梯条件还没成立就已经被回吐闸门卖掉 —— 七档表只能改变日志文案，改不了出场
+    时点（详见 `docs/2026-10-29_volatility_exit_stoploss_review.md` P2-3）。
+
+    棘轮把两者合成**一条**单调收紧的曲线：
+
+    ```
+    giveback(peak) = giveback_at_start
+                     - (giveback_at_start - giveback_min) * progress
+    progress       = clamp((peak - start) / (full_peak - start), 0, 1)
+    止盈线          = peak * (1 - giveback)
+    ```
+
+    * 峰值越高手上锁定的越多（20% → 10% 回吐），符合「让利润奔跑但要收回」；
+    * 持有超过 `tighten_minutes` 后回吐 × `tighten_factor`（默认 60 分钟 ×0.6），
+      把原先独立的时间收紧闸门并进同一条曲线，不再出现「两条规则谁先到」的歧义。
+
+    返回 ``None`` 表示**棘轮未启动**（峰值低于 `start`），调用方应走软启动分支。
+    """
+    peak = max(0.0, float(peak_pnl_ratio or 0.0))
+    start = max(0.0, float(start))
+    if peak < start:
+        return None
+    lo = max(0.0, min(1.0, float(giveback_min)))
+    hi = max(lo, min(1.0, float(giveback_at_start)))
+    span = max(1e-9, float(full_peak) - start)
+    progress = min(1.0, max(0.0, (peak - start) / span))
+    giveback = hi - (hi - lo) * progress
+    if held_minutes is not None and float(held_minutes) >= max(0.0, float(tighten_minutes)):
+        giveback *= max(0.0, min(1.0, float(tighten_factor)))
+    return max(0.0, min(1.0, giveback))
+
+
+def volatility_profit_ratchet_floor(
+    peak_pnl_ratio: float,
+    *,
+    held_minutes: float | None = None,
+    absolute_floor: float = 0.0,
+    **kwargs: float,
+) -> tuple[float, float, str] | None:
+    """棘轮的止盈线，附带「线由谁决定」的判定。
+
+    返回 ``(止盈线, 允许回吐, 驱动者)``；``驱动者`` ∈
+    ``{"棘轮", "绝对锁盈线"}`` —— 当 `minimum_locked_profit` 被调到棘轮线之上时，
+    由它接管，reason 必须说清楚是哪条线在起作用（否则运维无法从日志反推参数）。
+    """
+    giveback = volatility_profit_ratchet_giveback(
+        peak_pnl_ratio, held_minutes=held_minutes, **kwargs,
+    )
+    if giveback is None:
+        return None
+    ratchet_floor = max(0.0, float(peak_pnl_ratio or 0.0)) * (1.0 - giveback)
+    lock = max(0.0, float(absolute_floor or 0.0))
+    if lock > ratchet_floor:
+        return lock, giveback, "绝对锁盈线"
+    return ratchet_floor, giveback, "棘轮"
+
+
 def volatility_profit_lock_floor(peak_pnl_ratio: float) -> tuple[float, str]:
-    """Return a professional tiered profit floor based on max favorable excursion."""
+    """Return a professional tiered profit floor based on max favorable excursion.
+
+    **保留仅为兼容与展示**：主决策链路已改用 `volatility_profit_ratchet_floor`。
+    七档表在「回吐阈值」存在时永远不会先于回吐线触发，直接用它做卖出判定会重新
+    引入 P2-3（配置了但不生效）。页面仍展示该表，但文案必须说明它只作参考。
+    """
     peak = float(peak_pnl_ratio or 0.0)
     tiers = [
         (1.50, 1.10, "超级主升档"),
@@ -581,6 +669,47 @@ def volatility_combo_entry_allowed(
     if failed:
         return False, "组合结构质量不足，回退单腿买方期权：" + "；".join(failed), checks
     return True, "组合结构质量通过，可使用定义风险组合", checks
+
+
+HARD_STOP_PREMIUM_RATIO = 0.08
+HARD_STOP_USD_CAP = 300.0
+
+
+def volatility_locked_max_loss_usd(
+    entry_premium_usd: float,
+    *,
+    cap_usd: float = HARD_STOP_USD_CAP,
+    premium_ratio: float = HARD_STOP_PREMIUM_RATIO,
+) -> float | None:
+    """单笔硬止损的**绝对金额线**：`min(cap, premium_ratio × 建仓权利金)`。
+
+    为什么不再用固定的 $300：$300 对仓位规模完全不敏感。AMD 那种小权利金仓位
+    （1 张 ~$450）上，$300 相当于 **-67%**，绝对额那一层形同虚设，只能靠 -25%
+    相对线兜底；反过来大仓位上 $300 又只有个位数百分比，等于把止损压到噪音区间。
+    改成「按建仓权利金 8% 计算、$300 封顶」后：
+
+    * 小仓位：8% × $450 = $36 —— 止损跟着仓位走，不再被 $300 抬高到 -67%；
+    * 大仓位：8% × $10,000 = $800 → 被 $300 封顶，$300 只在大仓位上继续起
+      「防极端跳空」的作用。
+
+    **必须在建仓时算一次并锁定**，不能每轮用浮动盈亏重算 —— 否则仓位一盈利，
+    权利金基数变大、止损额跟着放大，等于「越赚越敢亏」，完全违背止损语义。
+    锁定的落库键见 `run_gamma_strategy._locked_hard_stop_usd`。
+
+    返回 ``None`` 表示入参不可用（权利金未知/<=0），调用方必须**回落 $300 并记
+    ERROR**，不得静默用 0（那会让 `usd_limit > 0` 恒假、止损永不触发）。
+    """
+    try:
+        premium = float(entry_premium_usd)
+    except (TypeError, ValueError):
+        return None
+    if premium <= 0:
+        return None
+    cap = max(0.0, float(cap_usd))
+    ratio = max(0.0, float(premium_ratio))
+    if cap <= 0 or ratio <= 0:
+        return None
+    return min(cap, premium * ratio)
 
 
 def volatility_hard_loss_exit_reason(
@@ -1344,6 +1473,10 @@ def decide_volatility_action(
     minimum_locked_profit: float = .0,
     single_contract_take_profit: float = .18,
     tiered_profit_lock_enabled: bool = True,
+    profit_ratchet_enabled: bool = True,
+    profit_ratchet_giveback_min: float | None = None,
+    profit_ratchet_full_peak: float = PROFIT_RATCHET_DEFAULTS["full_peak"],
+    profit_ratchet_tighten_factor: float = PROFIT_RATCHET_DEFAULTS["tighten_factor"],
     time_tighten_minutes: float = 60,
     time_tighten_giveback: float = .12,
     dynamic_stop_enabled: bool = True,
@@ -1420,43 +1553,83 @@ def decide_volatility_action(
             )
     # A single contract cannot be partially realized. Keep it running above
     # the target, but evaluate every lock/giveback rule before deciding HOLD.
-    if tiered_profit_lock_enabled and protection_active:
-        tier_floor, tier_label = volatility_profit_lock_floor(peak_pnl_ratio)
-        effective_floor = max(float(minimum_locked_profit or 0.0), tier_floor)
-        if effective_floor > 0 and pnl_ratio <= effective_floor:
-            return (
-                "SELL",
-                f"阶梯锁盈触发：{tier_label}峰值盈利{peak_pnl_ratio:.1%}，"
-                f"当前盈利{pnl_ratio:.1%} ≤ 锁盈线{effective_floor:.1%}",
+    if protection_active:
+        if profit_ratchet_enabled:
+            # 【方案 R · 统一棘轮】一条曲线取代原先四条并行规则
+            #（阶梯锁盈 / 时间收紧 / 固定回吐 / 最低锁定）。
+            #
+            # 原先四条互相遮蔽：固定回吐 20% 恒等于「峰值的 80%」，而七档阶梯的
+            # floor/peak 最高只有 73.3%，价格必然先穿过 80% 那条线 —— 阶梯条件
+            # 还没成立就已经卖出，七档表与开关常年不生效（P2-3）。
+            # 合并成棘轮后只剩**一条**判定，各参数的作用点唯一且可推导。
+            ratchet = volatility_profit_ratchet_floor(
+                peak_pnl_ratio,
+                held_minutes=held.total_seconds() / 60,
+                start=float(profit_protection_start),
+                giveback_at_start=float(protection_drawdown),
+                giveback_min=(
+                    float(profit_ratchet_giveback_min)
+                    if profit_ratchet_giveback_min is not None
+                    else float(protection_drawdown) * .5
+                ),
+                full_peak=float(profit_ratchet_full_peak),
+                tighten_minutes=float(time_tighten_minutes or 0.0),
+                tighten_factor=float(profit_ratchet_tighten_factor),
+                absolute_floor=float(minimum_locked_profit or 0.0),
             )
-        if (
-            held >= timedelta(minutes=max(0.0, float(time_tighten_minutes or 0.0)))
-            and peak_pnl_ratio >= .10
-            and profit_giveback >= float(time_tighten_giveback or 0.0)
-        ):
-            return (
-                "SELL",
-                f"持仓时间收紧止盈：已持有{held.total_seconds() / 60:.0f}分钟，"
-                f"峰值盈利{peak_pnl_ratio:.1%}，盈利回吐{profit_giveback:.1%} ≥ "
-                f"{float(time_tighten_giveback):.1%}",
-            )
-    if protection_active and profit_giveback >= protection_drawdown:
-        return (
-            "SELL",
-            f"盈利保护触发：峰值盈利{peak_pnl_ratio:.1%}，"
-            f"当前盈利{pnl_ratio:.1%}，"
-            f"盈利回吐{profit_giveback:.1%} ≥ {protection_drawdown:.1%}",
-        )
-    if (
-        protection_active
-        and minimum_locked_profit > 0
-        and pnl_ratio <= minimum_locked_profit
-    ):
-        return (
-            "SELL",
-            f"最低锁定盈利触发：峰值盈利{peak_pnl_ratio:.1%}，"
-            f"当前盈利{pnl_ratio:.1%} ≤ 锁定线{minimum_locked_profit:.1%}",
-        )
+            if ratchet is not None:
+                floor, giveback_allowed, driver = ratchet
+                if floor > 0 and pnl_ratio <= floor:
+                    if driver == "绝对锁盈线":
+                        return (
+                            "SELL",
+                            f"绝对锁盈线止盈触发：峰值盈利{peak_pnl_ratio:.1%}，"
+                            f"当前盈利{pnl_ratio:.1%} ≤ 锁定线{floor:.1%}",
+                        )
+                    return (
+                        "SELL",
+                        f"棘轮止盈触发：峰值盈利{peak_pnl_ratio:.1%}，"
+                        f"允许回吐{giveback_allowed:.1%}（实际回吐{profit_giveback:.1%}），"
+                        f"止盈线{floor:.1%}，当前盈利{pnl_ratio:.1%}",
+                    )
+        else:
+            # 【回退路径】`profit_ratchet_enabled=False` 时恢复 2026-10-29 之前的行为。
+            # 保留这条分支是为了让线上出现异常时能**一键回到旧逻辑**，
+            # 不必回滚代码 —— 资金侧的改动必须留退路。
+            # 注意：这条路本身带有 P2-3 缺陷（阶梯不生效），只作应急。
+            if tiered_profit_lock_enabled:
+                tier_floor, tier_label = volatility_profit_lock_floor(peak_pnl_ratio)
+                effective_floor = max(float(minimum_locked_profit or 0.0), tier_floor)
+                if effective_floor > 0 and pnl_ratio <= effective_floor:
+                    return (
+                        "SELL",
+                        f"阶梯锁盈触发：{tier_label}峰值盈利{peak_pnl_ratio:.1%}，"
+                        f"当前盈利{pnl_ratio:.1%} ≤ 锁盈线{effective_floor:.1%}",
+                    )
+                if (
+                    held >= timedelta(minutes=max(0.0, float(time_tighten_minutes or 0.0)))
+                    and peak_pnl_ratio >= .10
+                    and profit_giveback >= float(time_tighten_giveback or 0.0)
+                ):
+                    return (
+                        "SELL",
+                        f"持仓时间收紧止盈：已持有{held.total_seconds() / 60:.0f}分钟，"
+                        f"峰值盈利{peak_pnl_ratio:.1%}，盈利回吐{profit_giveback:.1%} ≥ "
+                        f"{float(time_tighten_giveback):.1%}",
+                    )
+            if profit_giveback >= protection_drawdown:
+                return (
+                    "SELL",
+                    f"盈利保护触发：峰值盈利{peak_pnl_ratio:.1%}，"
+                    f"当前盈利{pnl_ratio:.1%}，"
+                    f"盈利回吐{profit_giveback:.1%} ≥ {protection_drawdown:.1%}",
+                )
+            if minimum_locked_profit > 0 and pnl_ratio <= minimum_locked_profit:
+                return (
+                    "SELL",
+                    f"最低锁定盈利触发：峰值盈利{peak_pnl_ratio:.1%}，"
+                    f"当前盈利{pnl_ratio:.1%} ≤ 锁定线{minimum_locked_profit:.1%}",
+                )
     if weekend_protection_enabled:
         weekend_reason = volatility_weekend_carry_exit_reason(
             now=now,
@@ -1516,6 +1689,9 @@ def sync_volatility_position_cycle(
             "pending_exit_reason", "pending_exit_episode", "selected_exit_tranche_id", "peak_reached_at",
             "partial_exit_tiers", "tranches", "active_batch_id", "initial_risk",
             "adverse_signal_confirmations", "regime_was_active", "signal_active",
+            # 硬止损绝对额在建仓时锁定；清仓必须一并清掉，否则下一个仓位会
+            # 继承上一笔的权利金基数与止损额（跨仓位泄漏）。
+            "hard_stop_lock",
         ):
             state.pop(key, None)
         if transition == "CLOSED" and state.get("signal_epoch") is not None:

@@ -44,6 +44,7 @@ from futu_quant.volatility_optimizer import (
     loss_adaptive_premium_budget,
     volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
+    volatility_locked_max_loss_usd, HARD_STOP_PREMIUM_RATIO,
     complete_volatility_activation, volatility_regime, volatility_threshold_profile,
 )
 from futu_quant.volatility_structures import automatic_combo_id
@@ -519,10 +520,43 @@ def _stop_limit_problems(campaign: dict) -> tuple[list[str], list[str]]:
                 invalid.append(f"max_position_loss_usd={usd_raw!r}（须 > 0）")
         except (TypeError, ValueError):
             invalid.append(f"max_position_loss_usd={usd_raw!r}（不可解析）")
+    # 可选键：绝对止损额占建仓权利金的比例。缺键走默认 8%，但**写了就必须合法** ——
+    # 否则 `volatility_locked_max_loss_usd` 返回 None → 静默退回上限，等于没配。
+    if "max_loss_premium_ratio" in campaign:
+        pr_raw = campaign.get("max_loss_premium_ratio")
+        try:
+            if not 0 < float(pr_raw) <= 1:
+                invalid.append(f"max_loss_premium_ratio={pr_raw!r}（须 ∈ (0, 1]）")
+        except (TypeError, ValueError):
+            invalid.append(f"max_loss_premium_ratio={pr_raw!r}（不可解析）")
     return missing, invalid
 
 
-def _hard_stop_limits(campaign: dict, executor, code: str) -> dict:
+def _premium_ratio(campaign: dict, executor=None, code: str = "") -> float:
+    """单笔止损额占建仓权利金的比例（默认 8%），非法值回落默认并告警。
+
+    为什么不允许 0/负：`volatility_locked_max_loss_usd` 会返回 None → 退回 $300，
+    看起来「有止损」但实际用的是封顶值，配置错误被静默吞掉。
+    """
+    raw = campaign.get("max_loss_premium_ratio", HARD_STOP_PREMIUM_RATIO)
+    try:
+        ratio = float(raw)
+    except (TypeError, ValueError):
+        ratio = -1.0
+    if not 0 < ratio <= 1:
+        if executor is not None:
+            executor.store.operational_event(
+                "volatility_long_gamma", "HARD_STOP_PREMIUM_RATIO_INVALID", "ERROR",
+                {"code": code, "max_loss_premium_ratio": raw,
+                 "fallback": HARD_STOP_PREMIUM_RATIO},
+            )
+        return HARD_STOP_PREMIUM_RATIO
+    return ratio
+
+
+def _hard_stop_limits(
+    campaign: dict, executor, code: str, *, entry_premium_usd: float | None = None,
+) -> dict:
     """解析单笔硬止损限额 —— **两层共用这一处实现**（Reviewer 保留意见）。
 
     为什么必须共享：硬止损纵深防御的**第 1 层**（`:740` 分支内）与**第 2 层**
@@ -534,6 +568,15 @@ def _hard_stop_limits(campaign: dict, executor, code: str) -> dict:
     限额 `<= 0` 时 `volatility_hard_loss_exit_reason` 的
     `usd_limit > 0 and ...` 恒为假 → **止损永不触发**（静默失效）。
     这不是"用 0 做限额"，是配置错误 —— 必须**记 ERROR 并回落保守默认**。
+
+    **绝对额的实际取值改为 `min(max_position_loss_usd, 8% × 建仓权利金)`**
+    （2026-10-29 评审结论）：固定 $300 对小权利金仓位等于没有止损线
+    （1 张 ~$450 的合约上 $300 = -67%，只能靠 -25% 相对线兜底）。
+    `max_position_loss_usd` 的语义因此从「绝对止损额」变成「绝对止损额上限」，
+    实际生效值随仓位规模缩放并在建仓时锁定（见 `_locked_hard_stop_limits`）。
+
+    `entry_premium_usd` 传 None 时（老调用点/单测）退回「只用上限」的旧行为，
+    并在返回里用 `premium_basis=None` 标记，便于调用方判断。
     """
     usd_raw = campaign.get("max_position_loss_usd")
     ratio_raw = campaign.get("max_position_loss_ratio")
@@ -561,8 +604,71 @@ def _hard_stop_limits(campaign: dict, executor, code: str) -> dict:
                 f"—— 已回落保守默认 0.25/300；不修正则硬止损永不触发，请修正 campaign 配置",
                 incident_key="HARD_STOP_LIMIT_INVALID",
             )
-        return {"max_loss_usd": 300.0, "max_loss_ratio": 0.25}
-    return {"max_loss_usd": usd, "max_loss_ratio": ratio}
+        return {"max_loss_usd": 300.0, "max_loss_ratio": 0.25, "premium_basis": None}
+    premium_ratio = _premium_ratio(campaign, executor, code)
+    locked = volatility_locked_max_loss_usd(
+        entry_premium_usd, cap_usd=usd, premium_ratio=premium_ratio,
+    )
+    if locked is None:
+        # 权利金未知：**不能**回落成 0（止损永不触发），退回上限并留痕
+        return {"max_loss_usd": usd, "max_loss_ratio": ratio, "premium_basis": None}
+    return {"max_loss_usd": locked, "max_loss_ratio": ratio, "premium_basis": float(entry_premium_usd)}
+
+
+def _locked_hard_stop_limits(
+    campaign: dict, campaign_state: dict, executor, code: str,
+    *, entry_premium_usd: float, quantity: int,
+) -> dict:
+    """两层共用的**锁定版**限额解析：绝对额在建仓/加仓时定死，不随浮盈亏漂移。
+
+    为什么必须锁：`entry_premium_usd` 来自持仓成本 × 张数，逐轮重算看似无害，
+    但券商侧成本字段偶有微调，且**加仓后成本抬升会把止损额一起放宽** ——
+    止损线跟着仓位盈亏走，等于「越赚越敢亏」。锁定后：
+
+    * 建仓（无锁）→ 算一次并写进 `campaign_state["hard_stop_lock"]`；
+    * 加仓（持仓量变大）→ 按新的权利金重算并覆盖（风险预算本来就跟着仓位走）；
+    * 减仓（分批止盈）→ **按剩余张数等比缩减**，每张的风险预算保持不变；
+    * 其余情况 → 直接读锁，比例项（`max_loss_ratio`）仍实时读 campaign
+      （相对量不需要锁，它天然随仓位缩放）。
+
+    清仓时 `sync_volatility_position_cycle` 必须一并清掉 `hard_stop_lock`，
+    否则下一个仓位会继承上一笔的绝对止损额。
+    """
+    lock = campaign_state.get("hard_stop_lock")
+    locked_usd = None
+    locked_qty = 0
+    if isinstance(lock, dict):
+        try:
+            locked_usd = float(lock.get("max_loss_usd"))
+            locked_qty = int(lock.get("quantity", 0) or 0)
+        except (TypeError, ValueError):
+            locked_usd, locked_qty = None, 0
+    if locked_usd is None or locked_usd <= 0 or int(quantity) > locked_qty:
+        limits = _hard_stop_limits(
+            campaign, executor, code, entry_premium_usd=entry_premium_usd,
+        )
+        if int(quantity) > 0:
+            campaign_state["hard_stop_lock"] = {
+                "max_loss_usd": limits["max_loss_usd"],
+                "premium_basis": limits.get("premium_basis"),
+                "premium_ratio": _premium_ratio(campaign, executor, code),
+                "quantity": int(quantity),
+                "locked_at": campaign_state.get("position_opened_at"),
+            }
+        return limits
+    ratio_raw = campaign.get("max_position_loss_ratio")
+    ratio = float(ratio_raw) if ratio_raw not in (None, "") else 0.25
+    if ratio <= 0:
+        ratio = 0.25
+    effective_usd = locked_usd
+    if 0 < int(quantity) < locked_qty:
+        effective_usd = locked_usd * (int(quantity) / locked_qty)
+    return {
+        "max_loss_usd": effective_usd,
+        "max_loss_ratio": ratio,
+        "premium_basis": (lock or {}).get("premium_basis"),
+        "locked": True,
+    }
 
 
 def hard_issues_block_action(hard_issues: list[str], quantity: int) -> bool:
@@ -1107,6 +1213,13 @@ def run_campaign(
         (executable_mark - cost) * quantity * position_multiplier
         if quantity > 0 and cost > 0 else 0.0
     )
+    # 建仓权利金（整仓成本）：硬止损绝对额的计价基数。`cost` 是持仓均价，
+    # 浮盈亏不改它，所以这个基数天然稳定；真正防漂移靠 `_locked_hard_stop_limits`
+    # 把结果锁进 campaign_state。
+    entry_premium_usd = (
+        float(cost) * int(quantity) * position_multiplier
+        if quantity > 0 and cost > 0 else 0.0
+    )
     peak = float(campaign_state.get("peak", 0))
     if peak > previous_peak_mark and quantity > 0:
         campaign_state["peak_reached_at"] = now.isoformat()
@@ -1127,20 +1240,20 @@ def run_campaign(
     # 一路跑到 $366 才被动平仓 —— 冷却本意是「止损后 24h 内不再开新仓」，
     # 不该把「已持仓的退出」一起挡住。
     #
-    # 硬止损必须绕过退出冷却：冷却分支一旦命中就 `return`，会挡住后面的硬止损判定，
-    # 导致「亏损已到线却要等下一次机会」。10-22 实盘 META 看跌就是这样从 $300 线
-    # 一路跑到 $366 才被动平仓 —— 冷却本意是「止损后 24h 内不再开新仓」，
-    # 不该把「已持仓的退出」一起挡住。
-    #
     # 做法：提前判定硬止损并置 `action="SELL"`（`action` 在此处尚未赋值，必须初始化），
     # 命中时打标记 `hard_stop_fired`，让后面的常规决策不覆盖它；退出由**既有路径**统一提交。
     action, reason = "HOLD", "初始：未触发任何退出条件"
     hard_stop_fired = False
     if trigger_mode == "VOLATILITY" and quantity > 0:
+        _hard_limits = _locked_hard_stop_limits(
+            campaign, campaign_state, executor, code,
+            entry_premium_usd=entry_premium_usd, quantity=quantity,
+        )
         _hard_reason = volatility_hard_loss_exit_reason(
             pnl_ratio=pnl_ratio,
             pnl_amount=position_pnl_amount,
-            **_hard_stop_limits(campaign, executor, code),
+            max_loss_usd=_hard_limits["max_loss_usd"],
+            max_loss_ratio=_hard_limits["max_loss_ratio"],
         )
         if _hard_reason:
             action, reason = "SELL", _hard_reason
@@ -1149,7 +1262,8 @@ def run_campaign(
                 strategy_id, code, "SELL", reason,
                 {"position_quantity": quantity, "position_pnl_amount": position_pnl_amount,
                  "pnl_ratio": pnl_ratio, "hard_stop_bypasses_cooldown": True,
-                 "trigger_mode": trigger_mode},
+                 "trigger_mode": trigger_mode,
+                 "hard_stop_limits": _hard_limits},
                 tenant_id=_campaign_tenant,
             )
             print(f"{code}: SELL ({reason}) [硬止损绕过冷却]")
@@ -1580,6 +1694,20 @@ def run_campaign(
                 tiered_profit_lock_enabled=bool(
                     campaign.get("tiered_profit_lock_enabled", True)
                 ),
+                profit_ratchet_enabled=bool(
+                    campaign.get("profit_ratchet_enabled", True)
+                ),
+                profit_ratchet_giveback_min=(
+                    float(campaign["profit_ratchet_giveback_min"])
+                    if campaign.get("profit_ratchet_giveback_min") is not None
+                    else None
+                ),
+                profit_ratchet_full_peak=float(
+                    campaign.get("profit_ratchet_full_peak", 1.50)
+                ),
+                profit_ratchet_tighten_factor=float(
+                    campaign.get("profit_ratchet_tighten_factor", 0.60)
+                ),
                 time_tighten_minutes=float(
                     campaign.get("profit_time_tighten_minutes", 60)
                 ),
@@ -1648,10 +1776,15 @@ def run_campaign(
     # **本层之后不得再出现把 action 从 SELL 改回非 SELL 的分支**
     #（结构守卫 test_no_branch_downgrades_sell_after_hard_loss_layer 钉住）。
     if trigger_mode == "VOLATILITY" and quantity > 0:
+        _hard_limits = _locked_hard_stop_limits(
+            campaign, campaign_state, executor, code,
+            entry_premium_usd=entry_premium_usd, quantity=quantity,
+        )
         hard_loss_reason = volatility_hard_loss_exit_reason(
             pnl_ratio=pnl_ratio,
             pnl_amount=position_pnl_amount,
-            **_hard_stop_limits(campaign, executor, code),
+            max_loss_usd=_hard_limits["max_loss_usd"],
+            max_loss_ratio=_hard_limits["max_loss_ratio"],
         )
         if hard_loss_reason:
             partial_exit_quantity = 0
@@ -1713,6 +1846,15 @@ def run_campaign(
             "peak_pnl_ratio": peak_pnl_ratio,
             "tiered_profit_lock_floor": tier_lock_floor,
             "tiered_profit_lock_label": tier_lock_label,
+            # 方案 R：标记本轮实际驱动的止盈引擎，复盘时用来区分新旧口径。
+            # `ratchet` = 棘轮生效（阶梯表仅展示）；`legacy` = 应急回退路径。
+            "profit_exit_engine": (
+                "ratchet" if bool(campaign.get("profit_ratchet_enabled", True)) else "legacy"
+            ),
+            "hard_stop_limits": {"max_loss_usd": _hard_limits.get("max_loss_usd"),
+                                 "max_loss_ratio": _hard_limits.get("max_loss_ratio"),
+                                 "premium_basis": _hard_limits.get("premium_basis")}
+            if "_hard_limits" in locals() else None,
             "mfe_pnl_ratio": peak_pnl_ratio,
             "profit_protection_profile": (
                 volatility_profit_protection_profile(campaign, regime)
