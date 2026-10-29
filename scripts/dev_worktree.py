@@ -72,6 +72,9 @@ def verify_env(test_root: Path | None = None, prod_db: Path | None = None) -> di
     base = (test_root or TEST_ROOT).resolve()
     db = (prod_db or PROD_DB).resolve()
     qa = base / "data" / "qa"
+    # TEMP 指向这里就必须先存在：tempfile 不会替你创建，缺目录会直接抛
+    # FileNotFoundError: No usable temporary directory（pytest capture 首当其冲）。
+    qa.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["TRADEYI_ENV"] = "test"
     env["TRADEYI_TEST_ROOT"] = str(base)
