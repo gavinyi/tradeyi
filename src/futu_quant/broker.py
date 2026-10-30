@@ -445,12 +445,35 @@ class FutuPaperBroker:
 
     @_read_with_reconnect("trade")
     def account_info(self, refresh: bool = False) -> pd.DataFrame:
+        """账户资金快照，**统一按 USD 口径返回**（2026-10-30 修正）。
+
+        为什么必须显式传 currency：`accinfo_query()` 不传 currency 时返回**账户本位币**
+        （本账户为 HKD），而 `positions()` 的 `market_val` 是**美元**。两者混算会让
+        「账户资产」比真实美元值放大 7.85 倍 —— 实测同一时刻 total_assets
+        51,990.85 HKD vs 6,626.99 USD，所有 USD 语义的限额与百分比仓位全部失真，
+        净值曲线也与券商对不上。
+
+        传 USD 后与 `positions()` 同币种；模拟账户本来就是 USD 口径，数值不变。
+        """
         def load():
             acquire_api_slot("account_info", 9)
             with self.trade_context() as ctx:
-                return self._ok(
-                ctx.accinfo_query(trd_env=self.trd_env, **self._account_kwargs()), "account info"
-            )
+                frame = self._ok(
+                    ctx.accinfo_query(
+                        trd_env=self.trd_env, currency="USD", **self._account_kwargs()
+                    ),
+                    "account info",
+                )
+                if "currency" in frame.columns and not frame.empty:
+                    actual = str(frame.iloc[0].get("currency") or "").strip().upper()
+                    # 币种没被采纳时不能静默：数值仍是本位币，下游所有美元限额会被放大
+                    if actual not in ("USD", "N/A", ""):
+                        logger.warning(
+                            "account_info 请求 USD 但返回币种=%s（账户=%s env=%s）："
+                            "资产数值仍为本位币，USD 限额判定将失真",
+                            actual, self._account_kwargs().get("acc_id"), self.trading_env,
+                        )
+                return frame
         return load() if refresh else self._cached("account_info", load)
 
     @_read_with_reconnect("trade")
