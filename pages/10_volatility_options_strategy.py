@@ -525,7 +525,13 @@ with config_tab:
             )
             latest_scans["最高分候选详情"] = details.map(
                 lambda item: "；".join(
-                    f"{candidate.get('code', '')}：{candidate.get('reason', '')}"
+                    # 必须同时给出**预期收益**（真实选择键）与是否选中：
+                    # 只展示质量分会让人看到「低分反而中选」而无法判断依据
+                    # （2026-10-30 复盘：P145000 质量分 83.71 落选、77.75 的 P140000 中选）。
+                    f"{candidate.get('code', '')}"
+                    f"（预期收益 {float(candidate.get('expected_return') or 0):.1%}"
+                    f"{'·已选中' if candidate.get('selected') else ''}）"
+                    f"：{candidate.get('reason', '')}"
                     for candidate in (
                         (item.get("campaign_diagnostics") or {}).get("top_candidates") or []
                     )[:3]
