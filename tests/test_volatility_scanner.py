@@ -154,6 +154,15 @@ def test_active_signal_creates_campaign_and_enables_auto_monitor(monkeypatch):
     assert saved_campaigns[0]["iv_decline_exit_ratio"] == .20
     assert saved_campaigns[0]["efficiency_decline_exit_ratio"] == .40
     assert saved_campaigns[0]["contraction_confirmations_required"] == 3
+    # P1-3：开仓前强制校验这两个键，缺键即拒绝开仓（禁止静默兜底）。
+    # 雷达是 campaign 的第三个写入方，此前只给孤儿收养/推送收养补了键，
+    # 漏了这份 seed —— 结果是「雷达每自动建一个 campaign 就必然被拒一次」。
+    assert saved_campaigns[0]["max_position_loss_usd"] == 300.0
+    assert saved_campaigns[0]["max_position_loss_ratio"] == 0.25
+    # 跨模块契约：这份 campaign 必须真能通过开仓前校验，否则"补了键"只是自说自话。
+    from scripts.run_gamma_strategy import _stop_limit_problems
+
+    assert _stop_limit_problems(saved_campaigns[0]) == ([], [])
     assert "strategy_execution_mode:volatility_long_gamma" not in store.settings
     # 控制面不得跨租户连坐：无租户上下文的调用方**不许**写全局启用键。
     assert "strategy_enabled:Volatility Long Gamma" not in store.settings

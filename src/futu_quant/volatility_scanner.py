@@ -441,6 +441,18 @@ def _maybe_create_tenant_campaign(
         ),
         "profit_target": 2.0,
         "stop_loss": _setting_float(store, "volatility_default_stop_loss", .35),
+        # P1-3 硬校验要求 campaign **显式**带这两个键，缺键即拒绝开仓
+        # （`run_gamma_strategy._stop_limit_problems`，禁止静默兜底）。
+        # 雷达是 campaign 的第三个写入方（页面保存 / 孤儿收养 / 推送收养之外），
+        # 此前只给那两条收养路径补了键，漏了这份 seed → 雷达每自动建一个
+        # campaign 就必然开仓被拒一次（2026-10-30 21:43 实盘 US.COIN261120P145000
+        # 告警即此）。取值与页面同源，避免又出现「两处默认值打架」。
+        "max_position_loss_usd": _setting_float(
+            store, "volatility_default_max_position_loss_usd", 300.0,
+        ),
+        "max_position_loss_ratio": _setting_float(
+            store, "volatility_default_max_position_loss_ratio", 0.25,
+        ),
         "trailing_stop": .25,
         "max_hold_hours": 24, "minimum_hold_minutes": 90,
         "iv_decline_exit_ratio": .20,
