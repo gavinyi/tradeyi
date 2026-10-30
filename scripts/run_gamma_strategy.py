@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, time, timedelta, timezone
 import json
+import logging
 from pathlib import Path
 import time as clock
 from zoneinfo import ZoneInfo
@@ -67,6 +68,8 @@ from futu_quant.option_lifecycle import parse_option_code
 from futu_quant.store import TradingStore
 from futu_quant.tenant import tenant_id_of_broker
 from futu_quant.volatility_pause import volatility_new_entries_paused  # noqa: F401  单源（P1-9）
+
+logger = logging.getLogger("futu_quant.gamma_strategy")
 
 
 NY = ZoneInfo("America/New_York")
@@ -738,8 +741,10 @@ def warn_hard_stop_narrower_than_spread(
         executor.store.operational_event(
             strategy_id, "HARD_STOP_NARROWER_THAN_SPREAD", "WARN", detail,
         )
-    except Exception:  # noqa: BLE001 - 告警留痕失败不得打断退出管理
-        pass
+    except Exception as exc:  # noqa: BLE001 - 告警留痕失败不得打断退出管理
+        # 不能裸 pass：留痕失败时这条 WARN 就彻底消失了（静默降级）。
+        # 退出管理必须照常继续，但失败本身要留在服务日志里。
+        logger.warning("HARD_STOP_NARROWER_THAN_SPREAD 留痕失败 code=%s: %s", code, exc)
     try:
         executor.alerts.send(
             "WARN", "HARD_STOP_NARROWER_THAN_SPREAD",
@@ -749,8 +754,8 @@ def warn_hard_stop_narrower_than_spread(
             f"建议放宽止损比例或换价差更窄的合约",
             incident_key=f"HARD_STOP_NARROWER_THAN_SPREAD:{code}",
         )
-    except Exception:  # noqa: BLE001 - 推送失败不影响交易主流程
-        pass
+    except Exception as exc:  # noqa: BLE001 - 推送失败不影响交易主流程
+        logger.warning("HARD_STOP_NARROWER_THAN_SPREAD 推送失败 code=%s: %s", code, exc)
 
 
 def hard_issues_block_action(hard_issues: list[str], quantity: int) -> bool:
