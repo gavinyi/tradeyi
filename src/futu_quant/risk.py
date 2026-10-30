@@ -614,11 +614,16 @@ class RiskEngine:
                     notional,
                 )
         day_start = ny_trading_day_start_utc()
+        # 日累计额度必须**按租户分桶**：order_intents 里实盘与纸面混存，不分租户时
+        # 两个账户互相吃掉对方的当日额度（10-31 实测 实盘 2,218 + 纸面 2,304 = 4,522
+        # 合并计数，实盘下一单被「模拟盘用掉的额度」拒掉）。解析不出租户时退回全库
+        # 合并 —— 方向是**超计（更严）**，不会放宽额度。
+        quota_tenant, _ = tenant_of_broker(broker, strict=False)
         if risk_reducing_sell:
             # 减仓桶的「已用额度」与实盘闸门走**同一个累加实现**（store.reduce_notional），
             # 且状态集合一致 —— 否则同一笔 SELL 在两处算出的可用额度会分叉，错的那份先触发。
             used = self.store.reduce_notional(
-                (row for row in self.store.intents(limit=50_000)
+                (row for row in self.store.intents(limit=50_000, tenant_id=quota_tenant or None)
                  if str(row.get("status")) in USED_NOTIONAL_STATUSES
                  and str(row.get("created_at") or "") >= day_start.isoformat()),
                 "SELL",
@@ -632,6 +637,7 @@ class RiskEngine:
         else:
             used = self.store.sum_notional_since(
                 day_start.isoformat(), side=None if protected_short else "BUY",
+                tenant_id=quota_tenant or None,
             )
             if used + notional > self.limits.max_daily_notional:
                 return RiskDecision(

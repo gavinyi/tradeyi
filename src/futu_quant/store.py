@@ -1402,7 +1402,12 @@ class TradingStore:
             ).fetchone()
             return dict(row) if row else None
 
-    def sum_notional_since(self, iso_timestamp: str, side: str | None = None) -> float:
+    def sum_notional_since(
+        self,
+        iso_timestamp: str,
+        side: str | None = None,
+        tenant_id: str | None = None,
+    ) -> float:
         """按方向汇总名义金额 —— **底层聚合原语，无业务语义**。
 
         ⚠️ **不要直接调用它做额度判定**。本函数只负责「给定一组 intent，按 `side`
@@ -1412,17 +1417,28 @@ class TradingStore:
 
         10-22 事故的根源正是这层语义缺失：一个名字里没有方向的额度函数，
         被理解成「所有在途单」，于是没人知道要过滤 `side`。**命名即契约**。
+
+        `tenant_id` 是**第三层契约**（10-31 补）：`order_intents` 里实盘与纸面
+        混存，不按租户分桶时两个账户会互相吃掉对方的当日额度（实测 10-31
+        实盘 2,218 + 纸面 2,304 = 4,522 被合并计数，实盘下一单会被「模拟盘用掉的
+        额度」拒绝）。传 `None` 保持全库合并（历史行为），调用方**必须显式传**。
         """
         side_filter = " AND side=?" if side else ""
-        parameters = (iso_timestamp, side) if side else (iso_timestamp,)
+        tenant_filter = " AND tenant_id=?" if tenant_id else ""
+        parameters: list[object] = [iso_timestamp]
+        if side:
+            parameters.append(side)
+        if tenant_id:
+            parameters.append(str(tenant_id))
         with self.connection() as connection:
             row = connection.execute(
                 """SELECT COALESCE(SUM(quantity * limit_price *
                 CASE WHEN symbol GLOB 'US.*[0-9][CP][0-9]*' THEN 100 ELSE 1 END), 0) AS total
                 FROM order_intents
                 WHERE created_at >= ? AND status IN ('SUBMITTED','FILLED','FILLED_PART')"""
-                + side_filter,
-                parameters,
+                + side_filter
+                + tenant_filter,
+                tuple(parameters),
             ).fetchone()
             return float(row["total"])
 
