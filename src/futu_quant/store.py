@@ -3373,12 +3373,19 @@ class TradingStore:
         batch_metadata = json.loads(intent.get("metadata_json") or "{}")
         batch_id = batch_metadata.get("batch_id")
         with self.connection() as connection:
+            # fill_id 先置空：下面「命中已有投影行 / 命中同源重复」两条分支**不再 return**，
+            # 而是把已存在的行 id 交回，让批次归属（position_batches / batch_lots）继续执行。
+            # 2026-10-31 修：早先这里直接 return，使「轮询先记一笔、推送后认领」这条最常见的
+            # 实盘成交路径完全跳过批次链 —— 全库 position_batches 恒为 0 行，分档台账与
+            # 按批次复盘全部失效。
+            fill_id: int | None = None
             if broker_deal_id:
                 existing = connection.execute(
                     "SELECT id FROM fill_ledger WHERE broker_deal_id=?",
                     (str(broker_deal_id),),
                 ).fetchone()
                 if existing:
+                    # 同一 deal_id 已经完整落过账（含批次归属）：真正幂等，可安全返回。
                     return int(existing["id"])
                 # 跨路径幂等（10-22 实盘事故）：order push / 轮询可能已经先记了同一笔成交
                 # —— 它们拿不到 deal_id，写的是 BROKER_POLL_DIFF 投影行。若账本里已有一行
@@ -3402,8 +3409,8 @@ class TradingStore:
                         "UPDATE fill_ledger SET source=? WHERE id=?",
                         (source, int(proxy["id"])),
                     )
-                    return int(proxy["id"])
-            if not broker_deal_id:
+                    fill_id = int(proxy["id"])
+            if fill_id is None and not broker_deal_id:
                 duplicate = connection.execute(
                     """SELECT id FROM fill_ledger WHERE intent_id=? AND source=? AND side=?
                     AND ABS(quantity-?) < 0.000001 AND ABS(price-?) < 0.000001
@@ -3412,46 +3419,58 @@ class TradingStore:
                      self.FILL_DUP_MATCH_WINDOW_SECONDS),
                 ).fetchone()
                 if duplicate:
-                    return int(duplicate["id"])
-            # 过计防护：账本累计已超出券商累计时，本笔不再写入，并让过计可见。
-            # 只对券商来源生效 —— SHADOW/虚拟成交没有券商累计可比，不适用。
-            if str(source).upper().startswith("BROKER"):
-                broker_total = float(intent.get("filled_quantity") or 0)
-                if broker_total > 0:
-                    recorded = connection.execute(
-                        """SELECT COALESCE(SUM(quantity),0) AS total FROM fill_ledger
-                        WHERE intent_id=? AND side=?""",
-                        (intent_id, intent["side"]),
-                    ).fetchone()
-                    ledger_total = float(recorded["total"] or 0)
-                    if ledger_total + float(quantity) > broker_total + 0.000001:
-                        # 拦是对的：账本若越过券商累计，没有任何机制会把它降回来。
-                        # 但**只在真的过计时才告警** —— ledger_total <= broker_total 时，
-                        # 本笔只是「券商还没报到」（正常的部分成交序列），下一轮 order push
-                        # 的累计判定会把它补齐，属良性。若这里也发 ERROR，每一笔正常部分成交
-                        # 都会刷一条 ERROR；而 Product 已定「ERROR 一律必推」——那就是在真金
-                        # 路径上制造告警疲劳，把刚建起来的可信度毁掉。
-                        if ledger_total > broker_total + 0.000001:
-                            self._emit_fill_overcount(
-                                connection, intent_id, intent.get("symbol"),
-                                ledger_total, broker_total, float(quantity), source,
-                            )
-                        return None
-            cursor = connection.execute(
-                """INSERT INTO fill_ledger
-                (intent_id,strategy_id,symbol,side,quantity,price,multiplier,commission,
-                 regulatory_fee,fee_total,bid_price,ask_price,mid_price,reference_price,
-                 spread_cost,price_impact_cost,source,broker_deal_id,quote_json,filled_at,
-                 fee_is_estimate,fee_unavailable_reason)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (intent_id, intent["strategy_id"], intent["symbol"], intent["side"],
-                 quantity, price, multiplier, fees, 0.0, fees, bid or None, ask or None,
-                 mid, reference, spread_cost, price_impact, source,
-                 str(broker_deal_id) if broker_deal_id else None, payload, timestamp,
-                 1 if fee_is_estimate else 0, fee_unavailable_reason),
-            )
-            fill_id = int(cursor.lastrowid)
+                    fill_id = int(duplicate["id"])
+            if fill_id is None:
+                # 过计防护：账本累计已超出券商累计时，本笔不再写入，并让过计可见。
+                # 只对券商来源生效 —— SHADOW/虚拟成交没有券商累计可比，不适用。
+                # 认领/重复命中的行**不重复做**这项判定：那些数量已经在账本里，
+                # 再拿含自己的累计去比券商累计，只会把自己的成交判成过计。
+                if str(source).upper().startswith("BROKER"):
+                    broker_total = float(intent.get("filled_quantity") or 0)
+                    if broker_total > 0:
+                        recorded = connection.execute(
+                            """SELECT COALESCE(SUM(quantity),0) AS total FROM fill_ledger
+                            WHERE intent_id=? AND side=?""",
+                            (intent_id, intent["side"]),
+                        ).fetchone()
+                        ledger_total = float(recorded["total"] or 0)
+                        if ledger_total + float(quantity) > broker_total + 0.000001:
+                            # 拦是对的：账本若越过券商累计，没有任何机制会把它降回来。
+                            # 但**只在真的过计时才告警** —— ledger_total <= broker_total 时，
+                            # 本笔只是「券商还没报到」（正常的部分成交序列），下一轮 order push
+                            # 的累计判定会把它补齐，属良性。若这里也发 ERROR，每一笔正常部分成交
+                            # 都会刷一条 ERROR；而 Product 已定「ERROR 一律必推」——那就是在真金
+                            # 路径上制造告警疲劳，把刚建起来的可信度毁掉。
+                            if ledger_total > broker_total + 0.000001:
+                                self._emit_fill_overcount(
+                                    connection, intent_id, intent.get("symbol"),
+                                    ledger_total, broker_total, float(quantity), source,
+                                )
+                            return None
+                cursor = connection.execute(
+                    """INSERT INTO fill_ledger
+                    (intent_id,strategy_id,symbol,side,quantity,price,multiplier,commission,
+                     regulatory_fee,fee_total,bid_price,ask_price,mid_price,reference_price,
+                     spread_cost,price_impact_cost,source,broker_deal_id,quote_json,filled_at,
+                     fee_is_estimate,fee_unavailable_reason)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (intent_id, intent["strategy_id"], intent["symbol"], intent["side"],
+                     quantity, price, multiplier, fees, 0.0, fees, bid or None, ask or None,
+                     mid, reference, spread_cost, price_impact, source,
+                     str(broker_deal_id) if broker_deal_id else None, payload, timestamp,
+                     1 if fee_is_estimate else 0, fee_unavailable_reason),
+                )
+                fill_id = int(cursor.lastrowid)
         if batch_id and fill_id:
+            # 幂等闸门：认领/重复命中的是**既有账本行**，同一 fill_id 只能登记一次批次明细。
+            # `append_batch_lot` 用的是裸 INSERT（batch_lots 没有 (batch_id,fill_id) 唯一约束），
+            # 缺了这道判定，重复投递会把同一笔成交记成两条开仓明细、把仓位数量翻倍。
+            with self.connection() as connection:
+                already_lotted = connection.execute(
+                    "SELECT 1 FROM batch_lots WHERE fill_id=? LIMIT 1", (int(fill_id),)
+                ).fetchone()
+            if already_lotted:
+                return fill_id
             if str(intent["side"]).upper() == "BUY":
                 self.create_position_batch(
                     str(batch_id), strategy_id=intent["strategy_id"], symbol=intent["symbol"],

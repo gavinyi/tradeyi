@@ -2214,6 +2214,21 @@ def run_campaign(
         budget_limit, budget_reason = loss_adaptive_premium_budget(
             float(campaign["max_premium_per_stage"]), executor.store, campaign["underlying"],
         )
+        # 熔断降档接线（2026-10-31）：`risk_state.de_risk_scale` 此前**只写不读** ——
+        # 熔断评估把它算出来并落库，但下单路径没有任何调用点，降档等于从未生效。
+        # 这里按档位缩放本轮的**权利金预算**（数量最小单位已是 1 张，无法再按张缩），
+        # scale=1.0（正常/未熔断）时不改变任何行为。
+        de_risk_scale = 1.0
+        if trigger_mode == "VOLATILITY" and _campaign_tenant:
+            try:
+                risk_state_row = executor.store.load_risk_state(_campaign_tenant)
+                if risk_state_row:
+                    de_risk_scale = float(risk_state_row.get("de_risk_scale") or 1.0)
+            except Exception as exc:  # noqa: BLE001 - 读不到按 1.0，绝不因此拒绝开仓
+                logger.warning("读取熔断降档系数失败，按 1.0 处理：%s", exc)
+        if 0 < de_risk_scale < 1.0:
+            budget_limit *= de_risk_scale
+            budget_reason = f"{budget_reason}·熔断降档×{de_risk_scale:g}"
         if ask <= 0 or premium > budget_limit:
             block_reason = (
                 f"交易前权利金检查未通过：本批权利金 ${premium:,.2f}，"
@@ -2352,18 +2367,35 @@ def run_campaign(
                 })
             manager = ComboExecutionManager(broker, executor.store, executor)
             if existing_combo is None:
-                create_combo(executor.store, {
-                    "combo_id": active_combo_id,
-                    "strategy_id": strategy_id,
-                    "name": f"自动波动率表达 {campaign.get('underlying')}",
-                    "underlying": campaign["underlying"],
-                    "structure": campaign.get("structure", "DEFINED_RISK"),
-                    "max_net_debit": float(campaign["max_premium_per_stage"]) / 100,
-                    "min_net_credit": 0,
-                    "assembly_timeout_seconds": 300,
-                    "naked_timeout_seconds": 15,
-                    "auto_rollback": True,
-                }, combo_legs)
+                try:
+                    create_combo(executor.store, {
+                        "combo_id": active_combo_id,
+                        "strategy_id": strategy_id,
+                        "name": f"自动波动率表达 {campaign.get('underlying')}",
+                        "underlying": campaign["underlying"],
+                        "structure": campaign.get("structure", "DEFINED_RISK"),
+                        "max_net_debit": float(campaign["max_premium_per_stage"]) / 100,
+                        "min_net_credit": 0,
+                        "assembly_timeout_seconds": 300,
+                        "naked_timeout_seconds": 15,
+                        "auto_rollback": True,
+                    }, combo_legs)
+                except ValueError as combo_exc:
+                    # 2026-10-31 修：选腿阶段丢掉保护腿时，`validate_combo` 会抛
+                    # 「卖出腿没有足量、同到期日的价差保护腿」。此前不捕获，异常冒到
+                    # 外层变成 STRATEGY_ERROR → 整轮 campaign 执行失败、下一个监控周期
+                    # 才重试（实测 AMZN 因此晚了 ~3 分钟才成交）。
+                    # 裸卖保护腿必须拒绝，但拒绝应当是**一次明确的前置拦截**，
+                    # 不是一条把整轮执行打挂的异常。
+                    block_reason = f"定义风险组合被拒（腿计划不完整）：{combo_exc}"
+                    record_pretrade_block("COMBO_LEG_PLAN_INVALID", block_reason, {
+                        "combo_id": active_combo_id,
+                        "legs": combo_legs,
+                        "structure": campaign.get("structure"),
+                        "campaign_id": campaign.get("campaign_id"),
+                    })
+                    print(f"{code}: BLOCKED ({block_reason})")
+                    return
             manager.start(active_combo_id)
             executor.store.audit("VOLATILITY_COMBO_SUBMITTED", {
                 "combo_id": active_combo_id, "symbol": code,
