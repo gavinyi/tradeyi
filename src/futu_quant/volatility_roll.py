@@ -25,19 +25,58 @@ from .volatility_structures import build_volatility_structure_candidates
 MAINTAIN_SCORE_IMPROVEMENT = 8.0
 
 
-def _roll_diagnostics(candidates: pd.DataFrame, regime: dict, message: str) -> dict:
+def _roll_diagnostics(
+    candidates: pd.DataFrame, regime: dict, message: str, *,
+    selected_code: str = "", selection_key: str | None = None,
+) -> dict:
+    """诊断榜单必须与**实际选择**用同一个排序键（2026-10-30 修正）。
+
+    此前这里直接取 `candidates.head(5)`，但 `structures` 是按
+    `[volatility_eligible, structure_expected_return, volatility_quality_score]`
+    排序的，而展示的分数只有 `volatility_quality_score` —— 于是榜单看起来
+    「既非升序也非降序」，用户看到「质量分 83.71 的 P145000 落选、77.75 的
+    P140000 中选」，无法判断选择依据（实盘 10-30 COIN 就是这样被质疑的）。
+
+    实际选择键是**预期收益**（`structure_expected_return`），质量分只是
+    tiebreaker；开了 ML 重排则换成 `ml_adjusted_score`。现在榜单按真实键排序、
+    标出 `selected`，并显式写出 `selection_basis`，让「榜单第一 = 实际选中」
+    成为可验证的事实而不是巧合。
+    """
+    frame = candidates
+    key = selection_key
+    if key is None:
+        # 候选层（未生成结构）用 model_expected_return，结构层用 structure_expected_return；
+        # 早退分支出榜时也不能退化成「无排序」，否则还是解释不了顺序。
+        for candidate_key in (
+            "ml_adjusted_score", "structure_expected_return", "model_expected_return",
+        ):
+            if frame is not None and not frame.empty and candidate_key in frame.columns:
+                key = candidate_key
+                break
+    if frame is not None and not frame.empty and key and key in frame.columns:
+        frame = frame.sort_values(
+            key, ascending=False, kind="stable", na_position="last",
+        ).reset_index(drop=True)
     top = []
-    for _, row in candidates.head(5).iterrows():
+    for rank, (_, row) in enumerate(frame.head(5).iterrows() if frame is not None else [], start=1):
         entry = {
+            "rank": rank,
             "code": str(row.get("code", "")),
             "eligible": bool(row.get("volatility_eligible", False)),
             "reason": str(row.get("volatility_filter_reason", "")),
+            # `score` 是质量分（tiebreaker），**不是**选择键；选择键见 selection_key
             "score": float(row.get("volatility_quality_score", 0) or 0),
             "iv_rv": float(row.get("iv_rv", 0) or 0),
             "iv_rv_limit": float(row.get("iv_rv_limit", 0) or 0),
             "premium": float(row.get("premium_per_stage", 0) or 0),
             "expected_return": float(row.get("model_expected_return", 0) or 0),
+            "selected": bool(selected_code) and str(row.get("code", "")) == selected_code,
         }
+        if key and key in row.index:
+            try:
+                entry["selection_value"] = float(row.get(key))
+            except (TypeError, ValueError):
+                entry["selection_value"] = None
         if "ml_score" in row and pd.notna(row.get("ml_score")):
             entry["ml_score"] = float(row["ml_score"])
         if "ml_rank" in row and pd.notna(row.get("ml_rank")):
@@ -55,6 +94,15 @@ def _roll_diagnostics(candidates: pd.DataFrame, regime: dict, message: str) -> d
         "eligible_count": int(candidates.get(
             "volatility_eligible", pd.Series(dtype=bool)
         ).sum()),
+        # 选择依据写进 payload：页面/复盘不必再猜「为什么是这一张」
+        "selection_key": key or "",
+        "selection_basis": (
+            "ML 调整分降序（质量分 + ML 加权）" if key == "ml_adjusted_score"
+            else "预期收益降序（质量分为 tiebreaker）"
+            if key in {"structure_expected_return", "model_expected_return"}
+            else "未排序（无法确定选择键）"
+        ),
+        "selected_code": selected_code,
         "top_candidates": top,
     }
 
@@ -433,8 +481,12 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         if column in selected_contract:
             updated[column] = selected_contract[column]
     updated["_roll_diagnostics"] = _roll_diagnostics(
-        structures, regime,
-        f"已自动滚动到 {updated['code']}（{updated['structure_label']}）；{direction_reason}"
+        eligible, regime,
+        f"已自动滚动到 {updated['code']}（{updated['structure_label']}）；{direction_reason}",
+        # 用**选择时那一份**（`eligible`，可能已过 ML 重排）出榜，并标出被选中的那张：
+        # 榜单第一必须等于实际选择，否则「为什么选它」永远说不清。
+        # 标的是**行上**的 code（组合结构时 `updated["code"]` 是主腿代码，与行 code 不同）。
+        selected_code=str(selected.get("code") or selected_code),
     )
     return updated, (
         f"已自动滚动到 {updated['code']}（{updated['structure_label']}）；{direction_reason}"
