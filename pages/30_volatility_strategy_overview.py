@@ -37,14 +37,24 @@ symbols = load_volatility_symbols()
 # #1 键级分区：总览页**故意读全局**（含各租户键）—— 它是跨租户的状态看板，
 # 且**只读**（本页不写任何 campaign 键）。
 campaigns = load_all_volatility_campaigns()
-decisions = [
-    item for item in store.decisions(limit=500)
-    if item.get("strategy_id") == "volatility_long_gamma"
-]
-scanner_decisions = [
-    item for item in store.decisions(limit=500)
-    if item.get("strategy_id") == "volatility_scanner"
-]
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_decisions(strategy_id: str) -> list[dict]:
+    """决策日志查询按 60 秒缓存。
+
+    本页每次交互都整页重跑，模块顶的 decisions 查询每次都直打 SQLite
+    （decision_logs 单行 ≈2.4 KB payload）。看板是只读展示，60 秒陈旧度
+    可接受——真正下单的执行路径不经过本页。
+    """
+    return [
+        item for item in store.decisions(limit=500)
+        if item.get("strategy_id") == strategy_id
+    ]
+
+
+decisions = _cached_decisions("volatility_long_gamma")
+scanner_decisions = _cached_decisions("volatility_scanner")
 
 
 def parse_payload(raw: object) -> dict:
@@ -63,8 +73,10 @@ def recent_scanner_items() -> list[tuple[dict, dict]]:
     ]
 
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def load_broker_snapshot() -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    # 60 秒缓存：positions+orders 两次 OpenD RPC 实测 ≈1.7s，是本页 rerun 的
+    # 最大单项。总览页只展示不执行，60 秒陈旧度可接受。
     cached_broker = FutuPaperBroker(Settings.load())
     try:
         return cached_broker.positions(), cached_broker.orders(), ""

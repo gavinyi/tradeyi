@@ -128,6 +128,15 @@ def retention_cleanup(store) -> dict:
     retention = max(30, int(os.getenv("DATA_RETENTION_DAYS", "365")))
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention)
     result = {"cleanup": store.cleanup(cutoff.isoformat())}
+    # 大 JSON 表放独立短保留：全局 365 天对它们形同虚设（见各自 docstring 的实测体量）。
+    # - config_versions：每次保存存整份快照，VOLATILITY_CAMPAIGNS 高频回写，实测 223 MB
+    # - decision_logs：每行带完整 payload，雷达每轮每候选一条，实测 318 MB
+    result["config_versions_prune"] = store.prune_config_versions(
+        int(os.getenv("CONFIG_VERSION_RETAIN_DAYS", "30")),
+    )
+    result["decision_logs_prune"] = store.prune_decision_logs(
+        int(os.getenv("DECISION_LOG_RETAIN_DAYS", "60")),
+    )
     log = Path("data/service.log")
     max_log_bytes = int(os.getenv("MAX_LOG_BYTES", str(10 * 1024 * 1024)))
     if log.exists() and log.stat().st_size > max_log_bytes:

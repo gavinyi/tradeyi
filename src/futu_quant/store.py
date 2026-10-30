@@ -2498,6 +2498,39 @@ class TradingStore:
             )
             return int(cursor.rowcount or 0)
 
+    def prune_config_versions(self, days: int = 30) -> int:
+        """配置版本历史按天保留（默认 30 天）。
+
+        `config_versions` 是每次 ``save_runtime_settings`` 落一份**完整快照**——
+        其中 `VOLATILITY_CAMPAIGNS` 键由雷达高频回写，单份 JSON 数十 KB，
+        实测 4,611 份占 223 MB，是库里第二大表。回滚窗口只需要近期版本，
+        更老的快照只有考古价值。
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+        ).isoformat()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM config_versions WHERE created_at < ?", (cutoff,)
+            )
+            return int(cursor.rowcount or 0)
+
+    def prune_decision_logs(self, days: int = 60) -> int:
+        """决策日志按天保留（默认 60 天）。
+
+        `decision_logs` 每行带完整 payload JSON（实测均值 ≈2.4 KB），雷达每轮
+        每候选一条，131k 行已占 318 MB。全局 ``DATA_RETENTION_DAYS``（365 天）
+        对它形同虚设——复盘与策略评审只看近期，放单独的短保留。
+        """
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+        ).isoformat()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM decision_logs WHERE created_at < ?", (cutoff,)
+            )
+            return int(cursor.rowcount or 0)
+
     def candidate_exclusion_summary(self, tenant_id: str = "", hours: int = 24) -> list[dict]:
         """按原因聚合 —— 监控页「候选 N / 硬排除 M / 软降权 K」的数据源。"""
         cutoff = (
