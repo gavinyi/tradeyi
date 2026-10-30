@@ -120,6 +120,27 @@ def _campaign() -> dict:
     }
 
 
+def _stub_hard_check(reason: str | None):
+    """把 `volatility_hard_loss_check` 换成「只返回给定理由」的桩。
+
+    2026-10-30 起硬止损判定从 `volatility_hard_loss_exit_reason`（返回 str|None）
+    改为 `volatility_hard_loss_check`（返回带口径的 dict），因为它要同时给出
+    mid/bid 两套盈亏与是否需要二次确认。桩必须补齐调用方读到的所有键，
+    否则测试失败的原因是 KeyError 而不是业务断言。
+    """
+    def _check(**_kwargs):
+        return {
+            "fire": bool(reason), "basis": "MID" if reason else "NONE",
+            "reason": reason, "pending_checks": 0,
+            "bid": 0.0, "ask": 0.0, "mid": 0.0, "executable": 0.0,
+            "spread": 0.0, "spread_usd": 0.0, "spread_pct": 0.0,
+            "pnl_ratio_bid": 0.0, "pnl_amount_bid": 0.0,
+            "pnl_ratio_mid": 0.0, "pnl_amount_mid": 0.0,
+            "spread_guard": False,
+        }
+    return _check
+
+
 class _RecordingExecutor:
     """只实现 run_campaign 用到的执行器接口，并记录提交。"""
 
@@ -238,7 +259,7 @@ def test_six_exit_paths_reach_submit_limit_end_to_end(
         lambda _now: type("S", (), {"regular_open": staticmethod(lambda _n: True)})(),
     )
     # 每个场景只保留一条退出理由，防止别的 SELL 分支让守卫假绿。
-    monkeypatch.setattr(rg, "volatility_hard_loss_exit_reason", lambda *a, **k: None)
+    monkeypatch.setattr(rg, "volatility_hard_loss_check", _stub_hard_check(None))
     monkeypatch.setattr(rg, "volatility_partial_exit_plan", lambda **k: (0, None, None))
     monkeypatch.setattr(rg, "volatility_exit_reason", lambda *a, **k: None)
     monkeypatch.setattr(rg, "volatility_near_expiry_itm_exit_reason", lambda *a, **k: None)
@@ -246,8 +267,8 @@ def test_six_exit_paths_reach_submit_limit_end_to_end(
     if path == "hard_stop":
         bid = BID
         monkeypatch.setattr(
-            rg, "volatility_hard_loss_exit_reason",
-            lambda *a, **k: "单笔硬止损触发：测试路径",
+            rg, "volatility_hard_loss_check",
+            _stub_hard_check("单笔硬止损触发：测试路径"),
         )
     elif path == "profit_target":
         bid = COST * 1.55
@@ -327,34 +348,54 @@ def test_no_branch_downgrades_sell_after_hard_loss_layer():
 
 
 def test_two_hard_stop_layers_read_identical_limits():
-    """数据层守卫（Reviewer 保留意见）：两层必须读**同一份**解析结果。
+    """数据层守卫：两层必须读**同一份**限额，且**同一快照只判定一次**。
 
-    两层在**控制流**上独立（第 1 层 `:741` 挡分支内覆盖，第 2 层 `:1163` 挡
-    分支后降级），但在**数据**上耦合 —— 都读 `max_position_loss_usd` /
+    两层在**控制流**上独立（第 1 层挡分支内覆盖，第 2 层挡分支后降级），
+    但在**数据**上耦合 —— 都读 `max_position_loss_usd` /
     `max_position_loss_ratio`。若有一层被改成读另一个键、或另一个回落默认值，
     两层就会**静默分歧**（同一件事两个数，历史上 100/300 就是这样打架的）。
 
-    AST 判定：两处 `volatility_hard_loss_exit_reason(...)` 的实参必须**结构完全相同**。
-    判据可证伪：把第 1 层的回落值 `300` 改成 `100`，这条守卫必须转红。
+    2026-10-30 改造后多了一条：判定函数 `volatility_hard_loss_check` 带状态
+    （`hard_stop_pending_checks`，「仅 bid 击穿需连续 N 轮确认」）。同一轮求值
+    两次会让**一次报价抖动自己凑齐两轮确认**，把刚加的门槛取消掉 —— 所以
+    `run_campaign` 里必须**恰好 1 处**调用它，第 2 层复用第 1 层的结果。
+
+    判据可证伪：把第 1 层的 `_locked_hard_stop_limits` 实参改一处（例如把
+    `quantity=quantity` 换成常量），或让第 2 层重新独立求值，这条守卫必须转红。
     """
     tree = ast.parse(_gamma_source_path().read_text(encoding="utf-8"))
     fn = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "run_campaign"
     )
-    calls = [
+    checks = [
         node for node in ast.walk(fn)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "volatility_hard_loss_exit_reason"
+        and node.func.id == "volatility_hard_loss_check"
     ]
-    assert len(calls) == 2, (
-        f"硬止损应恰好有 2 处调用（第 1 层 :741 / 第 2 层 :1163），实际 {len(calls)} 处"
+    assert len(checks) == 1, (
+        "硬止损判定必须**只求值一次**（第 2 层复用第 1 层结果）；"
+        f"实际 {len(checks)} 处 —— 带状态的判定被重复求值会自行凑齐确认轮数"
     )
-    assert ast.dump(calls[0]) == ast.dump(calls[1]), (
+    limit_calls = [
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_locked_hard_stop_limits"
+    ]
+    assert len(limit_calls) == 2, (
+        f"硬止损两层应各读一次锁定限额，实际 {len(limit_calls)} 处"
+    )
+    assert ast.dump(limit_calls[0]) == ast.dump(limit_calls[1]), (
         "两层硬止损读到的是**不同的实参** —— 同一不变量两份解析结果会静默分歧：\n"
-        f"  第 1 层：{ast.unparse(calls[0])}\n"
-        f"  第 2 层：{ast.unparse(calls[1])}"
+        f"  第 1 层：{ast.unparse(limit_calls[0])}\n"
+        f"  第 2 层：{ast.unparse(limit_calls[1])}"
+    )
+    # 第 2 层必须复用而非重算
+    src = _gamma_source_path().read_text(encoding="utf-8")
+    assert "hard_loss_reason = _hard_reason" in src, (
+        "硬止损第 2 层没有复用第 1 层结论 —— 重复求值会让单次报价抖动通过双轮确认"
     )
 
 

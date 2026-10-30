@@ -42,7 +42,9 @@ from futu_quant.volatility_optimizer import (
     volatility_signal_state, volatility_cooldown_reentry_allowed,
     volatility_entry_quality_allowed, volatility_entry_tier,
     loss_adaptive_premium_budget,
-    volatility_combo_entry_allowed, volatility_hard_loss_exit_reason,
+    volatility_combo_entry_allowed,
+    volatility_hard_loss_check, HARD_STOP_BID_CONFIRM_CHECKS,
+    HARD_STOP_SPREAD_GUARD_RATIO,
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
     volatility_locked_max_loss_usd, HARD_STOP_PREMIUM_RATIO,
     complete_volatility_activation, volatility_regime, volatility_threshold_profile,
@@ -671,6 +673,53 @@ def _locked_hard_stop_limits(
     }
 
 
+def warn_hard_stop_narrower_than_spread(
+    executor, strategy_id: str, code: str, check: dict, limits: dict,
+) -> None:
+    """止损线比盘口价差还窄 → 任何一次报价抖动都能打掉整条止损线（只读告警）。
+
+    2026-10-30 实盘 COIN（US.COIN261120P140000）实证：止损线 $73.20 = 8% ×
+    权利金 $915，而当时一张合约的买卖价差约 $39 —— **2× 价差 $78 已经超过整条
+    止损线**。结果持仓 107 秒后被一次 bid 抖动打掉：判定价 8.40、实际成交 8.79，
+    账面亏 $41 而判定亏 $75，且全程从未翻正（mfe 为负）。
+
+    这不是行情判断失误，是**止损线落进了报价噪音带**：止损不再携带方向信息，
+    只是在随机消耗仓位。告警只提示、不阻断 —— 是否放宽止损或换宽价差标的由人定。
+    """
+    stop_usd = float(limits.get("max_loss_usd") or 0)
+    spread_usd = float(check.get("spread_usd") or 0)
+    mid = float(check.get("mid") or 0)
+    detail = {
+        "code": code,
+        "hard_stop_usd": stop_usd,
+        "spread_usd": spread_usd,
+        "spread_guard_ratio": HARD_STOP_SPREAD_GUARD_RATIO,
+        "bid": check.get("bid"), "ask": check.get("ask"), "mid": mid,
+        "spread_pct": check.get("spread_pct"),
+        "premium_basis": limits.get("premium_basis"),
+        "pnl_ratio_mid": check.get("pnl_ratio_mid"),
+        "pnl_ratio_bid": check.get("pnl_ratio_bid"),
+        "reason": "硬止损线窄于 2× 盘口价差 → 一次报价抖动即可触发止损，与行情方向无关",
+    }
+    try:
+        executor.store.operational_event(
+            strategy_id, "HARD_STOP_NARROWER_THAN_SPREAD", "WARN", detail,
+        )
+    except Exception:  # noqa: BLE001 - 告警留痕失败不得打断退出管理
+        pass
+    try:
+        executor.alerts.send(
+            "WARN", "HARD_STOP_NARROWER_THAN_SPREAD",
+            f"{code}: 硬止损线 ${stop_usd:,.2f} 窄于 2×盘口价差 "
+            f"${spread_usd:,.2f}（bid {detail['bid']} / ask {detail['ask']}）"
+            f"—— 一次报价抖动就能打掉整个仓位，止损已无信息量；"
+            f"建议放宽止损比例或换价差更窄的合约",
+            incident_key=f"HARD_STOP_NARROWER_THAN_SPREAD:{code}",
+        )
+    except Exception:  # noqa: BLE001 - 推送失败不影响交易主流程
+        pass
+
+
 def hard_issues_block_action(hard_issues: list[str], quantity: int) -> bool:
     """硬诊断是否应当**阻断本次动作**。
 
@@ -1244,17 +1293,47 @@ def run_campaign(
     # 命中时打标记 `hard_stop_fired`，让后面的常规决策不覆盖它；退出由**既有路径**统一提交。
     action, reason = "HOLD", "初始：未触发任何退出条件"
     hard_stop_fired = False
+    _hard_reason = None
     if trigger_mode == "VOLATILITY" and quantity > 0:
         _hard_limits = _locked_hard_stop_limits(
             campaign, campaign_state, executor, code,
             entry_premium_usd=entry_premium_usd, quantity=quantity,
         )
-        _hard_reason = volatility_hard_loss_exit_reason(
-            pnl_ratio=pnl_ratio,
-            pnl_amount=position_pnl_amount,
+        # 取价口径（2026-10-30）：**mid 判真跌、bid 判价差假摔**。
+        # 旧实现一律用 bid（可成交价）单点判定，在宽价差合约上等价于
+        # 「止损线落在噪音带里」—— COIN 那笔 107 秒被一次报价抖动打掉，
+        # 判定亏 $75、实际只亏 $41，全因 bid 里含着 $39 的价差。
+        _hard_check = volatility_hard_loss_check(
+            bid=bid, ask=ask, last=last,
+            cost=cost, quantity=quantity, multiplier=position_multiplier,
             max_loss_usd=_hard_limits["max_loss_usd"],
             max_loss_ratio=_hard_limits["max_loss_ratio"],
+            pending_checks=int(campaign_state.get("hard_stop_pending_checks", 0) or 0),
+            required_checks=int(
+                campaign.get("hard_stop_confirm_checks", HARD_STOP_BID_CONFIRM_CHECKS)
+                or HARD_STOP_BID_CONFIRM_CHECKS
+            ),
         )
+        campaign_state["hard_stop_pending_checks"] = _hard_check["pending_checks"]
+        if _hard_check["spread_guard"] and not campaign_state.get("hard_stop_spread_warned"):
+            # 每个仓位周期只提示一次（清仓时随 hard_stop_lock 一起清）
+            campaign_state["hard_stop_spread_warned"] = True
+            warn_hard_stop_narrower_than_spread(
+                executor, strategy_id, code, _hard_check, _hard_limits,
+            )
+        if _hard_check["basis"] == "BID_PENDING":
+            _pending_reason = (
+                f"可成交价 {_hard_check['bid']:.2f} 已触及止损线，但中间价 "
+                f"{_hard_check['mid']:.2f} 未击穿（价差 "
+                f"{_hard_check['spread_usd']:,.2f}）—— 等待下一轮确认，不按单次报价离场"
+            )
+            executor.store.decision_if_changed(
+                strategy_id, code, "HOLD", _pending_reason,
+                {"position_quantity": quantity, "trigger_mode": trigger_mode,
+                 "hard_stop_pending": _hard_check},
+                repeat_after_seconds=60, tenant_id=_campaign_tenant,
+            )
+        _hard_reason = _hard_check["reason"]
         if _hard_reason:
             action, reason = "SELL", _hard_reason
             hard_stop_fired = True
@@ -1263,7 +1342,14 @@ def run_campaign(
                 {"position_quantity": quantity, "position_pnl_amount": position_pnl_amount,
                  "pnl_ratio": pnl_ratio, "hard_stop_bypasses_cooldown": True,
                  "trigger_mode": trigger_mode,
-                 "hard_stop_limits": _hard_limits},
+                 "hard_stop_limits": _hard_limits,
+                 # 判定口径留痕：事后要能回答「是按 mid 还是 bid 打的、当时价差多少」
+                 "hard_stop_basis": _hard_check["basis"],
+                 "hard_stop_mid": _hard_check["mid"],
+                 "hard_stop_bid": _hard_check["bid"],
+                 "hard_stop_spread_usd": _hard_check["spread_usd"],
+                 "pnl_ratio_mid": _hard_check["pnl_ratio_mid"],
+                 "pnl_amount_mid": _hard_check["pnl_amount_mid"]},
                 tenant_id=_campaign_tenant,
             )
             print(f"{code}: SELL ({reason}) [硬止损绕过冷却]")
@@ -1467,7 +1553,9 @@ def run_campaign(
                 current_epoch=signal_state.get("signal_epoch"),
             )
             if not epoch_allowed:
-                reason = f"同一信号周期禁止重入：{epoch_reason}"
+                # 直接采用返回原因：旧写法固定加前缀「同一信号周期禁止重入」，
+                # 而真实原因往往是时间冷却（硬止损 24h）—— 前缀把人引到错的方向。
+                reason = epoch_reason
                 executor.store.decision_if_changed(
                     strategy_id, code, "HOLD", reason,
                     {"exit_state": "COOLDOWN", "signal_epoch": signal_state.get("signal_epoch"),
@@ -1780,12 +1868,15 @@ def run_campaign(
             campaign, campaign_state, executor, code,
             entry_premium_usd=entry_premium_usd, quantity=quantity,
         )
-        hard_loss_reason = volatility_hard_loss_exit_reason(
-            pnl_ratio=pnl_ratio,
-            pnl_amount=position_pnl_amount,
-            max_loss_usd=_hard_limits["max_loss_usd"],
-            max_loss_ratio=_hard_limits["max_loss_ratio"],
-        )
+        # 本层**只复用第 1 层的判定结果，不再独立求值**（2026-10-30 改造）。
+        #
+        # 原因：判定已从「瞬时 bid 单点」改成「mid 立即 / bid 连续 N 轮确认」，
+        # **带状态**（`hard_stop_pending_checks`）。同一轮里求值两次会让一次
+        # 报价抖动自己凑齐两轮确认 —— 等于把刚加的双轮门槛取消掉，正是本层
+        # 想防的那类「重算把上层结论改坏」。
+        # 两层仍然读**同一份**锁定限额（`_locked_hard_stop_limits` 调用点保留），
+        # 数据同源不变；变化的是「同一快照只判定一次」。
+        hard_loss_reason = _hard_reason
         if hard_loss_reason:
             partial_exit_quantity = 0
             partial_exit_tier = None

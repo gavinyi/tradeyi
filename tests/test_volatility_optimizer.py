@@ -49,12 +49,23 @@ def test_expired_cooldown_allows_reentry_without_legacy_exit_epoch():
     assert "冷却已结束" in reason
 
 
-def test_active_cooldown_still_requires_new_signal_epoch():
+def test_active_cooldown_reports_time_reason_not_signal_epoch():
+    """时间冷却期内，理由必须是**时间**，不能是「缺少上次退出信号周期」。
+
+    2026-10-30：实盘 COIN 硬止损后页面持续提示「同一信号周期禁止重入：缺少上次
+    退出信号周期」，用户以为等信号周期切换就能重入，实际要等满 24h。
+    判定结果（拒绝）没错，错的是理由 —— 真实闸门是 `remaining_hours`，
+    而 `remaining_hours > 0` 时 epoch 分支恒返回 False，对决策没有任何作用。
+    """
     allowed, reason = volatility_cooldown_reentry_allowed(
         remaining_hours=2, last_exit_epoch=None, current_epoch=1,
     )
     assert not allowed
-    assert "缺少上次退出信号周期" in reason
+    assert "退出冷却中" in reason
+    assert "剩余约 2.0 小时" in reason
+    assert "缺少上次退出信号周期" not in reason, (
+        "冷却期内的理由又退回信号周期口径 —— 会让人误以为等周期切换即可重入"
+    )
 
 
 def test_volatility_signal_state_survives_expression_roll():

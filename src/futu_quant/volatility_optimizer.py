@@ -754,6 +754,112 @@ def volatility_hard_loss_exit_reason(
     return "单笔硬止损触发：" + "；".join(reasons)
 
 
+# 硬止损「仅 bid 击穿」时要求连续确认的轮数。1 轮 = 退回旧行为（瞬时单点判定）。
+HARD_STOP_BID_CONFIRM_CHECKS = 2
+# 止损线窄于「价差成本 × 该倍数」即告警：一次正常盘口抖动就能吃掉整条止损线。
+HARD_STOP_SPREAD_GUARD_RATIO = 2.0
+
+
+def volatility_hard_loss_check(
+    *,
+    bid: float,
+    ask: float,
+    last: float,
+    cost: float,
+    quantity: float,
+    multiplier: float,
+    max_loss_usd: float,
+    max_loss_ratio: float,
+    pending_checks: int = 0,
+    required_checks: int = HARD_STOP_BID_CONFIRM_CHECKS,
+) -> dict:
+    """双口径硬止损判定：**mid 判真跌，bid 判价差假摔**（2026-10-30）。
+
+    为什么不能只看 bid：多头期权持仓的「可成交价」是 bid，用它算盈亏是**对的**
+    （那是真能拿到的钱），但用它**触发止损**是不对的 —— bid 里含有**盘口价差**，
+    而价差会独立于行情抖动。宽价差标的（COIN 期权常年 5–7%）上，
+    「8% 止损线 ⊂ 一次价差抖动」意味着止损被随机的报价跳动打掉，与方向无关。
+
+    实证（2026-10-30 实盘 COIN261120P140000）：
+        入场 9.15 / 止损线 8.42（8%）
+        13:50:48  bid 8.80（-3.8%）  13:51:56  bid 8.40（-8.2%，触发）
+        13:52:02  成交 8.79           中间价当时约 8.60（-6.0%，**未击穿**）
+    按 mid 判定根本不会触发；按 bid 瞬时判定 = 用「$39 的价差」换掉了一整个仓位。
+
+    判定规则（先紧后松，绝不放松风控）：
+    1. **mid 击穿 → 立即触发**。mid 不含价差，击穿即真实价格位移，不能等；
+    2. 仅 bid 击穿（mid 未击穿）→ 需要 `required_checks` 轮**连续**确认才触发，
+       单轮只记待确认（`basis="BID_PENDING"`）并清空于下一轮回撤；
+    3. bid 缺失/为 0 或 ask 不可用 → mid 退化为可成交价，等价于**旧行为立即判定**
+       （拿不到可靠 mid 时不能反过来放松，只能保守）。
+
+    `pending_checks` 由调用方存入 `campaign_state` 并在清仓时清除（跨仓位泄漏）。
+    """
+    bid_f = max(0.0, float(bid or 0.0))
+    ask_f = max(0.0, float(ask or 0.0))
+    last_f = max(0.0, float(last or 0.0))
+    executable = bid_f if bid_f > 0 else last_f
+    has_book = bid_f > 0 and ask_f >= bid_f
+    mid = (bid_f + ask_f) / 2.0 if has_book else executable
+    spread = (ask_f - bid_f) if has_book else 0.0
+    cost_f = max(0.0, float(cost or 0.0))
+    qty = max(0.0, float(quantity or 0.0))
+    mult = float(multiplier or 100.0)
+
+    result = {
+        "fire": False, "basis": "NONE", "reason": None, "pending_checks": 0,
+        "bid": bid_f, "ask": ask_f, "mid": mid, "executable": executable,
+        "spread": spread, "spread_usd": spread * qty * mult,
+        "spread_pct": (spread / mid) if mid > 0 else 0.0,
+        "pnl_ratio_bid": 0.0, "pnl_amount_bid": 0.0,
+        "pnl_ratio_mid": 0.0, "pnl_amount_mid": 0.0,
+        "spread_guard": False,
+    }
+    if qty <= 0 or cost_f <= 0 or executable <= 0:
+        return result
+
+    result["pnl_ratio_bid"] = executable / cost_f - 1
+    result["pnl_amount_bid"] = (executable - cost_f) * qty * mult
+    result["pnl_ratio_mid"] = mid / cost_f - 1
+    result["pnl_amount_mid"] = (mid - cost_f) * qty * mult
+    # 止损线窄于 2× 价差成本：这一次盘口抖动就够打掉整条止损线（只读提示，不阻断）
+    usd_limit = max(0.0, float(max_loss_usd or 0.0))
+    result["spread_guard"] = bool(
+        usd_limit > 0 and result["spread_usd"] > 0
+        and usd_limit < HARD_STOP_SPREAD_GUARD_RATIO * result["spread_usd"]
+    )
+
+    reason_mid = volatility_hard_loss_exit_reason(
+        pnl_ratio=result["pnl_ratio_mid"], pnl_amount=result["pnl_amount_mid"],
+        max_loss_usd=max_loss_usd, max_loss_ratio=max_loss_ratio,
+    )
+    if reason_mid:
+        result.update(fire=True, basis="MID", reason=reason_mid, pending_checks=0)
+        return result
+
+    reason_bid = volatility_hard_loss_exit_reason(
+        pnl_ratio=result["pnl_ratio_bid"], pnl_amount=result["pnl_amount_bid"],
+        max_loss_usd=max_loss_usd, max_loss_ratio=max_loss_ratio,
+    )
+    if not reason_bid:
+        return result
+
+    streak = int(pending_checks or 0) + 1
+    need = max(1, int(required_checks or 1))
+    if streak >= need:
+        result.update(
+            fire=True, basis="BID", pending_checks=0,
+            reason=(
+                f"{reason_bid}（仅可成交价 bid={executable:.2f} 击穿，中间价 "
+                f"{mid:.2f} 未击穿；已连续 {streak} 轮确认，价差 "
+                f"{spread:.2f}/张）"
+            ),
+        )
+    else:
+        result.update(basis="BID_PENDING", pending_checks=streak)
+    return result
+
+
 def volatility_time_decay_stop(
     *,
     pnl_ratio: float,
@@ -998,17 +1104,29 @@ def same_signal_epoch_reentry_allowed(
 def volatility_cooldown_reentry_allowed(
     *, remaining_hours: float, last_exit_epoch: int | None, current_epoch: int | None,
 ) -> tuple[bool, str]:
-    """Allow a re-entry once the time cooldown has actually expired.
+    """时间冷却未走完 → 直接拒绝，并**说清是时间在拦**（2026-10-30 修正文案）。
 
-    Older campaign state may not contain the exit epoch.  That missing field
-    must not turn an already-expired cooldown into a permanent block.
+    旧实现把 `remaining_hours > 0` 的分支交给 `same_signal_epoch_reentry_allowed`，
+    而后者在 `last_exit_epoch is None`（存量 campaign 常态）时返回
+    「缺少上次退出信号周期，按安全规则禁止重入」。判定结果没错（确实该拦），
+    但**理由说错了**：真实的闸门是 24h 时间冷却，与信号周期无关。用户看到这句话
+    会以为「等信号周期切换就能重入」，实际要等满 24 小时。
+
+    顺带修掉一个语义死角：`remaining_hours > 0` 时 epoch 分支**恒返回 False**，
+    即无论信号周期怎么变都不可重入 —— 那段代码在时间冷却期内没有任何决策作用，
+    只贡献误导性文案。现在改为显式返回时间原因。
+
+    `last_exit_epoch` 仅作为补充说明（帮助判断状态是否残缺），不参与本函数判定；
+    `current_epoch` 保留在签名里以兼容调用方。
     """
-    if float(remaining_hours) <= 0:
+    hours = float(remaining_hours)
+    if hours <= 0:
         return True, "退出冷却已结束，允许重新评估入场"
-    allowed, reason = same_signal_epoch_reentry_allowed(
-        last_exit_epoch=last_exit_epoch, current_epoch=current_epoch,
+    detail = "；上次退出的信号周期未记录" if last_exit_epoch is None else ""
+    return False, (
+        f"退出冷却中：剩余约 {hours:.1f} 小时{detail}；"
+        "时间冷却到期前不按信号周期重入"
     )
-    return allowed, reason
 
 
 def volatility_cooldown_bypass_allowed(
@@ -1692,6 +1810,9 @@ def sync_volatility_position_cycle(
             # 硬止损绝对额在建仓时锁定；清仓必须一并清掉，否则下一个仓位会
             # 继承上一笔的权利金基数与止损额（跨仓位泄漏）。
             "hard_stop_lock",
+            # 双口径判定的确认计数与价差告警标记同属「当前仓位」状态：
+            # 不清会让新仓位一开仓就带着上一笔的确认进度（等于绕过双轮门槛）。
+            "hard_stop_pending_checks", "hard_stop_spread_warned",
         ):
             state.pop(key, None)
         if transition == "CLOSED" and state.get("signal_epoch") is not None:
