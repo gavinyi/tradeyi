@@ -284,6 +284,16 @@ def main() -> None:
                     store.heartbeat(
                         "volatility_scanner", "HEALTHY", "等待美股常规交易时段", os.getpid()
                     )
+                    # 不能只按固定间隔睡：900 秒会**跨越开盘** —— 2026-10-30
+                    # 21:24:56 睡下、21:30 开盘，直到 21:39:56 才醒来扫描，
+                    # 开盘后 10 分钟的高波动完全没扫到（用户当场发现「10 分钟没动」）。
+                    # 等待时长按「距下次开盘」截断，开盘当刻即醒。
+                    next_wait_seconds = max(
+                        5.0,
+                        calendar.seconds_until_regular_open(
+                            now, cap=float(next_wait_seconds)
+                        ),
+                    )
                 _wait_or_stop(next_wait_seconds)
         finally:
             PID_FILE.unlink(missing_ok=True)
