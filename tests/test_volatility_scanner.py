@@ -159,6 +159,14 @@ def test_active_signal_creates_campaign_and_enables_auto_monitor(monkeypatch):
     # 漏了这份 seed —— 结果是「雷达每自动建一个 campaign 就必然被拒一次」。
     assert saved_campaigns[0]["max_position_loss_usd"] == 300.0
     assert saved_campaigns[0]["max_position_loss_ratio"] == 0.25
+    # 稳定身份：此前 seed 完全没有 campaign_id，雷达自动建的 campaign 在
+    # 拦截告警里全是 `campaign_id: null`（10-30 COIN 18 条拦截全中）。
+    assert saved_campaigns[0]["campaign_id"], "雷达 campaign 必须有稳定 campaign_id"
+    # 格式：`{tenant}|auto:{symbol}`；无租户上下文（本用例入口）则没有前缀。
+    assert saved_campaigns[0]["campaign_id"] == (
+        f"{saved_campaigns[0]['tenant_id']}|auto:US.AMD"
+        if saved_campaigns[0].get("tenant_id") else "auto:US.AMD"
+    ), "campaign_id 必须与 tenant_id 同源，否则租户之间会撞身份"
     # 跨模块契约：这份 campaign 必须真能通过开仓前校验，否则"补了键"只是自说自话。
     from scripts.run_gamma_strategy import _stop_limit_problems
 

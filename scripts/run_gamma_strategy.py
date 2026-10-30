@@ -489,6 +489,38 @@ def _campaign_naked_short_rows(campaign: dict, positions: pd.DataFrame) -> pd.Da
     return normalized[normalized["_code"].isin(uncovered)].drop(columns=["_code", "_qty"])
 
 
+def _exit_quote_snapshot(
+    quote_check: dict, *, bid: float, ask: float, last: float, mid: float,
+) -> dict:
+    """退出判定的盘口快照 —— 让复盘能自证「判定价从哪来」。
+
+    只写不读，不参与任何判定；改它不会改变交易行为。
+
+    起因（2026-10-30 实盘 US.COIN261120P140000）：13:51:56 硬止损的 decision
+    payload 里只有 `position_pnl_amount=-75` 与 `pnl_ratio=-0.082`，**没有 bid/ask**。
+    事后复盘只能从 `915-75=840` 反推判定价 8.40，反推不出卖一，于是「当时 mid
+    是 8.60 还是 8.70」无法证实 —— 而这个数直接决定「按 mid 判定到底会不会
+    触发」。风控决策必须自带证据，不能靠事后推算。
+    """
+    source = quote_check or {}
+    return {
+        "bid": float(bid or 0),
+        "ask": float(ask or 0),
+        "last": float(last or 0),
+        "mid": float(mid or 0),
+        "spread_pct": float(source.get("spread_pct") or 0),
+        "option_age_seconds": float(source.get("option_age_seconds") or 0),
+        "trade_age_seconds": float(source.get("trade_age_seconds") or 0),
+        "fresh": bool(source.get("option_fresh")),
+        "degraded": bool(source.get("option_degraded")),
+        "book_reason": str(source.get("book_reason") or ""),
+        "quote_source": str(source.get("quote_source") or ""),
+        "option_source_time": str(source.get("option_source_time") or ""),
+        "captured_at": str(source.get("captured_at") or ""),
+        "retries": len(list(source.get("attempts") or [])),
+    }
+
+
 def _stop_limit_problems(campaign: dict) -> tuple[list[str], list[str]]:
     """校验 campaign 的单笔止损限额 —— 返回 ``(缺失键, 非法值)``。
 
@@ -1349,7 +1381,15 @@ def run_campaign(
                  "hard_stop_bid": _hard_check["bid"],
                  "hard_stop_spread_usd": _hard_check["spread_usd"],
                  "pnl_ratio_mid": _hard_check["pnl_ratio_mid"],
-                 "pnl_amount_mid": _hard_check["pnl_amount_mid"]},
+                 "pnl_amount_mid": _hard_check["pnl_amount_mid"],
+                 # 完整盘口快照（2026-10-30）：13:51:56 那笔 COIN 止损的 payload 里
+                 # 只有 pnl_amount / pnl_ratio，没有 bid/ask，复盘时「判定价 8.40
+                 # 对不对、当时价差多少」只能靠反推 —— 反推不出 ask，于是
+                 # mid 到底是 8.60 还是 8.70 争了一晚上。此后不再靠猜。
+                 "exit_quote": _exit_quote_snapshot(
+                     quote_check, bid=bid, ask=ask, last=last,
+                     mid=_hard_check["mid"],
+                 )},
                 tenant_id=_campaign_tenant,
             )
             print(f"{code}: SELL ({reason}) [硬止损绕过冷却]")
@@ -1921,6 +1961,13 @@ def run_campaign(
          "opportunity_score": campaign.get("opportunity_score"),
          "expected_move_edge": campaign.get("expected_move_edge"),
     }
+    if quantity > 0:
+        # 任何**持仓退出**都带盘口快照，不只是硬止损：止盈、生命周期、
+        # 到期强制退出同样要有「判定价从哪来」的证据，否则复盘照样只能反推。
+        decision_payload["exit_quote"] = _exit_quote_snapshot(
+            quote_check, bid=bid, ask=ask, last=last,
+            mid=((bid + ask) / 2 if bid > 0 and ask > 0 else last),
+        )
     if trigger_mode == "VOLATILITY":
         decision_payload.update({
             "entry_tier": campaign.get("entry_tier", campaign.get("adaptive_risk_tier")),
@@ -2035,13 +2082,23 @@ def run_campaign(
             record_pretrade_block("VOLATILITY_STOP_LIMIT_MISSING", block_reason, {
                 "missing_keys": missing_limit,
                 "campaign_id": campaign.get("campaign_id"),
+                # 定位三件套（2026-10-30）：这 18 条拦截原先既没有 campaign_id
+                # （seed 没写）也没有 tenant_id，运维无法从告警认出「谁被拦了」。
+                "tenant_id": _campaign_tenant,
+                "underlying": campaign.get("underlying"),
                 "code": code,
             })
             executor.alerts.send(
                 "ERROR", "VOLATILITY_STOP_LIMIT_MISSING",
-                f"{code}: campaign {campaign.get('campaign_id')} 缺少显式止损限额 "
+                f"[{_campaign_tenant or 'default'}] {code}: campaign "
+                f"{campaign.get('campaign_id')} 缺少显式止损限额 "
                 f"{', '.join(missing_limit)}，已拒绝开仓（禁止静默兜底）",
-                incident_key="VOLATILITY_STOP_LIMIT_MISSING",
+                # 按「租户 + 标的」聚合：同标的多行权价只推一次，
+                # 两个租户不互相覆盖（原先固定 key 会让租户之间互相抑制）。
+                incident_key=(
+                    f"VOLATILITY_STOP_LIMIT_MISSING:"
+                    f"{_campaign_tenant or 'default'}:{campaign.get('underlying') or code}"
+                ),
             )
             print(f"{code}: BLOCKED ({block_reason})")
             return
@@ -2053,13 +2110,19 @@ def run_campaign(
             record_pretrade_block("VOLATILITY_STOP_LIMIT_INVALID", block_reason, {
                 "invalid_values": invalid_limit,
                 "campaign_id": campaign.get("campaign_id"),
+                "tenant_id": _campaign_tenant,
+                "underlying": campaign.get("underlying"),
                 "code": code,
             })
             executor.alerts.send(
                 "ERROR", "VOLATILITY_STOP_LIMIT_INVALID",
-                f"{code}: campaign {campaign.get('campaign_id')} 止损限额非法 —— "
+                f"[{_campaign_tenant or 'default'}] {code}: campaign "
+                f"{campaign.get('campaign_id')} 止损限额非法 —— "
                 f"{', '.join(invalid_limit)}，已拒绝开仓（禁止静默兜底）",
-                incident_key="VOLATILITY_STOP_LIMIT_INVALID",
+                incident_key=(
+                    f"VOLATILITY_STOP_LIMIT_INVALID:"
+                    f"{_campaign_tenant or 'default'}:{campaign.get('underlying') or code}"
+                ),
             )
             print(f"{code}: BLOCKED ({block_reason})")
             return

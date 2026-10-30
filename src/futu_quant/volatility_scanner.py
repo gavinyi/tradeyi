@@ -419,6 +419,12 @@ def _maybe_create_tenant_campaign(
     row["campaign_premium_budget"] = premium_budget
     seed = {
         "underlying": symbol, "code": symbol, "event_date": datetime.now(NY).date().isoformat(),
+        # 稳定身份（2026-10-30 补）：此前 seed 里**完全没有 campaign_id**，
+        # 于是雷达自动建的 campaign 在拦截告警里全是 `campaign_id: null` ——
+        # 10-30 COIN 那 18 条 `VOLATILITY_STOP_LIMIT_MISSING` 没有一条能定位到
+        # 「哪个租户的哪张合约」，只能拿 decision_logs 反查。
+        # 与孤儿收养（`{tenant}|orphan:{code}`）同构：租户前缀 + 语义前缀。
+        "campaign_id": f"{tenant_id}|auto:{symbol}" if tenant_id else f"auto:{symbol}",
         "event_session": "行情触发", "trigger_mode": "VOLATILITY",
         "activation_trace_id": row.get("activation_trace_id"),
         "activation_observed_at": row.get("activation_observed_at"),
