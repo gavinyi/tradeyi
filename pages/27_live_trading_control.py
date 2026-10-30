@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pandas as pd
 import streamlit as st
 
 from futu_quant.config import Settings, save_runtime_settings
@@ -9,11 +10,13 @@ from futu_quant.real_trading import (
     disable_session,
     enable_session,
     session_status,
+    trading_gate_overview,
 )
 from futu_quant.risk import ny_trading_day_start_utc
+from futu_quant.tenant import DEFAULT_TENANTS
 from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.strategy_plugins import strategy_plugins
-from futu_quant.ui import render_admin_login, render_sidebar
+from futu_quant.ui import get_current_tenant, render_admin_login, render_sidebar
 
 
 st.set_page_config(page_title="实盘交易控制", page_icon="🔐", layout="wide")
@@ -95,6 +98,73 @@ with col_m2:
         c2.metric("实盘状态", "已接入" if cfg_moomoo.get("enabled", False) else "未开启")
         c3.metric("单笔上限", f"${float(cfg_moomoo.get('max_order_notional', 1500)):,.0f}")
         st.info("角色: 备用专户 · 资金已划转至主专户", icon=":material/pause_circle:")
+
+# 实盘生效状态总览：把散在 .env / 租户设置 / 账户 JSON / 确认会话四处的开关
+# 按**下单路径的真实顺序**求值，直接给出「现在能不能下单、被哪一层挡住」。
+# 没有这块之前，用户只能逐页对照，看到「账户开关是开的」也不知道为什么没成交。
+def _gate_tenant_id() -> str:
+    """选一个 REAL 租户来评估闸口链。
+
+    本页管理的是两个实盘账户，但侧栏当前租户可能是模拟盘 —— 用模拟租户去评估
+    实盘闸口会得出一串无意义的「拦截」。因此：当前租户是 REAL 就用它，否则
+    固定回落到 futu_real_master（主专户所属租户）。
+    """
+    try:
+        candidate = str(get_current_tenant(settings).get("tenant_id") or "")
+    except Exception:
+        candidate = ""
+    profile = DEFAULT_TENANTS.get(candidate)
+    if profile is not None and profile.trading_env == "REAL":
+        return candidate
+    return "futu_real_master"
+
+
+_gate_tenant = _gate_tenant_id()
+_gate_plugins = strategy_plugins()
+_gate = trading_gate_overview(
+    store,
+    settings,
+    tenant_id=_gate_tenant,
+    strategies=tuple(plugin.strategy_id for plugin in _gate_plugins),
+    strategy_defaults={
+        plugin.strategy_id: not plugin.automatically_scheduled for plugin in _gate_plugins
+    },
+)
+
+st.subheader("实盘生效状态总览")
+if _gate.allowed:
+    st.success(_gate.verdict, icon=":material/check_circle:")
+else:
+    st.error(_gate.verdict, icon=":material/block:")
+st.caption(
+    f"评估租户 `{_gate.tenant_id}` · 账户 `{_gate.account_id or '未配置'}` · "
+    "判定与下单路径 `check_real_trade` 同源；改 `.env` 需重启 worker，改账户开关即时生效。"
+)
+st.dataframe(
+    pd.DataFrame([
+        {
+            "闸口": layer.label,
+            "结论": "通过" if layer.ok else "拦截",
+            "当前值 / 原因": layer.detail,
+        }
+        for layer in _gate.layers
+    ]),
+    hide_index=True,
+    width="stretch",
+)
+if _gate.strategies:
+    _labels = {plugin.strategy_id: plugin.display_name for plugin in _gate_plugins}
+    st.dataframe(
+        pd.DataFrame([
+            {
+                "策略": _labels.get(strategy_id, strategy_id),
+                "本租户启用": "启用" if enabled else "停用",
+            }
+            for strategy_id, enabled in _gate.strategies
+        ]),
+        hide_index=True,
+        width="stretch",
+    )
 
 config_tab, session_tab, checklist_tab = st.tabs(["多账户实盘配置", "短时确认会话管理", "上线安全检查清单"])
 

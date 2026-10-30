@@ -11,6 +11,8 @@ from .config import Settings
 from .risk import RiskLimits, ny_trading_day_start_utc
 from .risk_limits import RiskLimitsConfigError, resolve_risk_limits
 from .store import USED_NOTIONAL_STATUSES, TradingStore
+from .strategy_toggle import resolve_strategy_enabled
+from .tenant import resolve_tenant_active
 
 
 SESSION_KEY = "real_trading_session"
@@ -444,4 +446,144 @@ def check_real_trade(
     return RealTradeDecision(
         True, "实盘安全闸门通过",
         {"notional": notional, "used_today": used_today, "account_id": target_account},
+    )
+
+
+@dataclass(frozen=True)
+class GateLayer:
+    """实盘闸口链上的一道开关及其当前状态（供界面直读，不做二次判断）。"""
+
+    key: str          # 稳定标识：env / master_switch / tenant / account / confirm_session
+    label: str        # 人话名称
+    scope: str        # 作用域：env / tenant / account / session
+    ok: bool
+    detail: str       # 当前值（开启显示值，关闭显示原因）
+
+
+@dataclass(frozen=True)
+class TradingGateOverview:
+    allowed: bool
+    layers: tuple[GateLayer, ...]
+    blocking: tuple[GateLayer, ...]
+    strategies: tuple[tuple[str, bool], ...]
+    tenant_id: str
+    account_id: str
+    verdict: str
+
+
+def trading_gate_overview(
+    store: TradingStore,
+    settings: Settings,
+    tenant_id: str | None = None,
+    account_id: int | str | None = None,
+    now: datetime | None = None,
+    strategies: tuple[str, ...] = (),
+    strategy_defaults: dict[str, bool] | None = None,
+) -> TradingGateOverview:
+    """把实盘「能不能下单」的五道闸口一次算清，供控制页展示。
+
+    为什么要有它：``check_real_trade`` 的判定散在 .env、租户设置、账户级 JSON、
+    确认会话四处，界面各处只显示自己那一层 → 用户看到「账户开关是开的」却不知道为什么
+    不下单。这里按**下单路径的真实顺序**逐层求值，并直接给出「被哪一层挡住」。
+
+    注意：本函数**只读**，不改任何配置；判定口径必须与 ``check_real_trade`` 一致 ——
+    两边不一致就是又一条「界面说的和实际跑的」漂移。
+    """
+    default_account = str(
+        account_id
+        or getattr(settings, "real_account_id", "")
+        or ""
+    ).strip()
+    tenant = str(tenant_id or "").strip()
+    layers: list[GateLayer] = []
+
+    env = str(getattr(settings, "trading_env", "") or "").upper()
+    layers.append(GateLayer(
+        key="env", label="券商环境（FUTU_TRADING_ENV）", scope="env",
+        ok=env == "REAL",
+        detail=f"当前 {env or '未配置'}" + ("" if env == "REAL" else "，实盘下单直接拒绝"),
+    ))
+
+    master = bool(getattr(settings, "real_trading_enabled", False))
+    layers.append(GateLayer(
+        key="master_switch", label="实盘总开关（REAL_TRADING_ENABLED）", scope="env",
+        ok=master, detail="已开启" if master else "已关闭 · 所有实盘路径拦截",
+    ))
+
+    if tenant:
+        tenant_ok = bool(resolve_tenant_active(tenant, store=store))
+        layers.append(GateLayer(
+            key="tenant", label=f"租户开关（{tenant}）", scope="tenant",
+            ok=tenant_ok,
+            detail="worker 会拉起" if tenant_ok else "worker 不启动（实盘监控也会消失）",
+        ))
+    else:
+        layers.append(GateLayer(
+            key="tenant", label="租户开关", scope="tenant", ok=False,
+            detail="未指定租户，无法判定",
+        ))
+
+    limits = None
+    if default_account:
+        limits = resolve_real_account_limits(store, settings, default_account)
+        whitelist = ",".join(sorted(limits.allowed_strategies)) or "（空，全部拒绝）"
+        layers.append(GateLayer(
+            key="account", label=f"账户开关（{default_account}）", scope="account",
+            ok=limits.enabled,
+            detail=(
+                f"{'已开启' if limits.enabled else '已关闭'}"
+                f" · 白名单 {whitelist}"
+                f" · 单笔 ${limits.max_order_notional:,.0f} / 单日 ${limits.max_daily_notional:,.0f}"
+            ),
+        ))
+    else:
+        layers.append(GateLayer(
+            key="account", label="账户开关", scope="account", ok=False,
+            detail="未配置 REAL_ACCOUNT_ID，无法判定",
+        ))
+
+    # 人工确认会话：只在账户级 require_manual_confirm 为真时才真正参与拦截。
+    # 注意不能直接看「session 是否为空」——关闭确认时不写会话也放行，那才是常态。
+    if limits is not None:
+        if not limits.require_manual_confirm:
+            layers.append(GateLayer(
+                key="confirm_session", label="人工确认会话", scope="session", ok=True,
+                detail="未启用（REAL_REQUIRE_MANUAL_CONFIRM=false）· 自动放行",
+            ))
+        else:
+            active, reason, session = session_status(
+                store, settings, now,
+                account_id=default_account,
+                require_confirm=True,
+            )
+            expires = str(session.get("expires_at") or "")
+            layers.append(GateLayer(
+                key="confirm_session", label="人工确认会话", scope="session",
+                ok=active,
+                detail=(f"有效至 {expires}" if active else reason),
+            ))
+
+    blocking = tuple(layer for layer in layers if not layer.ok)
+    strategy_rows: list[tuple[str, bool]] = []
+    defaults = strategy_defaults or {}
+    for strategy_id in strategies:
+        strategy_rows.append((
+            strategy_id,
+            resolve_strategy_enabled(
+                store, strategy_id, tenant or None, default=bool(defaults.get(strategy_id, False)),
+            ),
+        ))
+
+    if blocking:
+        verdict = "实盘不可下单 · 被「" + "、".join(layer.label for layer in blocking) + "」拦截"
+    else:
+        verdict = "实盘可下单 · 五道闸口全部通过"
+    return TradingGateOverview(
+        allowed=not blocking,
+        layers=tuple(layers),
+        blocking=blocking,
+        strategies=tuple(strategy_rows),
+        tenant_id=tenant,
+        account_id=default_account,
+        verdict=verdict,
     )

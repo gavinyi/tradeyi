@@ -23,6 +23,7 @@ from futu_quant.strategy_budgeting import (
     recommended_active_budget_rows,
 )
 from futu_quant.strategy_plugins import strategy_plugins
+from futu_quant.strategy_toggle import resolve_strategy_enabled, set_strategy_enabled
 from futu_quant.ui import chinese_columns, get_current_tenant, render_admin_login, render_sidebar
 
 
@@ -96,10 +97,10 @@ for plugin in strategy_plugins():
     rows.append({
         "strategy_id": plugin.strategy_id, "display_name": plugin.display_name,
         "service_name": plugin.service_name, "asset_class": plugin.asset_class,
-        "enabled": store.get_setting(
-            f"strategy_enabled:{plugin.service_name}",
-            "false" if plugin.automatically_scheduled else "true",
-        ) == "true",
+        "enabled": resolve_strategy_enabled(
+            store, plugin.strategy_id, tenant_id or None,
+            default=not plugin.automatically_scheduled,
+        ),
         # P1-6：读侧走单源，且必须带上本页租户 —— 只读旧无前缀键会把
         # 「实盘已切换 REAL」显示成 INHERIT。
         "execution_mode": resolve_configured_execution_mode(
@@ -323,8 +324,14 @@ with overview_tab:
         changes = []
         for item in edited.to_dict("records"):
             plugin = by_id[item["strategy_id"]]
-            store.set_setting(
-                f"strategy_enabled:{plugin.service_name}", str(bool(item["enabled"])).lower()
+            # 启停键必须落到**本租户**并覆盖所有拼法变体：调度器先看显示名键、
+            # 再看策略 ID 键，只写其中一个会出现「界面关了、调度器照跑」。
+            # 拿不到租户就拒绝保存，绝不回落旧全局键（旧键被租户键盖过 = 写了不生效）。
+            if not tenant_id:
+                st.error("无法解析当前租户，已拒绝保存策略启停（避免写到别的租户/无效键）")
+                st.stop()
+            set_strategy_enabled(
+                store, plugin.strategy_id, bool(item["enabled"]), tenant_id=tenant_id,
             )
             mode = item["execution_mode"]
             # P1-6：只写当前租户键；拿不到租户就拒绝写，绝不回落旧全局键 ——
