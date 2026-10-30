@@ -47,6 +47,7 @@ from futu_quant.volatility_optimizer import (
     HARD_STOP_SPREAD_GUARD_RATIO,
     volatility_profit_capture_ratio, volatility_profit_lock_floor, select_partial_exit_batch,
     volatility_locked_max_loss_usd, HARD_STOP_PREMIUM_RATIO,
+    volatility_entry_spread_gate, ENTRY_MAX_SPREAD_PCT, ENTRY_MIN_SPREAD_MULTIPLE,
     complete_volatility_activation, volatility_regime, volatility_threshold_profile,
 )
 from futu_quant.volatility_structures import automatic_combo_id
@@ -1855,7 +1856,13 @@ def run_campaign(
                     campaign.get("dynamic_time_stop_full_decay_minutes", 90)
                 ),
                 soft_profit_protection_start=float(
-                    campaign.get("soft_profit_protection_start", .08)
+                    # 【2026-10-30 收紧】0.08 → 0.04。
+                    # 旧值 0.08 与硬止损线（8% × 权利金）**完全重合**，于是「浮盈 0%~8%」
+                    # 这一段没有任何保护：峰值没到 8% 软保护就不启动，价格一路回到 -8%
+                    # 才被硬止损砍掉。实盘 TSM261106P410000 峰值 +5.62% 正好落在这段真空中，
+                    # 最终 -13.6% 离场 —— 这就是「赢了没有止盈」。
+                    # 降到 4% 后，同一笔会在回吐到 +3%（软锁盈线）附近出局。
+                    campaign.get("soft_profit_protection_start", .04)
                 ),
                 soft_profit_lock_floor=float(
                     campaign.get("soft_profit_lock_floor", .03)
@@ -2129,6 +2136,35 @@ def run_campaign(
 
         multiplier = float(option["option_contract_multiplier"])
         order_legs = list(legs)
+        # 【入场价差门】2026-10-30：止损额撑不起价差就不建仓。
+        # 只拦**单腿买方**：组合（PUT_DEBIT_SPREAD）的价差风险按腿逐条计价，
+        # 组合本身的资金与滑点门禁在下方 combo 检查里，不能在这里混算。
+        # 目标是把「一次报价抖动 = 整条止损线」的仓位挡在下单之前，
+        # 而不是事后把止损线放宽（放宽只会让单笔亏损同步放大 2~3 倍）。
+        if trigger_mode == "VOLATILITY" and len(order_legs) == 1:
+            spread_ok, spread_reason, spread_detail = volatility_entry_spread_gate(
+                bid=float(option.get("bid_price") or 0),
+                ask=float(option.get("ask_price") or 0),
+                quantity=per_stage,
+                multiplier=multiplier,
+                max_loss_usd=float(campaign.get("max_position_loss_usd") or 0.0),
+                max_entry_spread_pct=float(
+                    campaign.get("entry_max_spread_pct", ENTRY_MAX_SPREAD_PCT)
+                ),
+                min_spread_multiple=float(
+                    campaign.get("entry_min_spread_multiple", ENTRY_MIN_SPREAD_MULTIPLE)
+                ),
+            )
+            if not spread_ok:
+                record_pretrade_block("ENTRY_SPREAD_TOO_WIDE", spread_reason, {
+                    "entry_spread_gate": spread_detail,
+                    "campaign_id": campaign.get("campaign_id"),
+                    "tenant_id": _campaign_tenant,
+                    "underlying": campaign.get("underlying"),
+                    "code": code,
+                })
+                print(f"{code}: BLOCKED ({spread_reason})")
+                return
         combo_entry_allowed = True
         combo_entry_reason = ""
         combo_entry_checks = {}

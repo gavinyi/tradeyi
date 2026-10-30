@@ -712,6 +712,90 @@ def volatility_locked_max_loss_usd(
     return min(cap, premium * ratio)
 
 
+# 入场阶段的两道价差门（2026-10-30）
+# 背景：止损线 = min($300, 8% × 权利金)，而宽价差合约上「一个价差」就够打掉整条止损线。
+# 实盘 TSM261106P410000 实测：止损线 $58.32，出口盘口价差 $60.00（bid 6.30/ask 6.90），
+# 止损线比一个价差还窄；mid 6.60 判定 -9.5% 触发后按 bid 6.30 成交，多亏 4.1 个点。
+ENTRY_MAX_SPREAD_PCT = 5.0        # 单腿买方入场价差上限（占到权利金的比例）
+ENTRY_MIN_SPREAD_MULTIPLE = 2.5   # 止损额至少要覆盖几个价差
+
+
+def volatility_entry_spread_gate(
+    *,
+    bid: float,
+    ask: float,
+    quantity: float,
+    multiplier: float = 100.0,
+    max_loss_usd: float = HARD_STOP_USD_CAP,
+    max_entry_spread_pct: float = ENTRY_MAX_SPREAD_PCT,
+    min_spread_multiple: float = ENTRY_MIN_SPREAD_MULTIPLE,
+) -> tuple[bool, str, dict]:
+    """开仓前的价差门：**止损额撑不起价差就不许建仓**。
+
+    为什么做成「拦截」而不是「放宽止损线」：把止损线抬到 2.5× 价差确实能免于被
+    报价抖动打掉，但代价是单笔最大亏损同比放大 2~3 倍。用户 2026-10-30 的原话是
+    「亏损一直在加大」，因此这里选择**降低入场次数**，而不是**放大单笔亏损**：
+
+    1. 价差占权利金比例 > `max_entry_spread_pct`（默认 5%）→ 拒绝；
+    2. 按 `min(cap, 8% × 权利金)` 算出的止损额 < `min_spread_multiple` × 价差金额
+       → 拒绝（这类仓位在入场那一刻就已经注定：一次报价抖动等于整条止损线）。
+
+    与 `volatility_hard_loss_check` 里的 `spread_guard` 同一判据，区别是那里只发
+    WARN（持仓中），这里在**下单前**直接拦掉。
+
+    盘口不可用时返回放行并标记 `skipped`：这条门只判断"价差是否过宽"，盘口可用性
+    由既有的 `option_book_status` 门禁负责，避免同一个原因产生两条拦截记录。
+    """
+    bid_f = max(0.0, float(bid or 0.0))
+    ask_f = max(0.0, float(ask or 0.0))
+    qty = float(quantity or 0.0)
+    mult = float(multiplier or 100.0)
+    detail = {
+        "bid": bid_f, "ask": ask_f, "quantity": qty,
+        "spread_pct": None, "spread_usd": None, "stop_usd": None,
+        "max_entry_spread_pct": float(max_entry_spread_pct),
+        "min_spread_multiple": float(min_spread_multiple),
+    }
+    if qty <= 0 or bid_f <= 0 or ask_f < bid_f:
+        detail["skipped"] = True
+        return True, "盘口不可用，交由盘口门禁判定", detail
+
+    mid = (bid_f + ask_f) / 2.0
+    spread_usd_unit = ask_f - bid_f
+    spread_pct = (spread_usd_unit / mid * 100.0) if mid > 0 else float("inf")
+    spread_usd = spread_usd_unit * qty * mult
+    premium = ask_f * qty * mult
+    stop_usd = volatility_locked_max_loss_usd(premium, cap_usd=max_loss_usd)
+    detail.update({
+        "spread_pct": spread_pct, "spread_usd": spread_usd,
+        "premium_usd": premium, "stop_usd": stop_usd,
+    })
+
+    if spread_pct > float(max_entry_spread_pct):
+        return False, (
+            f"入场价差 {spread_pct:.1f}% 超过上限 {max_entry_spread_pct:.1f}%"
+            f"（买一 {bid_f:.2f}、卖一 {ask_f:.2f}）：宽价差合约的单腿买方，"
+            "止损线在入场那一刻就落在报价噪声里"
+        ), detail
+
+    if stop_usd is None:
+        # 权利金算不出来就不能判断止损额是否够宽 —— fail-closed
+        return False, (
+            f"无法计算止损额（权利金未知，数量 {qty:g}）：拒绝在不可评估的仓位上开仓"
+        ), detail
+
+    if stop_usd < float(min_spread_multiple) * spread_usd:
+        return False, (
+            f"止损额 ${stop_usd:.2f} 撑不起 {min_spread_multiple:.1f}× 盘口价差 "
+            f"${spread_usd:.2f}（价差 {spread_pct:.1f}%）：一次报价抖动就会打掉整条止损线"
+        ), detail
+
+    return True, (
+        f"价差门通过：价差 {spread_pct:.1f}% ≤ {max_entry_spread_pct:.1f}%，"
+        f"止损额 ${stop_usd:.2f} ≥ {min_spread_multiple:.1f}× 价差 ${spread_usd:.2f}"
+    ), detail
+
+
 def volatility_hard_loss_exit_reason(
     *,
     pnl_ratio: float,
@@ -1260,7 +1344,18 @@ def volatility_regime(
     direction_score = sum(signs)
     dynamic_trigger = zscore >= entry_z or atr_ratio >= 1.5
     absolute_trigger = abs(intraday) >= minimum_move
-    strong_override = zscore >= 3.0 or atr_ratio >= 2.0 or abs(intraday) >= .03
+    # 【2026-10-30 收紧】移除 `abs(intraday) >= .03` 这一支。
+    #
+    # 当日涨跌 3% 在正常交易日里能同时出现在好几只权重股上，把它当「强信号」会让
+    # 几乎每个标的都拿到强波动档的**三重放宽**：量比门槛 1.2→0.8、方向分不足 2 也放行
+    # （direction_gate）、入场层级升为强波动。三件事叠加后，入场判据退化成
+    # 「日内跌超 3% 就买看跌期权」—— 买在波动已经走完的末端。
+    #
+    # 实证（2026-10-30 实盘 4 笔）：当日涨跌 -12.2%/-4.3%/-3.2%/-3.6% 全部命中该支，
+    # 而 z 值只有 1.82/1.86/1.89/1.61（均低于动态门槛 2.3）：4 笔里 3 笔买入后从未
+    # 有过一分钱浮盈，唯一浮盈的 TSM 峰值也只有 +5.62%。强信号应当保留统计意义上的
+    # 极端性 —— z≥3 或 ATR≥2，而不是「跌幅够大」这种已实现幅度。
+    strong_override = zscore >= 3.0 or atr_ratio >= 2.0
     volume_target = 0.80 if strong_override else 1.20
     volume_confirmed = volume_ratio >= volume_target if len(volume) >= 20 else True
     trigger_confirmed = dynamic_trigger or absolute_trigger

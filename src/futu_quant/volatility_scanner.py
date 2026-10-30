@@ -541,6 +541,27 @@ def _maybe_create_tenant_campaign(
         "dynamic_time_stop_full_decay_minutes": _setting_float(
             store, "volatility_default_dynamic_time_stop_full_decay_minutes", 90,
         ),
+        # 软启动锁盈（2026-10-30 新增显式键）：此前这三个参数只存在于
+        # run_gamma_strategy 的 `campaign.get(..., 默认值)` 里，seed 不写 →
+        # 雷达自动建的 campaign 全部靠代码默认值，改默认值等于隐式改所有 campaign。
+        # 写进 seed 后「配置里能看到」与「实际生效」是同一个值（同 P1-3 那一课）。
+        # 启动线从 8% 降到 4%：旧值与硬止损线 8% 重合，浮盈 0~8% 完全无保护。
+        "soft_profit_protection_start": _setting_float(
+            store, "volatility_default_soft_profit_protection_start", .04,
+        ),
+        "soft_profit_lock_floor": _setting_float(
+            store, "volatility_default_soft_profit_lock_floor", .03,
+        ),
+        "soft_profit_giveback": _setting_float(
+            store, "volatility_default_soft_profit_giveback", .35,
+        ),
+        # 入场价差门（2026-10-30）：单腿买方「止损额撑不起 2.5 个价差」时不建仓。
+        "entry_max_spread_pct": _setting_float(
+            store, "volatility_default_entry_max_spread_pct", 5.0,
+        ),
+        "entry_min_spread_multiple": _setting_float(
+            store, "volatility_default_entry_min_spread_multiple", 2.5,
+        ),
         "cooldown_take_profit_hours": 4,
         "cooldown_profit_protection_hours": 8,
         "cooldown_stop_loss_hours": 24,
