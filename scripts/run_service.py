@@ -1821,6 +1821,12 @@ def main() -> None:
     parser.add_argument("--poll", type=int, default=10, help="Scheduler polling seconds")
     parser.add_argument("--tenant", type=str, default=None, help="Target tenant ID (e.g. futu_real_master, futu_paper_sandbox)")
     args = parser.parse_args()
+    if args.tenant:
+        # 每个租户的 worker 写自己的 SDK 日志文件。此前两个 worker 都用
+        # role=service 同写 futu-service.log：既分不清「谁在刷屏」（行里的
+        # PID 要人工对照进程表），也没法安全轮转 —— Windows 上 rename 会被
+        # 另一个进程的打开句柄挡住，轮转直接抛 PermissionError。
+        os.environ["FUTU_LOG_ROLE"] = f"service-{args.tenant}"
     settings = Settings.load(refresh=True)
     if not settings.enable_paper_orders:
         raise RuntimeError("ENABLE_PAPER_ORDERS=false; automatic paper execution is disabled")

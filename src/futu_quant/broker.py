@@ -77,7 +77,20 @@ def configure_futu_process_log(role: str) -> Path:
     sdk_logger = FTLog()
     file_logger = sdk_logger.file_logger
     file_logger.handlers.clear()
-    handler = logging.handlers.WatchedFileHandler(target, encoding="utf-8") if os.name != "nt" else logging.FileHandler(target, encoding="utf-8")
+    if os.name == "nt":
+        # Windows 上没有人给这些日志做外部轮转（Linux 那边有 logrotate，仍走
+        # WatchedFileHandler）。裸 FileHandler 会一路长到几百 MB：
+        # 2026-10-30 实测 futu-service.log 6 小时 761MB —— 两个租户的 worker
+        # 同写一份，SDK 把每条 Send/Recv 都按 INFO 记。这里按大小轮转封顶，
+        # 上限 ≈ FUTU_LOG_MAX_BYTES × (FUTU_LOG_BACKUPS + 1)，默认 32MB × 5。
+        handler = logging.handlers.RotatingFileHandler(
+            target,
+            encoding="utf-8",
+            maxBytes=max(1, int(os.getenv("FUTU_LOG_MAX_BYTES", str(32 * 1024 * 1024)))),
+            backupCount=max(0, int(os.getenv("FUTU_LOG_BACKUPS", "4"))),
+        )
+    else:
+        handler = logging.handlers.WatchedFileHandler(target, encoding="utf-8")
     handler.setLevel(logging.INFO)
     handler.setFormatter(sdk_logger.formatter)
     file_logger.addHandler(handler)
