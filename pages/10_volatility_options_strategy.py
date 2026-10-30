@@ -36,6 +36,7 @@ from futu_quant.volatility_orphans import volatility_state_keys
 from futu_quant.campaign_timing import campaign_time_display
 from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.execution_mode import resolve_configured_execution_mode
+from futu_quant.strategy_toggle import resolve_strategy_enabled
 from futu_quant.volatility_pause import set_volatility_new_entries_paused
 from futu_quant.tenant import (
     campaign_belongs_to_tenant, campaigns_config_key_lenient, tenant_id_of_broker,
@@ -85,7 +86,9 @@ with st.container(border=True):
         _current_mode = resolve_configured_execution_mode(
             store, _page_tenant_id, "volatility_long_gamma",
         ) or "INHERIT"
-        _current_enabled = store.get_setting("strategy_enabled:Volatility Long Gamma", "false") == "true"
+        _current_enabled = resolve_strategy_enabled(
+            store, "volatility_long_gamma", _page_tenant_id or None, default=False,
+        )
         st.metric("执行模式", _current_mode, border=True)
         st.metric("自动调度", "已启用" if _current_enabled else "已关闭", border=True)
         # 交易范围跟随执行模式单源，不再写死「仅模拟盘」（实盘接入后该文案已失真）。
@@ -1696,8 +1699,12 @@ with config_tab:
         st.info("尚未保存波动率期权策略。")
 
     st.subheader("执行诊断 · 独立运行与调试")
-    mode = store.get_setting("strategy_execution_mode:volatility_long_gamma", "") or "INHERIT"
-    enabled = store.get_setting("strategy_enabled:Volatility Long Gamma", "false") == "true"
+    mode = resolve_configured_execution_mode(
+        store, _page_tenant_id or None, "volatility_long_gamma",
+    ) or "INHERIT"
+    enabled = resolve_strategy_enabled(
+        store, "volatility_long_gamma", _page_tenant_id or None, default=False,
+    )
     with st.container(horizontal=True):
         st.metric("执行模式", mode, border=True)
         st.metric("自动调度", "已启用" if enabled else "已关闭", border=True)

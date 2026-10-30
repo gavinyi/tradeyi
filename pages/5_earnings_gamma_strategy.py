@@ -26,9 +26,11 @@ from futu_quant.option_ranking import rank_long_option_candidates
 from futu_quant.option_signal import automatic_option_direction
 from futu_quant.campaign_timing import campaign_time_display
 from futu_quant.ui import open_trading_store as TradingStore
+from futu_quant.execution_mode import resolve_configured_execution_mode
+from futu_quant.strategy_toggle import resolve_strategy_enabled
 from futu_quant.ui import (
-    china_time_columns, chinese_columns, render_admin_login, render_sidebar,
-    translate_common_values,
+    china_time_columns, chinese_columns, get_current_tenant, render_admin_login,
+    render_sidebar, translate_common_values,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +49,18 @@ broker = FutuPaperBroker(settings)
 executor = ExecutionManager(broker)
 store = TradingStore()
 admin = render_admin_login()
+
+
+def _page_tenant_id() -> str:
+    """当前租户（读启停开关必须带租户，见 resolve_strategy_enabled）。
+
+    这个页面长期直接读全局 ``strategy_enabled:Earnings Gamma``，而调度器租户键优先 ——
+    租户里启用了、页面仍显示「已关闭」，反之亦然。
+    """
+    try:
+        return str(get_current_tenant(settings).get("tenant_id") or "")
+    except Exception:
+        return ""
 
 
 @st.cache_data(ttl=3600, show_spinner="正在载入并筛选未来 7 天财报标的……")
@@ -214,9 +228,15 @@ with data_tab:
             "启用": "是" if campaign.get("enabled", True) else "否",
             **time_info,
         })
-    gamma_mode = store.get_setting("strategy_execution_mode:earnings_gamma", "") or "INHERIT"
-    manual_mode = store.get_setting("strategy_execution_mode:earnings_gamma_manual", "") or "INHERIT"
-    gamma_enabled = store.get_setting("strategy_enabled:Earnings Gamma", "false") == "true"
+    gamma_mode = resolve_configured_execution_mode(
+        store, _page_tenant_id() or None, "earnings_gamma",
+    ) or "INHERIT"
+    manual_mode = resolve_configured_execution_mode(
+        store, _page_tenant_id() or None, "earnings_gamma_manual",
+    ) or "INHERIT"
+    gamma_enabled = resolve_strategy_enabled(
+        store, "earnings_gamma", _page_tenant_id() or None, default=False,
+    )
     pending_intents = [
         row for row in intents
         if str(row.get("status", "")).upper() in {"SUBMITTED", "WORKING", "SHADOW", "SHADOW_PART"}
@@ -898,8 +918,12 @@ with config_tab:
 
     st.subheader("Gamma 隔离调试")
     st.caption("Gamma 的启用开关、SHADOW/PAPER 模式和资金配额统一在策略与资金控制管理。")
-    gamma_mode = store.get_setting("strategy_execution_mode:earnings_gamma", "") or "INHERIT"
-    gamma_enabled = store.get_setting("strategy_enabled:Earnings Gamma", "false") == "true"
+    gamma_mode = resolve_configured_execution_mode(
+        store, _page_tenant_id() or None, "earnings_gamma",
+    ) or "INHERIT"
+    gamma_enabled = resolve_strategy_enabled(
+        store, "earnings_gamma", _page_tenant_id() or None, default=False,
+    )
     with st.container(horizontal=True):
         st.metric("Gamma 执行模式", gamma_mode, border=True)
         st.metric("自动调度", "已启用" if gamma_enabled else "已关闭", border=True)
