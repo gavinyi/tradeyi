@@ -24,6 +24,36 @@ from .volatility_structures import build_volatility_structure_candidates
 
 MAINTAIN_SCORE_IMPROVEMENT = 8.0
 
+# 滚档滞回带（2026-10-30 实盘 COIN 复盘）。
+#
+# 触发场景：13:42:06 把 P140000 滚到 P145000，13:47:44 又滚回 P140000 ——
+# **5 分 38 秒内同一租户来回滚两次**。候选表里相邻行权价的预期收益差只有
+# 0.215 vs 0.190（约 13%），而每次 roll 都要重新取链、重算结构、写配置；
+# 更重要的是**表达在 whipsaw**：刚滚过去的合约还没等成交就被换掉，
+# 决策日志看起来像「策略在乱动」，复盘也说不清到底在赌哪个行权价。
+#
+# 规则（默认宽松，宁可少换一次，不要来回换两次）：
+#   1. 距上次**实际**换约不足 `ROLL_MIN_INTERVAL_MINUTES` → 不换；
+#   2. 新候选的领先幅度不足 `ROLL_MIN_IMPROVEMENT_PCT` 且质量分没到 +8 → 不换。
+# 硬性例外（在此判定之前，不受滞回约束）：方向切换（PUT↔CALL）、
+# 当前合约质量变差、以及**到期换月**（走 needs_expiry_roll 独立路径）。
+ROLL_MIN_INTERVAL_MINUTES = 15.0
+ROLL_MIN_IMPROVEMENT_PCT = 0.15
+
+
+def _roll_elapsed_minutes(current: dict, now: datetime) -> float | None:
+    """距上次实际换约过了多少分钟；无记录（旧 campaign）返回 None。"""
+    raw = current.get("last_roll_at")
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (now - stamp).total_seconds() / 60.0
+
 
 def _roll_diagnostics(
     candidates: pd.DataFrame, regime: dict, message: str, *,
@@ -62,6 +92,14 @@ def _roll_diagnostics(
         entry = {
             "rank": rank,
             "code": str(row.get("code", "")),
+            # 同一主腿会有**多种表达**（单腿 / 借方价差 / 反向价差），`_package()`
+            # 把组合的 `code` 统一设成主腿代码 —— 于是榜单里同一个 code 会出现两行、
+            # 预期收益不同（10-30 实盘 US.COIN261120P145000 出现 0.1895 与 0.0505）。
+            # 那不是数据损坏，是「同一主腿的两种结构」；不写 structure 就无法区分，
+            # 复盘时会误判成「榜单有重复行」。组合本身是逐腿下单的
+            #（`option_combo_legs` 每条腿各有 intent_id），code 重名不代表执行漏腿。
+            "structure": str(row.get("structure", "")),
+            "structure_label": str(row.get("structure_label", "")),
             "eligible": bool(row.get("volatility_eligible", False)),
             "reason": str(row.get("volatility_filter_reason", "")),
             # `score` 是质量分（tiebreaker），**不是**选择键；选择键见 selection_key
@@ -103,6 +141,12 @@ def _roll_diagnostics(
             else "未排序（无法确定选择键）"
         ),
         "selected_code": selected_code,
+        # 同一主腿的多种表达：把「哪些 code 出现了多行」直接算出来，
+        # 页面/复盘不必再怀疑「是不是写重了」。
+        "multi_expression_codes": sorted({
+            str(item["code"]) for item in top
+            if sum(1 for other in top if other["code"] == item["code"]) > 1
+        }),
         "top_candidates": top,
     }
 
@@ -113,8 +157,19 @@ def _with_diagnostics(campaign: dict, candidates: pd.DataFrame, regime: dict, me
     return result, message
 
 
-def should_replace_campaign(current: dict, candidate: dict) -> tuple[bool, str]:
-    """Decide whether an empty volatility activity should track a better contract."""
+def should_replace_campaign(
+    current: dict, candidate: dict, *, now: datetime | None = None,
+) -> tuple[bool, str]:
+    """Decide whether an empty volatility activity should track a better contract.
+
+    2026-10-30 之前这里的兜底是 `return True, "动态波动仍有效，当前最佳候选已变化"`
+    —— 只要候选换了名字就换约，于是相邻行权价之间可以无限来回滚（实盘 COIN
+    5 分 38 秒滚两次）。现在改成**默认不换**：必须真的跨过某个门槛才换，
+    并且受时间滞回约束（见 `ROLL_MIN_INTERVAL_MINUTES`）。
+
+    这个函数只决定「换不换」，不写库；调用方在 False 时必须继续沿用原合约
+    （否则会用新合约去查旧仓位，见 run_volatility_strategy 的 `campaign = rolled`）。
+    """
     current_code = str(current.get("code", ""))
     candidate_code = str(candidate.get("code", ""))
     if not candidate_code or candidate_code == current_code:
@@ -122,6 +177,7 @@ def should_replace_campaign(current: dict, candidate: dict) -> tuple[bool, str]:
     current_type = str(current.get("option_type", ""))
     candidate_type = str(candidate.get("option_type", ""))
     if current_type and candidate_type and current_type != candidate_type:
+        # 方向反了必须换：滞回带不该把「看跌变看涨」也拖住。
         return True, f"方向表达从 {current_type} 切换为 {candidate_type}"
     diagnostics = candidate.get("_roll_diagnostics") or {}
     top = diagnostics.get("top_candidates") or []
@@ -133,13 +189,48 @@ def should_replace_campaign(current: dict, candidate: dict) -> tuple[bool, str]:
         current_score = float(current.get("volatility_quality_score", 0) or 0)
         current_reason = str(current.get("volatility_filter_reason", ""))
         if current_reason and current_reason != "全部条件通过":
+            # 当前合约已经不合格（流动性/IV 越界等）→ 必须换，不适用滞回。
             return True, f"当前合约质量变差：{current_reason}"
+        # —— 以下两道闸口只作用于「两个都合格、只是另一个分数略高」的场景 ——
+        interval = float(
+            current.get("roll_min_interval_minutes", ROLL_MIN_INTERVAL_MINUTES) or 0
+        )
+        elapsed = _roll_elapsed_minutes(current, now or datetime.now(timezone.utc))
+        if interval > 0 and elapsed is not None and 0 <= elapsed < interval:
+            return False, (
+                f"距上次换约 {elapsed:.0f} 分钟，不足最小间隔 {interval:.0f} 分钟 —— "
+                f"抑制相邻行权价来回滚动（候选 {candidate_code} 继续观察）"
+            )
+        min_pct = float(
+            current.get("roll_min_improvement_pct", ROLL_MIN_IMPROVEMENT_PCT) or 0
+        )
+        improvement_ok = False
+        try:
+            best_value = float(best.get("selection_value"))
+            current_value = float(current.get("model_expected_return") or 0)
+        except (TypeError, ValueError):
+            best_value, current_value = None, None
+        if best_value is not None and current_value and current_value > 0:
+            improvement_ok = (best_value - current_value) / current_value >= min_pct
         if best_score >= current_score + MAINTAIN_SCORE_IMPROVEMENT:
             return True, (
                 f"新候选质量分 {best_score:.1f} 明显高于当前 "
                 f"{current_score:.1f}"
             )
-    return True, "动态波动仍有效，当前最佳候选已变化"
+        if improvement_ok:
+            return True, (
+                f"新候选预期收益 {best_value:.1%} 相对当前 {current_value:.1%} "
+                f"领先 {(best_value - current_value) / current_value:.0%}"
+                f"（门槛 {min_pct:.0%}）"
+            )
+        return False, (
+            f"新候选 {candidate_code} 未达替换门槛：质量分 {best_score:.1f} vs "
+            f"当前 {current_score:.1f}（需 +{MAINTAIN_SCORE_IMPROVEMENT:.0f}），"
+            f"预期收益领先不足 {min_pct:.0%}"
+        )
+    # 没有诊断数据就无法证明「更好」，不换（旧实现在这里无条件返回 True）。
+    return False, "缺少候选诊断数据，无法判定是否更优，保持当前合约"
+
 
 
 def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
@@ -461,6 +552,10 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         "base_premium_budget": float(campaign.get("max_premium_per_stage", 1000)),
         "effective_premium_budget": premium_budget,
     })
+    if selected_code != str(campaign.get("code") or ""):
+        # 换约时间戳 = 滞回带的计时起点。**只在实际改变表达时写**：若每轮 roll
+        # 都刷新，15 分钟窗口永远走不完，等于滞回带失效。
+        updated["last_roll_at"] = datetime.now(timezone.utc).isoformat()
     # ML 评分写入活动（供审计与后续参考）
     if pd.notna(selected.get("ml_score")):
         updated["ml_score"] = float(selected["ml_score"])

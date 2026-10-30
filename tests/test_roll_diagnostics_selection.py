@@ -92,3 +92,55 @@ def test_diagnostics_without_selection_keeps_all_flags_false():
 
     assert all(item["selected"] is False for item in diagnostics["top_candidates"])
     assert diagnostics["message"]
+
+
+def test_same_primary_leg_different_structures_is_reported_not_silently_deduped():
+    """同一主腿的多种表达必须**标注结构**，不能当成重复行删掉。
+
+    10-30 实盘榜单里 US.COIN261120P145000 出现两行（exp 0.1895 与 0.0505），
+    质量分都是 83.71 —— 看起来像「数据写重了」。真实原因是 `_package()` 把
+    组合的 `code` 设成了**主腿代码**：一行是 LONG_OPTION，另一行是
+    PUT_DEBIT_SPREAD，同一主腿、两种表达、各自的预期收益。
+
+    组合本身是逐腿下单的（`option_combo_legs` 每条腿各有 intent_id），
+    所以 code 重名不代表执行漏腿；但展示必须能区分，否则复盘会误判成数据损坏。
+    """
+    frame = pd.DataFrame([
+        {
+            "code": "US.COIN261120P140000", "structure": "LONG_OPTION",
+            "structure_label": "单腿买方期权", "volatility_eligible": True,
+            "volatility_filter_reason": "全部条件通过", "volatility_quality_score": 77.75,
+            "model_expected_return": 0.2151, "structure_expected_return": 0.2151,
+            "iv_rv": 0.82, "iv_rv_limit": 1.8, "premium_per_stage": 935,
+        },
+        {
+            "code": "US.COIN261120P145000", "structure": "LONG_OPTION",
+            "structure_label": "单腿买方期权", "volatility_eligible": True,
+            "volatility_filter_reason": "全部条件通过", "volatility_quality_score": 83.71,
+            "model_expected_return": 0.1895, "structure_expected_return": 0.1895,
+            "iv_rv": 0.84, "iv_rv_limit": 1.8, "premium_per_stage": 980,
+        },
+        {
+            "code": "US.COIN261120P145000", "structure": "PUT_DEBIT_SPREAD",
+            "structure_label": "认沽借方价差", "volatility_eligible": True,
+            "volatility_filter_reason": "全部条件通过", "volatility_quality_score": 83.71,
+            "model_expected_return": 0.0505, "structure_expected_return": 0.0505,
+            "iv_rv": 0.84, "iv_rv_limit": 1.8, "premium_per_stage": 420,
+        },
+    ])
+
+    diagnostics = _roll_diagnostics(
+        frame, REGIME, "已自动滚动", selected_code="US.COIN261120P140000",
+    )
+
+    top = diagnostics["top_candidates"]
+    structures = {item["code"]: item["structure"] for item in top}
+    assert structures["US.COIN261120P140000"] == "LONG_OPTION"
+    # 两行同 code 的行都在榜单里，且结构可区分（**不是**简单去重）
+    p145 = [item for item in top if item["code"] == "US.COIN261120P145000"]
+    assert len(p145) == 2, "同主腿的两行都应保留 —— 去重会隐藏「价差表达」这个选项"
+    assert {item["structure"] for item in p145} == {"LONG_OPTION", "PUT_DEBIT_SPREAD"}
+    assert all(item["structure_label"] for item in top), "每行都要有可读的结构名"
+    assert diagnostics["multi_expression_codes"] == ["US.COIN261120P145000"], (
+        "必须显式告诉调用方「这个 code 有多行」，否则页面看起来像重复 bug"
+    )

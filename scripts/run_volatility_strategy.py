@@ -605,6 +605,11 @@ def run_once(
                      "diagnostics": rolled.get("_roll_diagnostics", {})},
                     tenant_id=str(campaign.get("tenant_id") or _tenant_id),
                 )
+                # 只有**真的替换**才把执行对象换成新合约。旧实现在 if 之外无条件
+                # `campaign = rolled`：即便 should_replace_campaign 判 False（DB 里
+                # 仍是旧合约），执行层也会拿新合约去查持仓 → 查到 0 张 → 误判空仓。
+                # 滞回带上线后 False 会成为常态（不再是罕见分支），必须先修这里。
+                campaign = rolled
             else:
                 executor.store.decision_if_changed(
                     "volatility_long_gamma", campaign.get("code"), "HOLD",
@@ -613,7 +618,6 @@ def run_once(
                     repeat_after_seconds=900,
                     tenant_id=str(campaign.get("tenant_id") or _tenant_id),
                 )
-            campaign = rolled
         prepared.append(campaign)
     for old_identity, old_campaign, rolled in rolled_pairs:
         old_code = str(old_campaign.get("code") or "").upper()
