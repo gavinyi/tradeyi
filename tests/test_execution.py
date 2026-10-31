@@ -625,3 +625,33 @@ def test_urgent_sell_reprice_exact_boundary_no_tick_drop(tmp_path, monkeypatch):
     repriced = ExecutionManager(broker, store).reprice_open_orders()
     assert repriced == 1
     assert broker.modified_price == 3.80
+
+
+def test_urgent_sell_reprice_abnormal_spread_falls_back_to_conservative_grid(tmp_path, monkeypatch):
+    """Bug 5 守卫：
+    若快照返回异常档位差（例如 price_spread=0.07 或 0.125，非 0.01 整数倍）：
+    必须自动回退至保守网格（>=3.0 走 0.10，<3.0 走 0.05），绝不能按 0.07 对出 3.78 这类非法价格！
+    """
+    monkeypatch.setenv("EXEC_REPRICE_INTERVAL_SECONDS", "15")
+    monkeypatch.setenv("EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT", "0.12")
+    store = TradingStore(tmp_path / "test.db")
+
+    # bid=3.86 -> bid*0.99 = 3.8214；传入异常档位差 price_spread=0.07
+    broker = OptionTickRepriceBroker({"bid_price": 3.86, "ask_price": 4.10, "price_spread": 0.07})
+    intent, _ = store.create_intent(
+        "volatility_long_gamma", "urgent-abnormal-spread", "US.XYZ261120C150000", "SELL", 1, 4.00,
+        {"urgent": True, "reference_price": 4.00},
+    )
+    store.update_intent(intent["id"], "SUBMITTED", broker_order_id="paper-tick-5")
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE order_intents SET created_at=?, last_reprice_at=? WHERE id=?",
+            ("2026-08-13T14:00:00+00:00", "2026-08-13T14:00:00+00:00", intent["id"]),
+        )
+
+    repriced = ExecutionManager(broker, store).reprice_open_orders()
+    assert repriced == 1
+    # 必须回退至 0.10 兜底网格（3.8214 向下对齐到 3.80），而不是按 0.07 对出 3.78！
+    assert broker.modified_price == 3.80
+    assert broker.modified_price != 3.78
+    assert round(broker.modified_price % 0.10, 4) in {0.0, 0.10}

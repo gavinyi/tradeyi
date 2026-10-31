@@ -775,7 +775,9 @@ class ExecutionManager:
                     except (ValueError, TypeError):
                         tick = 0.0
 
-                    if not (math.isfinite(tick) and 0 < tick <= 0.50):
+                    # 美股期权合法报价单位只能是 0.01 / 0.05 / 0.10，任何档位差等异常值一律回退至保守网格
+                    VALID_OPTION_TICKS = {0.01, 0.05, 0.10}
+                    if not (math.isfinite(tick) and any(abs(tick - vt) < 1e-4 for vt in VALID_OPTION_TICKS)):
                         tick = 0.10 if clamped_target >= 3.00 - 1e-9 else 0.05
 
                     # 2. 向下对齐 tick；若跌破地板，向上对齐到下一个合法 tick（确保 >= min_allowed）
