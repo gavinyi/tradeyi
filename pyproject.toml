@@ -19,6 +19,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+futu_quant = ["config_center/_specs_data.json"]
+
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.9"]
 postgres = ["psycopg[binary]>=3.2"]

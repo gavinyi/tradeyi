@@ -2409,6 +2409,12 @@ class TradingStore:
     def create_config_release(
         self, config_key: str, draft, created_by: str, reason: str = "",
     ) -> int:
+        from .config_center import GLOBAL_REGISTRY
+
+        # 统一配置中心 Phase 1 强门禁：严禁为未在 Registry 登记的任意键创建草稿
+        if not GLOBAL_REGISTRY.contains(config_key):
+            raise ValueError(f"配置键 '{config_key}' 未在统一配置中心登记，拒绝创建发布草稿")
+
         current = self.get_runtime_config(config_key)
         current_value, version = current if current else (None, 0)
         diff = {"before": current_value, "after": draft}

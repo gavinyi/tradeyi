@@ -187,19 +187,28 @@ def test_unregistered_env_keys_negative_control_fails_via_tmp_path(tmp_path):
     assert "BRAND_NEW_UNREGISTERED_PARAM_FAIL_PROOF" in leaked, f"负向对照必须捕获未登记配置，实际: {leaked}"
 
 
-# 严格冻结的 runtime_config 动态通用写调用助手豁免清单 (8 处，条数严禁增长)
-FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT = 8
-RUNTIME_WRITE_SITE_EXEMPTIONS = {
-    # 格式：(相对路径, 行号)
-    ("src/futu_quant/config.py", 116),                                     # _load_runtime_value 内部回填
-    ("src/futu_quant/config.py", 422),                                     # save_volatility_campaigns 通用写回
-    ("src/futu_quant/config.py", 495),                                     # save_campaign 通用保存助手
-    ("src/futu_quant/config.py", 550),                                     # delete_campaign 通用删除助手
-    ("src/futu_quant/store.py", 2439),                                     # publish_config_release 底层写回
-    ("src/futu_quant/store.py", 2447),                                     # publish_config_release 回滚写回
-    ("src/futu_quant/store.py", 2459),                                     # rollback_config_release 人工回滚写回
-    ("scripts/migrate_volatility_campaigns_tenant_scope.py", 1341),        # 离线数据迁移脚本
+# 严格冻结的 runtime_config 动态通用写调用助手豁免清单 (按函数名定位，解耦行号，条数严禁增长)
+FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT = 7
+RUNTIME_WRITE_FUNCTION_EXEMPTIONS = {
+    # 格式：(相对文件路径, 封闭函数名)
+    ("src/futu_quant/config.py", "_load_runtime_value"),
+    ("src/futu_quant/config.py", "save_volatility_campaigns"),
+    ("src/futu_quant/config.py", "upsert_campaign"),
+    ("src/futu_quant/config.py", "delete_campaign"),
+    ("src/futu_quant/store.py", "publish_config_release"),
+    ("src/futu_quant/store.py", "rollback_config_release"),
+    ("scripts/migrate_volatility_campaigns_tenant_scope.py", "run"),
 }
+
+
+def _get_enclosing_function_name(tree: ast.AST, target_node: ast.AST) -> str:
+    """获取 AST 节点的最近封闭函数名称。"""
+    for parent in ast.walk(tree):
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(parent):
+                if child is target_node:
+                    return parent.name
+    return "module"
 
 
 def _extract_module_level_constants(py_path: Path) -> dict[str, str]:
@@ -233,31 +242,36 @@ def scan_codebase_runtime_config_write_keys(repo_root: Path, require_counts: boo
         if p.exists():
             dynamic_constants.update(_extract_module_level_constants(p))
 
+    # 扫描根目录 *.py 以及 src, scripts, pages
+    scan_targets = list(repo_root.glob("*.py"))
     for subdir in ("src", "scripts", "pages"):
         folder = repo_root / subdir
         if not folder.exists():
             if require_counts:
                 raise FileNotFoundError(f"扫描目录不存在: {folder}")
             continue
-        for py_path in folder.rglob("*.py"):
-            content = py_path.read_text(encoding="utf-8-sig")
-            tree = ast.parse(content, filename=str(py_path))
-            rel_path = py_path.relative_to(repo_root).as_posix()
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                    if node.func.attr in ("set_runtime_config", "mutate_runtime_config") and node.args:
-                        write_call_count += 1
-                        arg0 = node.args[0]
-                        site = (rel_path, node.lineno)
-                        if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                            found_keys.add(arg0.value.strip())
-                        elif isinstance(arg0, ast.Name) and arg0.id in dynamic_constants:
-                            found_keys.add(dynamic_constants[arg0.id].strip())
-                        elif site in RUNTIME_WRITE_SITE_EXEMPTIONS:
-                            # 经冻结清单审核的通用底层写助手站点
-                            pass
-                        else:
-                            unresolved_sites.append((rel_path, node.lineno, ast.unparse(arg0)))
+        scan_targets.extend(folder.rglob("*.py"))
+
+    for py_path in scan_targets:
+        content = py_path.read_text(encoding="utf-8-sig")
+        tree = ast.parse(content, filename=str(py_path))
+        rel_path = py_path.relative_to(repo_root).as_posix()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr in ("set_runtime_config", "mutate_runtime_config") and node.args:
+                    write_call_count += 1
+                    arg0 = node.args[0]
+                    func_name = _get_enclosing_function_name(tree, node)
+                    func_site = (rel_path, func_name)
+                    if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                        found_keys.add(arg0.value.strip())
+                    elif isinstance(arg0, ast.Name) and arg0.id in dynamic_constants:
+                        found_keys.add(dynamic_constants[arg0.id].strip())
+                    elif func_site in RUNTIME_WRITE_FUNCTION_EXEMPTIONS:
+                        # 经冻结清单审核的通用底层写助手函数
+                        pass
+                    else:
+                        unresolved_sites.append((rel_path, node.lineno, func_name, ast.unparse(arg0)))
 
     if require_counts:
         assert write_call_count > 0, "未扫描到任何 set_runtime_config/mutate_runtime_config 调用，AST 检测链路异常！"
@@ -269,8 +283,8 @@ def test_codebase_runtime_config_writes_are_registered_guard():
     """CI 守卫第二道：AST 静态扫描所有 runtime_config 写调用，断言无未解析站点，写入键必须在 Registry 登记。"""
     repo_root = Path(__file__).resolve().parents[1]
     # 1. 验证豁免清单总数不得增长
-    assert len(RUNTIME_WRITE_SITE_EXEMPTIONS) <= FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT, (
-        f"runtime_config 写调用豁免数 ({len(RUNTIME_WRITE_SITE_EXEMPTIONS)}) 超出基线 ({FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT})！"
+    assert len(RUNTIME_WRITE_FUNCTION_EXEMPTIONS) <= FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT, (
+        f"runtime_config 写调用豁免数 ({len(RUNTIME_WRITE_FUNCTION_EXEMPTIONS)}) 超出基线 ({FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT})！"
     )
 
     found_keys, unresolved_sites = scan_codebase_runtime_config_write_keys(repo_root, require_counts=True)
@@ -298,32 +312,73 @@ def test_runtime_config_negative_control_fails_on_unregistered_write(tmp_path):
     assert not GLOBAL_REGISTRY.contains("UNREGISTERED_DANGEROUS_RUNTIME_KEY_XYZ")
 
 
-def test_create_config_release_draft_key_is_registered_guard():
-    """CI 缺口显式断言（Phase 0 事实记录）：
-    当前 pages/18 中草稿配置键来自 st.text_input 自由文本输入，
-    因此发布链路底层当前无法通过字面量静态阻止未登记键创建草稿；
-    本断言显式断言该入口仍为 text_input 自由文本（记录已知缺口），
-    一旦 Phase 1 将页面改造为登记表驱动的受限选择或强校验，本断言将失败，提醒同步升级守卫。
+def test_create_config_release_enforces_registry_membership(tmp_path):
+    """Phase 1 真实调用强校验守卫：
+    1. 传入未登记键调用 store.create_config_release 必须立即抛错拒绝；
+    2. 传入已登记键（或变量模板实例键）正常放行并创建草稿。
+    """
+    import pytest
+    from futu_quant.store import TradingStore
+
+    store = TradingStore(tmp_path / "release_test.db")
+
+    # A. 未登记键 -> 强拒绝 (抛出 ValueError)
+    with pytest.raises(ValueError, match="未在统一配置中心登记，拒绝创建发布草稿"):
+        store.create_config_release("COMPLETELY_UNREGISTERED_KEY_XYZ", {"some": "data"}, "admin", "test reason")
+
+    # B. 已登记键 (如 ENV_SETTINGS) -> 正常放行
+    release_id = store.create_config_release("ENV_SETTINGS", {"test_key": "val"}, "admin", "valid reason")
+    assert release_id > 0
+
+    # C. 模板键实例 (如 VOLATILITY_CAMPAIGNS:futu_real_master) -> 正常放行
+    release_id2 = store.create_config_release("VOLATILITY_CAMPAIGNS:futu_real_master", [], "admin", "valid template reason")
+    assert release_id2 > 0
+
+
+def test_page18_config_key_is_registry_driven_selectbox():
+    """Phase 1 UI 改造守卫：
+    断言 pages/18 中草稿配置键已经由自由文本 text_input 升级为受限的目录驱动 selectbox。
     """
     repo_root = Path(__file__).resolve().parents[1]
     page_18 = repo_root / "pages" / "18_infrastructure_disaster_recovery.py"
-    assert page_18.exists(), f"未找到灾备演练与配置发布页面: {page_18}"
+    assert page_18.exists()
 
     content = page_18.read_text(encoding="utf-8-sig")
     tree = ast.parse(content, filename=str(page_18))
 
-    # 断言存在 config_key = st.text_input(...) 自由文本调用
-    has_free_text_config_input = False
+    has_selectbox_input = False
+    has_free_text_input = False
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             if node.targets[0].id == "config_key":
                 if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
-                    if node.value.func.attr == "text_input":
-                        has_free_text_config_input = True
-                        break
+                    if node.value.func.attr == "selectbox":
+                        has_selectbox_input = True
+                    elif node.value.func.attr == "text_input":
+                        has_free_text_input = True
 
-    assert has_free_text_config_input, (
-        "pages/18 的配置键来源已不再是 text_input 自由文本！"
-        "说明发布入口已被 Phase 1 改造（如改为 selectbox 或引入 ConfigService 强校验），"
-        "请同步将本条缺口断言升级为严格的受限选择或校验器守卫！"
-    )
+    assert has_selectbox_input, "pages/18 必须通过 st.selectbox 受限选择配置键！"
+    assert not has_free_text_input, "pages/18 严禁保留 text_input 自由文本输入配置键！"
+
+
+def test_registry_specs_types_and_defaults_are_consistent():
+    """Phase 1 元数据自检守卫：
+    断言 bool/int/float 等强类型配置的默认值类型与声明的 value_type 完全一致，严禁一律占位 string。
+    """
+    type_map = {
+        "bool": bool,
+        "int": int,
+        "float": (float, int),
+        "string": str,
+        "symbols": (list, tuple),
+        "json": (list, dict),
+    }
+
+    mismatches = []
+    for spec in GLOBAL_REGISTRY.all_specs():
+        if spec.default is not None and spec.value_type in type_map:
+            expected = type_map[spec.value_type]
+            if not isinstance(spec.default, expected):
+                mismatches.append((spec.key, spec.value_type, type(spec.default)))
+
+    assert not mismatches, f"发现类型声明与默认值不匹配的配置项: {mismatches}"

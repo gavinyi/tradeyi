@@ -89,9 +89,14 @@ class ConfigRegistry:
 
 def _load_default_specs() -> list[ConfigSpec]:
     if not _DATA_PATH.exists():
-        return []
+        raise FileNotFoundError(
+            f"统一配置注册表元数据文件缺失: {_DATA_PATH}！"
+            "打包安装或环境部署必须包含 config_center/_specs_data.json，严禁静默空表启动！"
+        )
     with open(_DATA_PATH, "r", encoding="utf-8-sig") as f:
         data = json.load(f)
+    if not data:
+        raise ValueError(f"统一配置注册表数据为空: {_DATA_PATH}，系统拒绝以空注册表运行！")
     specs: list[ConfigSpec] = []
     for item in data:
         spec = ConfigSpec(
