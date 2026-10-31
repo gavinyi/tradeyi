@@ -1899,6 +1899,7 @@ def sync_volatility_position_cycle(
     state: dict, *, quantity: int, cost: float, last: float, current_iv: float,
     current_efficiency: float, now: datetime,
     allocation_policy: str = "FIFO",
+    incremental_entry_price: float | None = None,
 ) -> str:
     """Synchronize per-position baselines and never leak them across entry cycles."""
     previous_quantity = int(state.get("previous_position_quantity", 0) or 0)
@@ -1945,10 +1946,18 @@ def sync_volatility_position_cycle(
         tranches = list(state.get("tranches") or [])
         if quantity > previous_quantity:
             added = quantity - previous_quantity
+            # 若提供了当次加仓增量价格则优先使用；否则通过综合均价与旧均价倒推增量成本
+            if incremental_entry_price is not None and float(incremental_entry_price) > 0:
+                tranche_entry = float(incremental_entry_price)
+            else:
+                old_cost = float(state.get("cost", cost) or cost)
+                implied_entry = (float(cost) * quantity - old_cost * previous_quantity) / added
+                tranche_entry = implied_entry if implied_entry > 0 else float(cost)
+
             tranches.append({
                 "tranche_id": f"add-{now.strftime('%Y%m%d%H%M%S')}",
-                "entry_time": now.isoformat(), "entry_price": float(cost),
-                "stop_price": float(cost) * .65 if cost > 0 else 0.0,
+                "entry_time": now.isoformat(), "entry_price": tranche_entry,
+                "stop_price": tranche_entry * .65 if tranche_entry > 0 else 0.0,
                 "quantity": int(added), "peak_mark": float(last),
                 "mae_pnl_ratio": 0.0, "mfe_pnl_ratio": 0.0,
             })
