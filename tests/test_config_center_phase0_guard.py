@@ -335,10 +335,65 @@ def test_create_config_release_enforces_registry_membership(tmp_path):
     assert release_id2 > 0
 
 
+def test_get_draftable_config_keys_filters_critical_and_non_runtime():
+    """Phase 1 草稿可发布键助手函数守卫：
+    1. 断言生产函数 get_draftable_config_keys 返回非空集合；
+    2. 断言集合内每一项都在 GLOBAL_REGISTRY 中合法登记；
+    3. 断言集合内每一项均必须满足：storage=='runtime_config'、editable is True、risk_level!='CRITICAL'、requires_confirmation is False；
+    4. 负向/可失败测试：模拟包含 CRITICAL/requires_confirmation 项的注册表，验证其必须被过滤掉。
+    """
+    from futu_quant.config_center import get_draftable_config_keys, ConfigSpec, ConfigRegistry
+
+    keys = get_draftable_config_keys()
+    assert len(keys) > 0, "允许草稿发布的配置项列表不得为空！"
+
+    for k in keys:
+        assert GLOBAL_REGISTRY.contains(k), f"草稿配置键 {k} 必须在注册表中登记！"
+        canonical = GLOBAL_REGISTRY.resolve_canonical_key(k)
+        spec = GLOBAL_REGISTRY._specs_by_key[canonical]
+        assert spec.storage == "runtime_config", f"键 {k} 存储必须为 runtime_config，实际为 {spec.storage}"
+        assert spec.editable, f"键 {k} 必须标记为 editable"
+        assert spec.risk_level != "CRITICAL", f"键 {k} 严禁为 CRITICAL 风险级别"
+        assert not spec.requires_confirmation, f"键 {k} 严禁包含二次确认敏感标记"
+
+    # 负向可失败验证：用包含 CRITICAL 的桩注册表测试
+    def _make_spec(key: str, storage: str = "runtime_config", editable: bool = True, risk_level: str = "MEDIUM", requires_confirmation: bool = False) -> ConfigSpec:
+        return ConfigSpec(
+            key=key,
+            aliases=(key,),
+            category="⑤ 策略总览",
+            title=key,
+            description="desc",
+            value_type="string",
+            default=None,
+            scope="global",
+            storage=storage,
+            risk_level=risk_level,
+            editable=editable,
+            requires_admin=False,
+            requires_confirmation=requires_confirmation,
+            activation="next_cycle",
+            consumers=(),
+            tags=(),
+        )
+
+    mock_specs = [
+        _make_spec("TEST_CRITICAL", storage="runtime_config", editable=True, risk_level="CRITICAL"),
+        _make_spec("TEST_CONFIRM", storage="runtime_config", editable=True, risk_level="HIGH", requires_confirmation=True),
+        _make_spec("TEST_ENV", storage="env", editable=True, risk_level="LOW"),
+        _make_spec("TEST_NOT_EDITABLE", storage="runtime_config", editable=False, risk_level="LOW"),
+        _make_spec("TEST_SAFE", storage="runtime_config", editable=True, risk_level="MEDIUM"),
+    ]
+    mock_reg = ConfigRegistry(mock_specs)
+    filtered = get_draftable_config_keys(mock_reg)
+    assert filtered == ["TEST_SAFE"], f"过滤后必须只剩安全项 TEST_SAFE，实际为 {filtered}"
+
+
 def test_page18_config_key_is_registry_driven_selectbox():
     """Phase 1 UI 改造守卫：
     1. 断言 pages/18 中草稿配置键已经由自由文本 text_input 升级为受限的目录驱动 selectbox；
-    2. 严格断言供草稿选择的候选列表中严禁包含 CRITICAL 极高风险配置项（防绕道放行风控限额）。
+    2. 严格断言 pages/18 中调用了生产助手函数 get_draftable_config_keys，且 selectbox 的 options 严格绑定该结果；
+    3. 严禁任何硬编码选项或自由文本输入。
     """
     repo_root = Path(__file__).resolve().parents[1]
     page_18 = repo_root / "pages" / "18_infrastructure_disaster_recovery.py"
@@ -347,30 +402,39 @@ def test_page18_config_key_is_registry_driven_selectbox():
     content = page_18.read_text(encoding="utf-8-sig")
     tree = ast.parse(content, filename=str(page_18))
 
-    has_selectbox_input = False
-    has_free_text_input = False
+    imports_helper = False
+    calls_helper = False
+    assigned_candidate_keys = False
+    selectbox_uses_candidate_keys = False
+
     for node in ast.walk(tree):
+        # 检查是否 import 了 get_draftable_config_keys
+        if isinstance(node, ast.ImportFrom):
+            if any(alias.name == "get_draftable_config_keys" for alias in node.names):
+                imports_helper = True
+
+        # 检查是否调用并赋值给 candidate_keys
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == "candidate_keys":
+                    assigned_candidate_keys = True
+                    if isinstance(node.value, ast.Call):
+                        if isinstance(node.value.func, ast.Name) and node.value.func.id == "get_draftable_config_keys":
+                            calls_helper = True
+
+        # 检查 config_key = st.selectbox(...) 是否使用了 candidate_keys
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             if node.targets[0].id == "config_key":
                 if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
                     if node.value.func.attr == "selectbox":
-                        has_selectbox_input = True
-                    elif node.value.func.attr == "text_input":
-                        has_free_text_input = True
+                        for kw in node.value.keywords:
+                            if kw.arg == "options" and isinstance(kw.value, ast.Name) and kw.value.id == "candidate_keys":
+                                selectbox_uses_candidate_keys = True
 
-    assert has_selectbox_input, "pages/18 必须通过 st.selectbox 受限选择配置键！"
-    assert not has_free_text_input, "pages/18 严禁保留 text_input 自由文本输入配置键！"
+    assert imports_helper, "pages/18 必须 import get_draftable_config_keys！"
+    assert calls_helper and assigned_candidate_keys, "pages/18 必须调用 get_draftable_config_keys() 获取候选键！"
+    assert selectbox_uses_candidate_keys, "pages/18 的 st.selectbox 必须将 options 绑定为 candidate_keys！"
 
-    # 验证实际候选集合排除 CRITICAL
-    eligible_specs = [
-        s for s in GLOBAL_REGISTRY.all_specs()
-        if s.storage == "runtime_config"
-        and s.editable
-        and s.risk_level != "CRITICAL"
-        and not s.requires_confirmation
-    ]
-    critical_specs = [s for s in eligible_specs if s.risk_level == "CRITICAL" or s.requires_confirmation]
-    assert len(critical_specs) == 0, f"受限选择列表严禁出现 CRITICAL 项: {critical_specs}"
 
 
 def test_registry_specs_types_and_defaults_are_consistent():

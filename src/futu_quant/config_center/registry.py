@@ -126,3 +126,36 @@ def _load_default_specs() -> list[ConfigSpec]:
 
 
 GLOBAL_REGISTRY: ConfigRegistry = ConfigRegistry(_load_default_specs())
+
+
+def get_draftable_config_keys(registry: ConfigRegistry | None = None) -> list[str]:
+    """返回允许通过 UI/运维草稿发布链路编辑的配置键列表。
+
+    安全门禁：
+    1. 必须存储于 runtime_config (storage == "runtime_config")；
+    2. 明确标记为可编辑 (editable is True)；
+    3. 严禁包含 CRITICAL 极高风险配置 (risk_level != "CRITICAL")；
+    4. 严禁包含需要二次确认的敏感配置 (requires_confirmation is False)；
+    5. 排除带模板变量占位的抽象键；
+    6. 默认推荐配置置顶，其余按字典序稳定排序。
+    """
+    reg = registry or GLOBAL_REGISTRY
+    candidate_keys: list[str] = []
+    for s in reg.all_specs():
+        if s.storage != "runtime_config" or not s.editable:
+            continue
+        if s.risk_level == "CRITICAL" or s.requires_confirmation:
+            continue
+        for name in (*s.aliases, s.key):
+            if "{" in name and "}" in name:
+                continue
+            if name not in candidate_keys:
+                candidate_keys.append(name)
+
+    preferred = "CORE_SATELLITE_DAILY_VALIDATION"
+    candidate_keys.sort()
+    if preferred in candidate_keys:
+        candidate_keys.remove(preferred)
+        candidate_keys.insert(0, preferred)
+    return candidate_keys
+
