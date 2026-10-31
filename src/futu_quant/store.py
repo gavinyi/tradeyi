@@ -2426,16 +2426,16 @@ class TradingStore:
                 if acc:
                     accounts.add(str(acc))
 
-        # 3. 策略白名单动态提取 (从 strategy_approvals)
+        # 3. 策略白名单动态提取 (从 approvals 表动态提取，限定 sqlite3.Error 并记录可观测警告)
         strategies = set()
         try:
-            for row in self.strategy_approvals():
+            for row in self.approvals():
                 sid = row.get("strategy_id")
                 if sid:
                     strategies.add(str(sid))
-        except Exception as exc:
+        except sqlite3.Error as exc:
             import logging
-            logging.getLogger(__name__).warning("提取动态策略审批列表异常: %s", exc)
+            logging.getLogger(__name__).warning("提取动态策略审批列表数据库异常: %s", exc)
 
         validate_instance_key(
             config_key,

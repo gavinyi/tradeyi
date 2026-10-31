@@ -792,13 +792,18 @@ def test_account_whitelist_is_strictly_separated_from_tenants(tmp_path):
     assert release_id > 0
 
 
-def test_strategy_whitelist_enforces_known_strategies_and_retains_title_aliases():
+def test_strategy_whitelist_enforces_known_strategies_and_retains_title_aliases(tmp_path, caplog):
     """Phase 3 前置守卫 5：
     1. strategy_id 白名单放行 (如 core_satellite)；
     2. 存量 3 个带空格 Title 别名放行 (SMA Cross 等)；
-    3. 未知策略名严格抛出 ValueError 阻断。
+    3. 未知策略名严格抛出 ValueError 阻断；
+    4. 真实 TradingStore 路径：通过 store.approve_strategy 注入动态审批策略，端到端验证 store.approvals() 放行草稿；
+    5. 可观测性守卫：当数据库操作抛出 sqlite3.Error 时必须输出可审计 WARN，而非数据库异常严禁被静默吞掉。
     """
     from futu_quant.config_center import validate_instance_key
+    from futu_quant.store import TradingStore
+    import sqlite3
+    import logging
 
     # 1. strategy_id
     validate_instance_key("strategy_execution_mode:core_satellite")
@@ -811,6 +816,29 @@ def test_strategy_whitelist_enforces_known_strategies_and_retains_title_aliases(
     # 3. 未知策略阻断
     with pytest.raises(ValueError, match="未在有效策略插件注册表中登记"):
         validate_instance_key("strategy_execution_mode:unknown_random_strategy")
+
+    # 4. 真实 TradingStore 路径：测试 store.approvals() 动态策略生效
+    store = TradingStore(tmp_path / "test_approvals.db")
+    store.approve_strategy("custom_dynamic_strat", "hash_abc", "admin", True, True, True, True)
+    assert any(r["strategy_id"] == "custom_dynamic_strat" for r in store.approvals())
+    release_id = store.create_config_release("strategy_execution_mode:custom_dynamic_strat", "REAL", "streamlit_admin", "ok")
+    assert release_id > 0
+
+    # 5. 可观测性守卫：模拟 sqlite3.Error 时必须记录 WARN 日志
+    with caplog.at_level(logging.WARNING):
+        def _failing_approvals():
+            raise sqlite3.OperationalError("simulated db locked")
+        store.approvals = _failing_approvals
+        # 此时内置的已登记策略仍可放行，但产生可观测警告
+        store.create_config_release("strategy_execution_mode:core_satellite", "REAL", "streamlit_admin", "ok")
+        assert "提取动态策略审批列表数据库异常" in caplog.text
+
+    # 6. 非数据库未知异常严禁被静默吞掉（防回归）
+    def _buggy_approvals():
+        raise AttributeError("buggy code")
+    store.approvals = _buggy_approvals
+    with pytest.raises(AttributeError, match="buggy code"):
+        store.create_config_release("strategy_execution_mode:core_satellite", "REAL", "streamlit_admin", "ok")
 
 
 def test_single_key_matches_at_most_one_template():
