@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from futu_quant.option_signal import configured_volatility_direction_allowed
 from futu_quant.volatility_optimizer import (
@@ -746,6 +747,39 @@ def test_volatility_pyramid_addition_heals_unmigrated_state_using_tranches():
     add_tranche = state["tranches"][1]
     assert add_tranche["entry_price"] == 2.00, f"存量状态加仓批次必须通过 tranches 倒推为 2.00，实际: {add_tranche['entry_price']}"
     assert state["cost"] == 1.50
+
+
+def test_volatility_pyramid_addition_zero_cost_state_heals_via_tranches():
+    """Bug 6 守卫（P2 补强）：
+    若某轮券商异常返回 cost=0.0，导致 state['cost']=0.0，
+    下一轮加仓时绝对不能把 0.0 当成有效成本（否则倒推算成 1.5*2 - 0 = 3.00，导致 stop_price 虚高至 1.95）；
+    必须自动转入 else 分支通过已有 tranches 倒推为 2.00！
+    """
+    now = datetime(2026, 10, 31, 14, 0, tzinfo=timezone.utc)
+    state = {
+        "position_opened_at": now.isoformat(),
+        "previous_position_quantity": 1,
+        "cost": 0.0,  # 异常 0.0 成本
+        "tranches": [{
+            "tranche_id": "entry-1",
+            "entry_time": now.isoformat(),
+            "entry_price": 1.00,
+            "quantity": 1,
+        }],
+    }
+    now_add = now + timedelta(minutes=30)
+    sync_volatility_position_cycle(
+        state, quantity=2, cost=1.50, last=2.00, current_iv=0.48,
+        current_efficiency=1.30, now=now_add,
+    )
+    assert len(state["tranches"]) == 2
+    add_tranche = state["tranches"][1]
+    # 如果把 0.0 当成有效成本，implied 会变成 (1.50*2 - 0*1)/1 = 3.00；
+    # 正确自愈通过 tranches 倒推必须为 2.00！
+    assert add_tranche["entry_price"] == 2.00, f"加仓成本应为 2.00，实际为: {add_tranche['entry_price']}"
+    assert add_tranche["entry_price"] != 3.00
+    assert add_tranche["stop_price"] == pytest.approx(1.30)  # 2.00 * 0.65 = 1.30，而非 3.00 * 0.65 = 1.95
+
 
 
 
