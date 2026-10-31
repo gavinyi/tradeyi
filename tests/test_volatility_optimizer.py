@@ -717,6 +717,38 @@ def test_volatility_pyramid_addition_tranche_entry_price_tracks_incremental_cost
     assert "cost" not in state
 
 
+def test_volatility_pyramid_addition_heals_unmigrated_state_using_tranches():
+    """Bug 6 存量兼容守卫：
+    若当前持仓属于升级部署前已开立的仓位，state 中缺少 'cost' 字段，
+    系统必须能自愈：优先从已有 tranches 列表加权反推上一轮真实均价，准确倒推加仓批次成本，绝不退化为综合成本！
+    """
+    now = datetime(2026, 10, 31, 14, 0, tzinfo=timezone.utc)
+    # 构造老版本存量仓位状态：有 position_opened_at 和 tranches，但没有 state['cost']
+    state = {
+        "position_opened_at": now.isoformat(),
+        "previous_position_quantity": 1,
+        "tranches": [{
+            "tranche_id": "legacy-entry",
+            "entry_time": now.isoformat(),
+            "entry_price": 1.00,
+            "quantity": 1,
+        }],
+    }
+    assert "cost" not in state
+
+    # 加仓 1 张，混仓均价变为 1.50（理论增量应为 2.00）
+    now_add = now + timedelta(minutes=30)
+    sync_volatility_position_cycle(
+        state, quantity=2, cost=1.50, last=2.00, current_iv=0.48,
+        current_efficiency=1.30, now=now_add,
+    )
+    assert len(state["tranches"]) == 2
+    add_tranche = state["tranches"][1]
+    assert add_tranche["entry_price"] == 2.00, f"存量状态加仓批次必须通过 tranches 倒推为 2.00，实际: {add_tranche['entry_price']}"
+    assert state["cost"] == 1.50
+
+
+
 
 def test_active_shock_does_not_exit_only_because_long_term_volatility_contracts():
     regime = {

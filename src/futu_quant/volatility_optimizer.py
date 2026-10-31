@@ -1952,7 +1952,16 @@ def sync_volatility_position_cycle(
             if incremental_entry_price is not None and float(incremental_entry_price) > 0:
                 tranche_entry = float(incremental_entry_price)
             else:
-                old_cost = float(state.get("cost", cost) or cost)
+                if "cost" in state and state["cost"] is not None:
+                    old_cost = float(state["cost"])
+                elif tranches:
+                    # 存量持仓迁移缺口自愈：若部署前持仓无 state['cost']，优先从已有 tranches 计算上一轮真实加权均价
+                    total_tranche_qty = sum(int(t.get("quantity", 0)) for t in tranches)
+                    total_tranche_val = sum(int(t.get("quantity", 0)) * float(t.get("entry_price", 0)) for t in tranches)
+                    old_cost = total_tranche_val / total_tranche_qty if total_tranche_qty > 0 else float(cost)
+                else:
+                    old_cost = float(cost)
+
                 implied_entry = (float(cost) * quantity - old_cost * previous_quantity) / added
                 tranche_entry = implied_entry if implied_entry > 0 else float(cost)
 

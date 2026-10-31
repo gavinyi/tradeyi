@@ -140,7 +140,11 @@ def test_run_gamma_strategy_passes_market_session_to_decide_volatility_action():
         if isinstance(node, ast.Call):
             func_name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
             if func_name == "decide_volatility_action":
-                keywords = [kw.arg for kw in node.keywords]
-                assert "market_session" in keywords, "decide_volatility_action 调用必须显式包含 market_session 关键字参数"
+                kw_dict = {kw.arg: kw.value for kw in node.keywords}
+                assert "market_session" in kw_dict, "decide_volatility_action 调用必须显式包含 market_session 关键字参数"
+                val_node = kw_dict["market_session"]
+                assert isinstance(val_node, ast.Name) and val_node.id == "market_session", (
+                    f"market_session 必须绑定同名有效变量，不能写死为 None/常量，实际: {ast.dump(val_node)}"
+                )
                 found = True
     assert found, "未在 scripts/run_gamma_strategy.py 中找到 decide_volatility_action 调用点"
