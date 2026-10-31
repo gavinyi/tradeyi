@@ -846,6 +846,7 @@ def run_task(
     run_started_at = store.now()
     store.heartbeat(strategy_id, "RUNNING", "正在执行", os.getpid())
     tracker = store.begin_heartbeat_run(strategy_id)
+    run_settled = False
     try:
         callback()
         duration = time.monotonic() - started
@@ -863,6 +864,7 @@ def run_task(
             # 否则库里看到的仍是最后那条 HEALTHY（等于洗白）。
             store.heartbeat(strategy_id, worst, message, os.getpid())
             store.finish_task_run(run_id, "DEGRADED", duration, message)
+            run_settled = True
             # 不覆盖内部状态、不重置失败计数、不发送「已恢复」：内部降级必须保持可见。
             return True
         store.set_setting(_sched_write_key(f"task_failure_count:{strategy_id}"), "0")
@@ -873,6 +875,7 @@ def run_task(
         if duration > timeout:
             message = f"任务耗时 {duration:.1f} 秒，超过软超时 {timeout:.0f} 秒"
             store.finish_task_run(run_id, "SLOW", duration, message)
+            run_settled = True
             store.heartbeat(strategy_id, "DEGRADED", message, os.getpid())
             alerts.send(
                 "WARNING", "TASK_TIMEOUT", f"{strategy_id}：{message}",
@@ -880,6 +883,7 @@ def run_task(
             )
             return True
         store.finish_task_run(run_id, "SUCCESS", duration)
+        run_settled = True
         store.heartbeat(strategy_id, "HEALTHY", "最近一次执行成功", os.getpid())
         alerts.recover(
             "TASK_TIMEOUT", f"{strategy_id} 耗时已恢复正常",
@@ -898,6 +902,7 @@ def run_task(
             "持仓不足" in message or "可用持仓" in message or "可卖" in message
         ):
             store.finish_task_run(run_id, "DEGRADED", duration, message)
+            run_settled = True
             until = datetime.now(NY) + timedelta(hours=20)
             store.set_setting(_sched_write_key(f"task_backoff_until:{strategy_id}"), until.isoformat())
             store.decision(
@@ -914,6 +919,7 @@ def run_task(
             )
             return True
         store.finish_task_run(run_id, "DEGRADED", duration, message)
+        run_settled = True
         record_broker_failure(store, alerts, strategy_id, message)
         store.set_setting(
             _sched_write_key(f"task_backoff_until:{strategy_id}"),
@@ -929,6 +935,7 @@ def run_task(
         store.end_heartbeat_run(tracker)
         duration = time.monotonic() - started
         store.finish_task_run(run_id, "ERROR", duration, str(exc))
+        run_settled = True
         failures = int(store.get_setting(_sched_read_key(store, f"task_failure_count:{strategy_id}"), "0") or 0) + 1
         delay = min(300, 5 * (2 ** min(failures - 1, 6)))
         store.set_setting(_sched_write_key(f"task_failure_count:{strategy_id}"), str(failures))
@@ -942,6 +949,17 @@ def run_task(
             incident_key=f"STRATEGY_ERROR:{strategy_id}",
         )
         return False
+    finally:
+        if not run_settled:
+            try:
+                duration = time.monotonic() - started
+                store.finish_task_run(run_id, "ERROR", duration, "任务未正常写入终态，执行统一 finally 兜底收敛")
+            except Exception as fe:
+                logger.warning("finally 兜底写入 task_run 终态异常: %s", fe)
+            try:
+                store.end_heartbeat_run(tracker)
+            except Exception as he:
+                logger.warning("finally 兜底结清 heartbeat_run 异常: %s", he)
 
 
 def active_volatility_combo_ids(store: TradingStore) -> set[str]:

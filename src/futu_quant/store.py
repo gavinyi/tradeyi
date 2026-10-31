@@ -2133,39 +2133,41 @@ class TradingStore:
 
     def reconcile_orphan_task_runs(self, max_running_seconds: float = 7200.0) -> int:
         """自愈清理异常遗留的 RUNNING 任务记录：
-        1. 若对应 Worker 进程 PID 已死亡，且执行耗时超过任务软超时时间，立即确认为孤儿任务收敛为 ORPHAN_KILLED；
-        2. 若对应 Worker 进程存活，坚决不误伤，仅在超过严重卡死超长大门槛 (max_running_seconds) 时收敛。
+        1. 进程存活性双向判定：主路径通过系统调用判定 PID 存活性，fail-safe 默认按存活；
+        2. 若 PID 已死亡：无论 elapsed 耗时多短，立即确认为孤儿任务收敛为 ORPHAN_KILLED；
+        3. 若 PID 仍存活：坚决不误伤，仍按超大门槛 max(timeout*2, max_running_seconds) 兜底。
         """
         now_dt = datetime.now(timezone.utc)
         reconciled = 0
         to_reconcile = []
 
         def _is_pid_alive(pid_val: Any) -> bool:
+            import os
             try:
                 p = int(pid_val)
             except (ValueError, TypeError):
                 return False
             if p <= 0:
                 return False
-            try:
-                import psutil
-                return psutil.pid_exists(p)
-            except Exception:
-                pass
             if os.name == "nt":
                 import ctypes
                 kernel32 = ctypes.windll.kernel32
+                # 0x1000 = PROCESS_QUERY_LIMITED_INFORMATION
                 handle = kernel32.OpenProcess(0x1000, False, p)
                 if handle:
                     kernel32.CloseHandle(handle)
                     return True
-                return False
+                err = kernel32.GetLastError()
+                # 严格区分：只有 ERROR_INVALID_PARAMETER (87) 确凿证明 PID 不存在/已死亡；
+                # 遇到 ERROR_ACCESS_DENIED (5) 或其它任何错误遵循 fail-safe 铁律一律按存活处理，坚决防止误杀！
+                return err != 87
             else:
                 try:
                     os.kill(p, 0)
                     return True
-                except OSError:
-                    return False
+                except OSError as e:
+                    import errno
+                    return e.errno == errno.EPERM
 
         with self.connection() as connection:
             rows = connection.execute(
@@ -2188,13 +2190,12 @@ class TradingStore:
                 settle_reason = ""
 
                 if not pid_alive:
-                    # 进程已死亡：只要超过任务软超时 (且至少经过 10 秒缓冲)，立即认定为孤儿任务
-                    if elapsed > max(timeout_sec, 10.0):
-                        should_reconcile = True
-                        settle_reason = f"Worker进程(PID:{pid})已退出死亡，自愈收敛为终态"
+                    # 规则 1：PID 确认已死，无论 elapsed，立即收敛终态，根除强杀/崩溃遗留
+                    should_reconcile = True
+                    settle_reason = f"Worker进程(PID:{pid})已退出死亡，自愈收敛为终态"
                 else:
-                    # 进程仍然存活：绝不误伤运行中任务，仅超大阈值兜底
-                    threshold = max(float(timeout_sec) * 3.0, max_running_seconds)
+                    # 规则 2：PID 仍存活或状态不确定，坚决不误伤，仍按超大门槛判
+                    threshold = max(float(timeout_sec) * 2.0, max_running_seconds)
                     if elapsed > threshold:
                         should_reconcile = True
                         settle_reason = f"任务严重卡死超大门槛({threshold:.0f}s)，自愈收敛为终态"

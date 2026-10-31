@@ -180,6 +180,9 @@ def observability_snapshot(store, record: bool = True) -> dict:
 
 
 def automatic_recovery_cycle(store) -> dict:
+    # 运行期周期自愈：先收敛死进程遗留的孤儿 RUNNING 记录，避免僵尸 RUNNING 成为最新记录而阻断 incident 恢复
+    reconciled_orphans = store.reconcile_orphan_task_runs()
+
     latest: dict[str, dict] = {}
     for row in store.task_runs(limit=5000):
         latest.setdefault(row["task_id"], row)
@@ -198,7 +201,12 @@ def automatic_recovery_cycle(store) -> dict:
                 recovered.append(key)
         else:
             pending.append(key)
-    result = {"recovered": recovered, "pending": pending, "safe_actions_only": True}
+    result = {
+        "recovered": recovered,
+        "pending": pending,
+        "safe_actions_only": True,
+        "reconciled_orphans": reconciled_orphans,
+    }
     store.operational_event("recovery", "AUTO_RECOVERY", "HEALTHY" if not pending else "WARNING", result)
     return result
 
