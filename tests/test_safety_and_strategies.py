@@ -314,16 +314,26 @@ def test_core_satellite_sgov_insufficient_sellable_blocks_over_cash_buy():
     buys_locked = [o for o in plan_locked if o.side == "BUY" and o.symbol != "US.SGOV"]
     assert len(buys_locked) == 0, "SGOV 不可卖且无可用现金时，必须阻断 BUY 避免券商拒单或动用保证金"
 
-    # 场景 B：SGOV 充分可卖 (can_sell_qty=700)，允许买入，且买入总额 <= 现金+SGOV可变现
+    # 场景 B：SGOV 充分可卖 (can_sell_qty=950)，初始可用现金仅 5_000 (100k - 95k SGOV)
+    # 调仓产生 9_785 买单，买入额超过可用现金且使现金低于预留 buffer 5% (5_000)，
+    # 必须断言生成 SGOV 赎回腿（SELL）且赎回金额补足差额！
     positions_sellable = pd.DataFrame([
-        {"code": "US.SGOV", "qty": 700, "can_sell_qty": 700, "market_val": 70_000},
-        {"code": "US.OTHER", "qty": 100, "can_sell_qty": 100, "market_val": 10_000},
+        {"code": "US.SGOV", "qty": 950, "can_sell_qty": 950, "market_val": 95_000},
     ])
     plan_sellable, _ = build_rebalance_plan(
         frames, positions_sellable, 100_000, ("US.SPY", "US.AAPL"),
         min_trade_usd=100, cash_yield_enabled=True, cash_yield_symbol="US.SGOV",
+        cash_buffer=0.05,
     )
     buys_sellable = [o for o in plan_sellable if o.side == "BUY" and o.symbol != "US.SGOV"]
     total_buy_notional = sum(o.order_notional for o in buys_sellable)
-    assert total_buy_notional > 0, "SGOV 充足时应允许正常再平衡买入"
-    assert total_buy_notional <= 70_000 + 20_000, "买入总额不得超过现金与可变现 SGOV 额度"
+    assert total_buy_notional > 5_000, f"买入总额必须大于初始可用现金 5000 以触发赎回，实际: {total_buy_notional}"
+
+    sgov_sells = [o for o in plan_sellable if o.side == "SELL" and "SGOV" in o.symbol]
+    assert len(sgov_sells) > 0, "买入额超过可用现金时，必须生成 SGOV SELL 赎回腿，不能因现金计算错误被跳过！"
+    redeem_notional = sum(o.order_notional for o in sgov_sells)
+    # 验证最终保留现金达标：5_000 - total_buy_notional + redeem_notional >= buffer 5_000
+    assert 5_000 - total_buy_notional + redeem_notional >= 5_000 - 1e-4, "赎回额必须补足现金缓冲缺口"
+    # 并且 SELL 严格先于 BUY
+    sides = [o.side for o in plan_sellable]
+    assert sides.index("SELL") < sides.index("BUY"), f"赎回腿必须排在买单前：{sides}"

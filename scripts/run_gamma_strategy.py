@@ -2531,12 +2531,13 @@ def run_campaign(
                     "exit_price_context": exit_price_context,
                 }, strategy_id, actor="service:gamma")
 
-                # 静默拦截严禁无告警：若买盘真空导致平仓无法挂单，必须发出审计告警（900秒内去重）
-                alert_type = "OPTION_EXIT_LIQUIDITY_VACUUM"
-                if not executor.store.alert_recently_exists("ERROR", alert_type, wait_reason, seconds=900):
-                    executor.store.add_alert(
-                        "ERROR", alert_type, wait_reason, delivered=False,
-                    )
+                # 静默拦截严禁无告警：若买盘真空导致平仓无法挂单，必须通过 alerts.send 进行真实推送（内置 900 秒去重）
+                executor.alerts.send(
+                    "ERROR",
+                    "OPTION_EXIT_LIQUIDITY_VACUUM",
+                    f"{code}: {wait_reason}",
+                    incident_key=f"OPTION_EXIT_LIQUIDITY_VACUUM:{leg['code']}",
+                )
 
                 print(f"{code}: HOLD ({wait_reason})")
                 return

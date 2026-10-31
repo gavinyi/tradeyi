@@ -419,6 +419,7 @@ def build_rebalance_plan(
             position_map[code] = {
                 "qty": float(row.get("qty", 0.0)),
                 "can_sell_qty": float(row.get("can_sell_qty", row.get("qty", 0.0))),
+                "market_val": market_value,
             }
 
     stats_by_symbol = {symbol: indicators(frames[symbol]) for symbol in symbols}
@@ -485,12 +486,19 @@ def build_rebalance_plan(
     # 基础现金估算：总资产减去股票持仓市值及理财持仓市值
     sgov_mv = 0.0
     sgov_sellable_value = 0.0
+    yield_symbol_key = cash_yield_symbol
     if cash_yield_enabled:
         norm_yield = normalize_us_symbol(cash_yield_symbol)
         for code, h in position_map.items():
             if normalize_us_symbol(code) == norm_yield:
-                yield_p = frames[cash_yield_symbol]["close"].iloc[-1] if cash_yield_symbol in frames else 100.0
-                sgov_mv = h["qty"] * yield_p
+                yield_symbol_key = code
+                # 价格优先取持仓真实均价或行情价格，避免拍脑袋假定 100.0
+                yield_p = (
+                    h["market_val"] / h["qty"]
+                    if h.get("qty", 0) > 0 and h.get("market_val", 0) > 0
+                    else (frames[cash_yield_symbol]["close"].iloc[-1] if cash_yield_symbol in frames else 100.0)
+                )
+                sgov_mv = h["market_val"] if h.get("market_val", 0) > 0 else h["qty"] * yield_p
                 sgov_sellable_value = h["can_sell_qty"] * yield_p
                 break
 
@@ -546,9 +554,11 @@ def build_rebalance_plan(
         )
 
     # 现金理财池 (SGOV 超短国债 ETF 增益机制)：若启用且有行情，在闲置现金充裕时自动配置国债理财吃 4.8% 利息
-    if cash_yield_enabled and cash_yield_symbol in frames:
-        yield_stats = indicators(frames[cash_yield_symbol])
-        yield_held = position_map.get(cash_yield_symbol, {"qty": 0.0, "can_sell_qty": 0.0})
+    if cash_yield_enabled and (cash_yield_symbol in frames or any(normalize_us_symbol(k) == normalize_us_symbol(cash_yield_symbol) for k in frames)):
+        # 统一标准化查 frames 与 position_map，避免裸字符串不匹配
+        matching_frame_key = next((k for k in frames if normalize_us_symbol(k) == normalize_us_symbol(cash_yield_symbol)), cash_yield_symbol)
+        yield_stats = indicators(frames[matching_frame_key])
+        yield_held = position_map.get(yield_symbol_key, {"qty": 0.0, "can_sell_qty": 0.0, "market_val": 0.0})
         yield_mv = yield_held["qty"] * yield_stats["price"]
         # 计算所有股票指令执行后的净现金变动
         net_buy_outflow = sum(
@@ -556,8 +566,10 @@ def build_rebalance_plan(
         ) - sum(
             o.quantity * o.price for o in orders if o.side == "SELL"
         )
-        # 预估调仓后的可用现金
-        current_cash = max(0.0, account_value - total_market_value)
+        # 预估调仓后的可用现金：
+        # 必须同时扣减股票持仓市值与理财市值 sgov_mv，还原真实账户可用现金！
+        # 若不扣减 sgov_mv，会把未变现的 SGOV 误当现金，导致不发赎回腿发生实盘拒单
+        current_cash = max(0.0, account_value - total_market_value - sgov_mv)
         post_cash = current_cash - net_buy_outflow
         target_cash_buffer = account_value * cash_buffer
 
