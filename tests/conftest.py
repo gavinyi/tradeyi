@@ -142,8 +142,10 @@ def prod_guard_refusal(current_root: Path | None = None) -> str | None:
 # 隔离环境（TRADEYI_ENV=test）下，本工作区的 DEFAULT_DB 是**测试库**，不是生产库。
 # 守卫必须显式知道生产库在哪，否则会把测试库当生产库：要么假绿（测的是副本），
 # 要么因测试库不存在而误红。两者都会让「生产是否被写穿」这个问题失去答案。
-if os.environ.get("TRADEYI_ENV", "").strip().lower() == "test":
-    _prod_guard_env = os.environ.get("TRADEYI_PROD_DB_PATH", "").strip()
+_IS_TEST_ENV = os.environ.get("TRADEYI_ENV", "").strip().lower() == "test"
+_prod_guard_env = os.environ.get("TRADEYI_PROD_DB_PATH", "").strip()
+_PROD_DB_PATH_EXPLICIT = _IS_TEST_ENV and bool(_prod_guard_env)
+if _IS_TEST_ENV:
     if _prod_guard_env:
         _PROD_GUARD_DB_PATH = Path(_prod_guard_env).resolve()
     else:
@@ -250,11 +252,11 @@ def prod_config_violation(
         return None
 
     # 路径 2：before is None（拿不到生产库指纹）
-    # 代码来源是生产目录：必须硬失败（fail-closed），防止在生产环境下静默跳过守卫
-    if is_production_workspace():
+    # 生产目录或测试区显式指定生产库：必须硬失败（fail-closed），禁止静默跳过守卫。
+    if is_production_workspace() or (_IS_TEST_ENV and _PROD_DB_PATH_EXPLICIT):
         return f"生产 runtime_config 指纹不可读（数据源：{db_path_under_guard()}）—— fail-closed。"
 
-    # 路径 3：测试区拿不到生产库指纹：允许以 0 通过，由 sessionfinish 明确打印通知
+    # 路径 3：测试区未显式指定生产库：允许以 0 通过，由 sessionfinish 明确打印通知
     return None
 
 
@@ -275,7 +277,7 @@ def pytest_sessionstart(session):
         )
         print(f"\n{message}", file=sys.stderr, flush=True)
         raise pytest.UsageError(message)
-    if is_production_workspace():
+    if is_production_workspace() or (_IS_TEST_ENV and _PROD_DB_PATH_EXPLICIT):
         _SESSION_PROD_BASELINE = prod_config_fingerprint()
     else:
         # A4（2026-10-27）：测试区里的 `data/trading.db` 是**测试库**，不是生产库。
@@ -283,7 +285,7 @@ def pytest_sessionstart(session):
         # 明确不做比对（skip 口径），而不是 fail。
         _SESSION_PROD_BASELINE = None
     if _SESSION_PROD_BASELINE is None:
-        if is_production_workspace():
+        if is_production_workspace() or (_IS_TEST_ENV and _PROD_DB_PATH_EXPLICIT):
             print(
                 f"\n[PROD-GUARD] 生产 runtime_config 指纹不可读（{_PROD_GUARD_DB_PATH}）"
                 "—— 会话结束时将按 fail-closed 硬红。",
@@ -309,7 +311,7 @@ def pytest_sessionfinish(session, exitstatus):
     if violation:
         print(f"\n[PROD-GUARD] {violation}", file=sys.stderr, flush=True)
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
-    elif baseline is None and not is_production_workspace():
+    elif baseline is None and not is_production_workspace() and not (_IS_TEST_ENV and _PROD_DB_PATH_EXPLICIT):
         print(
             f"\n[PROD-GUARD] 数据源为测试库、本轮不做生产比对（数据源：{db_path_under_guard()}）",
             file=sys.stderr, flush=True,

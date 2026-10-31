@@ -219,9 +219,16 @@ def test_prod_guard_test_workspace_allows_without_production_db(monkeypatch):
     """
     import conftest
 
-    # 路 1：测试区拿不到生产库指纹 -> violation 为 None（以 0 通过）
+    # 路 1：仅测试区未显式指定生产库路径才允许明确 skip。
     monkeypatch.setattr(conftest, "is_production_workspace", lambda: False)
+    monkeypatch.setattr(conftest, "_IS_TEST_ENV", True)
+    monkeypatch.setattr(conftest, "_PROD_DB_PATH_EXPLICIT", False)
     assert conftest.prod_config_violation(None, None) is None
+
+    # 路 1b：测试区显式指定生产库路径 -> 不可读必须硬失败。
+    monkeypatch.setattr(conftest, "_PROD_DB_PATH_EXPLICIT", True)
+    v_explicit = conftest.prod_config_violation(None, None)
+    assert v_explicit and "fail-closed" in v_explicit
 
     # 路 2：代码来源是生产目录 -> 拿不到指纹硬失败（fail-closed）
     monkeypatch.setattr(conftest, "is_production_workspace", lambda: True)
