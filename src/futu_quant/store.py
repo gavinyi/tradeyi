@@ -2560,8 +2560,7 @@ class TradingStore:
         同时更新 runtime_config、config_versions、config_releases (PUBLISHED 终态) 以及可选的 audit_events，
         彻底根除两套状态机代码分叉风险。
         """
-        if audit_event_type:
-            validate_actor(approved_by)
+        validate_actor(approved_by)
         with self.connection() as connection:
             release = connection.execute(
                 "SELECT * FROM config_releases WHERE id=?", (release_id,)
