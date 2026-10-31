@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from futu_quant.config import normalize_us_symbol
+
 
 STRATEGY_NAME = "Core Satellite"
 CORE_MAX_WEIGHTS = {
@@ -405,9 +407,16 @@ def build_rebalance_plan(
     total_market_value = 0.0
     if not positions.empty:
         for _, row in positions.iterrows():
+            code = str(row["code"])
             market_value = float(row.get("market_val", row.get("val", 0.0)) or 0.0)
-            total_market_value += max(0.0, market_value)
-            position_map[str(row["code"])] = {
+            # 现金理财标的（如 US.SGOV）属闲置现金类资产，不占用股票敞口总市值；两侧经 normalize_us_symbol 严密匹配
+            is_cash_yield = (
+                cash_yield_enabled
+                and normalize_us_symbol(code) == normalize_us_symbol(cash_yield_symbol)
+            )
+            if not is_cash_yield:
+                total_market_value += max(0.0, market_value)
+            position_map[code] = {
                 "qty": float(row.get("qty", 0.0)),
                 "can_sell_qty": float(row.get("can_sell_qty", row.get("qty", 0.0))),
             }
@@ -468,10 +477,31 @@ def build_rebalance_plan(
         delta_value = account_value * target_weight - current_value
         candidates.append((symbol, stats, held, current_weight, target_weight, delta_value, reason))
 
-    # Existing managed or unmanaged holdings count toward the hard 70% stock cap.
-    buy_budget = max(0.0, account_value * max_stock_weight - total_market_value)
+    # 资金安全底线（Fail-closed，宁可少买不可超买）：
+    # 排除 SGOV 后，权重敞口预算仅反映目标股票比例上限；买入总预算必须受限于实际可用现金与流动性。
+    # 若 SGOV 可卖数量不足，绝不能把不可卖的 SGOV 视作购买力，避免券商拒单或动用保证金。
+    stock_exposure_budget = max(0.0, account_value * max_stock_weight - total_market_value)
+
+    # 基础现金估算：总资产减去股票持仓市值及理财持仓市值
+    sgov_mv = 0.0
+    sgov_sellable_value = 0.0
+    if cash_yield_enabled:
+        norm_yield = normalize_us_symbol(cash_yield_symbol)
+        for code, h in position_map.items():
+            if normalize_us_symbol(code) == norm_yield:
+                yield_p = frames[cash_yield_symbol]["close"].iloc[-1] if cash_yield_symbol in frames else 100.0
+                sgov_mv = h["qty"] * yield_p
+                sgov_sellable_value = h["can_sell_qty"] * yield_p
+                break
+
+    estimated_cash = max(0.0, account_value - total_market_value - sgov_mv)
+    # 股票调仓所能借助的最大流动性 = 当前现金 + 实际可变现的 SGOV（扣除必须预留的 cash_buffer）
+    target_cash_buffer = account_value * cash_buffer
+    max_available_liquidity = max(0.0, estimated_cash + sgov_sellable_value - target_cash_buffer)
+
+    buy_budget = min(stock_exposure_budget, max_available_liquidity)
     requested_buys = sum(max(0.0, item[5]) for item in candidates)
-    buy_scale = min(1.0, buy_budget / requested_buys) if requested_buys else 1.0
+    buy_scale = min(1.0, buy_budget / requested_buys) if requested_buys and buy_budget > 0 else 0.0
 
     orders = []
     for symbol, stats, held, current_weight, target_weight, delta_value, reason in candidates:
@@ -572,5 +602,9 @@ def build_rebalance_plan(
                         order_notional=invest_qty * yield_stats["price"],
                     )
                 )
+
+    # 工业规范：再平衡订单严格保证先卖后买（SELL-first, BUY-second），
+    # 释放流动性与购买力，避免实盘资金受限时买单抢先发出被券商拒单
+    orders.sort(key=lambda o: 0 if o.side == "SELL" else 1)
 
     return orders, risk_on
