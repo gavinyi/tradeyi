@@ -730,6 +730,9 @@ def _sched_read_key(store: TradingStore, base_key: str) -> str:
     tenant_key, legacy = tenant_config_key_candidates(_ACTIVE_TENANT_ID.get(), base_key)
     if tenant_key and store.get_setting(tenant_key):
         return tenant_key
+    # 严格租户隔离 (P0-8)：退避键具有强时效性与租户特异性，启用了租户时严禁回落至全局旧键，防止存量脏键跨租户连坐
+    if tenant_key and base_key.startswith("task_backoff_until:"):
+        return tenant_key
     return legacy
 
 
@@ -930,7 +933,7 @@ def run_task(
         delay = min(300, 5 * (2 ** min(failures - 1, 6)))
         store.set_setting(_sched_write_key(f"task_failure_count:{strategy_id}"), str(failures))
         store.set_setting(
-            f"task_backoff_until:{strategy_id}",
+            _sched_write_key(f"task_backoff_until:{strategy_id}"),
             (datetime.now(NY) + timedelta(seconds=delay)).isoformat(),
         )
         store.heartbeat(strategy_id, "ERROR", str(exc), os.getpid())

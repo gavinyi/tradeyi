@@ -2133,17 +2133,48 @@ class TradingStore:
 
     def reconcile_orphan_task_runs(self, max_running_seconds: float = 7200.0) -> int:
         """自愈清理异常遗留的 RUNNING 任务记录：
-        若服务重启或非正常退出，将超过超时门槛仍处于 RUNNING 的历史记录收敛为 ORPHAN_KILLED 终态。
+        1. 若对应 Worker 进程 PID 已死亡，且执行耗时超过任务软超时时间，立即确认为孤儿任务收敛为 ORPHAN_KILLED；
+        2. 若对应 Worker 进程存活，坚决不误伤，仅在超过严重卡死超长大门槛 (max_running_seconds) 时收敛。
         """
         now_dt = datetime.now(timezone.utc)
         reconciled = 0
         to_reconcile = []
+
+        def _is_pid_alive(pid_val: Any) -> bool:
+            try:
+                p = int(pid_val)
+            except (ValueError, TypeError):
+                return False
+            if p <= 0:
+                return False
+            try:
+                import psutil
+                return psutil.pid_exists(p)
+            except Exception:
+                pass
+            if os.name == "nt":
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.OpenProcess(0x1000, False, p)
+                if handle:
+                    kernel32.CloseHandle(handle)
+                    return True
+                return False
+            else:
+                try:
+                    os.kill(p, 0)
+                    return True
+                except OSError:
+                    return False
+
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT id, task_id, started_at, timeout_seconds, message FROM task_runs WHERE status = 'RUNNING'"
+                "SELECT id, task_id, started_at, timeout_seconds, message, pid FROM task_runs WHERE status = 'RUNNING'"
             ).fetchall()
             for r in rows:
-                run_id, task_id, started_at, timeout_sec, orig_msg = r[0], r[1], r[2], float(r[3] or 120.0), str(r[4] or "")
+                run_id, task_id, started_at, timeout_sec, orig_msg, pid = (
+                    r[0], r[1], r[2], float(r[3] or 120.0), str(r[4] or ""), r[5],
+                )
                 try:
                     s_dt = datetime.fromisoformat(str(started_at))
                     if s_dt.tzinfo is None:
@@ -2152,9 +2183,24 @@ class TradingStore:
                 except (ValueError, TypeError):
                     elapsed = float("inf")
 
-                threshold = max(float(timeout_sec) * 2.0, max_running_seconds)
-                if elapsed > threshold:
-                    settle_msg = f"服务非正常退出或超时遗留（原始: {orig_msg}），启动自愈标记为终态" if orig_msg else "服务非正常退出或超时遗留，启动自愈标记为终态"
+                pid_alive = _is_pid_alive(pid)
+                should_reconcile = False
+                settle_reason = ""
+
+                if not pid_alive:
+                    # 进程已死亡：只要超过任务软超时 (且至少经过 10 秒缓冲)，立即认定为孤儿任务
+                    if elapsed > max(timeout_sec, 10.0):
+                        should_reconcile = True
+                        settle_reason = f"Worker进程(PID:{pid})已退出死亡，自愈收敛为终态"
+                else:
+                    # 进程仍然存活：绝不误伤运行中任务，仅超大阈值兜底
+                    threshold = max(float(timeout_sec) * 3.0, max_running_seconds)
+                    if elapsed > threshold:
+                        should_reconcile = True
+                        settle_reason = f"任务严重卡死超大门槛({threshold:.0f}s)，自愈收敛为终态"
+
+                if should_reconcile:
+                    settle_msg = f"{settle_reason}（原始: {orig_msg}）" if orig_msg else settle_reason
                     connection.execute(
                         """UPDATE task_runs
                         SET status = 'ORPHAN_KILLED',
@@ -2164,7 +2210,8 @@ class TradingStore:
                         (settle_msg, self.now(), run_id),
                     )
                     to_reconciled = {
-                        "run_id": run_id, "task_id": task_id, "started_at": started_at, "elapsed_seconds": elapsed,
+                        "run_id": run_id, "task_id": task_id, "started_at": started_at,
+                        "elapsed_seconds": elapsed, "pid": pid, "pid_alive": pid_alive,
                     }
                     to_reconcile.append((task_id, to_reconciled))
 
