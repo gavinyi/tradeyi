@@ -456,9 +456,11 @@ def volatility_exit_limit_price(
     }
 
 
-def _exit_liquidity_incident_key(campaign_id: str, leg_number: int | str, code: str) -> str:
+def _exit_liquidity_incident_key(campaign_id: object, leg_number: int | str, code: str) -> str:
     """生成买盘真空事故去重键，精确绑定 campaign、腿编号与合约代码，防止同标的多腿相互吞噬去重。"""
-    return f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:{leg_number}:{code}"
+    cid = str(campaign_id).strip() if campaign_id is not None else ""
+    cid = cid or str(code).strip() or "unknown"
+    return f"OPTION_EXIT_LIQUIDITY_VACUUM:{cid}:{leg_number}:{code}"
 
 
 def _campaign_naked_short_rows(campaign: dict, positions: pd.DataFrame) -> pd.DataFrame:
@@ -2537,10 +2539,8 @@ def run_campaign(
                 }, strategy_id, actor="service:gamma")
 
                 # 静默拦截严禁无告警：若买盘真空导致平仓无法挂单，必须通过 alerts.send 进行真实推送（内置 900 秒去重）
-                # incident_key 必须精确绑定 campaign_id、leg_number 与 code，防止多腿组合被错误合并去重
-                # 显式处理 None 或空白字符串，防止出现空维度导致跨 campaign 串告警
-                resolved_campaign_id = str(campaign.get("campaign_id") or code).strip() or str(strategy_id)
-                incident_k = _exit_liquidity_incident_key(resolved_campaign_id, leg_number, leg["code"])
+                # incident_key 必须精确绑定 campaign_id、leg_number 与 code，由生产函数统一规范化防止空维度
+                incident_k = _exit_liquidity_incident_key(campaign.get("campaign_id"), leg_number, leg["code"])
                 executor.alerts.send(
                     "ERROR",
                     "OPTION_EXIT_LIQUIDITY_VACUUM",

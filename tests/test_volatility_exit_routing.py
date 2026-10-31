@@ -215,17 +215,17 @@ def test_sell_exit_liquidity_vacuum_alerts_with_multi_leg_distinction():
 
 
 def test_sell_exit_liquidity_vacuum_alerts_fallback_when_campaign_id_none_or_blank():
-    """Bug 4 追加守卫：
-    当 campaign.get('campaign_id') 显式为 None 或空串时，
-    incident_key 必须稳定回落至 code 或 strategy_id，绝不能生成空维度键。
+    """Bug 4 追加守卫（下沉验证）：
+    当直接传 campaign_id 为 None、""、"   " 给生产函数 _exit_liquidity_incident_key 时，
+    生产函数必须自身完成规范化，稳定回落至 code，绝不能生成包含 :: 或空维度的键。
     """
     _exit_liquidity_incident_key = getattr(module, "_exit_liquidity_incident_key", None)
     assert _exit_liquidity_incident_key is not None
 
     code = "US.XYZ261120C100000"
     for blank in (None, "", "   "):
-        resolved = str(blank or code).strip() or "strat-default"
-        key = _exit_liquidity_incident_key(resolved, 1, code)
+        key = _exit_liquidity_incident_key(blank, 1, code)
         assert "::" not in key, f"incident_key 不能包含连续空冒号: {key}"
-        assert f":{code}" in key, f"incident_key 必须包含有效标的: {key}"
+        assert f":{code}:" in key, f"incident_key 必须稳定回落至 code: {key}"
         assert not key.endswith(":"), f"incident_key 不能以冒号结尾: {key}"
+        assert key == f"OPTION_EXIT_LIQUIDITY_VACUUM:{code}:1:{code}"
