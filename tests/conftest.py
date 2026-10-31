@@ -357,7 +357,10 @@ def _isolate_environment(monkeypatch, tmp_path):
                        bootstrap=effective_bootstrap,
                        allow_migrations=allow_migrations, migration_actor=migration_actor)
         else:
-            _real_init(self, tmp_path / "isolated.db", tenant_registry,
+            # Reviewer 要求：每次生成唯一 DB 文件名（pid + uuid8），彻底根除跨测试或中断导致的半截库复用
+            import uuid
+            unique_name = f"isolated_{os.getpid()}_{uuid.uuid4().hex[:8]}.db"
+            _real_init(self, tmp_path / unique_name, tenant_registry,
                        read_only=read_only, bootstrap=effective_bootstrap,
                        allow_migrations=allow_migrations, migration_actor=migration_actor)
 
