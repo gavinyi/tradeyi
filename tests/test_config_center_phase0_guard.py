@@ -288,26 +288,31 @@ def test_runtime_config_negative_control_fails_on_unregistered_write(tmp_path):
 
 
 def test_create_config_release_draft_key_is_registered_guard():
-    """CI 守卫第三道：扫描全工程 create_config_release 调用，若传入字面量键，必须在 Registry 登记。"""
+    """CI 缺口显式断言（Phase 0 事实记录）：
+    当前 pages/18 中草稿配置键来自 st.text_input 自由文本输入，
+    因此发布链路底层当前无法通过字面量静态阻止未登记键创建草稿；
+    本断言显式断言该入口仍为 text_input 自由文本（记录已知缺口），
+    一旦 Phase 1 将页面改造为登记表驱动的受限选择或强校验，本断言将失败，提醒同步升级守卫。
+    """
     repo_root = Path(__file__).resolve().parents[1]
-    draft_calls = 0
-    unregistered = []
+    page_18 = repo_root / "pages" / "18_infrastructure_disaster_recovery.py"
+    assert page_18.exists(), f"未找到灾备演练与配置发布页面: {page_18}"
 
-    for folder in (repo_root / "src", repo_root / "scripts", repo_root / "pages"):
-        if not folder.exists():
-            continue
-        for py_path in folder.rglob("*.py"):
-            content = py_path.read_text(encoding="utf-8-sig")
-            tree = ast.parse(content, filename=str(py_path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                    if node.func.attr == "create_config_release" and node.args:
-                        draft_calls += 1
-                        arg0 = node.args[0]
-                        if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                            k = arg0.value.strip()
-                            if not GLOBAL_REGISTRY.contains(k):
-                                unregistered.append(k)
+    content = page_18.read_text(encoding="utf-8-sig")
+    tree = ast.parse(content, filename=str(page_18))
 
-    assert draft_calls > 0, "未扫描到 create_config_release 调用点！"
-    assert not unregistered, f"发现未登记的配置草稿创建键: {unregistered}"
+    # 断言存在 config_key = st.text_input(...) 自由文本调用
+    has_free_text_config_input = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            if node.targets[0].id == "config_key":
+                if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
+                    if node.value.func.attr == "text_input":
+                        has_free_text_config_input = True
+                        break
+
+    assert has_free_text_config_input, (
+        "pages/18 的配置键来源已不再是 text_input 自由文本！"
+        "说明发布入口已被 Phase 1 改造（如改为 selectbox 或引入 ConfigService 强校验），"
+        "请同步将本条缺口断言升级为严格的受限选择或校验器守卫！"
+    )

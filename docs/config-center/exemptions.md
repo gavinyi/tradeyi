@@ -53,7 +53,9 @@
 ## 4. runtime_config 写调用通用助手豁免清单 (8 处)
 针对由通用底层助手方法转发的写调用，由于其形参键名在函数内为变量：
 - 策略与配置业务调用处（如 `config.py` 中的 `save_campaign`、`save_volatility_campaigns` 等）的传入键名已在具体的业务调用处被静态或动态守卫覆盖；
-- 发布引擎写回链路（`store.py:2439/2447/2459`）当前底层直接采用草稿中的 `release['config_key']`，底层无键白名单强校验，因此列为技术豁免；**Phase 1 将由统一 ConfigService 在创建草稿入口处对 key 实施强校验**。
+- 发布引擎写回链路（`store.py:2439/2447/2459`）当前底层直接采用草稿中的 `release['config_key']`，底层无键白名单强校验；
+- **更靠前的缺口：UI 入口本身允许自由文本**。当前唯一前端入口 `pages/18_infrastructure_disaster_recovery.py:91` 采用 `st.text_input("配置键", value="ENV_SETTINGS")`，UI 允许输入任意未登记键创建草稿；
+- 因此发布全链路列为技术豁免与已知缺口：**直写路径已完全封死，发布/UI 自由文本链路列为已知缺口，Phase 1 由 ConfigService 在创建草稿处对 key 做登记表强校验并改造 UI**。
 
 | 序号 | 代码站点 | 函数角色 | 豁免理由 |
 |---:|---|---|---|
@@ -61,7 +63,7 @@
 | 2 | `src/futu_quant/config.py:422` | `save_volatility_campaigns` | 波动率 campaign 统一写回入口，key 来自 `_volatility_campaigns_key` (已登记) |
 | 3 | `src/futu_quant/config.py:495` | `save_campaign` 通用保存助手 | 供页面及策略通用更新，形参 config_key 由调用方传入 (已登记模板) |
 | 4 | `src/futu_quant/config.py:550` | `delete_campaign` 通用删除助手 | 供页面及策略通用删除，形参 config_key 由调用方传入 (已登记模板) |
-| 5 | `src/futu_quant/store.py:2439` | `publish_config_release` 发布应用 | 发布引擎底层写回，当前无键校验，Phase 1 由 ConfigService 在创建草稿处强校验 |
+| 5 | `src/futu_quant/store.py:2439` | `publish_config_release` 发布应用 | 发布引擎底层写回，当前无键校验（UI允许自由文本），Phase 1 由 ConfigService 在创建草稿处强校验 |
 | 6 | `src/futu_quant/store.py:2447` | `publish_config_release` 发布失败回滚 | 发布失败自动回滚写回原值，Phase 1 由 ConfigService 治理 |
 | 7 | `src/futu_quant/store.py:2459` | `rollback_config_release` 人工回滚 | 配置回滚引擎写回，键由发布单决定，Phase 1 由 ConfigService 治理 |
 | 8 | `scripts/migrate_volatility_campaigns_tenant_scope.py:1341` | 一次性离线数据迁移脚本 | 离线租户分区数据结构迁移脚本，不属于在线服务代码 |
