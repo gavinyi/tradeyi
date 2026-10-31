@@ -93,6 +93,9 @@ with config_tab:
     # 严格门禁：通过统一助手函数剔除 CRITICAL 极高风险与需二次确认项
     candidate_keys = get_draftable_config_keys()
 
+    admin_session_id = st.session_state.get("admin_user") or "shared_admin_credential"
+    admin_actor = f"streamlit_admin:{admin_session_id}"
+
     with st.form("config_release_draft", border=True):
         config_key = st.selectbox(
             "配置键 (受限目录驱动，已剔除 CRITICAL 极高风险)",
@@ -104,7 +107,7 @@ with config_tab:
         create_draft = st.form_submit_button("创建配置草稿", disabled=not admin)
     if create_draft:
         try:
-            release_id = store.create_config_release(config_key, json.loads(draft_text), "streamlit_admin", reason)
+            release_id = store.create_config_release(config_key, json.loads(draft_text), admin_actor, reason)
             st.success(f"草稿 #{release_id} 已创建，尚未发布。")
             st.rerun()
         except (ValueError, json.JSONDecodeError) as exc:
@@ -119,17 +122,17 @@ with config_tab:
             st.json(json.loads(release["diff_json"]))
             with st.container(horizontal=True):
                 if st.button("审批并发布", type="primary", disabled=not admin):
-                    store.publish_config_release(int(release_id), "streamlit_admin")
+                    store.publish_config_release(int(release_id), admin_actor)
                     st.success("配置已原子发布；服务下一循环读取。")
                     st.rerun()
                 if st.button("拒绝草稿", disabled=not admin):
-                    store.reject_config_release(int(release_id), "streamlit_admin")
+                    store.reject_config_release(int(release_id), admin_actor)
                     st.rerun()
         published = releases[releases["status"] == "PUBLISHED"]
         if not published.empty:
             rollback_id = st.selectbox("选择已发布版本回滚", published["id"].astype(int).tolist())
             if st.button("回滚选中配置", disabled=not admin):
-                store.rollback_config_release(int(rollback_id), "streamlit_admin")
+                store.rollback_config_release(int(rollback_id), admin_actor)
                 st.success("配置已回滚并生成新的运行版本。")
                 st.rerun()
 

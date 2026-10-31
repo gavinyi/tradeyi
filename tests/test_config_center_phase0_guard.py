@@ -860,4 +860,62 @@ def test_single_key_matches_at_most_one_template():
         seen[key] = t_str
 
 
+def test_all_publish_config_release_calls_enforce_valid_colon_actor_format():
+    """Phase 3 守卫：AST 扫描全仓所有 publish_config_release 调用点，断言第二实参绝不是无冒号字符串字面量。
+    保证任何发布调用点的 actor 必须显式满足 <class>:<id> 格式或由变量派生，杜绝运行时抛 AuditActorError。
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    scan_dirs = [repo_root / "src", repo_root / "pages", repo_root / "scripts", repo_root / "tests"]
+
+    py_files = list(repo_root.glob("*.py"))
+    for d in scan_dirs:
+        if d.exists():
+            py_files.extend(d.rglob("*.py"))
+
+    def _check_publish_calls(tree, filename: str) -> list[str]:
+        violations = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = None
+                if isinstance(node.func, ast.Name):
+                    name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    name = node.func.attr
+                if name in {"publish_config_release", "publish_config_release_with_audit"}:
+                    actor_node = None
+                    if len(node.args) >= 2:
+                        actor_node = node.args[1]
+                    else:
+                        for kw in node.keywords:
+                            if kw.arg in {"approved_by", "actor"}:
+                                actor_node = kw.value
+                                break
+                    if actor_node and isinstance(actor_node, ast.Constant) and isinstance(actor_node.value, str):
+                        actor_val = actor_node.value.strip()
+                        if ":" not in actor_val:
+                            violations.append(
+                                f"{filename}:{getattr(node, 'lineno', 0)} 的 {name} 传入了无冒号字面量 actor: '{actor_val}'"
+                            )
+        return violations
+
+    all_violations = []
+    for f in py_files:
+        try:
+            content = f.read_text(encoding="utf-8-sig")
+            tree = ast.parse(content, filename=str(f))
+            all_violations.extend(_check_publish_calls(tree, str(f.relative_to(repo_root))))
+        except Exception as exc:
+            all_violations.append(f"解析文件 {f} 失败: {exc}")
+
+    assert not all_violations, f"发现 publish_config_release 违规调用点:\n" + "\n".join(all_violations)
+
+    # 负向可失败验证：传入无冒号字面量代码必须被捕获
+    bad_code = "store.publish_config_release(1, 'bad_actor_no_colon')"
+    bad_tree = ast.parse(bad_code, filename="bad_call.py")
+    bad_violations = _check_publish_calls(bad_tree, "bad_call.py")
+    assert len(bad_violations) == 1
+    assert "bad_actor_no_colon" in bad_violations[0]
+
+
+
 
