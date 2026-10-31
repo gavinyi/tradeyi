@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -762,8 +763,27 @@ class ExecutionManager:
 
                 if is_urgent and intent["side"] == "SELL":
                     # 紧急平仓/锁利卖出: 积极主动吃单，紧贴买一价下方 1% 确保对手方撮合成交
-                    target = round(min(current, bid * 0.99), 2)
-                    target = max(target, round(reference * (1 - slip), 2))
+                    raw_target = min(current, bid * 0.99)
+                    min_allowed = reference * (1 - slip)
+
+                    # 1. 确定 tick 步长：优先取快照 price_spread，缺失或异常时退到保守网格
+                    spread_val = quote.get("price_spread")
+                    try:
+                        tick = float(spread_val) if spread_val is not None else 0.0
+                    except (ValueError, TypeError):
+                        tick = 0.0
+
+                    if not (math.isfinite(tick) and tick > 0):
+                        tick = 0.10 if raw_target >= 3.00 - 1e-9 else 0.05
+
+                    # 2. 向下对齐 tick（SELL 向下取整，确保不高于限价且容易成交）
+                    ticks = raw_target / tick
+                    aligned_ticks = int(ticks + 1e-7)
+                    target = round(max(0.01, aligned_ticks * tick), 2)
+
+                    # 3. 严格守住 slip 底线：对齐后若跌破 reference * (1 - slip)，宁可不发改单，绝不突破滑点保护
+                    if target < round(min_allowed, 2) - 1e-4:
+                        continue
                 elif is_urgent and intent["side"] == "BUY":
                     # 紧急买回平仓: 紧贴卖一价上方 1% 主动吃单
                     target = round(max(current, ask * 1.01), 2)

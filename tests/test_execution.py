@@ -493,3 +493,106 @@ def test_virtual_position_prevents_cross_strategy_sell(tmp_path, monkeypatch):
 
     assert not decision.allowed
     assert "虚拟持仓" in decision.reason
+
+
+class OptionTickRepriceBroker(FakeBroker):
+    def __init__(self, snapshot_row: dict):
+        super().__init__()
+        self.snapshot_row = snapshot_row
+        self.modified_price = None
+        self.modify_calls = 0
+
+    def snapshots(self, symbols):
+        row = dict(self.snapshot_row)
+        row["code"] = symbols[0]
+        return pd.DataFrame([row])
+
+    def modify_limit_order(self, broker_order_id, quantity, price, expected_env=None):
+        self.modified_price = price
+        self.modify_calls += 1
+
+
+def test_urgent_sell_reprice_aligns_to_price_spread_tick(tmp_path, monkeypatch):
+    """Bug 5 守卫：
+    1. 紧急平仓 SELL 改价必须对齐 price_spread（如 0.05 步长，3.82 -> 3.80）；
+    2. 对齐后价格必须为 tick 的合法整数倍；
+    3. 改单实际发往 broker.modify_limit_order 的价格必须是对齐后的价格。
+    """
+    monkeypatch.setenv("EXEC_REPRICE_INTERVAL_SECONDS", "15")
+    monkeypatch.setenv("EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT", "0.12")
+    store = TradingStore(tmp_path / "test.db")
+
+    # 快照提供 bid=3.86 (bid*0.99 = 3.8214)，price_spread=0.05
+    broker = OptionTickRepriceBroker({"bid_price": 3.86, "ask_price": 4.10, "price_spread": 0.05})
+    intent, _ = store.create_intent(
+        "volatility_long_gamma", "urgent-tick", "US.XYZ261120C150000", "SELL", 1, 4.00,
+        {"urgent": True, "reference_price": 4.00},
+    )
+    store.update_intent(intent["id"], "SUBMITTED", broker_order_id="paper-tick-1")
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE order_intents SET created_at=?, last_reprice_at=? WHERE id=?",
+            ("2026-08-13T14:00:00+00:00", "2026-08-13T14:00:00+00:00", intent["id"]),
+        )
+
+    repriced = ExecutionManager(broker, store).reprice_open_orders()
+    assert repriced == 1
+    assert broker.modified_price == 3.80, f"价格必须对齐到 0.05 网格，实际: {broker.modified_price}"
+
+
+def test_urgent_sell_reprice_falls_back_to_conservative_grid_when_spread_missing(tmp_path, monkeypatch):
+    """Bug 5 守卫：
+    当快照缺少 price_spread 或为非有限正数时：
+    price >= $3.0 走 0.10 兜底步长；
+    原 target = min(4.00, 3.86*0.99=3.8214) 必须向下对齐到 3.80（0.10 步长整数倍）。
+    """
+    monkeypatch.setenv("EXEC_REPRICE_INTERVAL_SECONDS", "15")
+    monkeypatch.setenv("EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT", "0.12")
+    store = TradingStore(tmp_path / "test.db")
+
+    broker = OptionTickRepriceBroker({"bid_price": 3.86, "ask_price": 4.10, "price_spread": None})
+    intent, _ = store.create_intent(
+        "volatility_long_gamma", "urgent-grid", "US.XYZ261120C150000", "SELL", 1, 4.00,
+        {"urgent": True, "reference_price": 4.00},
+    )
+    store.update_intent(intent["id"], "SUBMITTED", broker_order_id="paper-tick-2")
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE order_intents SET created_at=?, last_reprice_at=? WHERE id=?",
+            ("2026-08-13T14:00:00+00:00", "2026-08-13T14:00:00+00:00", intent["id"]),
+        )
+
+    repriced = ExecutionManager(broker, store).reprice_open_orders()
+    assert repriced == 1
+    # >= 3.00 且缺失 spread 时走 0.10 兜底网格，3.8214 向下对齐到 3.80
+    assert broker.modified_price == 3.80
+    assert round(broker.modified_price % 0.10, 4) in {0.0, 0.10}
+
+
+def test_urgent_sell_reprice_skips_when_alignment_violates_slippage(tmp_path, monkeypatch):
+    """Bug 5 守卫：
+    若对齐后的价格跌破滑点保护底线 reference * (1 - slip)，
+    必须宁可不改单跳过，绝不能为了对齐 tick 突破滑点底线！
+    """
+    monkeypatch.setenv("EXEC_REPRICE_INTERVAL_SECONDS", "15")
+    # 设置极端狭窄滑点 1%：reference=4.00 -> 最低只许 3.96
+    monkeypatch.setenv("EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT", "0.01")
+    store = TradingStore(tmp_path / "test.db")
+
+    # bid=3.98 -> bid*0.99 = 3.9402 < slip 边界 3.96
+    broker = OptionTickRepriceBroker({"bid_price": 3.98, "ask_price": 4.05, "price_spread": 0.10})
+    intent, _ = store.create_intent(
+        "volatility_long_gamma", "urgent-slip", "US.XYZ261120C150000", "SELL", 1, 4.00,
+        {"urgent": True, "reference_price": 4.00},
+    )
+    store.update_intent(intent["id"], "SUBMITTED", broker_order_id="paper-tick-3")
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE order_intents SET created_at=?, last_reprice_at=? WHERE id=?",
+            ("2026-08-13T14:00:00+00:00", "2026-08-13T14:00:00+00:00", intent["id"]),
+        )
+
+    repriced = ExecutionManager(broker, store).reprice_open_orders()
+    # 3.96 向下对齐 0.10 为 3.90，但 3.90 越过了滑点下限 3.96，因此必须不发改单！
+    assert repriced == 0
+    assert broker.modify_calls == 0
