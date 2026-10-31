@@ -337,7 +337,8 @@ def test_create_config_release_enforces_registry_membership(tmp_path):
 
 def test_page18_config_key_is_registry_driven_selectbox():
     """Phase 1 UI 改造守卫：
-    断言 pages/18 中草稿配置键已经由自由文本 text_input 升级为受限的目录驱动 selectbox。
+    1. 断言 pages/18 中草稿配置键已经由自由文本 text_input 升级为受限的目录驱动 selectbox；
+    2. 严格断言供草稿选择的候选列表中严禁包含 CRITICAL 极高风险配置项（防绕道放行风控限额）。
     """
     repo_root = Path(__file__).resolve().parents[1]
     page_18 = repo_root / "pages" / "18_infrastructure_disaster_recovery.py"
@@ -359,6 +360,17 @@ def test_page18_config_key_is_registry_driven_selectbox():
 
     assert has_selectbox_input, "pages/18 必须通过 st.selectbox 受限选择配置键！"
     assert not has_free_text_input, "pages/18 严禁保留 text_input 自由文本输入配置键！"
+
+    # 验证实际候选集合排除 CRITICAL
+    eligible_specs = [
+        s for s in GLOBAL_REGISTRY.all_specs()
+        if s.storage == "runtime_config"
+        and s.editable
+        and s.risk_level != "CRITICAL"
+        and not s.requires_confirmation
+    ]
+    critical_specs = [s for s in eligible_specs if s.risk_level == "CRITICAL" or s.requires_confirmation]
+    assert len(critical_specs) == 0, f"受限选择列表严禁出现 CRITICAL 项: {critical_specs}"
 
 
 def test_registry_specs_types_and_defaults_are_consistent():

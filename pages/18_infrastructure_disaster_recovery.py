@@ -90,24 +90,27 @@ with config_tab:
     from futu_quant.config_center import GLOBAL_REGISTRY
 
     # 统一配置中心 Phase 1 改造：受限表驱动选择，严禁自由文本输入未知配置键
-    # 仅展示 storage=runtime_config 且属于允许编辑的键列表，默认 ENV_SETTINGS
+    # 严格过滤风险：仅展示 storage=runtime_config、允许编辑、且非 CRITICAL/非二次确认的高/中/低风险配置
     eligible_specs = [
         s for s in GLOBAL_REGISTRY.all_specs()
-        if s.storage == "runtime_config" and s.editable
+        if s.storage == "runtime_config"
+        and s.editable
+        and s.risk_level != "CRITICAL"
+        and not s.requires_confirmation
     ]
     candidate_keys = []
     for s in eligible_specs:
         for a in s.aliases:
             if not ("{" in a and "}" in a) and a not in candidate_keys:
                 candidate_keys.append(a)
-    if "ENV_SETTINGS" not in candidate_keys:
-        candidate_keys.insert(0, "ENV_SETTINGS")
-    else:
-        candidate_keys.remove("ENV_SETTINGS")
-        candidate_keys.insert(0, "ENV_SETTINGS")
+
+    default_key = "CORE_SATELLITE_DAILY_VALIDATION"
+    if default_key in candidate_keys:
+        candidate_keys.remove(default_key)
+        candidate_keys.insert(0, default_key)
 
     with st.form("config_release_draft", border=True):
-        config_key = st.selectbox("配置键 (受限目录驱动)", options=candidate_keys, index=0)
+        config_key = st.selectbox("配置键 (受限目录驱动，已剔除 CRITICAL 极高风险)", options=candidate_keys, index=0)
         draft_text = st.text_area("草稿 JSON", value="{}", height=140)
         reason = st.text_input("变更原因")
         create_draft = st.form_submit_button("创建配置草稿", disabled=not admin)

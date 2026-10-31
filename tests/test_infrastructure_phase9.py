@@ -16,24 +16,25 @@ from futu_quant.store import TradingStore
 def test_versioned_migrations_and_config_release_lifecycle(tmp_path):
     store = TradingStore(tmp_path / "infra.db")
     assert migration_status(store)["healthy"]
-    store.set_runtime_config("TEST_CONFIG", {"value": 1}, "seed")
-    release = store.create_config_release("TEST_CONFIG", {"value": 2}, "maker", "test")
+    # 采用已在配置中心登记的合法 runtime_config 键测试生命周期
+    store.set_runtime_config("CORE_SATELLITE_DAILY_VALIDATION", {"value": 1}, "seed")
+    release = store.create_config_release("CORE_SATELLITE_DAILY_VALIDATION", {"value": 2}, "maker", "test")
 
     version = store.publish_config_release(release, "approver")
     assert version == 2
-    assert store.get_runtime_config("TEST_CONFIG")[0] == {"value": 2}
+    assert store.get_runtime_config("CORE_SATELLITE_DAILY_VALIDATION")[0] == {"value": 2}
 
     rollback_version = store.rollback_config_release(release, "approver")
     assert rollback_version == 3
-    assert store.get_runtime_config("TEST_CONFIG")[0] == {"value": 1}
+    assert store.get_runtime_config("CORE_SATELLITE_DAILY_VALIDATION")[0] == {"value": 1}
     assert store.config_releases()[0]["status"] == "ROLLED_BACK"
 
 
 def test_config_release_detects_stale_baseline(tmp_path):
     store = TradingStore(tmp_path / "config.db")
-    store.set_runtime_config("KEY", {"a": 1})
-    release = store.create_config_release("KEY", {"a": 2}, "maker")
-    store.set_runtime_config("KEY", {"a": 3})
+    store.set_runtime_config("CORE_SATELLITE_DAILY_VALIDATION", {"a": 1})
+    release = store.create_config_release("CORE_SATELLITE_DAILY_VALIDATION", {"a": 2}, "maker")
+    store.set_runtime_config("CORE_SATELLITE_DAILY_VALIDATION", {"a": 3})
 
     try:
         store.publish_config_release(release, "approver")
