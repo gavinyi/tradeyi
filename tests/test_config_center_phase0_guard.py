@@ -176,6 +176,17 @@ def test_codebase_env_access_is_fully_registered_guard():
     assert not unregistered, f"代码库中存在未在统一配置中心登记的隐形环境变量: {unregistered}"
 
 
+def test_unregistered_env_keys_negative_control_fails_via_tmp_path(tmp_path):
+    """真实负向对照（必红测试）：在独立工作区放入未登记的 os.getenv 调用，断言扫描比对必定检出并报错。"""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    bad_py = src_dir / "unregistered_leak.py"
+    bad_py.write_text("import os\nval = os.getenv('BRAND_NEW_UNREGISTERED_PARAM_FAIL_PROOF')", encoding="utf-8")
+
+    leaked = unregistered_env_keys(tmp_path, require_counts=False)
+    assert "BRAND_NEW_UNREGISTERED_PARAM_FAIL_PROOF" in leaked, f"负向对照必须捕获未登记配置，实际: {leaked}"
+
+
 # 严格冻结的 runtime_config 动态通用写调用助手豁免清单 (8 处，条数严禁增长)
 FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT = 8
 RUNTIME_WRITE_SITE_EXEMPTIONS = {
