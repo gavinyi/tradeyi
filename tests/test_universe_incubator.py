@@ -99,6 +99,65 @@ def test_daily_chain_signal_key_is_day_scoped_and_idempotent(tmp_path):
     assert len(store.open_incubator_virtual_positions()) == 2
 
 
+def test_run_daily_universe_ranking_seeds_virtual_positions_task_level(monkeypatch, tmp_path):
+    """任务级防回归守卫：若删除 scheduled_tasks.py 兜底建仓逻辑，本测试必定失败。"""
+    store = TradingStore(str(tmp_path / "seed-guard.db"))
+    now = datetime(2026, 10, 31, 20, 0, tzinfo=timezone.utc)
+
+    from futu_quant.ml_symbol_scorer import MLSymbolScorer
+
+    monkeypatch.setattr(
+        MLSymbolScorer,
+        "score_symbol",
+        lambda self, symbol, broker, store, trade_time=None, market_context=None: 0.50,
+    )
+    with store.connection() as connection:
+        for sym in ("US.PLTR", "US.NVDA", "US.ZERO"):
+            connection.execute(
+                """INSERT INTO candidate_universe
+                (week_start,symbol,underlying_name,industry,option_daily_volume,open_interest,
+                 stock_turnover_usd,median_spread_pct,status,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                ("2026-10-26", sym, sym, "TECH", 100, 100, 100, .01, "ACTIVE", now.isoformat()),
+            )
+
+    # 事先给 US.NVDA 建立一个 OPEN 仓位，断言其会被跳过
+    store.open_incubator_virtual_position(
+        "US.NVDA", "pre-existing-nvda", 120.0,
+        now.isoformat(), (now + timedelta(hours=24)).isoformat(),
+    )
+
+    class MockBroker:
+        def snapshots_tolerant(self, symbols):
+            records = []
+            for s in symbols:
+                if s == "US.PLTR":
+                    records.append({"code": s, "last_price": 50.0})
+                elif s == "US.ZERO":
+                    records.append({"code": s, "last_price": 0.0})  # 0 价不应开仓
+                else:
+                    records.append({"code": s, "last_price": 100.0})
+            return pd.DataFrame(records)
+
+    broker = MockBroker()
+
+    # 1. 首次运行：应为 missing 中的有效标的（US.PLTR）建仓，跳过已有 OPEN 的 NVDA 与 0 价格的 ZERO
+    run_daily_universe_ranking(store, now=now, broker=broker)
+
+    positions = store.open_incubator_virtual_positions()
+    pos_by_sym = {p["symbol"]: p for p in positions}
+    assert "US.PLTR" in pos_by_sym
+    assert pos_by_sym["US.PLTR"]["signal_key"] == "daily:2026-10-31:US.PLTR"
+    assert pos_by_sym["US.PLTR"]["entry_price"] == pytest.approx(50.0)
+    assert "US.ZERO" not in pos_by_sym
+    assert pos_by_sym["US.NVDA"]["signal_key"] == "pre-existing-nvda"  # 仍为旧仓位
+    assert len(positions) == 2
+
+    # 2. 同日重跑：幂等不新增
+    run_daily_universe_ranking(store, now=now, broker=broker)
+    assert len(store.open_incubator_virtual_positions()) == 2
+
+
 def test_daily_chain_settles_scores_and_promotes(monkeypatch, tmp_path):
     store = TradingStore(str(tmp_path / "incubator.db"))
     now = datetime.now(timezone.utc)
