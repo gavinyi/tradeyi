@@ -170,29 +170,36 @@ def test_windows_openprocess_error_code_isolation(tmp_path, monkeypatch):
             (past_20s,),
         )
 
-    # 模拟 Windows ctypes 返回 NULL 且 GetLastError=5 (拒绝访问)
-    class MockKernel32AccessDenied:
-        @staticmethod
-        def OpenProcess(access, inherit, pid):
-            return 0
-        @staticmethod
-        def GetLastError():
-            return 5
-
+    # 模拟 Windows ctypes 返回 NULL 且 get_last_error=5 (拒绝访问)
     import ctypes
-    monkeypatch.setattr(ctypes.windll, "kernel32", MockKernel32AccessDenied())
+
+    class MockHandleAccessDenied:
+        def __call__(self, *args, **kwargs):
+            ctypes.set_last_error(5)
+            return 0
+
+    class MockWinDLLAccessDenied:
+        def __init__(self, *args, **kwargs):
+            self.OpenProcess = MockHandleAccessDenied()
+            self.CloseHandle = lambda h: True
+
+    monkeypatch.setattr(ctypes, "WinDLL", MockWinDLLAccessDenied)
+    ctypes.set_last_error(5)
     assert store.reconcile_orphan_task_runs(max_running_seconds=7200.0) == 0
 
-    # 模拟 Windows ctypes 返回 NULL 且 GetLastError=87 (进程不存在)
-    class MockKernel32InvalidParam:
-        @staticmethod
-        def OpenProcess(access, inherit, pid):
+    # 模拟 Windows ctypes 返回 NULL 且 get_last_error=87 (进程不存在/参数错误)
+    class MockHandleDead:
+        def __call__(self, *args, **kwargs):
+            ctypes.set_last_error(87)
             return 0
-        @staticmethod
-        def GetLastError():
-            return 87
 
-    monkeypatch.setattr(ctypes.windll, "kernel32", MockKernel32InvalidParam())
+    class MockWinDLLDead:
+        def __init__(self, *args, **kwargs):
+            self.OpenProcess = MockHandleDead()
+            self.CloseHandle = lambda h: True
+
+    monkeypatch.setattr(ctypes, "WinDLL", MockWinDLLDead)
+    ctypes.set_last_error(87)
     assert store.reconcile_orphan_task_runs(max_running_seconds=7200.0) == 1
     runs = store.task_runs()
     assert runs[0]["status"] == "ORPHAN_KILLED"

@@ -249,6 +249,7 @@ class TradingStore:
                         UNIQUE(week_start, symbol)
                     );
                     CREATE INDEX IF NOT EXISTS idx_candidate_lookup ON candidate_universe(week_start, status);
+                    CREATE INDEX IF NOT EXISTS idx_task_runs_status_started ON task_runs(status, started_at);
                     CREATE TABLE IF NOT EXISTS shadow_incubator (
                         symbol TEXT PRIMARY KEY,
                         first_observed_at TEXT NOT NULL,
@@ -478,6 +479,8 @@ class TradingStore:
                     ON task_runs(task_id,started_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_task_runs_id_desc
                     ON task_runs(id DESC);
+                CREATE INDEX IF NOT EXISTS idx_task_runs_status_started
+                    ON task_runs(status, started_at);
                 CREATE TABLE IF NOT EXISTS option_combos (
                     combo_id TEXT PRIMARY KEY,
                     strategy_id TEXT NOT NULL,
@@ -2146,21 +2149,33 @@ class TradingStore:
             try:
                 p = int(pid_val)
             except (ValueError, TypeError):
-                return False
+                # Reviewer 要求 2：PID 不可解析时按不确定处理 (视为存活)，走 7200s 大门槛兜底，绝不直接判死误杀
+                return True
             if p <= 0:
-                return False
+                return True
             if os.name == "nt":
                 import ctypes
-                kernel32 = ctypes.windll.kernel32
-                # 0x1000 = PROCESS_QUERY_LIMITED_INFORMATION
-                handle = kernel32.OpenProcess(0x1000, False, p)
-                if handle:
-                    kernel32.CloseHandle(handle)
+                from ctypes import wintypes
+                try:
+                    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                    kernel32.OpenProcess.restype = wintypes.HANDLE
+                    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+                    kernel32.CloseHandle.restype = wintypes.BOOL
+
+                    # 0x1000 = PROCESS_QUERY_LIMITED_INFORMATION
+                    handle = kernel32.OpenProcess(0x1000, False, p)
+                    if handle:
+                        kernel32.CloseHandle(handle)
+                        return True
+                    err = ctypes.get_last_error()
+                    # 严格区分：只有 ERROR_INVALID_PARAMETER (87) 确凿证明 PID 不存在/已死亡；
+                    # 遇到 ERROR_ACCESS_DENIED (5) 或其它任何错误遵循 fail-safe 铁律一律按存活处理，坚决防止误杀！
+                    return err != 87
+                except Exception as ex:
+                    import logging
+                    logging.getLogger(__name__).warning("Windows OpenProcess 检测 PID 存活异常: %s，回退按存活处理", ex)
                     return True
-                err = kernel32.GetLastError()
-                # 严格区分：只有 ERROR_INVALID_PARAMETER (87) 确凿证明 PID 不存在/已死亡；
-                # 遇到 ERROR_ACCESS_DENIED (5) 或其它任何错误遵循 fail-safe 铁律一律按存活处理，坚决防止误杀！
-                return err != 87
             else:
                 try:
                     os.kill(p, 0)
@@ -2192,13 +2207,13 @@ class TradingStore:
                 if not pid_alive:
                     # 规则 1：PID 确认已死，无论 elapsed，立即收敛终态，根除强杀/崩溃遗留
                     should_reconcile = True
-                    settle_reason = f"Worker进程(PID:{pid})已退出死亡，自愈收敛为终态"
+                    settle_reason = f"Worker进程(PID:{pid})已退出死亡，启动自愈标记为终态"
                 else:
                     # 规则 2：PID 仍存活或状态不确定，坚决不误伤，仍按超大门槛判
                     threshold = max(float(timeout_sec) * 2.0, max_running_seconds)
                     if elapsed > threshold:
                         should_reconcile = True
-                        settle_reason = f"任务严重卡死超大门槛({threshold:.0f}s)，自愈收敛为终态"
+                        settle_reason = f"任务严重卡死超大门槛({threshold:.0f}s)，启动自愈标记为终态"
 
                 if should_reconcile:
                     settle_msg = f"{settle_reason}（原始: {orig_msg}）" if orig_msg else settle_reason

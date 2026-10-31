@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -164,11 +165,11 @@ def test_reconcile_orphan_task_runs_settles_zombie_running_records(tmp_path):
             VALUES(?,?,?,?,?)""",
             ("order_reconciliation", "RUNNING", 120, 9999, "2026-09-26T00:00:00+00:00"),
         )
-        # 插入一条刚启动 10 秒的正常任务
+        # 插入一条刚启动 10 秒的正常任务 (使用当前存活进程 PID)
         conn.execute(
             """INSERT INTO task_runs(task_id,status,timeout_seconds,pid,started_at)
             VALUES(?,?,?,?,?)""",
-            ("recent_task", "RUNNING", 120, 9999, datetime.now(timezone.utc).isoformat()),
+            ("recent_task", "RUNNING", 120, os.getpid(), datetime.now(timezone.utc).isoformat()),
         )
 
     reconciled = store.reconcile_orphan_task_runs(max_running_seconds=7200)
