@@ -2420,6 +2420,12 @@ def run_campaign(
                         "structure": campaign.get("structure"),
                         "campaign_id": campaign.get("campaign_id"),
                     })
+                    executor.alerts.send(
+                        "WARNING",
+                        "COMBO_LEG_PLAN_INVALID",
+                        f"{code}: {block_reason}",
+                        incident_key=f"COMBO_LEG_PLAN_INVALID:{campaign.get('campaign_id', code)}",
+                    )
                     print(f"{code}: BLOCKED ({block_reason})")
                     return
             manager.start(active_combo_id)

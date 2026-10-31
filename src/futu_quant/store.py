@@ -2131,6 +2131,39 @@ class TradingStore:
                 "SELECT * FROM task_runs ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()]
 
+    def reconcile_orphan_task_runs(self, max_running_seconds: float = 7200.0) -> int:
+        """自愈清理异常遗留的 RUNNING 任务记录：
+        若服务重启或非正常退出，将超过超时门槛仍处于 RUNNING 的历史记录收敛为 ORPHAN_KILLED 终态。
+        """
+        now_dt = datetime.now(timezone.utc)
+        reconciled = 0
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT id, started_at, timeout_seconds FROM task_runs WHERE status = 'RUNNING'"
+            ).fetchall()
+            for r in rows:
+                run_id, started_at, timeout_sec = r[0], r[1], float(r[2] or 120.0)
+                try:
+                    s_dt = datetime.fromisoformat(str(started_at))
+                    if s_dt.tzinfo is None:
+                        s_dt = s_dt.replace(tzinfo=timezone.utc)
+                    elapsed = (now_dt - s_dt).total_seconds()
+                except (ValueError, TypeError):
+                    elapsed = float("inf")
+
+                threshold = max(float(timeout_sec) * 2.0, max_running_seconds)
+                if elapsed > threshold:
+                    connection.execute(
+                        """UPDATE task_runs
+                        SET status = 'ORPHAN_KILLED',
+                            message = '服务非正常退出或超时遗留，启动自愈标记为终态',
+                            finished_at = ?
+                        WHERE id = ?""",
+                        (self.now(), run_id),
+                    )
+                    reconciled += 1
+        return reconciled
+
     def create_option_combo(self, combo: dict, legs: list[dict]) -> str:
         now = self.now()
         combo_id = str(combo["combo_id"])

@@ -152,3 +152,28 @@ def test_urgent_exit_retry_on_network_glitch():
         assert mock_broker.place_limit_order.call_count == 3
     finally:
         db_path.unlink(missing_ok=True)
+
+
+def test_reconcile_orphan_task_runs_settles_zombie_running_records(tmp_path):
+    """验证服务启动时能自动将超时滞留的 RUNNING 任务收敛为 ORPHAN_KILLED 终态。"""
+    store = TradingStore(tmp_path / "orphan_test.db")
+    with store.connection() as conn:
+        # 插入一条历史超时遗留的 RUNNING
+        conn.execute(
+            """INSERT INTO task_runs(task_id,status,timeout_seconds,pid,started_at)
+            VALUES(?,?,?,?,?)""",
+            ("order_reconciliation", "RUNNING", 120, 9999, "2026-09-26T00:00:00+00:00"),
+        )
+        # 插入一条刚启动 10 秒的正常任务
+        conn.execute(
+            """INSERT INTO task_runs(task_id,status,timeout_seconds,pid,started_at)
+            VALUES(?,?,?,?,?)""",
+            ("recent_task", "RUNNING", 120, 9999, datetime.now(timezone.utc).isoformat()),
+        )
+
+    reconciled = store.reconcile_orphan_task_runs(max_running_seconds=7200)
+    assert reconciled == 1
+
+    runs = {r["task_id"]: r for r in store.task_runs()}
+    assert runs["order_reconciliation"]["status"] == "ORPHAN_KILLED"
+    assert runs["recent_task"]["status"] == "RUNNING"

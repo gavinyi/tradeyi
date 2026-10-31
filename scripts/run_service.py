@@ -1913,6 +1913,10 @@ def main() -> None:
         # 正是 A2 要防的「假健康」。仅当库文件不存在（首次部署）才允许建库；
         # 文件存在但结构损坏 → 交给 TradingStore 的 A2 守卫大声失败。
         store = TradingStore(bootstrap=not Path(DEFAULT_DB).exists())
+        # 服务启动自愈：清理上次异常终止遗留的永久 RUNNING 僵尸任务
+        reconciled_runs = store.reconcile_orphan_task_runs()
+        if reconciled_runs > 0:
+            logger.info("服务启动自愈：收敛了 %d 条历史遗留 RUNNING 任务至终态", reconciled_runs)
         service_name = f"trading_service:{tenant_profile.tenant_id}" if tenant_profile else "trading_service"
         runtime_manifest = publish_approval_runtime_manifest(store, os.getpid())
         ensure_default_budgets(store)
