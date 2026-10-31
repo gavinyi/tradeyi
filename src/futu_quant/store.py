@@ -2558,9 +2558,70 @@ class TradingStore:
                     WHERE id=?""", (approved_by, self.now(), release_id),
                 )
         except Exception:
-            self.set_runtime_config(release["config_key"], previous, "automatic_publish_rollback")
+            self.set_runtime_config(release["config_key"], previous, "service:publish_rollback")
             raise
         return version
+
+    def publish_config_release_with_audit(
+        self,
+        release_id: int,
+        approved_by: str,
+        audit_event_type: str,
+        audit_payload: dict,
+    ) -> int:
+        """在同一个 SQLite 事务中原子化发布配置草稿并落库审计日志。
+
+        ACID 强保障：更新 runtime_config、config_versions、发布单状态、audit_events
+        必须全部在同一事务内完成，任何一步失败全量回滚，彻底根除账实/审计脱节。
+        """
+        validate_actor(approved_by)
+        with self.connection() as connection:
+            release = connection.execute(
+                "SELECT * FROM config_releases WHERE id=?", (release_id,)
+            ).fetchone()
+            if not release or release["status"] != "DRAFT":
+                raise ValueError("配置草稿不存在或已经处理")
+            current = connection.execute(
+                "SELECT version FROM runtime_config WHERE config_key=?", (release["config_key"],)
+            ).fetchone()
+            current_version = int(current["version"]) if current else 0
+            if current_version != int(release["base_version"]):
+                raise ValueError("配置基线已变化，请重新创建草稿")
+
+            next_version = current_version + 1
+            now_iso = self.now()
+            value_json = release["draft_json"]
+
+            # 1. 运行时配置与版本历史
+            connection.execute(
+                """INSERT INTO runtime_config(config_key, value_json, version, updated_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(config_key) DO UPDATE SET
+                    value_json=excluded.value_json,
+                    version=excluded.version,
+                    updated_at=excluded.updated_at""",
+                (release["config_key"], value_json, next_version, now_iso),
+            )
+            connection.execute(
+                """INSERT INTO config_versions(config_key, value_json, actor, reason, created_at)
+                VALUES(?,?,?,?,?)""",
+                (release["config_key"], value_json, approved_by, release["reason"], now_iso),
+            )
+
+            # 2. 更新发布单终态
+            connection.execute(
+                """UPDATE config_releases SET status='PUBLISHED', approved_by=?, published_at=?
+                WHERE id=?""",
+                (approved_by, now_iso, release_id),
+            )
+
+            # 3. 同事务原子落审计日志
+            connection.execute(
+                """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
+                VALUES(?,?,?,?,?)""",
+                (audit_event_type, _json_dumps(audit_payload), "config_center", approved_by, now_iso),
+            )
+            return next_version
 
     def rollback_config_release(self, release_id: int, actor: str) -> int:
         with self.connection() as connection:

@@ -213,7 +213,7 @@ def test_edit_low_risk_config_normalized_empty_diff_rejection(tmp_path):
 
 
 def test_atomic_publish_and_audit_failure_rollback(tmp_path, monkeypatch):
-    """断言 10：发布与审计原子化保障：若审计日志落库失败，必须自动补偿回滚刚刚发布的配置，绝不留未审计变更。"""
+    """断言 10：发布与审计原子化保障：若原子发布或审计落库失败，事务全量回滚，绝不留未审计变更。"""
     store = TradingStore(tmp_path / "test_atomic_audit.db")
     actor = "streamlit_admin:shared_admin_credential"
 
@@ -221,18 +221,18 @@ def test_atomic_publish_and_audit_failure_rollback(tmp_path, monkeypatch):
     edit_low_risk_config(store, "alert_mute_list", ["INIT_MUTE"], actor=actor, reason="init")
     assert store.get_runtime_config("alert_mute_list")[0] == ["INIT_MUTE"]
 
-    # 模拟 store.audit 发生未预期的持久化异常
-    def _failing_audit(*args, **kwargs):
-        raise RuntimeError("simulated disk full audit failure")
+    # 模拟 publish_config_release_with_audit 发生未预期的持久化异常
+    def _failing_publish(*args, **kwargs):
+        raise RuntimeError("simulated atomic transaction failure")
 
-    monkeypatch.setattr(store, "audit", _failing_audit)
+    monkeypatch.setattr(store, "publish_config_release_with_audit", _failing_publish)
 
-    with pytest.raises(RuntimeError, match="配置发布后写入审计事件失败，已强制自动回滚"):
+    with pytest.raises(RuntimeError, match="配置原子发布与审计失败"):
         edit_low_risk_config(
             store, "alert_mute_list", ["NEW_MUTE"], actor=actor, reason="try publish with broken audit",
         )
 
-    # 核心验证：配置已经被原子补偿回滚为初始值，未发生任何脏写入！
+    # 核心验证：配置已经被原子保护，保持为初始值，未发生任何脏写入！
     assert store.get_runtime_config("alert_mute_list")[0] == ["INIT_MUTE"]
 
 

@@ -85,29 +85,32 @@ def edit_low_risk_config(
     # 写入前二次验证实例键
     validate_instance_key(config_key)
 
-    # 走标准的草稿发布通道
+    # 1. 创建草稿
     release_id = store.create_config_release(config_key, new_value, actor, reason)
-    store.publish_config_release(release_id, actor)
 
-    # 发布与审计原子化保障：审计日志写入失败则强制自动回滚
+    # 2. 同事务原子化发布并落库审计日志 (Reviewer 首选方案：ACID 事务保证绝不脱节)
+    audit_payload = {
+        "config_key": config_key,
+        "before": before_value,
+        "after": new_value,
+        "base_version": base_version,
+        "release_id": release_id,
+        "actor": actor,
+        "reason": reason,
+    }
+
     try:
-        store.audit(
-            "CONFIG_LOW_RISK_UPDATED",
-            {
-                "config_key": config_key,
-                "before": before_value,
-                "after": new_value,
-                "base_version": base_version,
-                "release_id": release_id,
-                "actor": actor,
-                "reason": reason,
-            },
-            strategy_id="config_center",
-            actor=actor,
+        store.publish_config_release_with_audit(
+            release_id, actor, "CONFIG_LOW_RISK_UPDATED", audit_payload,
         )
     except Exception as exc:
-        store.set_runtime_config(config_key, before_value, "automatic_audit_failure_rollback")
-        raise RuntimeError(f"配置发布后写入审计事件失败，已强制自动回滚至前序版本！根因: {exc}") from exc
+        # 若原子发布过程发生异常，兜底确保草稿单与运行时账本一致，且绝不吞原异常
+        try:
+            store.rollback_config_release(release_id, "service:audit_compensation")
+        except Exception as comp_err:
+            import logging
+            logging.getLogger(__name__).warning("补偿回滚发布单状态异常: %s", comp_err)
+        raise RuntimeError(f"配置原子发布与审计失败，已执行全量回滚保真！根因: {exc}") from exc
 
     return {
         "status": "PUBLISHED",
