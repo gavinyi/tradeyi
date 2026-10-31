@@ -184,7 +184,8 @@ def test_urgent_sell_reprice_chases_bid_and_cancels_faster():
 
         modified = []
         broker = FakeBroker("SIMULATE")
-        broker.snapshots = lambda symbols: pd.DataFrame([{"code": "US.META", "bid_price": 19.00, "ask_price": 19.50}])
+        # 补齐 price_spread=0.01（模拟 Penny Pilot 合约），18.81 为合法的 0.01 步长价格
+        broker.snapshots = lambda symbols: pd.DataFrame([{"code": "US.META", "bid_price": 19.00, "ask_price": 19.50, "price_spread": 0.01}])
         broker.modify_limit_order = lambda oid, qty, price: modified.append((oid, qty, price))
         broker.cancel_order = lambda oid: None
 
@@ -194,7 +195,8 @@ def test_urgent_sell_reprice_chases_bid_and_cancels_faster():
         manager = ExecutionManager(broker, store)
         assert manager.reprice_open_orders() == 1
         assert len(modified) == 1
-        assert modified[0][2] == 18.81  # 19.00 * 0.99
+        # 价格必须等于 bid * 0.99 且为 tick (0.01) 整数倍
+        assert modified[0][2] == 18.81
 
         assert manager.cancel_stale_orders() == 1
         updated = [i for i in store.intents() if i["id"] == intent["id"]][0]
