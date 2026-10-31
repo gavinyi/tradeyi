@@ -2410,11 +2410,14 @@ class TradingStore:
         self, config_key: str, draft, created_by: str, reason: str = "",
     ) -> int:
         from .config_center import validate_instance_key
+        from futu_quant.tenant import DEFAULT_TENANTS
 
         # 统一配置中心 Phase 2 写入边界强门禁：
         # 1. 验证是否在 Registry 登记；
-        # 2. 对模板实例键严格验证租户后缀白名单（优先动态取自 self.tenant_registry，默认回退代码字典）
-        tenants = set(self.tenant_registry.keys()) if self.tenant_registry else None
+        # 2. 对模板实例键严格验证租户后缀白名单（动态租户表与代码默认租户取并集，杜绝合法租户被拒）
+        tenants = set(DEFAULT_TENANTS.keys())
+        if self.tenant_registry:
+            tenants |= set(self.tenant_registry.keys())
         validate_instance_key(config_key, allowed_tenants=tenants)
 
         current = self.get_runtime_config(config_key)

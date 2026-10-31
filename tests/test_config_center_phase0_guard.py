@@ -612,21 +612,25 @@ def test_template_key_tenant_suffix_validation_fails_closed(tmp_path):
     with pytest.raises(ValueError, match="未在有效租户注册表中登记"):
         validate_instance_key("risk_limits:evil_hacker_test")
 
-    # 3. 动态白名单支持
+    # 3. 动态白名单与默认白名单取并集
     custom_tenants = {"custom_tenant_alpha"}
     validate_instance_key("VOLATILITY_CAMPAIGNS:custom_tenant_alpha", allowed_tenants=custom_tenants)
-    with pytest.raises(ValueError, match="未在有效租户注册表中登记"):
-        validate_instance_key("VOLATILITY_CAMPAIGNS:futu_real_master", allowed_tenants=custom_tenants)
+    # 并集支持：代码默认租户依然放行，不被动态租户排他冲掉
+    validate_instance_key("VOLATILITY_CAMPAIGNS:futu_real_master", allowed_tenants=custom_tenants)
 
     # 4. 端到端草稿创建强门禁阻断
     store = TradingStore(tmp_path / "test_tenant_guard.db")
     with pytest.raises(ValueError, match="未在有效租户注册表中登记"):
         store.create_config_release("VOLATILITY_CAMPAIGNS:invalid_tenant_xyz", {}, "streamlit_admin", "bad test")
 
-    # 5. store 动态 tenant_registry 新租户正常通过草稿创建
+    # 5. store 动态 tenant_registry 取并集：动态新租户与代码默认租户均放行！
     custom_store = TradingStore(tmp_path / "custom_tenant.db", tenant_registry={"dynamic_new_tenant": {}})
-    release_id = custom_store.create_config_release("VOLATILITY_CAMPAIGNS:dynamic_new_tenant", {}, "streamlit_admin", "ok")
-    assert release_id > 0
+    # 动态新租户放行
+    release_id1 = custom_store.create_config_release("VOLATILITY_CAMPAIGNS:dynamic_new_tenant", {}, "streamlit_admin", "ok")
+    assert release_id1 > 0
+    # 代码默认租户并集放行（防历史租户被冲掉）
+    release_id2 = custom_store.create_config_release("VOLATILITY_CAMPAIGNS:futu_real_master", {}, "streamlit_admin", "ok")
+    assert release_id2 > 0
 
 
 def test_conftest_tempdir_is_on_drive_e_with_pid_and_uuid():
