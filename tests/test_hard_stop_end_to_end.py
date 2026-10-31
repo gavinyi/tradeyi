@@ -15,6 +15,7 @@ import ast
 import importlib.util
 import os
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -41,7 +42,28 @@ def _load_gamma():
     import run_gamma_strategy as module
     return module
 
-CODE = "US.META261030P660000"
+def _future_expiry_code(days: int = 75, strike: int = 660_000) -> str:
+    """生成一个**到期日在未来**的期权代码。
+
+    为什么必须动态：原先写死 `US.META261030P660000`（2026-10-30 到期）。合约一过期，
+    `run_gamma_strategy` 里的这段就恒真：
+
+        elif now.date() > expiry or (now.date() == expiry and now.hour >= 15):
+            action, reason = "SELL", "合约到期日临近收盘，强制退出以避免自动行权"
+
+    它会把**六条退出路径的理由统一覆盖成「到期强制退出」**，于是本文件的 7 条断言
+    全部转红（2026-10-31 实测：7 failed / 3 passed，而基线 2dc9c99 同测同样 7 failed
+    —— 环境性失效，不是业务回归）。写死的日期就是一颗定时炸弹：到期那天起，这批
+    守卫会天天误报，久而久之「红了但无所谓」就成了习惯，真正回归时反而看不见。
+
+    75 天是刻意选的：远大于 `volatility_default_near_expiry_protection_days` 的量级，
+    避免远期标签逻辑意外介入；同时 `volatility_near_expiry_itm_exit_reason` 在各用例里
+    已被 monkeypatch 成 None，不受临近到期分支影响。
+    """
+    return f"US.META{(date.today() + timedelta(days=days)).strftime('%y%m%d')}P{strike}"
+
+
+CODE = _future_expiry_code()
 UNDERLYING = "US.META"
 COST = 10.0          # 持仓成本
 BID = 7.4            # 现价 → pnl_ratio = -0.26：刚过 max_position_loss_ratio(0.25) 的线
@@ -116,7 +138,9 @@ def _campaign() -> dict:
         "entry_confirmation_min_volume_retention": 0.65,
         "entry_confirmation_require_active": True,
         "cooldown_hours": 24, "cooldown_bypass_enabled": True,
-        "event_date": "2026-10-23", "campaign_id": "cmp-1",
+        # 同样不能写死：`event_date` 是"事件日"，写成过去日期时，任何按它算
+        # 「距事件还有几天」的入口都会走到已经过期的分支上。
+        "event_date": date.today().isoformat(), "campaign_id": "cmp-1",
     }
 
 
