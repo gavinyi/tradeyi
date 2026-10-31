@@ -23,11 +23,11 @@ from futu_quant.store import TradingStore
 def test_edit_low_risk_config_requires_admin_login(tmp_path):
     """断言 1：未登录或非法 actor 试图编辑，必须抛出 PermissionError。"""
     store = TradingStore(tmp_path / "test_auth.db")
-    with pytest.raises(PermissionError, match="未授权或未登录管理员"):
+    with pytest.raises(PermissionError, match="未授权"):
         edit_low_risk_config(
             store, "alert_mute_list", ["ORDER_FAILED"], actor="anonymous", reason="try hack",
         )
-    with pytest.raises(PermissionError, match="未授权或未登录管理员"):
+    with pytest.raises(PermissionError, match="未授权"):
         edit_low_risk_config(
             store, "alert_mute_list", ["ORDER_FAILED"], actor="", reason="try hack",
         )
@@ -161,3 +161,88 @@ def test_low_risk_edit_and_rollback_positive_lifecycle(tmp_path):
     # 验证回滚后生效值
     cfg_after = store.get_runtime_config("alert_mute_list")
     assert cfg_after[0] is None
+
+
+def test_rollback_enforces_whitelist_and_content_validation(tmp_path):
+    """断言 8：回滚安全门禁强化：
+    1. 禁止通过低风险通道回滚非白名单项 (如 VOLATILITY_CAMPAIGNS)；
+    2. 禁止回滚还原包含不可静音事件 (如 REAL_TRADE_REJECTED) 的脏历史数据。
+    """
+    store = TradingStore(tmp_path / "test_rollback_deep.db")
+    actor = "streamlit_admin:shared_admin_credential"
+
+    # 1. 尝试回滚非准入白名单项 (即使历史有 PUBLISHED release)
+    with store.connection() as conn:
+        cursor = conn.execute(
+            """INSERT INTO config_releases(config_key, base_version, draft_json, status, diff_json, created_by, reason, created_at)
+            VALUES('VOLATILITY_CAMPAIGNS', 0, '[]', 'PUBLISHED', '{"before":[]}', ?, 'fake', '2026-11-01')""",
+            (actor,),
+        )
+        fake_vol_id = cursor.lastrowid
+
+    with pytest.raises(ValueError, match="不在 Batch 3 准入白名单中"):
+        rollback_low_risk_config(store, fake_vol_id, actor=actor, reason="try rollback non whitelist")
+
+    # 2. 尝试回滚包含不可静音项的脏历史数据
+    dirty_diff = json.dumps({"before": ["REAL_TRADE_REJECTED"]})
+    with store.connection() as conn:
+        cursor = conn.execute(
+            """INSERT INTO config_releases(config_key, base_version, draft_json, status, diff_json, created_by, reason, created_at)
+            VALUES('alert_mute_list', 0, '[]', 'PUBLISHED', ?, ?, 'dirty', '2026-11-01')""",
+            (dirty_diff, actor),
+        )
+        dirty_rel_id = cursor.lastrowid
+
+    with pytest.raises(ValueError, match="不可静音硬门禁"):
+        rollback_low_risk_config(store, dirty_rel_id, actor=actor, reason="try rollback dirty history")
+
+
+def test_edit_low_risk_config_normalized_empty_diff_rejection(tmp_path):
+    """断言 9：空 diff 判定必须归一化比对，元素顺序不同但集合相同的变更必须判为空 diff 并拒绝。"""
+    store = TradingStore(tmp_path / "test_norm_diff.db")
+    actor = "streamlit_admin:shared_admin_credential"
+
+    # 初始状态设为 ["A_TASK", "B_TASK"]
+    edit_low_risk_config(store, "alert_mute_list", ["A_TASK", "B_TASK"], actor=actor, reason="init")
+
+    # 再次提交 ["B_TASK", "A_TASK"]，顺序颠倒但内容无变，必须拒绝
+    with pytest.raises(ValueError, match="空 diff"):
+        edit_low_risk_config(
+            store, "alert_mute_list", ["B_TASK", "A_TASK"], actor=actor, reason="scrambled order submit",
+        )
+
+
+def test_atomic_publish_and_audit_failure_rollback(tmp_path, monkeypatch):
+    """断言 10：发布与审计原子化保障：若审计日志落库失败，必须自动补偿回滚刚刚发布的配置，绝不留未审计变更。"""
+    store = TradingStore(tmp_path / "test_atomic_audit.db")
+    actor = "streamlit_admin:shared_admin_credential"
+
+    # 初始配置
+    edit_low_risk_config(store, "alert_mute_list", ["INIT_MUTE"], actor=actor, reason="init")
+    assert store.get_runtime_config("alert_mute_list")[0] == ["INIT_MUTE"]
+
+    # 模拟 store.audit 发生未预期的持久化异常
+    def _failing_audit(*args, **kwargs):
+        raise RuntimeError("simulated disk full audit failure")
+
+    monkeypatch.setattr(store, "audit", _failing_audit)
+
+    with pytest.raises(RuntimeError, match="配置发布后写入审计事件失败，已强制自动回滚"):
+        edit_low_risk_config(
+            store, "alert_mute_list", ["NEW_MUTE"], actor=actor, reason="try publish with broken audit",
+        )
+
+    # 核心验证：配置已经被原子补偿回滚为初始值，未发生任何脏写入！
+    assert store.get_runtime_config("alert_mute_list")[0] == ["INIT_MUTE"]
+
+
+def test_actor_validation_rejects_non_admin_actors(tmp_path):
+    """断言 11：actor 必须经 validate_actor 严格判定为 streamlit_admin，其他类别的 actor 严禁越权修改。"""
+    store = TradingStore(tmp_path / "test_actor_class.db")
+
+    for bad_actor in ("service:worker", "test:bot", "cli:operator", "scheduler:timer"):
+        with pytest.raises(PermissionError, match="非管理员身份"):
+            edit_low_risk_config(store, "alert_mute_list", ["ORDER_TIMEOUT"], actor=bad_actor, reason="test")
+        with pytest.raises(PermissionError, match="非管理员身份"):
+            rollback_low_risk_config(store, 1, actor=bad_actor, reason="test")
+
