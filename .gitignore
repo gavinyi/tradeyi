@@ -42,6 +42,7 @@ draft_*_folder/
 .agents/
 .claude/
 .agent-teams/
+.workbuddy/
 .acl-*
 .env.*
 *.log
