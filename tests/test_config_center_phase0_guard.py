@@ -356,11 +356,23 @@ def test_get_draftable_config_keys_filters_critical_and_non_runtime():
         assert spec.risk_level != "CRITICAL", f"键 {k} 严禁为 CRITICAL 风险级别"
         assert not spec.requires_confirmation, f"键 {k} 严禁包含二次确认敏感标记"
 
+    # 严格门禁：候选列表中绝不得出现点号规范键 (spec.key)，必须全为实际落库别名 (alias)
+    all_canonical_keys = {s.key for s in GLOBAL_REGISTRY.all_specs()}
+    leaked_canonical_keys = set(keys) & all_canonical_keys
+    assert not leaked_canonical_keys, f"草稿候选列表严禁泄露规范点号键 (spec.key)，违规项: {leaked_canonical_keys}"
+
     # 负向可失败验证：用包含 CRITICAL 的桩注册表测试
-    def _make_spec(key: str, storage: str = "runtime_config", editable: bool = True, risk_level: str = "MEDIUM", requires_confirmation: bool = False) -> ConfigSpec:
+    def _make_spec(
+        key: str,
+        aliases: tuple[str, ...],
+        storage: str = "runtime_config",
+        editable: bool = True,
+        risk_level: str = "MEDIUM",
+        requires_confirmation: bool = False,
+    ) -> ConfigSpec:
         return ConfigSpec(
             key=key,
-            aliases=(key,),
+            aliases=aliases,
             category="⑤ 策略总览",
             title=key,
             description="desc",
@@ -378,15 +390,15 @@ def test_get_draftable_config_keys_filters_critical_and_non_runtime():
         )
 
     mock_specs = [
-        _make_spec("TEST_CRITICAL", storage="runtime_config", editable=True, risk_level="CRITICAL"),
-        _make_spec("TEST_CONFIRM", storage="runtime_config", editable=True, risk_level="HIGH", requires_confirmation=True),
-        _make_spec("TEST_ENV", storage="env", editable=True, risk_level="LOW"),
-        _make_spec("TEST_NOT_EDITABLE", storage="runtime_config", editable=False, risk_level="LOW"),
-        _make_spec("TEST_SAFE", storage="runtime_config", editable=True, risk_level="MEDIUM"),
+        _make_spec("runtime.critical", ("TEST_CRITICAL",), storage="runtime_config", editable=True, risk_level="CRITICAL"),
+        _make_spec("runtime.confirm", ("TEST_CONFIRM",), storage="runtime_config", editable=True, risk_level="HIGH", requires_confirmation=True),
+        _make_spec("env.item", ("TEST_ENV",), storage="env", editable=True, risk_level="LOW"),
+        _make_spec("runtime.disabled", ("TEST_NOT_EDITABLE",), storage="runtime_config", editable=False, risk_level="LOW"),
+        _make_spec("runtime.safe", ("TEST_SAFE",), storage="runtime_config", editable=True, risk_level="MEDIUM"),
     ]
     mock_reg = ConfigRegistry(mock_specs)
     filtered = get_draftable_config_keys(mock_reg)
-    assert filtered == ["TEST_SAFE"], f"过滤后必须只剩安全项 TEST_SAFE，实际为 {filtered}"
+    assert filtered == ["TEST_SAFE"], f"过滤后必须只剩安全落库键 TEST_SAFE，绝不能包含规范键 runtime.safe，实际为 {filtered}"
 
 
 def test_page18_config_key_is_registry_driven_selectbox():

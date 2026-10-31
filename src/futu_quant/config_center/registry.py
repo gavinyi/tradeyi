@@ -146,7 +146,7 @@ def get_draftable_config_keys(registry: ConfigRegistry | None = None) -> list[st
             continue
         if s.risk_level == "CRITICAL" or s.requires_confirmation:
             continue
-        for name in (*s.aliases, s.key):
+        for name in s.aliases:
             if "{" in name and "}" in name:
                 continue
             if name not in candidate_keys:
