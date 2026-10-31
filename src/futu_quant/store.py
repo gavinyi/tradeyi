@@ -2137,6 +2137,7 @@ class TradingStore:
         """
         now_dt = datetime.now(timezone.utc)
         reconciled = 0
+        to_reconcile = []
         with self.connection() as connection:
             rows = connection.execute(
                 "SELECT id, task_id, started_at, timeout_seconds, message FROM task_runs WHERE status = 'RUNNING'"
@@ -2162,14 +2163,19 @@ class TradingStore:
                         WHERE id = ?""",
                         (settle_msg, self.now(), run_id),
                     )
-                    connection.execute(
-                        """INSERT INTO audit_events(event_type,strategy_id,payload_json,actor,created_at)
-                        VALUES(?,?,?,?,?)""",
-                        ("TASK_RUN_ORPHAN_KILLED", "service:recovery", json.dumps({
-                            "run_id": run_id, "task_id": task_id, "started_at": started_at, "elapsed_seconds": elapsed,
-                        }), "service:recovery", self.now()),
-                    )
-                    reconciled += 1
+                    to_reconciled = {
+                        "run_id": run_id, "task_id": task_id, "started_at": started_at, "elapsed_seconds": elapsed,
+                    }
+                    to_reconcile.append((task_id, to_reconciled))
+
+        for task_id, payload in to_reconcile:
+            self.audit(
+                "TASK_RUN_ORPHAN_KILLED",
+                payload,
+                strategy_id=task_id,
+                actor="service:recovery",
+            )
+            reconciled += 1
         return reconciled
 
     def create_option_combo(self, combo: dict, legs: list[dict]) -> str:

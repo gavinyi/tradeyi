@@ -153,28 +153,42 @@ def test_run_gamma_strategy_passes_market_session_to_decide_volatility_action():
 def test_combo_leg_plan_invalid_sends_feishu_whitelist_alert(tmp_path):
     """AMZN 保护腿不足治理守卫：
     1. COMBO_LEG_PLAN_INVALID 必须在 FEISHU_GROUP_ALERT_WHITELIST 白名单中，确保 WARNING 级能够真实投递至飞书群；
-    2. 触发拒绝时，必须产生带有合法 incident_key 的告警，且当 campaign_id 为 None/空串时能够规范化回落，绝不产生空维度。
+    2. 触发拒绝时，必须调用生产函数 _combo_leg_incident_key 生成 incident_key，且当 campaign_id 为 None/空串时能够规范化回落，绝不产生空维度。
     """
+    import importlib.util
     from futu_quant.alerts import AlertManager, FEISHU_GROUP_ALERT_WHITELIST
     from futu_quant.store import TradingStore
 
     assert "COMBO_LEG_PLAN_INVALID" in FEISHU_GROUP_ALERT_WHITELIST, "COMBO_LEG_PLAN_INVALID 必须在飞书白名单中，防止只落库不推群"
 
+    spec = importlib.util.spec_from_file_location(
+        "run_gamma_strategy",
+        Path(__file__).resolve().parents[1] / "scripts" / "run_gamma_strategy.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _combo_leg_incident_key = getattr(module, "_combo_leg_incident_key", None)
+    assert _combo_leg_incident_key is not None, "生产代码必须提供 _combo_leg_incident_key 函数"
+
     store = TradingStore(tmp_path / "combo_alert.db")
     alerts = AlertManager(store)
     code = "US.AMZN261106P230000"
 
-    # 模拟无 campaign_id（显式 None）触发告警
-    cid = str(None or code).strip() or "unknown"
-    incident_key = f"COMBO_LEG_PLAN_INVALID:{cid}"
-    assert "::" not in incident_key
-    assert incident_key == f"COMBO_LEG_PLAN_INVALID:{code}"
+    # 测试生产函数对 None、""、"   " 等空入参的自动规范化与回退
+    for blank in (None, "", "   "):
+        incident_key = _combo_leg_incident_key(blank, code)
+        assert "::" not in incident_key
+        assert incident_key == f"COMBO_LEG_PLAN_INVALID:{code}"
+
+    # 测试有真实 campaign_id 时的正常生成
+    assert _combo_leg_incident_key("camp-xyz", code) == "COMBO_LEG_PLAN_INVALID:camp-xyz"
 
     alerts.send(
         "WARNING",
         "COMBO_LEG_PLAN_INVALID",
         f"{code}: 定义风险组合被拒（腿计划不完整）：卖出腿没有足量、同到期日的价差保护腿",
-        incident_key=incident_key,
+        incident_key=_combo_leg_incident_key(None, code),
     )
     record = [a for a in store.alerts() if a["event_type"] == "COMBO_LEG_PLAN_INVALID"][0]
     assert record["event_type"] == "COMBO_LEG_PLAN_INVALID"

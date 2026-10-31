@@ -468,6 +468,13 @@ def _exit_liquidity_incident_key(
     return f"OPTION_EXIT_LIQUIDITY_VACUUM:{cid}:{leg_number}:{code}"
 
 
+def _combo_leg_incident_key(campaign_id: object, code: str) -> str:
+    """生成定义风险组合多腿计划拒绝的事故去重键，支持 None/空串规范化回落。"""
+    cid = str(campaign_id).strip() if campaign_id is not None else ""
+    cid = cid or str(code).strip() or "unknown"
+    return f"COMBO_LEG_PLAN_INVALID:{cid}"
+
+
 def _campaign_naked_short_rows(campaign: dict, positions: pd.DataFrame) -> pd.DataFrame:
     """Return only genuinely uncovered short legs for this campaign.
 
@@ -2420,12 +2427,11 @@ def run_campaign(
                         "structure": campaign.get("structure"),
                         "campaign_id": campaign.get("campaign_id"),
                     })
-                    cid = str(campaign.get("campaign_id") or code).strip() or "unknown"
                     executor.alerts.send(
                         "WARNING",
                         "COMBO_LEG_PLAN_INVALID",
                         f"{code}: {block_reason}",
-                        incident_key=f"COMBO_LEG_PLAN_INVALID:{cid}",
+                        incident_key=_combo_leg_incident_key(campaign.get("campaign_id"), code),
                     )
                     print(f"{code}: BLOCKED ({block_reason})")
                     return
