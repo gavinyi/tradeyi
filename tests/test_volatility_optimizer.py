@@ -1104,3 +1104,45 @@ def test_weekend_carry_exit_triggers_on_friday_near_close():
         weekend_protection_min_profit=0.20,
     )
     assert action2 == "HOLD"
+
+
+def test_weekend_carry_exit_respects_early_close_market_session():
+    """Bug 2 守卫：
+    美股感恩节翌日等提前休市日（13:00 收盘）：
+    若 12:45（距真实收盘15分钟）浮盈不足 20%，必须触发周末避险退出；
+    若硬编码 16:00，距收盘被算成 195 分钟，将无法触发避险退出而带虚值期权过周末。
+    """
+    from zoneinfo import ZoneInfo
+    from futu_quant.market_calendar import MarketSession
+
+    ny_tz = ZoneInfo("America/New_York")
+    # 模拟感恩节翌日（星期五），13:00 收盘，当前时间 12:45
+    early_friday = datetime(2026, 11, 27, 12, 45, tzinfo=ny_tz)
+    session = MarketSession(
+        is_session=True,
+        market_open=datetime(2026, 11, 27, 9, 30, tzinfo=ny_tz),
+        market_close=datetime(2026, 11, 27, 13, 0, tzinfo=ny_tz),
+    )
+
+    action, reason = decide_volatility_action(
+        now=early_friday,
+        opened_at=early_friday - timedelta(hours=2),
+        quantity=1,
+        stages_filled=1,
+        max_stages=1,
+        pnl_ratio=0.05,
+        peak_pnl_ratio=0.08,
+        drawdown_from_peak=0.03,
+        directional_confirmation=True,
+        signal_active=True,
+        profit_target=0.50,
+        stop_loss=0.35,
+        trailing_stop=0.25,
+        max_hold_hours=24,
+        weekend_protection_enabled=True,
+        weekend_protection_min_profit=0.20,
+        market_session=session,
+    )
+    assert action == "SELL"
+    assert "周五收盘前避险退出" in reason
+    assert "距收盘15分钟" in reason

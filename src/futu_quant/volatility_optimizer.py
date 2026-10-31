@@ -992,6 +992,7 @@ def volatility_weekend_carry_exit_reason(
     min_profit_cushion: float = 0.20,
     pre_close_minutes: float = 30.0,
     enabled: bool = True,
+    market_session=None,
 ) -> str | None:
     """Exit long option positions before Friday close unless a large profit cushion exists.
 
@@ -1009,7 +1010,12 @@ def volatility_weekend_carry_exit_reason(
     if ny_now.weekday() != 4:
         return None
 
-    close_time = ny_now.replace(hour=16, minute=0, second=0, microsecond=0)
+    if market_session is not None and getattr(market_session, "market_close", None) is not None:
+        mc = market_session.market_close
+        close_time = mc.astimezone(ny_tz) if mc.tzinfo else mc.replace(tzinfo=ny_tz)
+    else:
+        close_time = ny_now.replace(hour=16, minute=0, second=0, microsecond=0)
+
     minutes_to_close = (close_time - ny_now).total_seconds() / 60.0
 
     if 0.0 <= minutes_to_close <= max(5.0, float(pre_close_minutes or 30.0)):
@@ -1705,6 +1711,7 @@ def decide_volatility_action(
     weekend_protection_enabled: bool = True,
     weekend_protection_min_profit: float = 0.20,
     weekend_protection_minutes: float = 30.0,
+    market_session=None,
 ) -> tuple[str, str]:
     """Decide one volatility campaign action without earnings-event semantics."""
     if quantity <= 0:
@@ -1851,6 +1858,7 @@ def decide_volatility_action(
             min_profit_cushion=weekend_protection_min_profit,
             pre_close_minutes=weekend_protection_minutes,
             enabled=True,
+            market_session=market_session,
         )
         if weekend_reason:
             return "SELL", weekend_reason
