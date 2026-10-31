@@ -456,6 +456,11 @@ def volatility_exit_limit_price(
     }
 
 
+def _exit_liquidity_incident_key(campaign_id: str, leg_number: int | str, code: str) -> str:
+    """生成买盘真空事故去重键，精确绑定 campaign、腿编号与合约代码，防止同标的多腿相互吞噬去重。"""
+    return f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:{leg_number}:{code}"
+
+
 def _campaign_naked_short_rows(campaign: dict, positions: pd.DataFrame) -> pd.DataFrame:
     """Return only genuinely uncovered short legs for this campaign.
 
@@ -2534,11 +2539,12 @@ def run_campaign(
                 # 静默拦截严禁无告警：若买盘真空导致平仓无法挂单，必须通过 alerts.send 进行真实推送（内置 900 秒去重）
                 # incident_key 必须精确绑定 campaign_id、leg_number 与 code，防止多腿组合被错误合并去重
                 campaign_id = campaign.get("campaign_id", code)
+                incident_k = _exit_liquidity_incident_key(campaign_id, leg_number, leg["code"])
                 executor.alerts.send(
                     "ERROR",
                     "OPTION_EXIT_LIQUIDITY_VACUUM",
                     f"{code}: {wait_reason}",
-                    incident_key=f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:{leg_number}:{leg['code']}",
+                    incident_key=incident_k,
                 )
 
                 print(f"{code}: HOLD ({wait_reason})")

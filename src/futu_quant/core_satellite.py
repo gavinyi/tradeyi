@@ -503,12 +503,22 @@ def build_rebalance_plan(
 
                 sgov_mv = h["market_val"] if h.get("market_val", 0) > 0 else h["qty"] * yield_p
                 sgov_sellable_value = h["can_sell_qty"] * yield_p if yield_p > 0 else 0.0
+                # 若持仓包含理财但价格完全缺失，无法确定资产净值与变现能力，按 fail-closed 阻断买入流动性
+                if h.get("qty", 0) > 0 and yield_p <= 0 and h.get("market_val", 0) <= 0:
+                    sgov_unpriced = True
+                else:
+                    sgov_unpriced = False
                 break
+    else:
+        sgov_unpriced = False
 
     estimated_cash = max(0.0, account_value - total_market_value - sgov_mv)
     # 股票调仓所能借助的最大流动性 = 当前现金 + 实际可变现的 SGOV（扣除必须预留的 cash_buffer）
     target_cash_buffer = account_value * cash_buffer
-    max_available_liquidity = max(0.0, estimated_cash + sgov_sellable_value - target_cash_buffer)
+    if sgov_unpriced:
+        max_available_liquidity = 0.0
+    else:
+        max_available_liquidity = max(0.0, estimated_cash + sgov_sellable_value - target_cash_buffer)
 
     buy_budget = min(stock_exposure_budget, max_available_liquidity)
     requested_buys = sum(max(0.0, item[5]) for item in candidates)
