@@ -173,3 +173,22 @@ def test_urgent_buy_to_close_prices_above_ask_to_reduce_short_leg_risk():
 
     assert price == 1.05
     assert context["urgent_exit"] is True
+
+
+def test_sell_exit_when_bid_non_positive_returns_zero_price_and_waiting_liquidity():
+    """Bug 4 守卫：
+    平多头期权（SELL）时，若 bid <= 0（流动性真空/无买盘），
+    严禁回退到陈旧的 last 挂单，必须返回 0.0 限价并标记 WAITING_EXIT_LIQUIDITY，
+    避免悬空限价单导致监控进入在途订单等待死循环。
+    """
+    quote = pd.Series({"bid_price": 0.0, "ask_price": 2.50, "last_price": 2.00})
+    price, context = volatility_exit_limit_price(
+        quote,
+        "SELL",
+        urgent=True,
+        campaign={"urgent_exit_price_improvement_pct": 0.04},
+    )
+
+    assert price == 0.0
+    assert context["liquidity_status"] == "WAITING_EXIT_LIQUIDITY"
+    assert "买盘真空" in context["exit_limit_rule"]

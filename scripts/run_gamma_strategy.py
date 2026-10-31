@@ -413,6 +413,18 @@ def volatility_exit_limit_price(
     last = float(quote.get("last_price", 0) or 0)
     side = side.upper()
     reference = ask if side == "BUY" else bid
+    if side == "SELL" and bid <= 0:
+        # 工业规范：平多头期权卖出时，若买盘真空 (bid <= 0)，严禁回落至历史 last 挂单。
+        # 否则会生成无法成交的悬空限价单，导致后续监控被在途订单阻塞。
+        return 0.0, {
+            "bid_price": bid,
+            "ask_price": ask,
+            "last_price": last,
+            "urgent_exit": urgent,
+            "urgent_exit_price_improvement_pct": 0.0,
+            "liquidity_status": "WAITING_EXIT_LIQUIDITY",
+            "exit_limit_rule": "买盘真空：bid <= 0 暂不下单，等待做市商报价恢复",
+        }
     if reference <= 0:
         reference = last
     adjustment = 0.0
@@ -435,6 +447,7 @@ def volatility_exit_limit_price(
         "last_price": last,
         "urgent_exit": urgent,
         "urgent_exit_price_improvement_pct": adjustment,
+        "liquidity_status": "AVAILABLE",
         "exit_limit_rule": (
             "紧急退出：卖出按买一主动降价，买回按卖一主动加价"
             if urgent else
@@ -2499,13 +2512,17 @@ def run_campaign(
                     f"等待可退出盘口：{leg['code']} "
                     f"{closing_side} 可用限价为 0，下一轮继续刷新尝试退出"
                 )
-                executor.store.decision(strategy_id, code, "HOLD", wait_reason, {
-                    **decision_payload,
-                    "market_data_status": "WAITING_EXIT_LIQUIDITY",
-                    "book_reason": wait_reason,
-                    "planned_order_quantity": exit_quantity,
-                    "exit_price_context": exit_price_context,
-                }, tenant_id=_campaign_tenant)
+                executor.store.decision_if_changed(
+                    strategy_id, code, "HOLD", wait_reason, {
+                        **decision_payload,
+                        "market_data_status": "WAITING_EXIT_LIQUIDITY",
+                        "book_reason": wait_reason,
+                        "planned_order_quantity": exit_quantity,
+                        "exit_price_context": exit_price_context,
+                    },
+                    tenant_id=_campaign_tenant,
+                    repeat_after_seconds=900,
+                )
                 executor.store.audit("OPTION_EXIT_WAITING_FOR_BID", {
                     "symbol": leg["code"], "strategy_id": strategy_id,
                     "reason": wait_reason,
@@ -2513,6 +2530,14 @@ def run_campaign(
                     "planned_order_quantity": exit_quantity,
                     "exit_price_context": exit_price_context,
                 }, strategy_id, actor="service:gamma")
+
+                # 静默拦截严禁无告警：若买盘真空导致平仓无法挂单，必须发出审计告警（900秒内去重）
+                alert_type = "OPTION_EXIT_LIQUIDITY_VACUUM"
+                if not executor.store.alert_recently_exists("ERROR", alert_type, wait_reason, seconds=900):
+                    executor.store.add_alert(
+                        "ERROR", alert_type, wait_reason, delivered=False,
+                    )
+
                 print(f"{code}: HOLD ({wait_reason})")
                 return
             result = executor.submit_limit(
