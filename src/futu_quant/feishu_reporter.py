@@ -57,6 +57,7 @@ EVENT_TYPE_NAMES: dict[str, str] = {
     "PORTFOLIO_STRESS_ALERT": "投资组合压力预警",
     "STRESS_STATE_TENANT_FALLBACK": "组合压力状态租户回落",
     "EQUITY_SNAPSHOT_FAILED": "资产净值快照记录失败",
+    "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK": "日亏线解析失败（已退回环境变量值）",
 
     # 机器学习 (P2)
     "ML_MODEL_STALE": "ML 模型需重训（模型过旧）",

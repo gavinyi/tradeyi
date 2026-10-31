@@ -29,6 +29,12 @@ EVENT_METAS: dict[str, EventMeta] = {
         action_guide="建议前往【风控中心】核验浮动盈亏，若需继续开仓可由管理员评估后临时放行。",
         page_path="pages/7_risk_center.py",
     ),
+    "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK": EventMeta(
+        chinese_name="日亏线解析失败（已退回环境变量值）",
+        impact="账户生效的风控参数不完整，系统已退回环境变量里的兜底日亏线继续巡检 —— 这条兜底线可能比页面配置的更宽松，等于当日急停被放远。",
+        action_guide="请前往【风控中心】核对账户/租户的风控参数是否齐全（缺任意一项即拒绝按配置生效）。",
+        page_path="pages/7_risk_center.py",
+    ),
     "KILL_SWITCH_ENGAGED": EventMeta(
         chinese_name="紧急急停开关触发",
         impact="已开启全系统/租户交易急停制动，所有新增买入加仓被拦截；平仓通道保持畅通。",

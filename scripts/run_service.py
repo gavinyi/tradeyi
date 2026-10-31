@@ -68,6 +68,7 @@ from futu_quant.campaign_cleanup import cleanup_expired_campaigns
 from futu_quant.connectivity_protection import protected_position_summary
 from futu_quant.account_metrics import account_pnl_metrics
 from futu_quant.risk import RiskLimits, ny_trading_day_start_utc
+from futu_quant.risk_limits import RiskLimitsConfigError, resolve_risk_limits
 from futu_quant.option_lifecycle import execute_disposition_plans, monitor_option_lifecycle
 from futu_quant.option_history import collect_option_snapshots
 from futu_quant.portfolio_allocator import ensure_default_budgets
@@ -749,6 +750,34 @@ def mark_run(store: TradingStore, key: str, now: datetime) -> None:
     store.set_setting(_sched_write_key(key), now.isoformat())
 
 
+def resolve_daily_loss_limit(store: TradingStore, broker, alerts, account_id: str = "") -> tuple[float, str]:
+    """解析**本账户生效**的日亏急停线，返回 ``(阈值, 来源)``。
+
+    为什么必须走 ``resolve_risk_limits`` 而不是 ``RiskLimits.load()``：
+    ``RiskLimits.load()`` **只读 .env**。页面 27 上配的日亏线（账户级 ``risk`` 段 /
+    租户级 ``risk_limits:{tenant}``）在这条巡检里**完全不生效** —— 实盘租户配的是
+    $400，env 是 $10,000，于是「亏到 400 就该停」实际要亏到 10,000 才停，25 倍宽松。
+    这条巡检是账户急停**唯一**的触发点，所以它的取线口径必须与下单风控同源。
+
+    ``来源 == "env_fallback"`` 表示配置残缺、已退回 .env 值：返回的线**可能比配置的宽**，
+    调用方据此可以在审计里标出来。绝不静默退回 —— 那是「风控自己降级」。
+    """
+    try:
+        return resolve_risk_limits(store, broker).max_daily_loss, "resolved"
+    except RiskLimitsConfigError as exc:
+        limit = RiskLimits.load().max_daily_loss
+        store.operational_event(
+            "trading_service", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK", "DEGRADED",
+            {"error": str(exc), "account_id": account_id, "fallback_limit": limit},
+        )
+        alerts.send(
+            "ERROR", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK",
+            f"账户 {account_id or '系统'} 日亏线解析失败，已退回 .env 值 "
+            f"${limit:,.2f}：{exc}",
+        )
+        return limit, "env_fallback"
+
+
 def core_rebalance_window(store: TradingStore, session, now: datetime) -> tuple[bool, str]:
     """Select the normal pre-close run or a missed daily-validation catch-up."""
     key = "last_run:core_satellite"
@@ -1285,14 +1314,19 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                          "tolerance": snapshot_tolerance},
                     )
                 loss = max(0.0, position_loss, equity_loss)
-                limit = RiskLimits.load().max_daily_loss
+                # 日亏线走唯一解析入口（账户级 risk 段 → risk_limits:{tenant} → env），
+                # 与下单风控同源。原先的 RiskLimits.load() 只读 .env，页面上配的
+                # 租户/账户日亏线在这条巡检里完全不生效（实盘 400 长期退化为 10,000）。
+                limit, limit_source = resolve_daily_loss_limit(
+                    store, broker, alerts, account_id=broker_acc_id,
+                )
                 if session.regular_open(now) and loss >= limit and not store.kill_switch(account_id=broker_acc_id):
                     store.set_kill_switch(True, account_id=broker_acc_id)
                     store.audit("DAILY_LOSS_KILL_SWITCH", {
                         "loss": loss, "position_loss": position_loss,
                         "equity_loss": equity_loss, "baseline_assets": baseline_assets,
                         "limit": limit, "trading_date_ny": now.date().isoformat(),
-                        "account_id": broker_acc_id,
+                        "account_id": broker_acc_id, "limit_source": limit_source,
                     }, actor="scheduler:main")
                     target_name = f"账户 {broker_acc_id}" if broker_acc_id else "系统"
                     alerts.send(
