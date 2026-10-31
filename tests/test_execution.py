@@ -569,20 +569,21 @@ def test_urgent_sell_reprice_falls_back_to_conservative_grid_when_spread_missing
     assert round(broker.modified_price % 0.10, 4) in {0.0, 0.10}
 
 
-def test_urgent_sell_reprice_skips_when_alignment_violates_slippage(tmp_path, monkeypatch):
+def test_urgent_sell_reprice_clamps_to_slippage_floor_and_aligns_upward(tmp_path, monkeypatch):
     """Bug 5 守卫：
-    若对齐后的价格跌破滑点保护底线 reference * (1 - slip)，
-    必须宁可不改单跳过，绝不能为了对齐 tick 突破滑点底线！
+    当 bid*0.99 跌破滑点底线 reference*(1-slip) 时（急跌），
+    必须保留旧逻辑兜到底板继续改单的语义：向上对齐到 >= 地板的下一个合法 tick，
+    绝不能放弃改单导致紧急平仓卡死！
     """
     monkeypatch.setenv("EXEC_REPRICE_INTERVAL_SECONDS", "15")
-    # 设置极端狭窄滑点 1%：reference=4.00 -> 最低只许 3.96
+    # 设置滑点 1%：reference=4.00 -> 最低只许 3.96
     monkeypatch.setenv("EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT", "0.01")
     store = TradingStore(tmp_path / "test.db")
 
-    # bid=3.98 -> bid*0.99 = 3.9402 < slip 边界 3.96
-    broker = OptionTickRepriceBroker({"bid_price": 3.98, "ask_price": 4.05, "price_spread": 0.10})
+    # bid=3.95 -> bid*0.99 = 3.9105 远低于地板 3.96；tick=0.10
+    broker = OptionTickRepriceBroker({"bid_price": 3.95, "ask_price": 4.05, "price_spread": 0.10})
     intent, _ = store.create_intent(
-        "volatility_long_gamma", "urgent-slip", "US.XYZ261120C150000", "SELL", 1, 4.00,
+        "volatility_long_gamma", "urgent-slip-clamp", "US.XYZ261120C150000", "SELL", 1, 4.05,
         {"urgent": True, "reference_price": 4.00},
     )
     store.update_intent(intent["id"], "SUBMITTED", broker_order_id="paper-tick-3")
@@ -593,6 +594,34 @@ def test_urgent_sell_reprice_skips_when_alignment_violates_slippage(tmp_path, mo
         )
 
     repriced = ExecutionManager(broker, store).reprice_open_orders()
-    # 3.96 向下对齐 0.10 为 3.90，但 3.90 越过了滑点下限 3.96，因此必须不发改单！
-    assert repriced == 0
-    assert broker.modify_calls == 0
+    assert repriced == 1
+    # 地板 3.96，向下对齐 0.10 为 3.90（低于地板），必须向上对齐到 4.00（>= 3.96 的合法 tick）
+    assert broker.modified_price == 4.00
+    assert broker.modified_price >= 3.96
+    assert round(broker.modified_price % 0.10, 4) in {0.0, 0.10}
+
+
+def test_urgent_sell_reprice_exact_boundary_no_tick_drop(tmp_path, monkeypatch):
+    """Bug 5 守卫：
+    二进制浮点边界防掉档：3.80 / 0.05 必须精确对齐为 3.80，绝不能因为 75.999999 掉档为 3.75。
+    """
+    monkeypatch.setenv("EXEC_REPRICE_INTERVAL_SECONDS", "15")
+    monkeypatch.setenv("EXEC_URGENT_EXIT_MAX_SLIPPAGE_PCT", "0.12")
+    store = TradingStore(tmp_path / "test.db")
+
+    # bid=3.83838384 -> bid*0.99 ≈ 3.800000001
+    broker = OptionTickRepriceBroker({"bid_price": 3.80 / 0.99, "ask_price": 4.00, "price_spread": 0.05})
+    intent, _ = store.create_intent(
+        "volatility_long_gamma", "urgent-exact", "US.XYZ261120C150000", "SELL", 1, 4.00,
+        {"urgent": True, "reference_price": 4.00},
+    )
+    store.update_intent(intent["id"], "SUBMITTED", broker_order_id="paper-tick-4")
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE order_intents SET created_at=?, last_reprice_at=? WHERE id=?",
+            ("2026-08-13T14:00:00+00:00", "2026-08-13T14:00:00+00:00", intent["id"]),
+        )
+
+    repriced = ExecutionManager(broker, store).reprice_open_orders()
+    assert repriced == 1
+    assert broker.modified_price == 3.80

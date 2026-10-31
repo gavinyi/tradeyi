@@ -765,25 +765,30 @@ class ExecutionManager:
                     # 紧急平仓/锁利卖出: 积极主动吃单，紧贴买一价下方 1% 确保对手方撮合成交
                     raw_target = min(current, bid * 0.99)
                     min_allowed = reference * (1 - slip)
+                    # 先兜到底板，保留滑点保护兜底改单语义
+                    clamped_target = max(raw_target, min_allowed)
 
-                    # 1. 确定 tick 步长：优先取快照 price_spread，缺失或异常时退到保守网格
+                    # 1. 确定 tick 步长：优先取快照 price_spread，缺失、非有限正数或异常偏大(>0.5)时退到保守网格
                     spread_val = quote.get("price_spread")
                     try:
                         tick = float(spread_val) if spread_val is not None else 0.0
                     except (ValueError, TypeError):
                         tick = 0.0
 
-                    if not (math.isfinite(tick) and tick > 0):
-                        tick = 0.10 if raw_target >= 3.00 - 1e-9 else 0.05
+                    if not (math.isfinite(tick) and 0 < tick <= 0.50):
+                        tick = 0.10 if clamped_target >= 3.00 - 1e-9 else 0.05
 
-                    # 2. 向下对齐 tick（SELL 向下取整，确保不高于限价且容易成交）
-                    ticks = raw_target / tick
-                    aligned_ticks = int(ticks + 1e-7)
-                    target = round(max(0.01, aligned_ticks * tick), 2)
+                    # 2. 向下对齐 tick；若跌破地板，向上对齐到下一个合法 tick（确保 >= min_allowed）
+                    ticks = clamped_target / tick
+                    aligned_ticks = math.floor(ticks + 1e-9)
+                    aligned_target = round(max(0.01, aligned_ticks * tick), 2)
+                    if aligned_target < round(min_allowed, 2) - 1e-4:
+                        aligned_target = round(max(0.01, math.ceil(ticks - 1e-9) * tick), 2)
 
-                    # 3. 严格守住 slip 底线：对齐后若跌破 reference * (1 - slip)，宁可不发改单，绝不突破滑点保护
-                    if target < round(min_allowed, 2) - 1e-4:
+                    # 3. 若向上对齐后高于 current，说明地板已高于现价，本轮不发（保持更优现价）
+                    if aligned_target > current + 1e-4:
                         continue
+                    target = aligned_target
                 elif is_urgent and intent["side"] == "BUY":
                     # 紧急买回平仓: 紧贴卖一价上方 1% 主动吃单
                     target = round(max(current, ask * 1.01), 2)
