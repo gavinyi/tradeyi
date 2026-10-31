@@ -487,6 +487,7 @@ def build_rebalance_plan(
     # 基础现金估算：总资产减去股票持仓市值及理财持仓市值
     sgov_mv = 0.0
     sgov_sellable_value = 0.0
+    sgov_unpriced = False
     yield_symbol_key = cash_yield_symbol
     if cash_yield_enabled:
         norm_yield = normalize_us_symbol(cash_yield_symbol)
@@ -513,11 +514,7 @@ def build_rebalance_plan(
                 # 若持仓包含理财但价格完全缺失，无法确定资产净值与变现能力，按 fail-closed 阻断买入流动性
                 if h.get("qty", 0) > 0 and yield_p <= 0 and h.get("market_val", 0) <= 0:
                     sgov_unpriced = True
-                else:
-                    sgov_unpriced = False
                 break
-    else:
-        sgov_unpriced = False
 
     estimated_cash = max(0.0, account_value - total_market_value - sgov_mv)
     # 股票调仓所能借助的最大流动性 = 当前现金 + 实际可变现的 SGOV（扣除必须预留的 cash_buffer）

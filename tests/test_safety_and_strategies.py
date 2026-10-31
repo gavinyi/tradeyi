@@ -386,3 +386,26 @@ def test_core_satellite_sgov_infinite_or_non_positive_price_fails_closed():
     )
     buys = [o for o in plan if o.side == "BUY" and o.symbol != "US.SGOV"]
     assert len(buys) == 0, f"SGOV 行情为 inf 时必须 fail-closed 阻断买入，实际生成: {buys}"
+
+
+def test_core_satellite_cash_yield_enabled_without_sgov_position_runs_normally():
+    """Bug 1 回归守卫：
+    当 cash_yield_enabled=True 但账户当前完全没有 SGOV 持仓时：
+    1. 不得抛出 UnboundLocalError: sgov_unpriced 异常；
+    2. 买入预算按可用现金正常计算，能正常产生买单，绝不可误锁正常场景。
+    """
+    frames = {
+        "US.SPY": core_frame(),
+        "US.AAPL": trend_frame(start=100, step=1.0),
+        "US.SGOV": core_frame(price=100.0),
+    }
+    # 账户净值 100_000，纯现金（无任何持仓）
+    positions_empty = pd.DataFrame()
+    plan, risk_on = build_rebalance_plan(
+        frames, positions_empty, 100_000, ("US.SPY", "US.AAPL"),
+        min_trade_usd=100, cash_yield_enabled=True, cash_yield_symbol="US.SGOV",
+        cash_buffer=0.05,
+    )
+    assert risk_on
+    buys = [o for o in plan if o.side == "BUY" and o.symbol != "US.SGOV"]
+    assert len(buys) > 0, "无 SGOV 持仓但现金充裕时，必须正常产生股票买单，不得被误锁！"
