@@ -391,6 +391,25 @@ def run_daily_universe_ranking(
     symbols = [c["symbol"] for c in candidates]
     settled_count = 0
     if broker is not None:
+        # 日任务是孵化闭环的兜底入口：扫描器可能因市场窗口/行情短暂不可用而只记信号。
+        # 虚拟仓属于全局共享研究层（schema 无 tenant_id），不是租户账本；这里按共享
+        # OPEN 仓去重，租户隔离只适用于 promoted_universe 投放层。
+        existing = {row["symbol"] for row in incubator.store.open_incubator_virtual_positions()}
+        missing = [symbol for symbol in symbols if symbol not in existing]
+        if missing:
+            frame = broker.snapshots_tolerant(missing)
+            if frame is not None and not frame.empty and "code" in frame.columns:
+                opened_at = (now or datetime.now(CHINA)).astimezone(ZoneInfo("UTC"))
+                for _, row in frame.iterrows():
+                    symbol = str(row.get("code", "")).upper()
+                    entry_price = float(row.get("last_price", 0) or 0)
+                    if symbol in missing and entry_price > 0:
+                        incubator.open_virtual_position(
+                            symbol, entry_price,
+                            signal_key=f"daily:{opened_at.date().isoformat()}:{symbol}",
+                            opened_at=opened_at.isoformat(), holding_hours=24,
+                        )
+
         open_positions = incubator.store.open_incubator_virtual_positions(
             due_at=(now or datetime.now(CHINA)).astimezone(ZoneInfo("UTC")).isoformat()
         )

@@ -80,6 +80,25 @@ def test_virtual_position_open_and_settle_is_idempotent(tmp_path):
     assert metrics["simulated_pnl_usd"] == pytest.approx(1.0)
 
 
+def test_daily_chain_signal_key_is_day_scoped_and_idempotent(tmp_path):
+    """日任务同日重跑不重复开仓，跨日使用新 signal_key；研究仓保持共享语义。"""
+    store = TradingStore(str(tmp_path / "daily-idempotency.db"))
+    opened = datetime(2026, 10, 30, 21, 30, tzinfo=timezone.utc)
+    assert store.open_incubator_virtual_position(
+        "US.PLTR", "daily:2026-10-30:US.PLTR", 100.0,
+        opened.isoformat(), (opened + timedelta(hours=24)).isoformat(),
+    )
+    assert not store.open_incubator_virtual_position(
+        "US.PLTR", "daily:2026-10-30:US.PLTR", 101.0,
+        opened.isoformat(), (opened + timedelta(hours=24)).isoformat(),
+    )
+    assert store.open_incubator_virtual_position(
+        "US.PLTR", "daily:2026-10-31:US.PLTR", 101.0,
+        (opened + timedelta(days=1)).isoformat(), (opened + timedelta(days=2)).isoformat(),
+    )
+    assert len(store.open_incubator_virtual_positions()) == 2
+
+
 def test_daily_chain_settles_scores_and_promotes(monkeypatch, tmp_path):
     store = TradingStore(str(tmp_path / "incubator.db"))
     now = datetime.now(timezone.utc)
