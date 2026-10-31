@@ -2412,13 +2412,37 @@ class TradingStore:
         from .config_center import validate_instance_key
         from futu_quant.tenant import DEFAULT_TENANTS
 
-        # 统一配置中心 Phase 2 写入边界强门禁：
-        # 1. 验证是否在 Registry 登记；
-        # 2. 对模板实例键严格验证租户后缀白名单（动态租户表与代码默认租户取并集，杜绝合法租户被拒）
+        # 统一配置中心 Phase 3 写入边界强门禁：
+        # 1. 租户白名单（代码默认与动态租户表并集）
         tenants = set(DEFAULT_TENANTS.keys())
         if self.tenant_registry:
             tenants |= set(self.tenant_registry.keys())
-        validate_instance_key(config_key, allowed_tenants=tenants)
+
+        # 2. 账户白名单严格提取（兼容 TenantProfile 对象或 dict 桩，防御空 dict）
+        accounts = {t.account_id for t in DEFAULT_TENANTS.values() if getattr(t, "account_id", None)}
+        if self.tenant_registry:
+            for v in self.tenant_registry.values():
+                acc = getattr(v, "account_id", None) or (v.get("account_id") if isinstance(v, dict) else None)
+                if acc:
+                    accounts.add(str(acc))
+
+        # 3. 策略白名单动态提取 (从 strategy_approvals)
+        strategies = set()
+        try:
+            for row in self.strategy_approvals():
+                sid = row.get("strategy_id")
+                if sid:
+                    strategies.add(str(sid))
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("提取动态策略审批列表异常: %s", exc)
+
+        validate_instance_key(
+            config_key,
+            allowed_tenants=tenants,
+            allowed_accounts=accounts,
+            allowed_strategies=strategies,
+        )
 
         current = self.get_runtime_config(config_key)
         current_value, version = current if current else (None, 0)

@@ -710,3 +710,126 @@ def test_page43_unified_config_center_is_strictly_read_only():
     assert len(bad_violations) > 0, "AST 写入扫描器未能捕获 set_runtime_config 违规！"
 
 
+def test_template_literal_is_directly_resolvable():
+    """Phase 3 前置守卫 1：
+    断言模板字面量本身 (含占位符字符串自身) 优先通过 alias 字面量秒级解析，
+    保证元数据反射与 Phase 0 静态守卫不被切段索引破坏。
+    """
+    assert GLOBAL_REGISTRY.resolve_canonical_key("risk_limits:{tenant}") == "risk.limits.tenant"
+    assert GLOBAL_REGISTRY.resolve_canonical_key("real_account_config:{account}") == "safety.real.account_config"
+    assert GLOBAL_REGISTRY.resolve_canonical_key("strategy_enabled:{tenant}:{strategy}") == "control.strategy.enabled"
+
+
+def test_template_segment_matching_rejects_empty_segments_and_extra_colons():
+    """Phase 3 前置守卫 2：
+    1. 负向防御：空段 (如 'a::b')、悬空冒号 (如 'a:')、段数不匹配等非法格式必须显式拒识 (返回 None)；
+    2. 正向验证：现网存在空格的策略名 (如 'strategy_execution_mode:SMA Cross') 必须精准切段命中，不受旧正则限制。
+    """
+    # 负向：空段与非法格式
+    assert GLOBAL_REGISTRY.resolve_canonical_key("strategy_execution_mode::core_satellite") is None
+    assert GLOBAL_REGISTRY.resolve_canonical_key("strategy_execution_mode:futu_real_master:core:satellite:extra") is None
+    assert GLOBAL_REGISTRY.resolve_canonical_key("strategy_execution_mode:") is None
+    assert GLOBAL_REGISTRY.resolve_canonical_key("risk_limits::") is None
+
+    # 正向：带空格的存量 Title 别名切段命中
+    assert GLOBAL_REGISTRY.resolve_canonical_key("strategy_execution_mode:SMA Cross") == "runtime.strategy.execution_mode"
+    assert GLOBAL_REGISTRY.resolve_canonical_key("strategy_execution_mode:20 Day Breakout") == "runtime.strategy.execution_mode"
+    assert GLOBAL_REGISTRY.resolve_canonical_key("strategy_execution_mode:RSI Mean Reversion") == "runtime.strategy.execution_mode"
+
+
+def test_deprecated_strategy_enabled_legacy_fails_closed_on_write(tmp_path):
+    """Phase 3 前置守卫 3：
+    1. 只读断言：无租户历史键 strategy_enabled:core_satellite 在 contains() 仍返回 True (保持只读注册不变)；
+    2. 写入阻断：validate_instance_key 必须抛出 ValueError 并明确提示已废弃 (deprecated)；
+    3. 端到端阻断：store.create_config_release 对废弃键必须拒建草稿。
+    """
+    from futu_quant.config_center import validate_instance_key
+    from futu_quant.store import TradingStore
+
+    legacy_key = "strategy_enabled:core_satellite"
+    # 1. contains() 保持只读合法注册
+    assert GLOBAL_REGISTRY.contains(legacy_key) is True
+
+    # 2. validate_instance_key 写入边界抛错
+    with pytest.raises(ValueError, match="已废弃 \\(deprecated\\)"):
+        validate_instance_key(legacy_key)
+
+    # 3. 端到端草稿创建拒建
+    store = TradingStore(tmp_path / "test_deprecated_guard.db")
+    with pytest.raises(ValueError, match="已废弃 \\(deprecated\\)"):
+        store.create_config_release(legacy_key, True, "streamlit_admin", "try write deprecated")
+
+
+def test_account_whitelist_is_strictly_separated_from_tenants(tmp_path):
+    """Phase 3 前置守卫 4：
+    1. 真实纯数字券商账号通过：real_account_config:281756481476169109 校验通过；
+    2. 租户名冒充账号必须拒识：以租户名充当账号 real_account_config:futu_real_master 抛出 ValueError；
+    3. 防御空 dict 测试桩：tenant_registry 传入空 dict 时安全提取不崩溃；
+    4. 动态账号并集支持。
+    """
+    from futu_quant.config_center import validate_instance_key
+    from futu_quant.store import TradingStore
+
+    # 1. 真实数字账号通过
+    validate_instance_key("real_account_config:281756481476169109")
+    validate_instance_key("real_account_config:283445327916889204")
+
+    # 2. 租户名冒充账号必须被拒 (严格分离)
+    with pytest.raises(ValueError, match="未在有效账户注册表中登记"):
+        validate_instance_key("real_account_config:futu_real_master")
+
+    # 3. 动态账号并集支持
+    validate_instance_key("real_account_config:9988776655", allowed_accounts={"9988776655"})
+    with pytest.raises(ValueError, match="未在有效账户注册表中登记"):
+        validate_instance_key("real_account_config:1122334455", allowed_accounts={"9988776655"})
+
+    # 4. store 携带空 dict 桩不抛 AttributeError 崩溃
+    stub_store = TradingStore(tmp_path / "test_empty_dict.db", tenant_registry={"empty_stub": {}})
+    # 仍可正常为默认真实账号创建草稿
+    release_id = stub_store.create_config_release(
+        "real_account_config:281756481476169109", {"max_daily_notional": 5000}, "streamlit_admin", "ok"
+    )
+    assert release_id > 0
+
+
+def test_strategy_whitelist_enforces_known_strategies_and_retains_title_aliases():
+    """Phase 3 前置守卫 5：
+    1. strategy_id 白名单放行 (如 core_satellite)；
+    2. 存量 3 个带空格 Title 别名放行 (SMA Cross 等)；
+    3. 未知策略名严格抛出 ValueError 阻断。
+    """
+    from futu_quant.config_center import validate_instance_key
+
+    # 1. strategy_id
+    validate_instance_key("strategy_execution_mode:core_satellite")
+    validate_instance_key("strategy_execution_mode:volatility_long_gamma")
+
+    # 2. 存量 Title 别名
+    validate_instance_key("strategy_execution_mode:SMA Cross")
+    validate_instance_key("strategy_execution_mode:20 Day Breakout")
+
+    # 3. 未知策略阻断
+    with pytest.raises(ValueError, match="未在有效策略插件注册表中登记"):
+        validate_instance_key("strategy_execution_mode:unknown_random_strategy")
+
+
+def test_single_key_matches_at_most_one_template():
+    """Phase 3 前置守卫 6：
+    断言在注册表模板索引中，任何 (prefix, segment_count) 均全局唯一，
+    保证任何实例键至多命中唯一一个模板，彻底消除顺序与段数歧义。
+    """
+    templates = []
+    for spec in GLOBAL_REGISTRY.all_specs():
+        for a in spec.aliases:
+            if "{" in a and "}" in a:
+                parts = a.split(":")
+                templates.append((parts[0], len(parts), a))
+
+    seen = {}
+    for prefix, seg_count, t_str in templates:
+        key = (prefix, seg_count)
+        assert key not in seen, f"发现冲突模板: {t_str} 与 {seen[key]} 共享相同 (prefix={prefix}, seg_count={seg_count})"
+        seen[key] = t_str
+
+
+

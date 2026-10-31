@@ -9434,8 +9434,7 @@
   {
     "key": "control.strategy.enabled",
     "aliases": [
-      "strategy_enabled:{tenant}:{strategy}",
-      "strategy_enabled:{strategy}"
+      "strategy_enabled:{tenant}:{strategy}"
     ],
     "category": "③ 急停与运行控制",
     "title": "策略启用开关",
@@ -9456,6 +9455,32 @@
       "急停与运行控制"
     ],
     "runtime_key": "strategy_enabled:{tenant}:{strategy}"
+  },
+  {
+    "key": "control.strategy.enabled.legacy",
+    "aliases": [
+      "strategy_enabled:{strategy}"
+    ],
+    "category": "③ 急停与运行控制",
+    "title": "策略启用开关 (历史全局无租户形态·已弃用)",
+    "description": "历史全局策略启用开关，现网已全面多租户化，本键已弃用，禁止新建草稿",
+    "value_type": "bool",
+    "default": true,
+    "scope": "strategy",
+    "storage": "system_settings",
+    "risk_level": "HIGH",
+    "editable": false,
+    "requires_admin": false,
+    "requires_confirmation": false,
+    "activation": "immediate",
+    "consumers": [
+      "run_service.service_cycle"
+    ],
+    "tags": [
+      "急停与运行控制"
+    ],
+    "runtime_key": "strategy_enabled:{strategy}",
+    "deprecated": true
   },
   {
     "key": "runtime.strategy.execution_mode",
