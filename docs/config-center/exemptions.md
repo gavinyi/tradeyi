@@ -47,3 +47,19 @@
 - `TRADEYI_TEST_ROOT`
 - `DSH_HADOOP_USER`
 - `CUA_DRIVER_PIPE`
+
+---
+
+## 4. runtime_config 写调用通用助手豁免清单 (8 处)
+针对由通用底层助手方法转发的写调用，由于其形参键名在函数内为变量，且实际传入的键名已在具体的业务调用处被静态或动态守卫覆盖，以下通用写入口站点列入冻结豁免：
+
+| 序号 | 代码站点 | 函数角色 | 豁免理由 |
+|---:|---|---|---|
+| 1 | `src/futu_quant/config.py:116` | `_load_runtime_value` 内部初始化迁移 | 通用读取回填助手，key 来自调用方 |
+| 2 | `src/futu_quant/config.py:422` | `save_volatility_campaigns` | 波动率 campaign 统一写回入口，key 来自 `_volatility_campaigns_key` (已登记) |
+| 3 | `src/futu_quant/config.py:495` | `save_campaign` 通用保存助手 | 供页面及策略通用更新，形参 config_key 由调用方传入 (已登记模板) |
+| 4 | `src/futu_quant/config.py:550` | `delete_campaign` 通用删除助手 | 供页面及策略通用删除，形参 config_key 由调用方传入 (已登记模板) |
+| 5 | `src/futu_quant/store.py:2439` | `publish_config_release` 发布应用 | 配置发布引擎底层写回，键由草稿 release['config_key'] 决定 |
+| 6 | `src/futu_quant/store.py:2447` | `publish_config_release` 发布失败回滚 | 发布失败自动回滚写回原值 |
+| 7 | `src/futu_quant/store.py:2459` | `rollback_config_release` 人工回滚 | 配置回滚引擎写回，键由发布单 release['config_key'] 决定 |
+| 8 | `scripts/migrate_volatility_campaigns_tenant_scope.py:1341` | 一次性离线数据迁移脚本 | 离线租户分区数据结构迁移脚本，不属于在线服务代码 |

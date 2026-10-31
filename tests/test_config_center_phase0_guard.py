@@ -176,16 +176,51 @@ def test_codebase_env_access_is_fully_registered_guard():
     assert not unregistered, f"代码库中存在未在统一配置中心登记的隐形环境变量: {unregistered}"
 
 
-def scan_codebase_runtime_config_write_keys(repo_root: Path, require_counts: bool = True) -> set[str]:
-    """通过 AST 解析代码库中所有写入 runtime_config 的配置键 (Fail-closed)。"""
+# 严格冻结的 runtime_config 动态通用写调用助手豁免清单 (8 处，条数严禁增长)
+FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT = 8
+RUNTIME_WRITE_SITE_EXEMPTIONS = {
+    # 格式：(相对路径, 行号)
+    ("src/futu_quant/config.py", 116),                                     # _load_runtime_value 内部回填
+    ("src/futu_quant/config.py", 422),                                     # save_volatility_campaigns 通用写回
+    ("src/futu_quant/config.py", 495),                                     # save_campaign 通用保存助手
+    ("src/futu_quant/config.py", 550),                                     # delete_campaign 通用删除助手
+    ("src/futu_quant/store.py", 2439),                                     # publish_config_release 底层写回
+    ("src/futu_quant/store.py", 2447),                                     # publish_config_release 回滚写回
+    ("src/futu_quant/store.py", 2459),                                     # rollback_config_release 人工回滚写回
+    ("scripts/migrate_volatility_campaigns_tenant_scope.py", 1341),        # 离线数据迁移脚本
+}
+
+
+def _extract_module_level_constants(py_path: Path) -> dict[str, str]:
+    """通过 AST 动态提取 Python 文件顶层的常量字符串定义，不手抄、不复述实现。"""
+    constants = {}
+    try:
+        tree = ast.parse(py_path.read_text(encoding="utf-8-sig"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+                if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    constants[name] = node.value.value
+    except Exception:
+        pass
+    return constants
+
+
+def scan_codebase_runtime_config_write_keys(repo_root: Path, require_counts: bool = True) -> tuple[set[str], list[tuple[str, int, str]]]:
+    """通过 AST 解析代码库中所有写入 runtime_config 的配置键 (Fail-closed)。
+
+    返回: (resolved_keys, unresolved_sites)
+    """
     found_keys = set()
+    unresolved_sites = []
     write_call_count = 0
 
-    KNOWN_KEY_CONSTANTS = {
-        "ALERT_MUTE_LIST_KEY": "alert_mute_list",
-        "CONFIG_KEY": "CORE_SATELLITE_DAILY_VALIDATION",
-        "IM_DELIVERY_PENDING_KEY": "DAILY_STRATEGY_REVIEW_IM_PENDING",
-    }
+    # 动态从源码 AST 提取模块级常量定义，严禁手抄
+    dynamic_constants = {}
+    for const_mod in ("src/futu_quant/alerts.py", "src/futu_quant/core_validation.py", "src/futu_quant/scheduled_tasks.py"):
+        p = repo_root / const_mod
+        if p.exists():
+            dynamic_constants.update(_extract_module_level_constants(p))
 
     for subdir in ("src", "scripts", "pages"):
         folder = repo_root / subdir
@@ -196,26 +231,40 @@ def scan_codebase_runtime_config_write_keys(repo_root: Path, require_counts: boo
         for py_path in folder.rglob("*.py"):
             content = py_path.read_text(encoding="utf-8-sig")
             tree = ast.parse(content, filename=str(py_path))
+            rel_path = py_path.relative_to(repo_root).as_posix()
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                     if node.func.attr in ("set_runtime_config", "mutate_runtime_config") and node.args:
                         write_call_count += 1
                         arg0 = node.args[0]
+                        site = (rel_path, node.lineno)
                         if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
                             found_keys.add(arg0.value.strip())
-                        elif isinstance(arg0, ast.Name) and arg0.id in KNOWN_KEY_CONSTANTS:
-                            found_keys.add(KNOWN_KEY_CONSTANTS[arg0.id])
+                        elif isinstance(arg0, ast.Name) and arg0.id in dynamic_constants:
+                            found_keys.add(dynamic_constants[arg0.id].strip())
+                        elif site in RUNTIME_WRITE_SITE_EXEMPTIONS:
+                            # 经冻结清单审核的通用底层写助手站点
+                            pass
+                        else:
+                            unresolved_sites.append((rel_path, node.lineno, ast.unparse(arg0)))
 
     if require_counts:
         assert write_call_count > 0, "未扫描到任何 set_runtime_config/mutate_runtime_config 调用，AST 检测链路异常！"
 
-    return found_keys
+    return found_keys, unresolved_sites
 
 
 def test_codebase_runtime_config_writes_are_registered_guard():
-    """CI 守卫第二道：AST 静态扫描所有 runtime_config 写调用，断言写入键必须在 Registry 登记。"""
+    """CI 守卫第二道：AST 静态扫描所有 runtime_config 写调用，断言无未解析站点，写入键必须在 Registry 登记。"""
     repo_root = Path(__file__).resolve().parents[1]
-    found_keys = scan_codebase_runtime_config_write_keys(repo_root, require_counts=True)
+    # 1. 验证豁免清单总数不得增长
+    assert len(RUNTIME_WRITE_SITE_EXEMPTIONS) <= FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT, (
+        f"runtime_config 写调用豁免数 ({len(RUNTIME_WRITE_SITE_EXEMPTIONS)}) 超出基线 ({FROZEN_RUNTIME_WRITE_EXEMPTION_COUNT})！"
+    )
+
+    found_keys, unresolved_sites = scan_codebase_runtime_config_write_keys(repo_root, require_counts=True)
+    # 2. 严格断言未解析站点必须为 0
+    assert not unresolved_sites, f"发现未解析且未豁免的 runtime_config 写调用点: {unresolved_sites}"
     assert len(found_keys) > 0
 
     unregistered = []
@@ -233,6 +282,6 @@ def test_runtime_config_negative_control_fails_on_unregistered_write(tmp_path):
     bad_py = src_dir / "bad_runtime_write.py"
     bad_py.write_text("store.set_runtime_config('UNREGISTERED_DANGEROUS_RUNTIME_KEY_XYZ', {})", encoding="utf-8")
 
-    leaked_keys = scan_codebase_runtime_config_write_keys(tmp_path, require_counts=False)
+    leaked_keys, _ = scan_codebase_runtime_config_write_keys(tmp_path, require_counts=False)
     assert "UNREGISTERED_DANGEROUS_RUNTIME_KEY_XYZ" in leaked_keys
     assert not GLOBAL_REGISTRY.contains("UNREGISTERED_DANGEROUS_RUNTIME_KEY_XYZ")
