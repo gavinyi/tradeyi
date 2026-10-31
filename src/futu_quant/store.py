@@ -148,6 +148,27 @@ def actor_kind(actor: str) -> str:
     return ACTOR_CLASS_KIND.get(cls, "unclassified")
 
 
+_WIN_KERNEL32 = None
+
+
+def _get_win_kernel32():
+    global _WIN_KERNEL32
+    import os
+    if _WIN_KERNEL32 is None and os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        try:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            k32.CloseHandle.restype = wintypes.BOOL
+            _WIN_KERNEL32 = k32
+        except Exception:
+            _WIN_KERNEL32 = None
+    return _WIN_KERNEL32
+
+
 class TradingStore:
     # 成交账本的两个匹配窗口（秒）。
     # - PROXY：order push / 轮询先写下的「无 deal_id 投影行」，deal push 后到时**认领**它。
@@ -2155,23 +2176,18 @@ class TradingStore:
                 return True
             if os.name == "nt":
                 import ctypes
-                from ctypes import wintypes
                 try:
-                    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-                    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-                    kernel32.OpenProcess.restype = wintypes.HANDLE
-                    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-                    kernel32.CloseHandle.restype = wintypes.BOOL
-
-                    # 0x1000 = PROCESS_QUERY_LIMITED_INFORMATION
-                    handle = kernel32.OpenProcess(0x1000, False, p)
-                    if handle:
-                        kernel32.CloseHandle(handle)
-                        return True
-                    err = ctypes.get_last_error()
-                    # 严格区分：只有 ERROR_INVALID_PARAMETER (87) 确凿证明 PID 不存在/已死亡；
-                    # 遇到 ERROR_ACCESS_DENIED (5) 或其它任何错误遵循 fail-safe 铁律一律按存活处理，坚决防止误杀！
-                    return err != 87
+                    kernel32 = _get_win_kernel32()
+                    if kernel32:
+                        handle = kernel32.OpenProcess(0x1000, False, p)
+                        if handle:
+                            kernel32.CloseHandle(handle)
+                            return True
+                        err = ctypes.get_last_error()
+                        # 严格区分：只有 ERROR_INVALID_PARAMETER (87) 确凿证明 PID 不存在/已死亡；
+                        # 遇到 ERROR_ACCESS_DENIED (5) 或其它任何错误遵循 fail-safe 铁律一律按存活处理，坚决防止误杀！
+                        return err != 87
+                    return True
                 except Exception as ex:
                     import logging
                     logging.getLogger(__name__).warning("Windows OpenProcess 检测 PID 存活异常: %s，回退按存活处理", ex)

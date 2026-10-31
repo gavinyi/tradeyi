@@ -156,8 +156,29 @@ def test_run_task_finally_guarantees_settlement_on_abrupt_exit(tmp_path, monkeyp
     assert "finally 兜底收敛" in runs[0]["message"]
 
 
+def test_reconcile_orphan_task_runs_treats_none_pid_as_alive_within_threshold(tmp_path):
+    """断言 6：PID 为 None 或不可解析时，按存活/不确定处理，在未达 7200s 前绝不误杀，保持 RUNNING。"""
+    store = TradingStore(tmp_path / "test_none_pid.db")
+    past_60s = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    with store.connection() as conn:
+        conn.execute(
+            """INSERT INTO task_runs(task_id, status, timeout_seconds, pid, started_at)
+            VALUES('test_task', 'RUNNING', 60.0, NULL, ?)""",
+            (past_60s,),
+        )
+
+    # 未超 7200s，绝不误杀！
+    reconciled = store.reconcile_orphan_task_runs(max_running_seconds=7200.0)
+    assert reconciled == 0
+
+    runs = store.task_runs()
+    assert len(runs) == 1
+    assert runs[0]["status"] == "RUNNING"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ctypes 专用测试")
 def test_windows_openprocess_error_code_isolation(tmp_path, monkeypatch):
-    """断言 6：Windows API 错误码隔离验证：
+    """断言 7：Windows API 错误码隔离验证：
     只有错误码 87 (ERROR_INVALID_PARAMETER) 确凿判死；
     错误码 5 (ERROR_ACCESS_DENIED) 遵循 fail-safe 铁律必须判定为存活，防止权限受限误杀。
     """
@@ -170,35 +191,31 @@ def test_windows_openprocess_error_code_isolation(tmp_path, monkeypatch):
             (past_20s,),
         )
 
-    # 模拟 Windows ctypes 返回 NULL 且 get_last_error=5 (拒绝访问)
     import ctypes
 
-    class MockHandleAccessDenied:
-        def __call__(self, *args, **kwargs):
+    class MockKernel32AccessDenied:
+        @staticmethod
+        def OpenProcess(access, inherit, pid):
             ctypes.set_last_error(5)
             return 0
+        @staticmethod
+        def CloseHandle(h):
+            return True
 
-    class MockWinDLLAccessDenied:
-        def __init__(self, *args, **kwargs):
-            self.OpenProcess = MockHandleAccessDenied()
-            self.CloseHandle = lambda h: True
-
-    monkeypatch.setattr(ctypes, "WinDLL", MockWinDLLAccessDenied)
+    monkeypatch.setattr("futu_quant.store._get_win_kernel32", lambda: MockKernel32AccessDenied)
     ctypes.set_last_error(5)
     assert store.reconcile_orphan_task_runs(max_running_seconds=7200.0) == 0
 
-    # 模拟 Windows ctypes 返回 NULL 且 get_last_error=87 (进程不存在/参数错误)
-    class MockHandleDead:
-        def __call__(self, *args, **kwargs):
+    class MockKernel32Dead:
+        @staticmethod
+        def OpenProcess(access, inherit, pid):
             ctypes.set_last_error(87)
             return 0
+        @staticmethod
+        def CloseHandle(h):
+            return True
 
-    class MockWinDLLDead:
-        def __init__(self, *args, **kwargs):
-            self.OpenProcess = MockHandleDead()
-            self.CloseHandle = lambda h: True
-
-    monkeypatch.setattr(ctypes, "WinDLL", MockWinDLLDead)
+    monkeypatch.setattr("futu_quant.store._get_win_kernel32", lambda: MockKernel32Dead)
     ctypes.set_last_error(87)
     assert store.reconcile_orphan_task_runs(max_running_seconds=7200.0) == 1
     runs = store.task_runs()
