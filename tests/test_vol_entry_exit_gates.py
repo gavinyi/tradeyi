@@ -226,3 +226,24 @@ def test_gamma_strategy_uses_four_percent_soft_start_fallback():
     assert 'campaign.get("soft_profit_protection_start", .04)' in text, (
         "软保护启动线回落值必须是 4%：8% 与硬止损线重合，会让浮盈 0~8% 全程裸奔"
     )
+
+
+def test_soft_profit_lock_floor_requires_positive_pnl_to_prevent_short_cooldown():
+    """Bug 3 守卫：
+    若峰值曾摸到软保护（例如 4.2%），随后暴跌至亏损（例如 -10%）：
+    1. 软锁盈线判定必须限定 0.0 < pnl_ratio <= soft_profit_lock_floor；
+    2. 亏损单绝不能触发"软启动锁盈"文案（否则会归入 4h 止盈冷却）；
+    3. 亏损离场必须按止损标准适用 24 小时冷却。
+    """
+    from futu_quant.volatility_optimizer import volatility_cooldown_hours
+
+    # 1. pnl 为 -10% 时，不应被识别为"软启动锁盈"
+    action, reason = _decide(0.04, peak=0.042, pnl=-0.10)
+    # 此时未破硬止损 -25%，属于回吐或未触发锁盈，绝不能返回"软启动锁盈"
+    if action == "SELL":
+        assert "软启动锁盈" not in reason, f"亏损单不可归入软启动锁盈文案：{reason}"
+        assert "止盈" not in reason, f"亏损单不可带有止盈字样：{reason}"
+
+    # 2. 如果退出的 reason 带有亏损回吐或止损，cooldown 必须为 24h 而不是 4h
+    loss_reason = "软启动回吐/保本止损：峰值4.2%，当前-10.0%"
+    assert volatility_cooldown_hours(loss_reason, 24) == 24.0

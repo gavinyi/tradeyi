@@ -1749,7 +1749,7 @@ def decide_volatility_action(
             and (now - peak_reached_at).total_seconds() <= max(0.0, rapid_giveback_window_minutes) * 60
             and profit_giveback >= max(0.0, rapid_giveback_threshold)
         )
-        if soft_profit_lock_floor > 0 and pnl_ratio <= soft_profit_lock_floor:
+        if soft_profit_lock_floor > 0 and 0.0 < pnl_ratio <= soft_profit_lock_floor:
             return "SELL", (
                 f"软启动锁盈触发：峰值盈利{peak_pnl_ratio:.1%}，当前盈利{pnl_ratio:.1%} "
                 f"≤ 软锁盈线{soft_profit_lock_floor:.1%}"
