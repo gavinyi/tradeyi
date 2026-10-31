@@ -33,7 +33,7 @@ EXEMPTIONS = {
 }
 
 # 严格冻结的 Registry 最小注册条目数（只增不减）
-FROZEN_REGISTRY_MIN_COUNT = 368
+FROZEN_REGISTRY_MIN_COUNT = 381
 
 
 def scan_codebase_env_keys(repo_root: Path, require_counts: bool = True) -> set[str]:
@@ -152,11 +152,10 @@ def test_all_settings_fields_are_registered_in_registry():
 
 
 def test_all_env_example_keys_are_registered_in_registry():
-    """验证 .env.example 暴露的所有配置模板均已在 Registry 中登记。"""
+    """验证 .env.example 暴露的所有配置模板均已在 Registry 中登记（必须存在，严禁删文件静默全绿）。"""
     repo_root = Path(__file__).resolve().parents[1]
     env_example = repo_root / ".env.example"
-    if not env_example.exists():
-        return
+    assert env_example.exists(), f"配置文件模板不存在: {env_example}，严禁删除 .env.example 规避检查！"
 
     unregistered = []
     with open(env_example, "r", encoding="utf-8") as f:
@@ -177,12 +176,63 @@ def test_codebase_env_access_is_fully_registered_guard():
     assert not unregistered, f"代码库中存在未在统一配置中心登记的隐形环境变量: {unregistered}"
 
 
-def test_unregistered_env_keys_negative_control_fails_via_tmp_path(tmp_path):
-    """真实负向对照（必红测试）：在独立工作区放入未登记的 os.getenv 调用，断言扫描比对必定检出并报错。"""
+def scan_codebase_runtime_config_write_keys(repo_root: Path, require_counts: bool = True) -> set[str]:
+    """通过 AST 解析代码库中所有写入 runtime_config 的配置键 (Fail-closed)。"""
+    found_keys = set()
+    write_call_count = 0
+
+    KNOWN_KEY_CONSTANTS = {
+        "ALERT_MUTE_LIST_KEY": "alert_mute_list",
+        "CONFIG_KEY": "CORE_SATELLITE_DAILY_VALIDATION",
+        "IM_DELIVERY_PENDING_KEY": "DAILY_STRATEGY_REVIEW_IM_PENDING",
+    }
+
+    for subdir in ("src", "scripts", "pages"):
+        folder = repo_root / subdir
+        if not folder.exists():
+            if require_counts:
+                raise FileNotFoundError(f"扫描目录不存在: {folder}")
+            continue
+        for py_path in folder.rglob("*.py"):
+            content = py_path.read_text(encoding="utf-8-sig")
+            tree = ast.parse(content, filename=str(py_path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    if node.func.attr in ("set_runtime_config", "mutate_runtime_config") and node.args:
+                        write_call_count += 1
+                        arg0 = node.args[0]
+                        if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
+                            found_keys.add(arg0.value.strip())
+                        elif isinstance(arg0, ast.Name) and arg0.id in KNOWN_KEY_CONSTANTS:
+                            found_keys.add(KNOWN_KEY_CONSTANTS[arg0.id])
+
+    if require_counts:
+        assert write_call_count > 0, "未扫描到任何 set_runtime_config/mutate_runtime_config 调用，AST 检测链路异常！"
+
+    return found_keys
+
+
+def test_codebase_runtime_config_writes_are_registered_guard():
+    """CI 守卫第二道：AST 静态扫描所有 runtime_config 写调用，断言写入键必须在 Registry 登记。"""
+    repo_root = Path(__file__).resolve().parents[1]
+    found_keys = scan_codebase_runtime_config_write_keys(repo_root, require_counts=True)
+    assert len(found_keys) > 0
+
+    unregistered = []
+    for k in sorted(found_keys):
+        if not GLOBAL_REGISTRY.contains(k):
+            unregistered.append(k)
+
+    assert not unregistered, f"代码库中存在未在配置中心登记的 runtime_config 写入键: {unregistered}"
+
+
+def test_runtime_config_negative_control_fails_on_unregistered_write(tmp_path):
+    """第二道守卫真实负向对照（必红测试）：断言向 runtime_config 写入未登记键时，守卫必定报错阻断。"""
     src_dir = tmp_path / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
-    bad_py = src_dir / "unregistered_leak.py"
-    bad_py.write_text("import os\nval = os.getenv('BRAND_NEW_UNREGISTERED_PARAM_FAIL_PROOF')", encoding="utf-8")
+    bad_py = src_dir / "bad_runtime_write.py"
+    bad_py.write_text("store.set_runtime_config('UNREGISTERED_DANGEROUS_RUNTIME_KEY_XYZ', {})", encoding="utf-8")
 
-    leaked = unregistered_env_keys(tmp_path, require_counts=False)
-    assert "BRAND_NEW_UNREGISTERED_PARAM_FAIL_PROOF" in leaked, f"负向对照必须捕获未登记配置，实际: {leaked}"
+    leaked_keys = scan_codebase_runtime_config_write_keys(tmp_path, require_counts=False)
+    assert "UNREGISTERED_DANGEROUS_RUNTIME_KEY_XYZ" in leaked_keys
+    assert not GLOBAL_REGISTRY.contains("UNREGISTERED_DANGEROUS_RUNTIME_KEY_XYZ")

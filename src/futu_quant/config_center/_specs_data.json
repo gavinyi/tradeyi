@@ -6160,30 +6160,6 @@
     ]
   },
   {
-    "key": "gamma.campaigns",
-    "aliases": [
-      "GAMMA_CAMPAIGNS"
-    ],
-    "category": "⑦ 期权与 Gamma",
-    "title": "GAMMA_CAMPAIGNS",
-    "description": "环境变量/配置项 GAMMA_CAMPAIGNS",
-    "value_type": "string",
-    "default": null,
-    "scope": "global",
-    "storage": "env",
-    "risk_level": "HIGH",
-    "editable": true,
-    "requires_admin": true,
-    "requires_confirmation": false,
-    "activation": "next_cycle",
-    "consumers": [
-      "config.Settings"
-    ],
-    "tags": [
-      "期权与"
-    ]
-  },
-  {
     "key": "gamma.interval.seconds",
     "aliases": [
       "GAMMA_INTERVAL_SECONDS"
@@ -8441,30 +8417,6 @@
     ]
   },
   {
-    "key": "volatility.campaigns",
-    "aliases": [
-      "VOLATILITY_CAMPAIGNS"
-    ],
-    "category": "⑤ 策略总览",
-    "title": "VOLATILITY_CAMPAIGNS",
-    "description": "环境变量/配置项 VOLATILITY_CAMPAIGNS",
-    "value_type": "string",
-    "default": null,
-    "scope": "global",
-    "storage": "env",
-    "risk_level": "HIGH",
-    "editable": true,
-    "requires_admin": true,
-    "requires_confirmation": false,
-    "activation": "next_cycle",
-    "consumers": [
-      "config.Settings"
-    ],
-    "tags": [
-      "策略总览"
-    ]
-  },
-  {
     "key": "volatility.candidate.retry.seconds",
     "aliases": [
       "VOLATILITY_CANDIDATE_RETRY_SECONDS"
@@ -8627,30 +8579,6 @@
     "activation": "next_cycle",
     "consumers": [
       "runtime"
-    ],
-    "tags": [
-      "策略总览"
-    ]
-  },
-  {
-    "key": "volatility.symbols",
-    "aliases": [
-      "VOLATILITY_SYMBOLS"
-    ],
-    "category": "⑤ 策略总览",
-    "title": "VOLATILITY_SYMBOLS",
-    "description": "环境变量/配置项 VOLATILITY_SYMBOLS",
-    "value_type": "string",
-    "default": null,
-    "scope": "global",
-    "storage": "env",
-    "risk_level": "HIGH",
-    "editable": true,
-    "requires_admin": true,
-    "requires_confirmation": false,
-    "activation": "next_cycle",
-    "consumers": [
-      "config.Settings"
     ],
     "tags": [
       "策略总览"
@@ -8842,6 +8770,402 @@
     ],
     "tags": [
       "运维与高级"
+    ]
+  },
+  {
+    "key": "strategy.volatility.campaigns",
+    "aliases": [
+      "VOLATILITY_CAMPAIGNS",
+      "VOLATILITY_CAMPAIGNS:{tenant}"
+    ],
+    "category": "⑧ 波动率策略",
+    "title": "波动率期权活动清单",
+    "description": "各租户及全局的波动率长伽马期权持仓与活动配置 (JSON List)",
+    "value_type": "json",
+    "default": [],
+    "scope": "tenant",
+    "storage": "runtime_config",
+    "risk_level": "HIGH",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "next_cycle",
+    "consumers": [
+      "config.load_volatility_campaigns",
+      "run_gamma_strategy"
+    ],
+    "tags": [
+      "波动率策略",
+      "期权"
+    ]
+  },
+  {
+    "key": "strategy.gamma.campaigns",
+    "aliases": [
+      "GAMMA_CAMPAIGNS"
+    ],
+    "category": "⑦ 期权与 Gamma",
+    "title": "财报伽马期权活动清单",
+    "description": "财报伽马事件驱动期权活动配置列表",
+    "value_type": "json",
+    "default": [],
+    "scope": "global",
+    "storage": "runtime_config",
+    "risk_level": "HIGH",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": false,
+    "activation": "next_cycle",
+    "consumers": [
+      "config.load_gamma_campaigns",
+      "run_gamma_strategy"
+    ],
+    "tags": [
+      "期权"
+    ]
+  },
+  {
+    "key": "strategy.volatility.symbols",
+    "aliases": [
+      "VOLATILITY_SYMBOLS"
+    ],
+    "category": "⑧ 波动率策略",
+    "title": "波动率策略股票池",
+    "description": "雷达扫描与期权候选标的代码池",
+    "value_type": "symbols",
+    "default": [],
+    "scope": "global",
+    "storage": "runtime_config",
+    "risk_level": "HIGH",
+    "editable": true,
+    "requires_admin": false,
+    "requires_confirmation": false,
+    "activation": "next_cycle",
+    "consumers": [
+      "volatility_scanner",
+      "run_gamma_strategy"
+    ],
+    "tags": [
+      "波动率策略"
+    ]
+  },
+  {
+    "key": "strategy.volatility.radar_budgets",
+    "aliases": [
+      "VOLATILITY_RADAR_BUDGETS"
+    ],
+    "category": "⑧ 波动率策略",
+    "title": "波动率雷达扫描预算",
+    "description": "雷达周期扫描资金预算与配额",
+    "value_type": "json",
+    "default": {},
+    "scope": "global",
+    "storage": "runtime_config",
+    "risk_level": "HIGH",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": false,
+    "activation": "next_cycle",
+    "consumers": [
+      "volatility_scanner"
+    ],
+    "tags": [
+      "波动率策略"
+    ]
+  },
+  {
+    "key": "strategy.core_satellite.daily_validation",
+    "aliases": [
+      "CORE_SATELLITE_DAILY_VALIDATION"
+    ],
+    "category": "⑥ Core Satellite",
+    "title": "Core Satellite 每日校验配置",
+    "description": "核心卫星策略每日扫描与调仓检验状态与配置",
+    "value_type": "json",
+    "default": {},
+    "scope": "global",
+    "storage": "runtime_config",
+    "risk_level": "MEDIUM",
+    "editable": true,
+    "requires_admin": false,
+    "requires_confirmation": false,
+    "activation": "next_cycle",
+    "consumers": [
+      "core_validation"
+    ],
+    "tags": [
+      "Core Satellite"
+    ]
+  },
+  {
+    "key": "notification.alert_mute_list",
+    "aliases": [
+      "alert_mute_list"
+    ],
+    "category": "⑪ 通知与可观测性",
+    "title": "告警静音清单",
+    "description": "人工配置的临时静音告警事件列表 (不可静音事件受代码底线保护)",
+    "value_type": "json",
+    "default": [],
+    "scope": "global",
+    "storage": "runtime_config",
+    "risk_level": "MEDIUM",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": false,
+    "activation": "immediate",
+    "consumers": [
+      "alerts.AlertManager"
+    ],
+    "tags": [
+      "通知与可观测性"
+    ]
+  },
+  {
+    "key": "notification.daily_review_im_pending",
+    "aliases": [
+      "DAILY_STRATEGY_REVIEW_IM_PENDING"
+    ],
+    "category": "⑪ 通知与可观测性",
+    "title": "每日策略复盘群推送待决状态",
+    "description": "每日复盘投递群消息状态记录",
+    "value_type": "json",
+    "default": {},
+    "scope": "global",
+    "storage": "runtime_config",
+    "risk_level": "LOW",
+    "editable": false,
+    "requires_admin": false,
+    "requires_confirmation": false,
+    "activation": "immediate",
+    "consumers": [
+      "scheduled_tasks"
+    ],
+    "tags": [
+      "通知与可观测性"
+    ]
+  },
+  {
+    "key": "runtime.env_settings",
+    "aliases": [
+      "ENV_SETTINGS"
+    ],
+    "category": "① 运行环境与连接",
+    "title": "运行时环境配置镜像",
+    "description": "存储于 SQLite 中的动态环境变量覆盖集",
+    "value_type": "json",
+    "default": {},
+    "scope": "global",
+    "storage": "runtime_config",
+    "risk_level": "CRITICAL",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "restart",
+    "consumers": [
+      "config.Settings"
+    ],
+    "tags": [
+      "运行环境与连接"
+    ]
+  },
+  {
+    "key": "safety.real.account_config",
+    "aliases": [
+      "real_account_config:{account}"
+    ],
+    "category": "② 交易安全与实盘门禁",
+    "title": "实盘账户级门禁与限额配置",
+    "description": "指定实盘账户的单笔/单日名义本金限额与准入规则 (存储于 system_settings)",
+    "value_type": "json",
+    "default": {},
+    "scope": "account",
+    "storage": "system_settings",
+    "risk_level": "CRITICAL",
+    "editable": false,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "immediate",
+    "consumers": [
+      "real_trading.resolve_real_account_limits"
+    ],
+    "tags": [
+      "交易安全与实盘门禁"
+    ]
+  },
+  {
+    "key": "risk.limits.tenant",
+    "aliases": [
+      "risk_limits:{tenant}"
+    ],
+    "category": "④ 风控边界",
+    "title": "租户级风控边界限额",
+    "description": "分租户配置的单笔/单日限额、仓位比例与希腊值限额",
+    "value_type": "json",
+    "default": {},
+    "scope": "tenant",
+    "storage": "system_settings",
+    "risk_level": "CRITICAL",
+    "editable": false,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "next_cycle",
+    "consumers": [
+      "risk.resolve_risk_limits"
+    ],
+    "tags": [
+      "风控边界"
+    ]
+  },
+  {
+    "key": "control.volatility.new_entries_paused",
+    "aliases": [
+      "volatility_new_entries_paused",
+      "volatility_new_entries_paused:{tenant}"
+    ],
+    "category": "③ 急停与运行控制",
+    "title": "波动率期权新开仓暂停开关",
+    "description": "临时暂停波动率策略新开仓 (租户级优先、全局兜底，已有持仓继续平仓管理)",
+    "value_type": "bool",
+    "default": false,
+    "scope": "tenant",
+    "storage": "system_settings",
+    "risk_level": "HIGH",
+    "editable": true,
+    "requires_admin": false,
+    "requires_confirmation": false,
+    "activation": "immediate",
+    "consumers": [
+      "volatility_scanner",
+      "run_gamma_strategy"
+    ],
+    "tags": [
+      "急停与运行控制",
+      "波动率策略"
+    ]
+  },
+  {
+    "key": "control.strategy.enabled",
+    "aliases": [
+      "strategy_enabled:{tenant}:{strategy}",
+      "strategy_enabled:{strategy}"
+    ],
+    "category": "③ 急停与运行控制",
+    "title": "策略启用开关",
+    "description": "分租户或全局控制策略调度与执行使能状态",
+    "value_type": "bool",
+    "default": true,
+    "scope": "strategy",
+    "storage": "system_settings",
+    "risk_level": "HIGH",
+    "editable": true,
+    "requires_admin": false,
+    "requires_confirmation": false,
+    "activation": "immediate",
+    "consumers": [
+      "run_service.service_cycle"
+    ],
+    "tags": [
+      "急停与运行控制"
+    ]
+  },
+  {
+    "key": "runtime.strategy.execution_mode",
+    "aliases": [
+      "strategy_execution_mode:{tenant}:{strategy}",
+      "strategy_execution_mode:{strategy}"
+    ],
+    "category": "① 运行环境与连接",
+    "title": "策略执行模式覆盖",
+    "description": "按租户或策略独立覆盖执行模式 (SHADOW / PAPER / REAL)",
+    "value_type": "enum",
+    "default": "PAPER",
+    "scope": "strategy",
+    "storage": "system_settings",
+    "risk_level": "CRITICAL",
+    "editable": false,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "immediate",
+    "consumers": [
+      "execution_mode.resolve_configured_execution_mode"
+    ],
+    "tags": [
+      "运行环境与连接"
+    ]
+  },
+  {
+    "key": "control.tenant.active",
+    "aliases": [
+      "tenant_active:{tenant}"
+    ],
+    "category": "③ 急停与运行控制",
+    "title": "租户 Worker 运行状态开关",
+    "description": "控制指定租户进程是否处于活跃工作状态",
+    "value_type": "bool",
+    "default": true,
+    "scope": "tenant",
+    "storage": "system_settings",
+    "risk_level": "CRITICAL",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "restart",
+    "consumers": [
+      "run_service.main"
+    ],
+    "tags": [
+      "急停与运行控制"
+    ]
+  },
+  {
+    "key": "risk.circuit_breaker.mode",
+    "aliases": [
+      "risk_breaker_mode:{tenant}"
+    ],
+    "category": "④ 风控边界",
+    "title": "租户回撤熔断状态模式",
+    "description": "租户权益大幅回撤时的熔断状态 (NORMAL / WARN / HALT)",
+    "value_type": "enum",
+    "default": "NORMAL",
+    "scope": "tenant",
+    "storage": "system_settings",
+    "risk_level": "CRITICAL",
+    "editable": false,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "immediate",
+    "consumers": [
+      "risk.RiskEngine"
+    ],
+    "tags": [
+      "风控边界"
+    ]
+  },
+  {
+    "key": "risk.circuit_breaker.thresholds",
+    "aliases": [
+      "risk_drawdown_warn_pct:{tenant}",
+      "risk_drawdown_stop_pct:{tenant}",
+      "risk_drawdown_resume_pct:{tenant}"
+    ],
+    "category": "④ 风控边界",
+    "title": "租户回撤熔断阈值",
+    "description": "租户回撤预警、急停与自愈恢复阈值设定",
+    "value_type": "float",
+    "default": 0.1,
+    "scope": "tenant",
+    "storage": "system_settings",
+    "risk_level": "CRITICAL",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "immediate",
+    "consumers": [
+      "risk.RiskEngine"
+    ],
+    "tags": [
+      "风控边界"
     ]
   }
 ]

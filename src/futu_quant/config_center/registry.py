@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -24,16 +25,25 @@ class ConfigRegistry:
     def __init__(self, specs: list[ConfigSpec]):
         self._specs_by_key: dict[str, ConfigSpec] = {}
         self._alias_to_key: dict[str, str] = {}
+        self._template_patterns: list[tuple[re.Pattern, str]] = []
         for spec in specs:
             if spec.key in self._specs_by_key:
                 raise ValueError(f"Duplicate canonical key in registry: {spec.key}")
             self._specs_by_key[spec.key] = spec
-            # 建立别名双向解析映射
+            # 建立别名双向解析映射与变量键模板识别
             for alias in spec.aliases:
                 alias_norm = alias.strip()
-                if alias_norm in self._alias_to_key and self._alias_to_key[alias_norm] != spec.key:
-                    raise ValueError(f"Conflicting alias '{alias_norm}' mapped to multiple keys: {self._alias_to_key[alias_norm]} vs {spec.key}")
-                self._alias_to_key[alias_norm] = spec.key
+                if "{" in alias_norm and "}" in alias_norm:
+                    # 动态变量键模板（例如 risk_limits:{tenant}、real_account_config:{account}）
+                    escaped = re.escape(alias_norm)
+                    pat_str = "^" + re.sub(r"\\\{[a-zA-Z0-9_]+\\\}", r"[a-zA-Z0-9_\-\.]+", escaped) + "$"
+                    self._template_patterns.append((re.compile(pat_str, re.IGNORECASE), spec.key))
+                    # 模板字符串自身也注册为 alias，支持元数据直接双向反射
+                    self._alias_to_key[alias_norm] = spec.key
+                else:
+                    if alias_norm in self._alias_to_key and self._alias_to_key[alias_norm] != spec.key:
+                        raise ValueError(f"Conflicting alias '{alias_norm}' mapped to multiple keys: {self._alias_to_key[alias_norm]} vs {spec.key}")
+                    self._alias_to_key[alias_norm] = spec.key
             # canonical key 自身也作为 alias 保证完全幂等查询
             self._alias_to_key[spec.key] = spec.key
 
@@ -42,22 +52,29 @@ class ConfigRegistry:
         if not key_or_alias:
             return None
         norm = key_or_alias.strip()
-        canonical = self._alias_to_key.get(norm)
+        canonical = self.resolve_canonical_key(norm)
         if canonical is not None:
             return self._specs_by_key.get(canonical)
         return self._specs_by_key.get(norm)
 
     def resolve_canonical_key(self, key_or_alias: str) -> str | None:
-        """将任意历史 alias 或规范键解析为唯一 canonical key。"""
+        """将任意历史 alias、变量实例键或规范键解析为唯一 canonical key。"""
         if not key_or_alias:
             return None
-        return self._alias_to_key.get(key_or_alias.strip())
+        norm = key_or_alias.strip()
+        if norm in self._alias_to_key:
+            return self._alias_to_key[norm]
+        # 尝试匹配变量键模板
+        for pat, ckey in self._template_patterns:
+            if pat.match(norm):
+                return ckey
+        return None
 
     def contains(self, key_or_alias: str) -> bool:
-        """检查配置项是否已在注册表登记。"""
+        """检查配置项（含具体实例键）是否已在注册表登记。"""
         if not key_or_alias:
             return False
-        return key_or_alias.strip() in self._alias_to_key
+        return self.resolve_canonical_key(key_or_alias) is not None
 
     def all_specs(self) -> list[ConfigSpec]:
         """返回所有已登记的配置项列表。"""
