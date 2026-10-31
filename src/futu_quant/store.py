@@ -2139,10 +2139,10 @@ class TradingStore:
         reconciled = 0
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT id, started_at, timeout_seconds FROM task_runs WHERE status = 'RUNNING'"
+                "SELECT id, task_id, started_at, timeout_seconds, message FROM task_runs WHERE status = 'RUNNING'"
             ).fetchall()
             for r in rows:
-                run_id, started_at, timeout_sec = r[0], r[1], float(r[2] or 120.0)
+                run_id, task_id, started_at, timeout_sec, orig_msg = r[0], r[1], r[2], float(r[3] or 120.0), str(r[4] or "")
                 try:
                     s_dt = datetime.fromisoformat(str(started_at))
                     if s_dt.tzinfo is None:
@@ -2153,13 +2153,21 @@ class TradingStore:
 
                 threshold = max(float(timeout_sec) * 2.0, max_running_seconds)
                 if elapsed > threshold:
+                    settle_msg = f"服务非正常退出或超时遗留（原始: {orig_msg}），启动自愈标记为终态" if orig_msg else "服务非正常退出或超时遗留，启动自愈标记为终态"
                     connection.execute(
                         """UPDATE task_runs
                         SET status = 'ORPHAN_KILLED',
-                            message = '服务非正常退出或超时遗留，启动自愈标记为终态',
+                            message = ?,
                             finished_at = ?
                         WHERE id = ?""",
-                        (self.now(), run_id),
+                        (settle_msg, self.now(), run_id),
+                    )
+                    connection.execute(
+                        """INSERT INTO audit_events(event_type,strategy_id,payload_json,actor,created_at)
+                        VALUES(?,?,?,?,?)""",
+                        ("TASK_RUN_ORPHAN_KILLED", "service:recovery", json.dumps({
+                            "run_id": run_id, "task_id": task_id, "started_at": started_at, "elapsed_seconds": elapsed,
+                        }), "service:recovery", self.now()),
                     )
                     reconciled += 1
         return reconciled

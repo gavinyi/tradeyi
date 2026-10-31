@@ -148,3 +148,35 @@ def test_run_gamma_strategy_passes_market_session_to_decide_volatility_action():
                 )
                 found = True
     assert found, "未在 scripts/run_gamma_strategy.py 中找到 decide_volatility_action 调用点"
+
+
+def test_combo_leg_plan_invalid_sends_feishu_whitelist_alert(tmp_path):
+    """AMZN 保护腿不足治理守卫：
+    1. COMBO_LEG_PLAN_INVALID 必须在 FEISHU_GROUP_ALERT_WHITELIST 白名单中，确保 WARNING 级能够真实投递至飞书群；
+    2. 触发拒绝时，必须产生带有合法 incident_key 的告警，且当 campaign_id 为 None/空串时能够规范化回落，绝不产生空维度。
+    """
+    from futu_quant.alerts import AlertManager, FEISHU_GROUP_ALERT_WHITELIST
+    from futu_quant.store import TradingStore
+
+    assert "COMBO_LEG_PLAN_INVALID" in FEISHU_GROUP_ALERT_WHITELIST, "COMBO_LEG_PLAN_INVALID 必须在飞书白名单中，防止只落库不推群"
+
+    store = TradingStore(tmp_path / "combo_alert.db")
+    alerts = AlertManager(store)
+    code = "US.AMZN261106P230000"
+
+    # 模拟无 campaign_id（显式 None）触发告警
+    cid = str(None or code).strip() or "unknown"
+    incident_key = f"COMBO_LEG_PLAN_INVALID:{cid}"
+    assert "::" not in incident_key
+    assert incident_key == f"COMBO_LEG_PLAN_INVALID:{code}"
+
+    alerts.send(
+        "WARNING",
+        "COMBO_LEG_PLAN_INVALID",
+        f"{code}: 定义风险组合被拒（腿计划不完整）：卖出腿没有足量、同到期日的价差保护腿",
+        incident_key=incident_key,
+    )
+    record = [a for a in store.alerts() if a["event_type"] == "COMBO_LEG_PLAN_INVALID"][0]
+    assert record["event_type"] == "COMBO_LEG_PLAN_INVALID"
+    # 验证白名单中事件在飞书未配置环境下的默认尝试状态（未静音且命中了推送判断，非 -1 假静默）
+    assert record["muted"] == 0

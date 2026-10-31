@@ -17,6 +17,7 @@ from pathlib import Path
 import sys
 
 import pandas as pd
+import pytest
 
 from futu_quant.alerts import AlertManager
 from futu_quant.execution import ExecutionManager
@@ -139,6 +140,89 @@ def test_option_history_missing_contract_is_audited(tmp_path, monkeypatch):
     heartbeat = store.heartbeat_status("option_history")
     assert heartbeat["status"] == "DEGRADED"
     assert "缺失 1" in heartbeat["message"]
+
+
+def test_option_history_sixty_percent_usable_threshold_guard(tmp_path, monkeypatch):
+    """Bug 治理守卫：
+    1. 正常市场微小降级（如 10 个合约中 8 个可用，比例 80% >= 60% 且无 missing）：
+       必须报告 HEALTHY，绝不触发 DEGRADED 误报稀释真故障；
+    2. 可用比例严重降低（如 10 个中仅 4 个可用，比例 40% < 60%）：
+       必须坚决触发 DEGRADED 心跳告警；
+    3. 若 records 完全为空，必须判定为 DEGRADED。
+    """
+    store = TradingStore(tmp_path / "opt_hist_guard.db")
+    fresh = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1. 场景 A: 80% 可用 -> HEALTHY
+    test_codes = [f"US.AAPL260720C{300000 + i * 1000}" for i in range(10)]
+    monkeypatch.setattr(
+        "futu_quant.option_history.load_gamma_campaigns",
+        lambda: [{"code": c} for c in test_codes],
+    )
+    monkeypatch.setattr("futu_quant.option_history.load_all_volatility_campaigns", lambda: [])
+
+    class HealthyBroker:
+        @staticmethod
+        def positions():
+            return pd.DataFrame()
+
+        @staticmethod
+        def snapshots(symbols):
+            records = [{"code": "US.AAPL", "last_price": 200.0}]
+            for i, s in enumerate(symbols):
+                if s == "US.AAPL":
+                    continue
+                # 前 8 个正常有双边价，后 2 个为深虚无 bid
+                bid = 5.0 if i < 8 else 0.0
+                ask = 5.5 if i < 8 else 0.0
+                records.append({
+                    "code": s, "bid_price": bid, "ask_price": ask,
+                    "option_implied_volatility": 0.4, "option_delta": 0.5,
+                    "option_open_interest": 100, "volume": 10, "update_time": fresh,
+                })
+            return pd.DataFrame(records)
+
+    collect_option_snapshots(HealthyBroker(), store)
+    assert store.heartbeat_status("option_history")["status"] == "HEALTHY"
+
+    # 2. 场景 B: 仅 40% 可用 (< 60%) -> DEGRADED
+    class DegradedBroker:
+        @staticmethod
+        def positions():
+            return pd.DataFrame()
+
+        @staticmethod
+        def snapshots(symbols):
+            records = [{"code": "US.AAPL", "last_price": 200.0}]
+            for i, s in enumerate(symbols):
+                if s == "US.AAPL":
+                    continue
+                bid = 5.0 if i < 4 else 0.0
+                ask = 5.5 if i < 4 else 0.0
+                records.append({
+                    "code": s, "bid_price": bid, "ask_price": ask,
+                    "option_implied_volatility": 0.4, "option_delta": 0.5,
+                    "option_open_interest": 100, "volume": 10, "update_time": fresh,
+                })
+            return pd.DataFrame(records)
+
+    collect_option_snapshots(DegradedBroker(), store)
+    assert store.heartbeat_status("option_history")["status"] == "DEGRADED"
+
+    # 3. 场景 C: 快照全空 -> 抛出 ValueError 触发异常处理，不能静默 HEALTHY
+    class EmptyBroker:
+        @staticmethod
+        def positions():
+            return pd.DataFrame()
+
+        @staticmethod
+        def snapshots(symbols):
+            return pd.DataFrame()
+
+    with pytest.raises(ValueError, match="期权历史采集没有取得行情快照"):
+        collect_option_snapshots(EmptyBroker(), store)
+
+
 
 
 # ---------------------------------------------------------------------------

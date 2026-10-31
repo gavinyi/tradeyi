@@ -176,4 +176,9 @@ def test_reconcile_orphan_task_runs_settles_zombie_running_records(tmp_path):
 
     runs = {r["task_id"]: r for r in store.task_runs()}
     assert runs["order_reconciliation"]["status"] == "ORPHAN_KILLED"
+    assert "启动自愈标记为终态" in runs["order_reconciliation"]["message"]
     assert runs["recent_task"]["status"] == "RUNNING"
+
+    audits = [row for row in store.audit_events(limit=10) if row["event_type"] == "TASK_RUN_ORPHAN_KILLED"]
+    assert len(audits) == 1, "必须新增独立审计行记录 TASK_RUN_ORPHAN_KILLED"
+    assert "order_reconciliation" in audits[0]["payload_json"]

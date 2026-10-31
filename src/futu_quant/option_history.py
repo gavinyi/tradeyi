@@ -146,9 +146,10 @@ def collect_option_snapshots(broker, store) -> dict:
         )
     # 告警与降级分层治理：
     # 远月或深虚合约由于自然缺乏报价出现部分降级属于市场常态；
-    # 只有当合约完全缺失（missing），或整体可用比例低于阈值（如 < 60%）时才判定为 DEGRADED 报警，避免正常微小降级稀释真实故障。
-    usable_ratio = (usable / len(records)) if records else 1.0
-    healthy = (usable_ratio >= 0.60) and not missing
+    # 只有当合约完全缺失（missing），或整体可用比例低于阈值（如 < 60%）时才判定为 DEGRADED 报警；
+    # 若 records 完全为空，绝不可误判为健康（必须判 DEGRADED）。
+    usable_ratio = (usable / len(records)) if records else 0.0
+    healthy = bool(records) and (usable_ratio >= 0.60) and not missing
     message = (
         f"采集 {len(records)} 个合约；可用 {usable}（{usable_ratio:.1%}），降级 {len(records) - usable}"
         f"（ML 标签 GOOD {good}）"

@@ -55,6 +55,8 @@ FEISHU_GROUP_ALERT_WHITELIST = {
     "ML_ALERT_NOT_DELIVERED",
     # 调度任务超时会使健康检查/对账等关键任务失效；此前 WARNING 仅落库，形成监控盲区。
     "TASK_TIMEOUT",
+    # 组合多腿计划因保护腿不足等被拒（定义风险组合无法建仓，防止静默拒单）
+    "COMBO_LEG_PLAN_INVALID",
 }
 
 # 「不可静音清单」（P0-2）：**代码常量，不可配置** —— 静音它们等于把安全系统变哑。
