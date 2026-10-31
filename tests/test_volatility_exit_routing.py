@@ -215,17 +215,28 @@ def test_sell_exit_liquidity_vacuum_alerts_with_multi_leg_distinction():
 
 
 def test_sell_exit_liquidity_vacuum_alerts_fallback_when_campaign_id_none_or_blank():
-    """Bug 4 追加守卫（下沉验证）：
-    当直接传 campaign_id 为 None、""、"   " 给生产函数 _exit_liquidity_incident_key 时，
-    生产函数必须自身完成规范化，稳定回落至 code，绝不能生成包含 :: 或空维度的键。
+    """Bug 4 追加守卫（指纹解耦防撞键）：
+    1. 同 code+leg 但不同 event_date/structure 的 campaign 必须生成不同 key（防跨 campaign 撞键）；
+    2. 同一 campaign 连续调用生成相同 key（去重依然有效）；
+    3. campaign_id 缺失时 key 里不得出现裸 code 作为 campaign 维度。
     """
     _exit_liquidity_incident_key = getattr(module, "_exit_liquidity_incident_key", None)
     assert _exit_liquidity_incident_key is not None
 
     code = "US.XYZ261120C100000"
-    for blank in (None, "", "   "):
-        key = _exit_liquidity_incident_key(blank, 1, code)
-        assert "::" not in key, f"incident_key 不能包含连续空冒号: {key}"
-        assert f":{code}:" in key, f"incident_key 必须稳定回落至 code: {key}"
-        assert not key.endswith(":"), f"incident_key 不能以冒号结尾: {key}"
-        assert key == f"OPTION_EXIT_LIQUIDITY_VACUUM:{code}:1:{code}"
+    fp1 = '{"event_date": "2026-11-20", "strategy_id": "gamma", "structure": "STRADDLE", "tenant_id": "default"}'
+    fp2 = '{"event_date": "2026-11-27", "strategy_id": "gamma", "structure": "STRADDLE", "tenant_id": "default"}'
+
+    # a) 缺失 campaign_id 时，不同指纹生成不同 key
+    key_camp1 = _exit_liquidity_incident_key(None, 1, code, campaign_fingerprint=fp1)
+    key_camp2 = _exit_liquidity_incident_key(None, 1, code, campaign_fingerprint=fp2)
+    assert key_camp1 != key_camp2, f"不同 campaign 不得生成相同 incident_key: {key_camp1}"
+
+    # b) 同一 campaign 连续调用生成相同 key（保持去重）
+    key_camp1_repeat = _exit_liquidity_incident_key(None, 1, code, campaign_fingerprint=fp1)
+    assert key_camp1 == key_camp1_repeat
+
+    # c) campaign_id 缺失时，key 中不得直接出现裸 code 充当 campaign 维度
+    assert not key_camp1.startswith(f"OPTION_EXIT_LIQUIDITY_VACUUM:{code}:")
+    assert "cfg-" in key_camp1
+    assert "::" not in key_camp1

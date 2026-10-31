@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, time, timedelta, timezone
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -456,10 +457,14 @@ def volatility_exit_limit_price(
     }
 
 
-def _exit_liquidity_incident_key(campaign_id: object, leg_number: int | str, code: str) -> str:
+def _exit_liquidity_incident_key(
+    campaign_id: object, leg_number: int | str, code: str, campaign_fingerprint: str = "",
+) -> str:
     """生成买盘真空事故去重键，精确绑定 campaign、腿编号与合约代码，防止同标的多腿相互吞噬去重。"""
     cid = str(campaign_id).strip() if campaign_id is not None else ""
-    cid = cid or str(code).strip() or "unknown"
+    if not cid:
+        fp = str(campaign_fingerprint or "").strip()
+        cid = "cfg-" + hashlib.sha1(fp.encode("utf-8")).hexdigest()[:12] if fp else "no-campaign-id"
     return f"OPTION_EXIT_LIQUIDITY_VACUUM:{cid}:{leg_number}:{code}"
 
 
@@ -2539,8 +2544,9 @@ def run_campaign(
                 }, strategy_id, actor="service:gamma")
 
                 # 静默拦截严禁无告警：若买盘真空导致平仓无法挂单，必须通过 alerts.send 进行真实推送（内置 900 秒去重）
-                # incident_key 必须精确绑定 campaign_id、leg_number 与 code，由生产函数统一规范化防止空维度
-                incident_k = _exit_liquidity_incident_key(campaign.get("campaign_id"), leg_number, leg["code"])
+                # incident_key 必须精确绑定 campaign_id、leg_number 与 code；缺失 campaign_id 时按配置指纹隔离，防同 code 撞键
+                fp = json.dumps({k: campaign.get(k) for k in ("tenant_id", "event_date", "strategy_id", "structure")}, sort_keys=True, default=str)
+                incident_k = _exit_liquidity_incident_key(campaign.get("campaign_id"), leg_number, leg["code"], campaign_fingerprint=fp)
                 executor.alerts.send(
                     "ERROR",
                     "OPTION_EXIT_LIQUIDITY_VACUUM",
