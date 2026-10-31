@@ -682,7 +682,8 @@ def test_volatility_pyramid_addition_tranche_entry_price_tracks_incremental_cost
     加仓时 tranche 的 entry_price 必须记录该批增量的真实成交成本，
     不能直接使用混仓后的券商综合持仓均价 cost，否则批次 R 乘数与局部止盈失真。
     若第 1 笔 1 张买在 $1.00，涨到 $2.00 时加仓 1 张（成交 $2.00，混仓 cost 为 $1.50）：
-    新批次 entry_price 必须精确记录为 $2.00，而非 $1.50。
+    即使不显式传 incremental_entry_price，状态字典中持久化的上一轮 state['cost']=1.00
+    也必须支持通过 (1.50*2 - 1.00*1)/1 倒推出新批次 entry_price == 2.00，而非 $1.50！
     """
     now = datetime(2026, 10, 31, 14, 0, tzinfo=timezone.utc)
     state = {}
@@ -693,16 +694,27 @@ def test_volatility_pyramid_addition_tranche_entry_price_tracks_incremental_cost
     )
     assert len(state["tranches"]) == 1
     assert state["tranches"][0]["entry_price"] == 1.00
+    assert state.get("cost") == 1.00
 
-    # 2. 金字塔加仓 1 张，券商综合成本变为 1.50，增量价格为 2.00
+    # 2. 金字塔加仓 1 张，券商综合成本变为 1.50，不传 incremental_entry_price，完全依靠持久化 state['cost'] 倒推
     now_add = now + timedelta(minutes=30)
     sync_volatility_position_cycle(
         state, quantity=2, cost=1.50, last=2.00, current_iv=0.48,
-        current_efficiency=1.30, now=now_add, incremental_entry_price=2.00,
+        current_efficiency=1.30, now=now_add,
     )
     assert len(state["tranches"]) == 2
     add_tranche = state["tranches"][1]
     assert add_tranche["entry_price"] == 2.00, f"新加仓批次成本必须是 2.00，实际: {add_tranche['entry_price']}"
+    assert add_tranche["entry_price"] != 1.50
+    assert state.get("cost") == 1.50
+
+    # 3. 清仓时 cost 必须被清除，防止泄漏到下一个新仓位
+    now_close = now + timedelta(hours=1)
+    sync_volatility_position_cycle(
+        state, quantity=0, cost=0.0, last=2.50, current_iv=0.40,
+        current_efficiency=1.0, now=now_close,
+    )
+    assert "cost" not in state
 
 
 

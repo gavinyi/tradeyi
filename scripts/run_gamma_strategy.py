@@ -1919,6 +1919,7 @@ def run_campaign(
                 weekend_protection_minutes=float(
                     campaign.get("weekend_protection_minutes", 30.0)
                 ),
+                market_session=market_session,
             )
     else:
         partial_exit_quantity = 0

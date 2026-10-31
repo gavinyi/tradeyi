@@ -1917,6 +1917,8 @@ def sync_volatility_position_cycle(
             # 双口径判定的确认计数与价差告警标记同属「当前仓位」状态：
             # 不清会让新仓位一开仓就带着上一笔的确认进度（等于绕过双轮门槛）。
             "hard_stop_pending_checks", "hard_stop_spread_warned",
+            # 清仓时必须清掉持久化的上一轮持仓成本，防止下一轮开仓时继承陈旧均价算错增量成本
+            "cost",
         ):
             state.pop(key, None)
         if transition == "CLOSED" and state.get("signal_epoch") is not None:
@@ -1984,4 +1986,5 @@ def sync_volatility_position_cycle(
         current_pnl = float(last) / float(cost) - 1 if cost > 0 else 0.0
         state["mae_pnl_ratio"] = min(float(state.get("mae_pnl_ratio", 0.0)), current_pnl)
         state["mfe_pnl_ratio"] = max(float(state.get("mfe_pnl_ratio", current_pnl)), current_pnl)
+        state["cost"] = float(cost)
     return transition

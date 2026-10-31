@@ -124,3 +124,23 @@ def test_option_market_data_failures_are_tracked_instead_of_silent_prints():
     assert "OPTION_MARKET_DATA_WAITING" in source
     assert "WAITING_EXIT_LIQUIDITY" in source
     assert "OPTION_EXIT_WAITING_FOR_BID" in source
+
+
+def test_run_gamma_strategy_passes_market_session_to_decide_volatility_action():
+    """Bug 2 接线级守卫（AST 静态验证）：
+    必须用 AST 解析 run_gamma_strategy.py，严格断言调用 decide_volatility_action 时
+    显式传入了 market_session 实参，防止生产主调度由于漏传参使提前休市避险失效！
+    """
+    import ast
+
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_gamma_strategy.py"
+    tree = ast.parse(script_path.read_text(encoding="utf-8"))
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func_name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if func_name == "decide_volatility_action":
+                keywords = [kw.arg for kw in node.keywords]
+                assert "market_session" in keywords, "decide_volatility_action 调用必须显式包含 market_session 关键字参数"
+                found = True
+    assert found, "未在 scripts/run_gamma_strategy.py 中找到 decide_volatility_action 调用点"
