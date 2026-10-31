@@ -2409,11 +2409,13 @@ class TradingStore:
     def create_config_release(
         self, config_key: str, draft, created_by: str, reason: str = "",
     ) -> int:
-        from .config_center import GLOBAL_REGISTRY
+        from .config_center import validate_instance_key
 
-        # 统一配置中心 Phase 1 强门禁：严禁为未在 Registry 登记的任意键创建草稿
-        if not GLOBAL_REGISTRY.contains(config_key):
-            raise ValueError(f"配置键 '{config_key}' 未在统一配置中心登记，拒绝创建发布草稿")
+        # 统一配置中心 Phase 2 写入边界强门禁：
+        # 1. 验证是否在 Registry 登记；
+        # 2. 对模板实例键严格验证租户后缀白名单（优先动态取自 self.tenant_registry，默认回退代码字典）
+        tenants = set(self.tenant_registry.keys()) if self.tenant_registry else None
+        validate_instance_key(config_key, allowed_tenants=tenants)
 
         current = self.get_runtime_config(config_key)
         current_value, version = current if current else (None, 0)

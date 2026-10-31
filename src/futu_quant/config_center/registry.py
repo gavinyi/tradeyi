@@ -75,30 +75,15 @@ class ConfigRegistry:
         return self._specs_by_key.get(norm)
 
     def resolve_canonical_key(self, key_or_alias: str) -> str | None:
-        """将任意历史 alias、变量实例键或规范键解析为唯一 canonical key。
-
-        Phase 2 门禁强化：对带变量模板的实例键（如 {tenant}、{account}），严格校验后缀合法性，
-        非法租户/非法账户一律拒识（返回 None），防任意未知串注入系统。
-        """
+        """将任意历史 alias、变量实例键或规范键解析为唯一 canonical key。"""
         if not key_or_alias:
             return None
         norm = key_or_alias.strip()
         if norm in self._alias_to_key:
             return self._alias_to_key[norm]
-        # 尝试匹配变量键模板并执行后缀白名单校验
+        # 尝试匹配变量键模板
         for pat, ckey, _orig_template in self._template_patterns:
-            m = pat.match(norm)
-            if m:
-                gd = m.groupdict()
-                if "tenant" in gd:
-                    from futu_quant.tenant import DEFAULT_TENANTS
-                    if gd["tenant"] not in DEFAULT_TENANTS:
-                        continue  # 租户未在注册表白名单登记，拒绝匹配
-                if "account" in gd:
-                    from futu_quant.tenant import DEFAULT_TENANTS
-                    known_accounts = {t.account_id for t in DEFAULT_TENANTS.values()}
-                    if gd["account"] not in known_accounts and gd["account"] not in DEFAULT_TENANTS:
-                        continue  # 账户未在注册表白名单登记，拒绝匹配
+            if pat.match(norm):
                 return ckey
         return None
 
@@ -119,6 +104,49 @@ class ConfigRegistry:
         return len(self._specs_by_key)
 
 
+def validate_instance_key(
+    key: str,
+    allowed_tenants: set[str] | list[str] | None = None,
+    registry: ConfigRegistry | None = None,
+) -> None:
+    """在写入边界 (如 create_config_release) 严格校验配置项/实例键的合法性。
+
+    门禁规则：
+    1. 必须能在注册表中识别 (contains is True)；
+    2. 若匹配动态变量模板且包含 {tenant} 占位符，其后缀租户必须属于有效租户白名单；
+    3. 若匹配 {account} 占位符，其后缀账户必须属于已知账户白名单。
+    不合法一律抛出 ValueError fail-closed 拒写。
+    """
+    reg = registry or GLOBAL_REGISTRY
+    norm = key.strip() if key else ""
+    if not norm or not reg.contains(norm):
+        raise ValueError(f"配置键 '{key}' 未在统一配置中心登记，拒绝创建发布草稿")
+
+    for pat, ckey, orig_template in reg._template_patterns:
+        m = pat.match(norm)
+        if m:
+            gd = m.groupdict()
+            if "tenant" in gd:
+                tenant_val = gd["tenant"]
+                tenants = set(allowed_tenants) if allowed_tenants is not None else set()
+                if not tenants:
+                    from futu_quant.tenant import DEFAULT_TENANTS
+                    tenants = set(DEFAULT_TENANTS.keys())
+                if tenant_val not in tenants:
+                    raise ValueError(
+                        f"配置实例键 '{key}' 中的租户 '{tenant_val}' 未在有效租户注册表中登记！"
+                        f"有效租户白名单: {sorted(tenants)}"
+                    )
+            if "account" in gd:
+                account_val = gd["account"]
+                from futu_quant.tenant import DEFAULT_TENANTS
+                known_accounts = {t.account_id for t in DEFAULT_TENANTS.values()}
+                if account_val not in known_accounts and account_val not in DEFAULT_TENANTS:
+                    raise ValueError(
+                        f"配置实例键 '{key}' 中的账户 '{account_val}' 未在有效账户注册表中登记！"
+                    )
+
+
 def _load_default_specs() -> list[ConfigSpec]:
     if not _DATA_PATH.exists():
         raise FileNotFoundError(
@@ -132,7 +160,9 @@ def _load_default_specs() -> list[ConfigSpec]:
     specs: list[ConfigSpec] = []
     for item in data:
         aliases = tuple(item.get("aliases", ()))
-        runtime_key = item.get("runtime_key") or (aliases[0] if aliases else item["key"])
+        runtime_key = item.get("runtime_key")
+        if not runtime_key:
+            raise ValueError(f"配置项 {item.get('key')} 缺失必填字段 runtime_key！严禁任何默认回退或静默推导！")
         spec = ConfigSpec(
             key=item["key"],
             aliases=aliases,

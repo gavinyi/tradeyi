@@ -494,14 +494,17 @@ def test_registry_specs_types_and_defaults_are_consistent():
     assert not mismatches, f"发现类型声明与默认值不匹配的配置项: {mismatches}"
 
 
-def test_runtime_key_is_mandatory_unique_and_member_of_aliases():
+def test_runtime_key_is_mandatory_unique_and_member_of_aliases(tmp_path, monkeypatch):
     """Phase 2 前置守卫：
     1. 断言 Registry 每一个 spec 的 runtime_key 均非空；
     2. 断言每一个 runtime_key 必须属于自身的 aliases；
     3. 断言全局所有 runtime_key 无任何重复（全局唯一）；
-    4. 负向测试：构造 runtime_key 不属于 aliases 或存在冲突的配置项，断言注册表构建必抛 ValueError。
+    4. 负向测试：构造 runtime_key 不属于 aliases 或存在冲突的配置项，断言注册表构建必抛 ValueError；
+    5. 负向测试：元数据文件缺失 runtime_key 时，loader 严禁任何 aliases[0] 或 key 默认兜底，必须抛出 ValueError。
     """
     from futu_quant.config_center import ConfigSpec, ConfigRegistry
+    from futu_quant.config_center.registry import _load_default_specs
+    import json
 
     specs = GLOBAL_REGISTRY.all_specs()
     assert len(specs) >= 381, f"注册表配置项数量异常: {len(specs)}"
@@ -579,28 +582,51 @@ def test_runtime_key_is_mandatory_unique_and_member_of_aliases():
     with pytest.raises(ValueError, match="全局必须唯一"):
         ConfigRegistry([dup_spec1, dup_spec2])
 
+    # 负向 3：元数据文件缺失 runtime_key 时，loader 严禁任何兜底，必须抛出 ValueError
+    tmp_json = tmp_path / "missing_rk.json"
+    tmp_json.write_text(json.dumps([{"key": "test.missing", "aliases": ["TEST_MISSING"]}]), encoding="utf-8")
+    monkeypatch.setattr("futu_quant.config_center.registry._DATA_PATH", tmp_json)
+    with pytest.raises(ValueError, match="缺失必填字段 runtime_key"):
+        _load_default_specs()
+
 
 def test_template_key_tenant_suffix_validation_fails_closed(tmp_path):
     """Phase 2 前置守卫：
-    1. 正向验证：真实已登记租户的模板实例键（如 VOLATILITY_CAMPAIGNS:futu_real_master）必须被 Registry 承认；
-    2. 负向验证：非法/未登记租户（如 VOLATILITY_CAMPAIGNS:invalid_tenant_xyz）必须 fail-closed 拒识（contains 返回 False）；
-    3. 端到端负向验证：向 store.create_config_release 传入非法租户后缀实例键，必须抛出 ValueError 阻断草稿创建。
+    1. 纯函数 validate_instance_key 在写入边界校验：
+       - 正向：真实已登记租户的模板实例键（如 VOLATILITY_CAMPAIGNS:futu_real_master）校验通过；
+       - 负向：非法/未登记租户（如 VOLATILITY_CAMPAIGNS:invalid_tenant_xyz）抛出 ValueError；
+       - 动态：支持动态传入 allowed_tenants，不锁死代码静态字典；
+    2. 端到端负向验证：向 store.create_config_release 传入非法租户后缀实例键，必须抛出 ValueError 阻断草稿创建；
+    3. 支持携带 store.tenant_registry 动态开通的新租户，不把正常业务锁死。
     """
-    # 1. 正向放行已知租户
-    assert GLOBAL_REGISTRY.contains("VOLATILITY_CAMPAIGNS:futu_real_master")
-    assert GLOBAL_REGISTRY.contains("VOLATILITY_CAMPAIGNS:futu_paper_sandbox")
-    assert GLOBAL_REGISTRY.contains("risk_limits:futu_real_master")
-
-    # 2. 负向阻断非法租户
-    assert not GLOBAL_REGISTRY.contains("VOLATILITY_CAMPAIGNS:invalid_tenant_xyz")
-    assert not GLOBAL_REGISTRY.contains("VOLATILITY_CAMPAIGNS:evil_hacker_test")
-    assert not GLOBAL_REGISTRY.contains("risk_limits:non_existent_tenant")
-
-    # 3. 端到端草稿创建强门禁阻断
+    from futu_quant.config_center import validate_instance_key
     from futu_quant.store import TradingStore
+
+    # 1. 纯函数正向放行已知租户
+    validate_instance_key("VOLATILITY_CAMPAIGNS:futu_real_master")
+    validate_instance_key("risk_limits:futu_paper_sandbox")
+
+    # 2. 纯函数负向阻断非法租户
+    with pytest.raises(ValueError, match="未在有效租户注册表中登记"):
+        validate_instance_key("VOLATILITY_CAMPAIGNS:invalid_tenant_xyz")
+    with pytest.raises(ValueError, match="未在有效租户注册表中登记"):
+        validate_instance_key("risk_limits:evil_hacker_test")
+
+    # 3. 动态白名单支持
+    custom_tenants = {"custom_tenant_alpha"}
+    validate_instance_key("VOLATILITY_CAMPAIGNS:custom_tenant_alpha", allowed_tenants=custom_tenants)
+    with pytest.raises(ValueError, match="未在有效租户注册表中登记"):
+        validate_instance_key("VOLATILITY_CAMPAIGNS:futu_real_master", allowed_tenants=custom_tenants)
+
+    # 4. 端到端草稿创建强门禁阻断
     store = TradingStore(tmp_path / "test_tenant_guard.db")
-    with pytest.raises(ValueError, match="未在统一配置中心登记"):
+    with pytest.raises(ValueError, match="未在有效租户注册表中登记"):
         store.create_config_release("VOLATILITY_CAMPAIGNS:invalid_tenant_xyz", {}, "streamlit_admin", "bad test")
+
+    # 5. store 动态 tenant_registry 新租户正常通过草稿创建
+    custom_store = TradingStore(tmp_path / "custom_tenant.db", tenant_registry={"dynamic_new_tenant": {}})
+    release_id = custom_store.create_config_release("VOLATILITY_CAMPAIGNS:dynamic_new_tenant", {}, "streamlit_admin", "ok")
+    assert release_id > 0
 
 
 def test_conftest_tempdir_is_on_drive_e_with_pid_and_uuid():
