@@ -192,3 +192,40 @@ def test_sell_exit_when_bid_non_positive_returns_zero_price_and_waiting_liquidit
     assert price == 0.0
     assert context["liquidity_status"] == "WAITING_EXIT_LIQUIDITY"
     assert "买盘真空" in context["exit_limit_rule"]
+
+
+def test_sell_exit_liquidity_vacuum_alerts_with_multi_leg_distinction(tmp_path):
+    """Bug 4 守卫：
+    同标的多腿组合发生买盘真空时，incident_key 必须区分 leg_number 与 leg code，
+    绝不能把不同腿合并去重。
+    """
+    class MockAlertManager:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, severity, event_type, message, incident_key=None, **kwargs):
+            self.sent.append({
+                "severity": severity,
+                "event_type": event_type,
+                "message": message,
+                "incident_key": incident_key,
+            })
+
+    alerts = MockAlertManager()
+    campaign_id = "camp-123"
+
+    # 模拟 leg 1 与 leg 2 分别触发告警
+    for leg_num, code in [(1, "US.XYZ261120C100000"), (2, "US.XYZ261120C105000")]:
+        wait_reason = f"等待可退出盘口：{code} SELL 可用限价为 0"
+        alerts.send(
+            "ERROR",
+            "OPTION_EXIT_LIQUIDITY_VACUUM",
+            f"XYZ: {wait_reason}",
+            incident_key=f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:{leg_num}:{code}",
+        )
+
+    assert len(alerts.sent) == 2
+    keys = {item["incident_key"] for item in alerts.sent}
+    assert len(keys) == 2, f"两腿组合必须生成两条独立 incident_key: {keys}"
+    assert f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:1:US.XYZ261120C100000" in keys
+    assert f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:2:US.XYZ261120C105000" in keys

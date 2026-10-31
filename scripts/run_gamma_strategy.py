@@ -2532,11 +2532,13 @@ def run_campaign(
                 }, strategy_id, actor="service:gamma")
 
                 # 静默拦截严禁无告警：若买盘真空导致平仓无法挂单，必须通过 alerts.send 进行真实推送（内置 900 秒去重）
+                # incident_key 必须精确绑定 campaign_id、leg_number 与 code，防止多腿组合被错误合并去重
+                campaign_id = campaign.get("campaign_id", code)
                 executor.alerts.send(
                     "ERROR",
                     "OPTION_EXIT_LIQUIDITY_VACUUM",
                     f"{code}: {wait_reason}",
-                    incident_key=f"OPTION_EXIT_LIQUIDITY_VACUUM:{leg['code']}",
+                    incident_key=f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:{leg_number}:{leg['code']}",
                 )
 
                 print(f"{code}: HOLD ({wait_reason})")

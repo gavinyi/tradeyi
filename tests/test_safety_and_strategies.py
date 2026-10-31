@@ -337,3 +337,27 @@ def test_core_satellite_sgov_insufficient_sellable_blocks_over_cash_buy():
     # 并且 SELL 严格先于 BUY
     sides = [o.side for o in plan_sellable]
     assert sides.index("SELL") < sides.index("BUY"), f"赎回腿必须排在买单前：{sides}"
+
+
+def test_core_satellite_sgov_missing_price_fails_closed_zero_sellable_value():
+    """Bug 1 追加守卫（假价拦截）：
+    当 SGOV 缺少真实行情且无真实持仓市值时，价格必须 fail-closed 归零，
+    绝不可默认 100.0 假价放宽 buy_budget 导致超额买入。
+    """
+    frames_no_sgov = {
+        "US.SPY": core_frame(),
+        "US.AAPL": trend_frame(start=100, step=1.0),
+    }
+    # 账户净值 100_000，已有股票 95_000，可用现金仅 5_000（恰好等于 cash_buffer 5%）
+    # 持有 700 股 SGOV，但在缺少行情/价格时，可变现额必须为 0，不能假定 100.0 算出 70_000 的可变现流动性来放行买入
+    positions = pd.DataFrame([
+        {"code": "sgov", "qty": 700, "can_sell_qty": 700, "market_val": 0.0},
+        {"code": "US.OTHER", "qty": 950, "can_sell_qty": 950, "market_val": 95_000},
+    ])
+    plan, _ = build_rebalance_plan(
+        frames_no_sgov, positions, 100_000, ("US.SPY", "US.AAPL"),
+        min_trade_usd=100, cash_yield_enabled=True, cash_yield_symbol="US.SGOV",
+        cash_buffer=0.05,
+    )
+    buys = [o for o in plan if o.side == "BUY" and o.symbol != "US.SGOV"]
+    assert len(buys) == 0, "缺少真实 SGOV 价格时其可变现额必须 fail-closed 归零，不可凭空扩充买入预算"

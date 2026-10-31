@@ -492,14 +492,17 @@ def build_rebalance_plan(
         for code, h in position_map.items():
             if normalize_us_symbol(code) == norm_yield:
                 yield_symbol_key = code
-                # 价格优先取持仓真实均价或行情价格，避免拍脑袋假定 100.0
-                yield_p = (
-                    h["market_val"] / h["qty"]
-                    if h.get("qty", 0) > 0 and h.get("market_val", 0) > 0
-                    else (frames[cash_yield_symbol]["close"].iloc[-1] if cash_yield_symbol in frames else 100.0)
-                )
+                # 价格优先取持仓真实均价或已匹配的行情价格；无真实价时 fail-closed 归零，严禁拍脑袋默认 100.0
+                matching_frame_key = next((k for k in frames if normalize_us_symbol(k) == norm_yield), None)
+                if h.get("qty", 0) > 0 and h.get("market_val", 0) > 0:
+                    yield_p = h["market_val"] / h["qty"]
+                elif matching_frame_key and "close" in frames[matching_frame_key].columns and not frames[matching_frame_key].empty:
+                    yield_p = float(frames[matching_frame_key]["close"].iloc[-1])
+                else:
+                    yield_p = 0.0
+
                 sgov_mv = h["market_val"] if h.get("market_val", 0) > 0 else h["qty"] * yield_p
-                sgov_sellable_value = h["can_sell_qty"] * yield_p
+                sgov_sellable_value = h["can_sell_qty"] * yield_p if yield_p > 0 else 0.0
                 break
 
     estimated_cash = max(0.0, account_value - total_market_value - sgov_mv)
