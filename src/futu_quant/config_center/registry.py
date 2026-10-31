@@ -25,19 +25,36 @@ class ConfigRegistry:
     def __init__(self, specs: list[ConfigSpec]):
         self._specs_by_key: dict[str, ConfigSpec] = {}
         self._alias_to_key: dict[str, str] = {}
-        self._template_patterns: list[tuple[re.Pattern, str]] = []
+        self._runtime_key_to_spec: dict[str, ConfigSpec] = {}
+        self._template_patterns: list[tuple[re.Pattern, str, str]] = []
+
         for spec in specs:
             if spec.key in self._specs_by_key:
                 raise ValueError(f"Duplicate canonical key in registry: {spec.key}")
             self._specs_by_key[spec.key] = spec
+
+            # Phase 2 强制约束：runtime_key 必须非空、必须属于自身的 aliases、且全局唯一
+            if not spec.runtime_key:
+                raise ValueError(f"配置项 {spec.key} 的 runtime_key 不能为空！")
+            if spec.runtime_key not in spec.aliases:
+                raise ValueError(
+                    f"配置项 {spec.key} 的 runtime_key '{spec.runtime_key}' 必须属于其已声明的 aliases: {spec.aliases}！"
+                )
+            if spec.runtime_key in self._runtime_key_to_spec:
+                existing = self._runtime_key_to_spec[spec.runtime_key]
+                raise ValueError(
+                    f"重复的 runtime_key '{spec.runtime_key}'，在 {existing.key} 与 {spec.key} 之间冲突！全局必须唯一！"
+                )
+            self._runtime_key_to_spec[spec.runtime_key] = spec
+
             # 建立别名双向解析映射与变量键模板识别
             for alias in spec.aliases:
                 alias_norm = alias.strip()
                 if "{" in alias_norm and "}" in alias_norm:
                     # 动态变量键模板（例如 risk_limits:{tenant}、real_account_config:{account}）
                     escaped = re.escape(alias_norm)
-                    pat_str = "^" + re.sub(r"\\\{[a-zA-Z0-9_]+\\\}", r"[a-zA-Z0-9_\-\.]+", escaped) + "$"
-                    self._template_patterns.append((re.compile(pat_str, re.IGNORECASE), spec.key))
+                    pat_str = "^" + re.sub(r"\\\{([a-zA-Z0-9_]+)\\\}", r"(?P<\1>[a-zA-Z0-9_\-\.]+)", escaped) + "$"
+                    self._template_patterns.append((re.compile(pat_str, re.IGNORECASE), spec.key, alias_norm))
                     # 模板字符串自身也注册为 alias，支持元数据直接双向反射
                     self._alias_to_key[alias_norm] = spec.key
                 else:
@@ -58,15 +75,30 @@ class ConfigRegistry:
         return self._specs_by_key.get(norm)
 
     def resolve_canonical_key(self, key_or_alias: str) -> str | None:
-        """将任意历史 alias、变量实例键或规范键解析为唯一 canonical key。"""
+        """将任意历史 alias、变量实例键或规范键解析为唯一 canonical key。
+
+        Phase 2 门禁强化：对带变量模板的实例键（如 {tenant}、{account}），严格校验后缀合法性，
+        非法租户/非法账户一律拒识（返回 None），防任意未知串注入系统。
+        """
         if not key_or_alias:
             return None
         norm = key_or_alias.strip()
         if norm in self._alias_to_key:
             return self._alias_to_key[norm]
-        # 尝试匹配变量键模板
-        for pat, ckey in self._template_patterns:
-            if pat.match(norm):
+        # 尝试匹配变量键模板并执行后缀白名单校验
+        for pat, ckey, _orig_template in self._template_patterns:
+            m = pat.match(norm)
+            if m:
+                gd = m.groupdict()
+                if "tenant" in gd:
+                    from futu_quant.tenant import DEFAULT_TENANTS
+                    if gd["tenant"] not in DEFAULT_TENANTS:
+                        continue  # 租户未在注册表白名单登记，拒绝匹配
+                if "account" in gd:
+                    from futu_quant.tenant import DEFAULT_TENANTS
+                    known_accounts = {t.account_id for t in DEFAULT_TENANTS.values()}
+                    if gd["account"] not in known_accounts and gd["account"] not in DEFAULT_TENANTS:
+                        continue  # 账户未在注册表白名单登记，拒绝匹配
                 return ckey
         return None
 
@@ -99,9 +131,11 @@ def _load_default_specs() -> list[ConfigSpec]:
         raise ValueError(f"统一配置注册表数据为空: {_DATA_PATH}，系统拒绝以空注册表运行！")
     specs: list[ConfigSpec] = []
     for item in data:
+        aliases = tuple(item.get("aliases", ()))
+        runtime_key = item.get("runtime_key") or (aliases[0] if aliases else item["key"])
         spec = ConfigSpec(
             key=item["key"],
-            aliases=tuple(item.get("aliases", ())),
+            aliases=aliases,
             category=item.get("category", "⑤ 策略总览"),
             title=item.get("title", item["key"]),
             description=item.get("description", ""),
@@ -120,6 +154,7 @@ def _load_default_specs() -> list[ConfigSpec]:
             dependencies=tuple(item.get("dependencies", ())),
             secret=bool(item.get("secret", False)),
             deprecated=bool(item.get("deprecated", False)),
+            runtime_key=runtime_key,
         )
         specs.append(spec)
     return specs
@@ -131,6 +166,7 @@ GLOBAL_REGISTRY: ConfigRegistry = ConfigRegistry(_load_default_specs())
 def get_draftable_config_keys(registry: ConfigRegistry | None = None) -> list[str]:
     """返回允许通过 UI/运维草稿发布链路编辑的配置键列表。
 
+    Phase 2 规范化：直接读取 s.runtime_key 落库键，不再遍历 alias 列表。
     安全门禁：
     1. 必须存储于 runtime_config (storage == "runtime_config")；
     2. 明确标记为可编辑 (editable is True)；
@@ -146,11 +182,11 @@ def get_draftable_config_keys(registry: ConfigRegistry | None = None) -> list[st
             continue
         if s.risk_level == "CRITICAL" or s.requires_confirmation:
             continue
-        for name in s.aliases:
-            if "{" in name and "}" in name:
-                continue
-            if name not in candidate_keys:
-                candidate_keys.append(name)
+        rk = s.runtime_key
+        if "{" in rk and "}" in rk:
+            continue
+        if rk not in candidate_keys:
+            candidate_keys.append(rk)
 
     preferred = "CORE_SATELLITE_DAILY_VALIDATION"
     candidate_keys.sort()

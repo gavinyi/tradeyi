@@ -33,3 +33,4 @@ class ConfigSpec:
     dependencies: tuple[str, ...] = () # 依赖项
     secret: bool = False             # 是否涉密
     deprecated: bool = False         # 是否已弃用
+    runtime_key: str = ""            # 真实落库键名 (Phase 2 显式化，必须属于 aliases 且全局唯一)

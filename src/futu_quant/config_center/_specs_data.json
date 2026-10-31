@@ -21,7 +21,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ADMIN_LOCKOUT_SECONDS"
   },
   {
     "key": "admin.max.login.attempts",
@@ -45,7 +46,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ADMIN_MAX_LOGIN_ATTEMPTS"
   },
   {
     "key": "admin.password.hash",
@@ -70,7 +72,8 @@
     "tags": [
       "策略总览"
     ],
-    "secret": true
+    "secret": true,
+    "runtime_key": "ADMIN_PASSWORD_HASH"
   },
   {
     "key": "admin.session.timeout.seconds",
@@ -94,7 +97,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ADMIN_SESSION_TIMEOUT_SECONDS"
   },
   {
     "key": "alert.dedupe.seconds",
@@ -118,7 +122,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ALERT_DEDUPE_SECONDS"
   },
   {
     "key": "alert.probe.interval.seconds",
@@ -142,7 +147,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ALERT_PROBE_INTERVAL_SECONDS"
   },
   {
     "key": "alert.webhook.secret",
@@ -167,7 +173,8 @@
     "tags": [
       "策略总览"
     ],
-    "secret": true
+    "secret": true,
+    "runtime_key": "ALERT_WEBHOOK_SECRET"
   },
   {
     "key": "alert.webhook.url",
@@ -191,7 +198,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ALERT_WEBHOOK_URL"
   },
   {
     "key": "alpaca.api.key",
@@ -216,7 +224,8 @@
     "tags": [
       "策略总览"
     ],
-    "secret": true
+    "secret": true,
+    "runtime_key": "ALPACA_API_KEY"
   },
   {
     "key": "alpaca.api.secret",
@@ -241,7 +250,8 @@
     "tags": [
       "策略总览"
     ],
-    "secret": true
+    "secret": true,
+    "runtime_key": "ALPACA_API_SECRET"
   },
   {
     "key": "approval.error.window.hours",
@@ -265,7 +275,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "APPROVAL_ERROR_WINDOW_HOURS"
   },
   {
     "key": "approval.exempt.strategies",
@@ -289,7 +300,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "APPROVAL_EXEMPT_STRATEGIES"
   },
   {
     "key": "approval.max.shadow.slippage.pct",
@@ -313,7 +325,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "APPROVAL_MAX_SHADOW_SLIPPAGE_PCT"
   },
   {
     "key": "approval.min.shadow.days",
@@ -337,7 +350,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "APPROVAL_MIN_SHADOW_DAYS"
   },
   {
     "key": "approval.min.shadow.fill.rate",
@@ -361,7 +375,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "APPROVAL_MIN_SHADOW_FILL_RATE"
   },
   {
     "key": "approval.min.shadow.orders",
@@ -385,7 +400,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "APPROVAL_MIN_SHADOW_ORDERS"
   },
   {
     "key": "auto.computer.shutdown.enabled",
@@ -409,7 +425,8 @@
     ],
     "tags": [
       "急停与运行控制"
-    ]
+    ],
+    "runtime_key": "AUTO_COMPUTER_SHUTDOWN_ENABLED"
   },
   {
     "key": "auto.daily.universe.ranking.enabled",
@@ -433,7 +450,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "AUTO_DAILY_UNIVERSE_RANKING_ENABLED"
   },
   {
     "key": "auto.shutdown.dry.run",
@@ -457,7 +475,8 @@
     ],
     "tags": [
       "急停与运行控制"
-    ]
+    ],
+    "runtime_key": "AUTO_SHUTDOWN_DRY_RUN"
   },
   {
     "key": "auto.weekly.universe.recall.enabled",
@@ -481,7 +500,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "AUTO_WEEKLY_UNIVERSE_RECALL_ENABLED"
   },
   {
     "key": "backup.dir",
@@ -505,7 +525,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "BACKUP_DIR"
   },
   {
     "key": "backup.retention.days",
@@ -529,7 +550,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "BACKUP_RETENTION_DAYS"
   },
   {
     "key": "candidate.exclusions.retain.days",
@@ -553,7 +575,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "CANDIDATE_EXCLUSIONS_RETAIN_DAYS"
   },
   {
     "key": "config.version.retain.days",
@@ -577,7 +600,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "CONFIG_VERSION_RETAIN_DAYS"
   },
   {
     "key": "core.catchup.after.open.minutes",
@@ -601,7 +625,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_CATCHUP_AFTER_OPEN_MINUTES"
   },
   {
     "key": "core.sat.cash.buffer",
@@ -626,7 +651,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_CASH_BUFFER"
   },
   {
     "key": "core.sat.core.budget",
@@ -651,7 +677,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_CORE_BUDGET"
   },
   {
     "key": "core.sat.high.vol.daily.std",
@@ -676,7 +703,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_HIGH_VOL_DAILY_STD"
   },
   {
     "key": "core.sat.high.vol.trade.factor",
@@ -701,7 +729,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_HIGH_VOL_TRADE_FACTOR"
   },
   {
     "key": "core.sat.max.order.notional",
@@ -726,7 +755,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_MAX_ORDER_NOTIONAL"
   },
   {
     "key": "core.sat.max.single.rebalance.pct",
@@ -751,7 +781,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_MAX_SINGLE_REBALANCE_PCT"
   },
   {
     "key": "core.sat.max.stock.weight",
@@ -776,7 +807,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_MAX_STOCK_WEIGHT"
   },
   {
     "key": "core.sat.max.target.change",
@@ -801,7 +833,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_MAX_TARGET_CHANGE"
   },
   {
     "key": "core.sat.min.trade.usd",
@@ -826,7 +859,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_MIN_TRADE_USD"
   },
   {
     "key": "core.sat.profile",
@@ -851,7 +885,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_PROFILE"
   },
   {
     "key": "core.sat.rebalance.frequency",
@@ -876,7 +911,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_REBALANCE_FREQUENCY"
   },
   {
     "key": "core.sat.satellite.budget",
@@ -901,7 +937,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_SATELLITE_BUDGET"
   },
   {
     "key": "core.sat.satellite.daily.scan",
@@ -926,7 +963,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_SATELLITE_DAILY_SCAN"
   },
   {
     "key": "core.sat.satellite.min.score",
@@ -951,7 +989,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_SATELLITE_MIN_SCORE"
   },
   {
     "key": "core.sat.symbols",
@@ -976,7 +1015,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_SYMBOLS"
   },
   {
     "key": "core.sat.weight.tolerance",
@@ -1001,7 +1041,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "CORE_SAT_WEIGHT_TOLERANCE"
   },
   {
     "key": "crypto.breakout.enabled",
@@ -1025,7 +1066,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_BREAKOUT_ENABLED"
   },
   {
     "key": "crypto.confirmation.bars",
@@ -1049,7 +1091,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_CONFIRMATION_BARS"
   },
   {
     "key": "crypto.contraction.confirmations",
@@ -1073,7 +1116,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_CONTRACTION_CONFIRMATIONS"
   },
   {
     "key": "crypto.contraction.ratio",
@@ -1097,7 +1141,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_CONTRACTION_RATIO"
   },
   {
     "key": "crypto.cooldown.hours",
@@ -1121,7 +1166,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_COOLDOWN_HOURS"
   },
   {
     "key": "crypto.execution.mode",
@@ -1145,7 +1191,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_EXECUTION_MODE"
   },
   {
     "key": "crypto.higher.timeframe.bar",
@@ -1169,7 +1216,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_BAR"
   },
   {
     "key": "crypto.higher.timeframe.enabled",
@@ -1193,7 +1241,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_ENABLED"
   },
   {
     "key": "crypto.higher.timeframe.min.bars",
@@ -1217,7 +1266,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_MIN_BARS"
   },
   {
     "key": "crypto.higher.timeframe.min.trend.return",
@@ -1241,7 +1291,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_MIN_TREND_RETURN"
   },
   {
     "key": "crypto.interval.seconds",
@@ -1265,7 +1316,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_INTERVAL_SECONDS"
   },
   {
     "key": "crypto.loss.lock.hours",
@@ -1289,7 +1341,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_LOSS_LOCK_HOURS"
   },
   {
     "key": "crypto.max.chase.atr",
@@ -1313,7 +1366,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MAX_CHASE_ATR"
   },
   {
     "key": "crypto.max.consecutive.losses",
@@ -1337,7 +1391,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MAX_CONSECUTIVE_LOSSES"
   },
   {
     "key": "crypto.max.daily.trades",
@@ -1361,7 +1416,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MAX_DAILY_TRADES"
   },
   {
     "key": "crypto.max.hold.hours",
@@ -1385,7 +1441,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MAX_HOLD_HOURS"
   },
   {
     "key": "crypto.max.open.positions",
@@ -1409,7 +1466,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MAX_OPEN_POSITIONS"
   },
   {
     "key": "crypto.max.order.notional",
@@ -1433,7 +1491,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MAX_ORDER_NOTIONAL"
   },
   {
     "key": "crypto.max.portfolio.drawdown",
@@ -1457,7 +1516,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MAX_PORTFOLIO_DRAWDOWN"
   },
   {
     "key": "crypto.max.total.exposure",
@@ -1481,7 +1541,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MAX_TOTAL_EXPOSURE"
   },
   {
     "key": "crypto.min.trend.strength",
@@ -1505,7 +1566,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_MIN_TREND_STRENGTH"
   },
   {
     "key": "crypto.partial.profit.tier1",
@@ -1529,7 +1591,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER1"
   },
   {
     "key": "crypto.partial.profit.tier1.fraction",
@@ -1553,7 +1616,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER1_FRACTION"
   },
   {
     "key": "crypto.partial.profit.tier2",
@@ -1577,7 +1641,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER2"
   },
   {
     "key": "crypto.partial.profit.tier2.fraction",
@@ -1601,7 +1666,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER2_FRACTION"
   },
   {
     "key": "crypto.pullback.depth",
@@ -1625,7 +1691,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PULLBACK_DEPTH"
   },
   {
     "key": "crypto.pullback.enabled",
@@ -1649,7 +1716,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PULLBACK_ENABLED"
   },
   {
     "key": "crypto.pullback.max.bollinger",
@@ -1673,7 +1741,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PULLBACK_MAX_BOLLINGER"
   },
   {
     "key": "crypto.pullback.max.rsi",
@@ -1697,7 +1766,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PULLBACK_MAX_RSI"
   },
   {
     "key": "crypto.pullback.min.last.return",
@@ -1721,7 +1791,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PULLBACK_MIN_LAST_RETURN"
   },
   {
     "key": "crypto.pullback.min.trend.return",
@@ -1745,7 +1816,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_PULLBACK_MIN_TREND_RETURN"
   },
   {
     "key": "crypto.radar.auto.add",
@@ -1769,7 +1841,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_AUTO_ADD"
   },
   {
     "key": "crypto.radar.enabled",
@@ -1793,7 +1866,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_ENABLED"
   },
   {
     "key": "crypto.radar.exit.inactive.cycles",
@@ -1817,7 +1891,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_EXIT_INACTIVE_CYCLES"
   },
   {
     "key": "crypto.radar.full.scan.enabled",
@@ -1841,7 +1916,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_FULL_SCAN_ENABLED"
   },
   {
     "key": "crypto.radar.managed.symbols",
@@ -1865,7 +1941,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_MANAGED_SYMBOLS"
   },
   {
     "key": "crypto.radar.max.managed.symbols",
@@ -1889,7 +1966,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_MAX_MANAGED_SYMBOLS"
   },
   {
     "key": "crypto.radar.max.symbols.per.cycle",
@@ -1913,7 +1991,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_MAX_SYMBOLS_PER_CYCLE"
   },
   {
     "key": "crypto.radar.min.auto.add.score",
@@ -1937,7 +2016,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_MIN_AUTO_ADD_SCORE"
   },
   {
     "key": "crypto.radar.universe",
@@ -1961,7 +2041,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_RADAR_UNIVERSE"
   },
   {
     "key": "crypto.regime.filter.enabled",
@@ -1985,7 +2066,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_REGIME_FILTER_ENABLED"
   },
   {
     "key": "crypto.swap.allow.major.short",
@@ -2009,7 +2091,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALLOW_MAJOR_SHORT"
   },
   {
     "key": "crypto.swap.alt.short.add.loss.steps",
@@ -2033,7 +2116,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ADD_LOSS_STEPS"
   },
   {
     "key": "crypto.swap.alt.short.add.margin.multipliers",
@@ -2057,7 +2141,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ADD_MARGIN_MULTIPLIERS"
   },
   {
     "key": "crypto.swap.alt.short.enabled",
@@ -2081,7 +2166,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ENABLED"
   },
   {
     "key": "crypto.swap.alt.short.excluded.bases",
@@ -2105,7 +2191,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_EXCLUDED_BASES"
   },
   {
     "key": "crypto.swap.alt.short.initial.margin.fraction",
@@ -2129,7 +2216,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_INITIAL_MARGIN_FRACTION"
   },
   {
     "key": "crypto.swap.alt.short.max.layers",
@@ -2153,7 +2241,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_MAX_LAYERS"
   },
   {
     "key": "crypto.swap.alt.short.max.position.loss",
@@ -2177,7 +2266,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_MAX_POSITION_LOSS"
   },
   {
     "key": "crypto.swap.alt.short.recovery.take.profit",
@@ -2201,7 +2291,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_RECOVERY_TAKE_PROFIT"
   },
   {
     "key": "crypto.swap.breakout.window",
@@ -2225,7 +2316,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_BREAKOUT_WINDOW"
   },
   {
     "key": "crypto.swap.confirmation.bars",
@@ -2249,7 +2341,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_CONFIRMATION_BARS"
   },
   {
     "key": "crypto.swap.continuation.bars",
@@ -2273,7 +2366,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_CONTINUATION_BARS"
   },
   {
     "key": "crypto.swap.continuation.min.return",
@@ -2297,7 +2391,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_CONTINUATION_MIN_RETURN"
   },
   {
     "key": "crypto.swap.contraction.confirmations",
@@ -2321,7 +2416,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_CONTRACTION_CONFIRMATIONS"
   },
   {
     "key": "crypto.swap.contraction.ratio",
@@ -2345,7 +2441,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_CONTRACTION_RATIO"
   },
   {
     "key": "crypto.swap.emergency.reverse.loss",
@@ -2369,7 +2466,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_EMERGENCY_REVERSE_LOSS"
   },
   {
     "key": "crypto.swap.engine",
@@ -2393,7 +2491,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ENGINE"
   },
   {
     "key": "crypto.swap.entry.enabled",
@@ -2417,7 +2516,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ENTRY_ENABLED"
   },
   {
     "key": "crypto.swap.execution.mode",
@@ -2441,7 +2541,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_EXECUTION_MODE"
   },
   {
     "key": "crypto.swap.fast.window",
@@ -2465,7 +2566,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_FAST_WINDOW"
   },
   {
     "key": "crypto.swap.funding.exit.rate",
@@ -2489,7 +2591,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_FUNDING_EXIT_RATE"
   },
   {
     "key": "crypto.swap.hard.stop",
@@ -2513,7 +2616,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_HARD_STOP"
   },
   {
     "key": "crypto.swap.higher.timeframe.bar",
@@ -2537,7 +2641,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_BAR"
   },
   {
     "key": "crypto.swap.higher.timeframe.enabled",
@@ -2561,7 +2666,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_ENABLED"
   },
   {
     "key": "crypto.swap.higher.timeframe.min.bars",
@@ -2585,7 +2691,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_MIN_BARS"
   },
   {
     "key": "crypto.swap.higher.timeframe.min.trend.return",
@@ -2609,7 +2716,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_MIN_TREND_RETURN"
   },
   {
     "key": "crypto.swap.interval.seconds",
@@ -2633,7 +2741,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_INTERVAL_SECONDS"
   },
   {
     "key": "crypto.swap.leverage",
@@ -2657,7 +2766,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_LEVERAGE"
   },
   {
     "key": "crypto.swap.liquidation.buffer.exit",
@@ -2681,7 +2791,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_LIQUIDATION_BUFFER_EXIT"
   },
   {
     "key": "crypto.swap.long.hard.stop",
@@ -2705,7 +2816,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_LONG_HARD_STOP"
   },
   {
     "key": "crypto.swap.long.max.hold.hours",
@@ -2729,7 +2841,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_LONG_MAX_HOLD_HOURS"
   },
   {
     "key": "crypto.swap.long.min.trend.strength",
@@ -2753,7 +2866,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_LONG_MIN_TREND_STRENGTH"
   },
   {
     "key": "crypto.swap.long.min.volume.ratio",
@@ -2777,7 +2891,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_LONG_MIN_VOLUME_RATIO"
   },
   {
     "key": "crypto.swap.long.profit.giveback",
@@ -2801,7 +2916,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_LONG_PROFIT_GIVEBACK"
   },
   {
     "key": "crypto.swap.long.profit.protection.start",
@@ -2825,7 +2941,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_LONG_PROFIT_PROTECTION_START"
   },
   {
     "key": "crypto.swap.margin.budget",
@@ -2849,7 +2966,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MARGIN_BUDGET"
   },
   {
     "key": "crypto.swap.max.abs.funding.rate",
@@ -2873,7 +2991,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MAX_ABS_FUNDING_RATE"
   },
   {
     "key": "crypto.swap.max.chase.atr",
@@ -2897,7 +3016,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MAX_CHASE_ATR"
   },
   {
     "key": "crypto.swap.max.hold.hours",
@@ -2921,7 +3041,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MAX_HOLD_HOURS"
   },
   {
     "key": "crypto.swap.max.leverage",
@@ -2945,7 +3066,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MAX_LEVERAGE"
   },
   {
     "key": "crypto.swap.max.margin.per.position",
@@ -2969,7 +3091,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MAX_MARGIN_PER_POSITION"
   },
   {
     "key": "crypto.swap.max.open.positions",
@@ -2993,7 +3116,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MAX_OPEN_POSITIONS"
   },
   {
     "key": "crypto.swap.max.spread.ratio",
@@ -3017,7 +3141,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MAX_SPREAD_RATIO"
   },
   {
     "key": "crypto.swap.max.total.margin",
@@ -3041,7 +3166,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MAX_TOTAL_MARGIN"
   },
   {
     "key": "crypto.swap.mean.reversion.bollinger.lower",
@@ -3065,7 +3191,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_BOLLINGER_LOWER"
   },
   {
     "key": "crypto.swap.mean.reversion.bollinger.upper",
@@ -3089,7 +3216,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_BOLLINGER_UPPER"
   },
   {
     "key": "crypto.swap.mean.reversion.enabled",
@@ -3113,7 +3241,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_ENABLED"
   },
   {
     "key": "crypto.swap.mean.reversion.min.volume.ratio",
@@ -3137,7 +3266,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_MIN_VOLUME_RATIO"
   },
   {
     "key": "crypto.swap.mean.reversion.position.scale",
@@ -3161,7 +3291,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_POSITION_SCALE"
   },
   {
     "key": "crypto.swap.mean.reversion.rsi.overbought",
@@ -3185,7 +3316,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_RSI_OVERBOUGHT"
   },
   {
     "key": "crypto.swap.mean.reversion.rsi.oversold",
@@ -3209,7 +3341,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_RSI_OVERSOLD"
   },
   {
     "key": "crypto.swap.mean.reversion.zscore",
@@ -3233,7 +3366,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_ZSCORE"
   },
   {
     "key": "crypto.swap.mf.benchmark.symbol",
@@ -3257,7 +3391,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MF_BENCHMARK_SYMBOL"
   },
   {
     "key": "crypto.swap.mf.max.negative.funding.short",
@@ -3281,7 +3416,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MF_MAX_NEGATIVE_FUNDING_SHORT"
   },
   {
     "key": "crypto.swap.mf.min.volume.ratio",
@@ -3305,7 +3441,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MF_MIN_VOLUME_RATIO"
   },
   {
     "key": "crypto.swap.mf.relative.weakness",
@@ -3329,7 +3466,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MF_RELATIVE_WEAKNESS"
   },
   {
     "key": "crypto.swap.mf.score.threshold",
@@ -3353,7 +3491,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MF_SCORE_THRESHOLD"
   },
   {
     "key": "crypto.swap.mf.trend.invalidation.score",
@@ -3377,7 +3516,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MF_TREND_INVALIDATION_SCORE"
   },
   {
     "key": "crypto.swap.min.hold.hours",
@@ -3401,7 +3541,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MIN_HOLD_HOURS"
   },
   {
     "key": "crypto.swap.min.trend.strength",
@@ -3425,7 +3566,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MIN_TREND_STRENGTH"
   },
   {
     "key": "crypto.swap.min.volume.ratio",
@@ -3449,7 +3591,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_MIN_VOLUME_RATIO"
   },
   {
     "key": "crypto.swap.partial.profit.tier1",
@@ -3473,7 +3616,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER1"
   },
   {
     "key": "crypto.swap.partial.profit.tier1.fraction",
@@ -3497,7 +3641,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER1_FRACTION"
   },
   {
     "key": "crypto.swap.partial.profit.tier2",
@@ -3521,7 +3666,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER2"
   },
   {
     "key": "crypto.swap.partial.profit.tier2.fraction",
@@ -3545,7 +3691,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER2_FRACTION"
   },
   {
     "key": "crypto.swap.profit.giveback",
@@ -3569,7 +3716,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_PROFIT_GIVEBACK"
   },
   {
     "key": "crypto.swap.profit.protection.start",
@@ -3593,7 +3741,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_PROFIT_PROTECTION_START"
   },
   {
     "key": "crypto.swap.radar.auto.add",
@@ -3617,7 +3766,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_RADAR_AUTO_ADD"
   },
   {
     "key": "crypto.swap.radar.enabled",
@@ -3641,7 +3791,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_RADAR_ENABLED"
   },
   {
     "key": "crypto.swap.radar.exit.cycles",
@@ -3665,7 +3816,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_RADAR_EXIT_CYCLES"
   },
   {
     "key": "crypto.swap.radar.full.scan.enabled",
@@ -3689,7 +3841,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_RADAR_FULL_SCAN_ENABLED"
   },
   {
     "key": "crypto.swap.radar.max.managed",
@@ -3713,7 +3866,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_RADAR_MAX_MANAGED"
   },
   {
     "key": "crypto.swap.radar.max.per.cycle",
@@ -3737,7 +3891,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_RADAR_MAX_PER_CYCLE"
   },
   {
     "key": "crypto.swap.radar.min.auto.add.score",
@@ -3761,7 +3916,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_RADAR_MIN_AUTO_ADD_SCORE"
   },
   {
     "key": "crypto.swap.radar.universe",
@@ -3785,7 +3941,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_RADAR_UNIVERSE"
   },
   {
     "key": "crypto.swap.regime.filter.enabled",
@@ -3809,7 +3966,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_REGIME_FILTER_ENABLED"
   },
   {
     "key": "crypto.swap.short.continuation.min.return",
@@ -3833,7 +3991,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SHORT_CONTINUATION_MIN_RETURN"
   },
   {
     "key": "crypto.swap.short.hard.stop",
@@ -3857,7 +4016,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SHORT_HARD_STOP"
   },
   {
     "key": "crypto.swap.short.max.hold.hours",
@@ -3881,7 +4041,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SHORT_MAX_HOLD_HOURS"
   },
   {
     "key": "crypto.swap.short.min.trend.strength",
@@ -3905,7 +4066,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SHORT_MIN_TREND_STRENGTH"
   },
   {
     "key": "crypto.swap.short.min.volume.ratio",
@@ -3929,7 +4091,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SHORT_MIN_VOLUME_RATIO"
   },
   {
     "key": "crypto.swap.short.profit.giveback",
@@ -3953,7 +4116,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SHORT_PROFIT_GIVEBACK"
   },
   {
     "key": "crypto.swap.short.profit.protection.start",
@@ -3977,7 +4141,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SHORT_PROFIT_PROTECTION_START"
   },
   {
     "key": "crypto.swap.slow.window",
@@ -4001,7 +4166,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SLOW_WINDOW"
   },
   {
     "key": "crypto.swap.symbols",
@@ -4025,7 +4191,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_SYMBOLS"
   },
   {
     "key": "crypto.swap.trend.breakout.enabled",
@@ -4049,7 +4216,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_TREND_BREAKOUT_ENABLED"
   },
   {
     "key": "crypto.swap.trend.window",
@@ -4073,7 +4241,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_TREND_WINDOW"
   },
   {
     "key": "crypto.swap.vol.expansion",
@@ -4097,7 +4266,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_VOL_EXPANSION"
   },
   {
     "key": "crypto.swap.weak.momentum.exit.enabled",
@@ -4121,7 +4291,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_ENABLED"
   },
   {
     "key": "crypto.swap.weak.momentum.exit.hours",
@@ -4145,7 +4316,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_HOURS"
   },
   {
     "key": "crypto.swap.weak.momentum.exit.max.pnl",
@@ -4169,7 +4341,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_MAX_PNL"
   },
   {
     "key": "crypto.swap.weak.momentum.exit.min.peak.pnl",
@@ -4193,7 +4366,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_MIN_PEAK_PNL"
   },
   {
     "key": "crypto.swap.zscore",
@@ -4217,7 +4391,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_SWAP_ZSCORE"
   },
   {
     "key": "crypto.trend.participation.enabled",
@@ -4241,7 +4416,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_ENABLED"
   },
   {
     "key": "crypto.trend.participation.max.bollinger",
@@ -4265,7 +4441,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MAX_BOLLINGER"
   },
   {
     "key": "crypto.trend.participation.max.rsi",
@@ -4289,7 +4466,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MAX_RSI"
   },
   {
     "key": "crypto.trend.participation.min.24h.return",
@@ -4313,7 +4491,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_24H_RETURN"
   },
   {
     "key": "crypto.trend.participation.min.72h.return",
@@ -4337,7 +4516,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_72H_RETURN"
   },
   {
     "key": "crypto.trend.participation.min.volume.ratio",
@@ -4361,7 +4541,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_VOLUME_RATIO"
   },
   {
     "key": "crypto.trend.participation.position.scale",
@@ -4385,7 +4566,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_POSITION_SCALE"
   },
   {
     "key": "crypto.trend.window",
@@ -4409,7 +4591,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_TREND_WINDOW"
   },
   {
     "key": "crypto.volatility.budget",
@@ -4433,7 +4616,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOLATILITY_BUDGET"
   },
   {
     "key": "crypto.volatility.symbols",
@@ -4457,7 +4641,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOLATILITY_SYMBOLS"
   },
   {
     "key": "crypto.vol.breakout.window",
@@ -4481,7 +4666,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_BREAKOUT_WINDOW"
   },
   {
     "key": "crypto.vol.expansion",
@@ -4505,7 +4691,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_EXPANSION"
   },
   {
     "key": "crypto.vol.fast.window",
@@ -4529,7 +4716,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_FAST_WINDOW"
   },
   {
     "key": "crypto.vol.hard.stop",
@@ -4553,7 +4741,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_HARD_STOP"
   },
   {
     "key": "crypto.vol.minimum.locked.profit",
@@ -4577,7 +4766,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_MINIMUM_LOCKED_PROFIT"
   },
   {
     "key": "crypto.vol.min.volume.ratio",
@@ -4601,7 +4791,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_MIN_VOLUME_RATIO"
   },
   {
     "key": "crypto.vol.profit.giveback",
@@ -4625,7 +4816,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_PROFIT_GIVEBACK"
   },
   {
     "key": "crypto.vol.profit.protection.start",
@@ -4649,7 +4841,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_PROFIT_PROTECTION_START"
   },
   {
     "key": "crypto.vol.slow.window",
@@ -4673,7 +4866,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_SLOW_WINDOW"
   },
   {
     "key": "crypto.vol.tactical.minimum.locked.profit",
@@ -4697,7 +4891,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_TACTICAL_MINIMUM_LOCKED_PROFIT"
   },
   {
     "key": "crypto.vol.tactical.profit.giveback",
@@ -4721,7 +4916,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_TACTICAL_PROFIT_GIVEBACK"
   },
   {
     "key": "crypto.vol.tactical.profit.protection.start",
@@ -4745,7 +4941,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_TACTICAL_PROFIT_PROTECTION_START"
   },
   {
     "key": "crypto.vol.target.volatility",
@@ -4769,7 +4966,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_TARGET_VOLATILITY"
   },
   {
     "key": "crypto.vol.zscore",
@@ -4793,7 +4991,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_VOL_ZSCORE"
   },
   {
     "key": "crypto.weak.momentum.exit.enabled",
@@ -4817,7 +5016,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_ENABLED"
   },
   {
     "key": "crypto.weak.momentum.exit.hours",
@@ -4841,7 +5041,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_HOURS"
   },
   {
     "key": "crypto.weak.momentum.exit.max.pnl",
@@ -4865,7 +5066,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_MAX_PNL"
   },
   {
     "key": "crypto.weak.momentum.exit.min.peak.pnl",
@@ -4889,7 +5091,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_MIN_PEAK_PNL"
   },
   {
     "key": "database.backend",
@@ -4913,7 +5116,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "DATABASE_BACKEND"
   },
   {
     "key": "database.url",
@@ -4937,7 +5141,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "DATABASE_URL"
   },
   {
     "key": "data.retention.days",
@@ -4961,7 +5166,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "DATA_RETENTION_DAYS"
   },
   {
     "key": "decision.log.retain.days",
@@ -4985,7 +5191,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "DECISION_LOG_RETAIN_DAYS"
   },
   {
     "key": "dw.reexec",
@@ -5009,7 +5216,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "DW_REEXEC"
   },
   {
     "key": "earnings.source.overall.timeout.seconds",
@@ -5033,7 +5241,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "EARNINGS_SOURCE_OVERALL_TIMEOUT_SECONDS"
   },
   {
     "key": "earnings.source.retries",
@@ -5057,7 +5266,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "EARNINGS_SOURCE_RETRIES"
   },
   {
     "key": "earnings.source.timeout.seconds",
@@ -5081,7 +5291,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "EARNINGS_SOURCE_TIMEOUT_SECONDS"
   },
   {
     "key": "earnings.source.workers",
@@ -5105,7 +5316,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "EARNINGS_SOURCE_WORKERS"
   },
   {
     "key": "enable.paper.orders",
@@ -5129,7 +5341,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ENABLE_PAPER_ORDERS"
   },
   {
     "key": "enforce.virtual.positions",
@@ -5153,7 +5366,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ENFORCE_VIRTUAL_POSITIONS"
   },
   {
     "key": "execution.mode",
@@ -5177,7 +5391,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "EXECUTION_MODE"
   },
   {
     "key": "exec.max.reprice.attempts",
@@ -5201,7 +5416,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "EXEC_MAX_REPRICE_ATTEMPTS"
   },
   {
     "key": "exec.max.slippage.pct",
@@ -5225,7 +5441,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "EXEC_MAX_SLIPPAGE_PCT"
   },
   {
     "key": "exec.max.spread.pct",
@@ -5249,7 +5466,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "EXEC_MAX_SPREAD_PCT"
   },
   {
     "key": "exec.reprice.interval.seconds",
@@ -5273,7 +5491,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "EXEC_REPRICE_INTERVAL_SECONDS"
   },
   {
     "key": "exec.reprice.step.pct",
@@ -5297,7 +5516,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "EXEC_REPRICE_STEP_PCT"
   },
   {
     "key": "exec.urgent.max.reprice.attempts",
@@ -5321,7 +5541,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "EXEC_URGENT_MAX_REPRICE_ATTEMPTS"
   },
   {
     "key": "exec.urgent.order.timeout.seconds",
@@ -5345,7 +5566,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "EXEC_URGENT_ORDER_TIMEOUT_SECONDS"
   },
   {
     "key": "exec.urgent.reprice.interval.seconds",
@@ -5369,7 +5591,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "EXEC_URGENT_REPRICE_INTERVAL_SECONDS"
   },
   {
     "key": "fee.option.minimum",
@@ -5393,7 +5616,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "FEE_OPTION_MINIMUM"
   },
   {
     "key": "fee.option.per.contract",
@@ -5417,7 +5641,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "FEE_OPTION_PER_CONTRACT"
   },
   {
     "key": "fee.sell.regulatory.rate",
@@ -5441,7 +5666,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "FEE_SELL_REGULATORY_RATE"
   },
   {
     "key": "fee.stock.minimum",
@@ -5465,7 +5691,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "FEE_STOCK_MINIMUM"
   },
   {
     "key": "fee.stock.per.share",
@@ -5489,7 +5716,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "FEE_STOCK_PER_SHARE"
   },
   {
     "key": "feishu.allow.test.network",
@@ -5513,7 +5741,8 @@
     ],
     "tags": [
       "通知与可观测性"
-    ]
+    ],
+    "runtime_key": "FEISHU_ALLOW_TEST_NETWORK"
   },
   {
     "key": "feishu.chat.id",
@@ -5537,7 +5766,8 @@
     ],
     "tags": [
       "通知与可观测性"
-    ]
+    ],
+    "runtime_key": "FEISHU_CHAT_ID"
   },
   {
     "key": "feishu.folder.token",
@@ -5561,7 +5791,8 @@
     ],
     "tags": [
       "通知与可观测性"
-    ]
+    ],
+    "runtime_key": "FEISHU_FOLDER_TOKEN"
   },
   {
     "key": "feishu.group.chat.id",
@@ -5585,7 +5816,8 @@
     ],
     "tags": [
       "通知与可观测性"
-    ]
+    ],
+    "runtime_key": "FEISHU_GROUP_CHAT_ID"
   },
   {
     "key": "feishu.webhook.secret",
@@ -5610,7 +5842,8 @@
     "tags": [
       "通知与可观测性"
     ],
-    "secret": true
+    "secret": true,
+    "runtime_key": "FEISHU_WEBHOOK_SECRET"
   },
   {
     "key": "feishu.webhook.url",
@@ -5634,7 +5867,8 @@
     ],
     "tags": [
       "通知与可观测性"
-    ]
+    ],
+    "runtime_key": "FEISHU_WEBHOOK_URL"
   },
   {
     "key": "futu.acc.id",
@@ -5658,7 +5892,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_ACC_ID"
   },
   {
     "key": "futu.connect.timeout.seconds",
@@ -5682,7 +5917,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_CONNECT_TIMEOUT_SECONDS"
   },
   {
     "key": "futu.host",
@@ -5706,7 +5942,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_HOST"
   },
   {
     "key": "futu.log.backups",
@@ -5730,7 +5967,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_LOG_BACKUPS"
   },
   {
     "key": "futu.log.dir",
@@ -5754,7 +5992,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_LOG_DIR"
   },
   {
     "key": "futu.log.max.bytes",
@@ -5778,7 +6017,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_LOG_MAX_BYTES"
   },
   {
     "key": "futu.log.role",
@@ -5802,7 +6042,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_LOG_ROLE"
   },
   {
     "key": "futu.market",
@@ -5826,7 +6067,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_MARKET"
   },
   {
     "key": "futu.opend.app.name",
@@ -5850,7 +6092,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_OPEND_APP_NAME"
   },
   {
     "key": "futu.opend.auto.restart",
@@ -5874,7 +6117,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_OPEND_AUTO_RESTART"
   },
   {
     "key": "futu.opend.max.backoff.seconds",
@@ -5898,7 +6142,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_OPEND_MAX_BACKOFF_SECONDS"
   },
   {
     "key": "futu.opend.restart.command",
@@ -5922,7 +6167,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_OPEND_RESTART_COMMAND"
   },
   {
     "key": "futu.opend.restart.min.interval.seconds",
@@ -5946,7 +6192,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_OPEND_RESTART_MIN_INTERVAL_SECONDS"
   },
   {
     "key": "futu.opend.restart.on.failures",
@@ -5970,7 +6217,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_OPEND_RESTART_ON_FAILURES"
   },
   {
     "key": "futu.opend.restart.timeout.seconds",
@@ -5994,7 +6242,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_OPEND_RESTART_TIMEOUT_SECONDS"
   },
   {
     "key": "futu.opend.restart.wait.seconds",
@@ -6018,7 +6267,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_OPEND_RESTART_WAIT_SECONDS"
   },
   {
     "key": "futu.port",
@@ -6042,7 +6292,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_PORT"
   },
   {
     "key": "futu.preflight.timeout.seconds",
@@ -6066,7 +6317,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_PREFLIGHT_TIMEOUT_SECONDS"
   },
   {
     "key": "futu.sdk.preflight.cache.seconds",
@@ -6090,7 +6342,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_SDK_PREFLIGHT_CACHE_SECONDS"
   },
   {
     "key": "futu.sdk.preflight.timeout.seconds",
@@ -6114,7 +6367,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_SDK_PREFLIGHT_TIMEOUT_SECONDS"
   },
   {
     "key": "futu.security.firm",
@@ -6138,7 +6392,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_SECURITY_FIRM"
   },
   {
     "key": "futu.trading.env",
@@ -6162,7 +6417,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "FUTU_TRADING_ENV"
   },
   {
     "key": "gamma.interval.seconds",
@@ -6186,7 +6442,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_INTERVAL_SECONDS"
   },
   {
     "key": "gamma.max.abs.delta",
@@ -6210,7 +6467,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_MAX_ABS_DELTA"
   },
   {
     "key": "gamma.max.abs.gamma",
@@ -6234,7 +6492,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_MAX_ABS_GAMMA"
   },
   {
     "key": "gamma.max.abs.vega",
@@ -6258,7 +6517,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_MAX_ABS_VEGA"
   },
   {
     "key": "gamma.max.iv.percentile",
@@ -6282,7 +6542,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_MAX_IV_PERCENTILE"
   },
   {
     "key": "gamma.max.iv.rv",
@@ -6306,7 +6567,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_MAX_IV_RV"
   },
   {
     "key": "gamma.symbols",
@@ -6330,7 +6592,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_SYMBOLS"
   },
   {
     "key": "gamma.volatility.max.absolute.iv",
@@ -6354,7 +6617,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_VOLATILITY_MAX_ABSOLUTE_IV"
   },
   {
     "key": "gamma.volatility.max.iv.percentile",
@@ -6378,7 +6642,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_VOLATILITY_MAX_IV_PERCENTILE"
   },
   {
     "key": "gamma.volatility.max.iv.rv",
@@ -6402,7 +6667,8 @@
     ],
     "tags": [
       "期权与"
-    ]
+    ],
+    "runtime_key": "GAMMA_VOLATILITY_MAX_IV_RV"
   },
   {
     "key": "max.log.bytes",
@@ -6426,7 +6692,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "MAX_LOG_BYTES"
   },
   {
     "key": "ml.auc.guard",
@@ -6450,7 +6717,8 @@
     ],
     "tags": [
       "行情与数据"
-    ]
+    ],
+    "runtime_key": "ML_AUC_GUARD"
   },
   {
     "key": "ml.enabled",
@@ -6474,7 +6742,8 @@
     ],
     "tags": [
       "行情与数据"
-    ]
+    ],
+    "runtime_key": "ML_ENABLED"
   },
   {
     "key": "ml.health.interval.seconds",
@@ -6498,7 +6767,8 @@
     ],
     "tags": [
       "行情与数据"
-    ]
+    ],
+    "runtime_key": "ML_HEALTH_INTERVAL_SECONDS"
   },
   {
     "key": "ml.min.improvement.margin",
@@ -6522,7 +6792,8 @@
     ],
     "tags": [
       "行情与数据"
-    ]
+    ],
+    "runtime_key": "ML_MIN_IMPROVEMENT_MARGIN"
   },
   {
     "key": "ml.model.path",
@@ -6546,7 +6817,8 @@
     ],
     "tags": [
       "行情与数据"
-    ]
+    ],
+    "runtime_key": "ML_MODEL_PATH"
   },
   {
     "key": "ml.threshold",
@@ -6570,7 +6842,8 @@
     ],
     "tags": [
       "行情与数据"
-    ]
+    ],
+    "runtime_key": "ML_THRESHOLD"
   },
   {
     "key": "ml.weight",
@@ -6594,7 +6867,8 @@
     ],
     "tags": [
       "行情与数据"
-    ]
+    ],
+    "runtime_key": "ML_WEIGHT"
   },
   {
     "key": "okx.api.key",
@@ -6619,7 +6893,8 @@
     "tags": [
       "运维与高级"
     ],
-    "secret": true
+    "secret": true,
+    "runtime_key": "OKX_API_KEY"
   },
   {
     "key": "okx.base.url",
@@ -6643,7 +6918,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "OKX_BASE_URL"
   },
   {
     "key": "okx.enable.demo.orders",
@@ -6667,7 +6943,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "OKX_ENABLE_DEMO_ORDERS"
   },
   {
     "key": "okx.max.order.notional",
@@ -6691,7 +6968,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "OKX_MAX_ORDER_NOTIONAL"
   },
   {
     "key": "okx.passphrase",
@@ -6715,7 +6993,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "OKX_PASSPHRASE"
   },
   {
     "key": "okx.retry.attempts",
@@ -6739,7 +7018,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "OKX_RETRY_ATTEMPTS"
   },
   {
     "key": "okx.retry.backoff.seconds",
@@ -6763,7 +7043,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "OKX_RETRY_BACKOFF_SECONDS"
   },
   {
     "key": "okx.secret.key",
@@ -6788,7 +7069,8 @@
     "tags": [
       "运维与高级"
     ],
-    "secret": true
+    "secret": true,
+    "runtime_key": "OKX_SECRET_KEY"
   },
   {
     "key": "okx.timeout.seconds",
@@ -6812,7 +7094,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "OKX_TIMEOUT_SECONDS"
   },
   {
     "key": "okx.trading.mode",
@@ -6836,7 +7119,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "OKX_TRADING_MODE"
   },
   {
     "key": "option.contracts",
@@ -6860,7 +7144,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "OPTION_CONTRACTS"
   },
   {
     "key": "option.exit.max.spread.pct",
@@ -6884,7 +7169,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "OPTION_EXIT_MAX_SPREAD_PCT"
   },
   {
     "key": "option.exit.price.deviation.anchor.pct",
@@ -6908,7 +7194,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT"
   },
   {
     "key": "option.risk.free.rate",
@@ -6932,7 +7219,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "OPTION_RISK_FREE_RATE"
   },
   {
     "key": "order.quantities",
@@ -6956,7 +7244,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ORDER_QUANTITIES"
   },
   {
     "key": "order.quantity",
@@ -6980,7 +7269,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ORDER_QUANTITY"
   },
   {
     "key": "order.timeout.seconds",
@@ -7004,7 +7294,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ORDER_TIMEOUT_SECONDS"
   },
   {
     "key": "order.unknown.after.seconds",
@@ -7028,7 +7319,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "ORDER_UNKNOWN_AFTER_SECONDS"
   },
   {
     "key": "paper.acceptance.max.reject.rate",
@@ -7052,7 +7344,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "PAPER_ACCEPTANCE_MAX_REJECT_RATE"
   },
   {
     "key": "paper.acceptance.max.slippage",
@@ -7076,7 +7369,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "PAPER_ACCEPTANCE_MAX_SLIPPAGE"
   },
   {
     "key": "paper.acceptance.min.days",
@@ -7100,7 +7394,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "PAPER_ACCEPTANCE_MIN_DAYS"
   },
   {
     "key": "paper.acceptance.min.fill.rate",
@@ -7124,7 +7419,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "PAPER_ACCEPTANCE_MIN_FILL_RATE"
   },
   {
     "key": "paper.acceptance.min.orders",
@@ -7148,7 +7444,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "PAPER_ACCEPTANCE_MIN_ORDERS"
   },
   {
     "key": "protective.radar.restart.min.interval.seconds",
@@ -7172,7 +7469,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "PROTECTIVE_RADAR_RESTART_MIN_INTERVAL_SECONDS"
   },
   {
     "key": "protective.restart.on.failures",
@@ -7196,7 +7494,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "PROTECTIVE_RESTART_ON_FAILURES"
   },
   {
     "key": "protective.service.restart.min.interval.seconds",
@@ -7220,7 +7519,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "PROTECTIVE_SERVICE_RESTART_MIN_INTERVAL_SECONDS"
   },
   {
     "key": "radar.api.timeout.seconds",
@@ -7244,7 +7544,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "RADAR_API_TIMEOUT_SECONDS"
   },
   {
     "key": "radar.max.symbols.per.scan",
@@ -7268,7 +7569,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "RADAR_MAX_SYMBOLS_PER_SCAN"
   },
   {
     "key": "radar.stop.timeout.seconds",
@@ -7292,7 +7594,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "RADAR_STOP_TIMEOUT_SECONDS"
   },
   {
     "key": "real.account.id",
@@ -7316,7 +7619,8 @@
     ],
     "tags": [
       "交易安全与实盘门禁"
-    ]
+    ],
+    "runtime_key": "REAL_ACCOUNT_ID"
   },
   {
     "key": "real.allowed.strategies",
@@ -7340,7 +7644,8 @@
     ],
     "tags": [
       "交易安全与实盘门禁"
-    ]
+    ],
+    "runtime_key": "REAL_ALLOWED_STRATEGIES"
   },
   {
     "key": "real.max.daily.notional",
@@ -7364,7 +7669,8 @@
     ],
     "tags": [
       "交易安全与实盘门禁"
-    ]
+    ],
+    "runtime_key": "REAL_MAX_DAILY_NOTIONAL"
   },
   {
     "key": "real.max.order.notional",
@@ -7388,7 +7694,8 @@
     ],
     "tags": [
       "交易安全与实盘门禁"
-    ]
+    ],
+    "runtime_key": "REAL_MAX_ORDER_NOTIONAL"
   },
   {
     "key": "real.require.manual.confirm",
@@ -7412,7 +7719,8 @@
     ],
     "tags": [
       "交易安全与实盘门禁"
-    ]
+    ],
+    "runtime_key": "REAL_REQUIRE_MANUAL_CONFIRM"
   },
   {
     "key": "real.shutdown.enabled",
@@ -7436,7 +7744,8 @@
     ],
     "tags": [
       "交易安全与实盘门禁"
-    ]
+    ],
+    "runtime_key": "REAL_SHUTDOWN_ENABLED"
   },
   {
     "key": "real.trading.enabled",
@@ -7460,7 +7769,8 @@
     ],
     "tags": [
       "交易安全与实盘门禁"
-    ]
+    ],
+    "runtime_key": "REAL_TRADING_ENABLED"
   },
   {
     "key": "reconciliation.retain.days",
@@ -7484,7 +7794,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "RECONCILIATION_RETAIN_DAYS"
   },
   {
     "key": "recovery.point.retention.count",
@@ -7508,7 +7819,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "RECOVERY_POINT_RETENTION_COUNT"
   },
   {
     "key": "recovery.point.retention.days",
@@ -7532,7 +7844,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "RECOVERY_POINT_RETENTION_DAYS"
   },
   {
     "key": "require.strategy.approval",
@@ -7556,7 +7869,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "REQUIRE_STRATEGY_APPROVAL"
   },
   {
     "key": "risk.correlation.clusters",
@@ -7580,7 +7894,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_CORRELATION_CLUSTERS"
   },
   {
     "key": "risk.correlation.threshold",
@@ -7604,7 +7919,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_CORRELATION_THRESHOLD"
   },
   {
     "key": "risk.max.abs.gamma",
@@ -7628,7 +7944,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_ABS_GAMMA"
   },
   {
     "key": "risk.max.abs.theta",
@@ -7652,7 +7969,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_ABS_THETA"
   },
   {
     "key": "risk.max.abs.vega",
@@ -7676,7 +7994,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_ABS_VEGA"
   },
   {
     "key": "risk.max.correlated.delta.pct",
@@ -7700,7 +8019,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_CORRELATED_DELTA_PCT"
   },
   {
     "key": "risk.max.daily.loss",
@@ -7724,7 +8044,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_DAILY_LOSS"
   },
   {
     "key": "risk.max.daily.notional",
@@ -7748,7 +8069,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_DAILY_NOTIONAL"
   },
   {
     "key": "risk.max.daily.reduction.notional",
@@ -7772,7 +8094,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_DAILY_REDUCTION_NOTIONAL"
   },
   {
     "key": "risk.max.drawdown.pct",
@@ -7796,7 +8119,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_DRAWDOWN_PCT"
   },
   {
     "key": "risk.max.family.delta.pct",
@@ -7820,7 +8144,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_FAMILY_DELTA_PCT"
   },
   {
     "key": "risk.max.gross.exposure",
@@ -7844,7 +8169,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_GROSS_EXPOSURE"
   },
   {
     "key": "risk.max.net.delta.pct",
@@ -7868,7 +8194,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_NET_DELTA_PCT"
   },
   {
     "key": "risk.max.option.premium",
@@ -7892,7 +8219,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_OPTION_PREMIUM"
   },
   {
     "key": "risk.max.order.notional",
@@ -7916,7 +8244,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_ORDER_NOTIONAL"
   },
   {
     "key": "risk.max.pending.orders",
@@ -7940,7 +8269,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_PENDING_ORDERS"
   },
   {
     "key": "risk.max.reduction.order.notional",
@@ -7964,7 +8294,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_REDUCTION_ORDER_NOTIONAL"
   },
   {
     "key": "risk.max.symbol.weight",
@@ -7988,7 +8319,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "RISK_MAX_SYMBOL_WEIGHT"
   },
   {
     "key": "sec.user.agent",
@@ -8012,7 +8344,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "SEC_USER_AGENT"
   },
   {
     "key": "service.stop.timeout.seconds",
@@ -8036,7 +8369,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "SERVICE_STOP_TIMEOUT_SECONDS"
   },
   {
     "key": "service.strategies",
@@ -8060,7 +8394,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "SERVICE_STRATEGIES"
   },
   {
     "key": "shadow.extended.hours.liquidity",
@@ -8084,7 +8419,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "SHADOW_EXTENDED_HOURS_LIQUIDITY"
   },
   {
     "key": "shadow.max.reprice.attempts",
@@ -8108,7 +8444,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "SHADOW_MAX_REPRICE_ATTEMPTS"
   },
   {
     "key": "shadow.max.slippage.pct",
@@ -8132,7 +8469,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "SHADOW_MAX_SLIPPAGE_PCT"
   },
   {
     "key": "shadow.order.timeout.seconds",
@@ -8156,7 +8494,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "SHADOW_ORDER_TIMEOUT_SECONDS"
   },
   {
     "key": "shadow.participation.rate",
@@ -8180,7 +8519,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "SHADOW_PARTICIPATION_RATE"
   },
   {
     "key": "shadow.reprice.step.pct",
@@ -8204,7 +8544,8 @@
     ],
     "tags": [
       "执行与订单"
-    ]
+    ],
+    "runtime_key": "SHADOW_REPRICE_STEP_PCT"
   },
   {
     "key": "stock.stress.loss.ratio",
@@ -8228,7 +8569,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "STOCK_STRESS_LOSS_RATIO"
   },
   {
     "key": "strategy.budgets",
@@ -8252,7 +8594,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "STRATEGY_BUDGETS"
   },
   {
     "key": "strategy.interval.seconds",
@@ -8277,7 +8620,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "STRATEGY_INTERVAL_SECONDS"
   },
   {
     "key": "tradeyi.allow.dirty.tree",
@@ -8301,7 +8645,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "TRADEYI_ALLOW_DIRTY_TREE"
   },
   {
     "key": "tradeyi.dev.root",
@@ -8325,7 +8670,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "TRADEYI_DEV_ROOT"
   },
   {
     "key": "tradeyi.env",
@@ -8349,7 +8695,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "TRADEYI_ENV"
   },
   {
     "key": "tradeyi.prod.root",
@@ -8373,7 +8720,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "TRADEYI_PROD_ROOT"
   },
   {
     "key": "tradeyi.test.root",
@@ -8397,7 +8745,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "TRADEYI_TEST_ROOT"
   },
   {
     "key": "transient.incident.auto.recover.hours",
@@ -8421,7 +8770,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "TRANSIENT_INCIDENT_AUTO_RECOVER_HOURS"
   },
   {
     "key": "volatility.candidate.retry.seconds",
@@ -8445,7 +8795,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_CANDIDATE_RETRY_SECONDS"
   },
   {
     "key": "volatility.expected.return.min.dynamic",
@@ -8469,7 +8820,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_DYNAMIC"
   },
   {
     "key": "volatility.expected.return.min.normal",
@@ -8493,7 +8845,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_NORMAL"
   },
   {
     "key": "volatility.expected.return.min.strong",
@@ -8517,7 +8870,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_STRONG"
   },
   {
     "key": "volatility.expression.review.seconds",
@@ -8541,7 +8895,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_EXPRESSION_REVIEW_SECONDS"
   },
   {
     "key": "volatility.interval.seconds",
@@ -8565,7 +8920,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_INTERVAL_SECONDS"
   },
   {
     "key": "volatility.orphan.position.policy",
@@ -8589,7 +8945,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_ORPHAN_POSITION_POLICY"
   },
   {
     "key": "watchlist",
@@ -8613,7 +8970,8 @@
     ],
     "tags": [
       "策略总览"
-    ]
+    ],
+    "runtime_key": "WATCHLIST"
   },
   {
     "key": "control.kill_switch",
@@ -8637,7 +8995,8 @@
     ],
     "tags": [
       "急停与运行控制"
-    ]
+    ],
+    "runtime_key": "kill_switch"
   },
   {
     "key": "control.strategies_paused",
@@ -8661,11 +9020,14 @@
     ],
     "tags": [
       "急停与运行控制"
-    ]
+    ],
+    "runtime_key": "strategies_paused"
   },
   {
     "key": "runtime.execution_mode",
-    "aliases": [],
+    "aliases": [
+      "execution_mode"
+    ],
     "category": "① 运行环境与连接",
     "title": "全局执行模式",
     "description": "全局执行模式",
@@ -8683,11 +9045,14 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "execution_mode"
   },
   {
     "key": "security.admin_password_hash",
-    "aliases": [],
+    "aliases": [
+      "admin_password_hash"
+    ],
     "category": "① 运行环境与连接",
     "title": "管理员哈希",
     "description": "管理员哈希",
@@ -8705,7 +9070,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "admin_password_hash"
   },
   {
     "key": "strategy.core_satellite.cash_yield_enabled",
@@ -8729,7 +9095,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "core_satellite_cash_yield_enabled"
   },
   {
     "key": "strategy.core_satellite.cash_yield_symbol",
@@ -8753,7 +9120,8 @@
     ],
     "tags": [
       "Core"
-    ]
+    ],
+    "runtime_key": "core_satellite_cash_yield_symbol"
   },
   {
     "key": "runtime.module.enable_crypto",
@@ -8777,7 +9145,8 @@
     ],
     "tags": [
       "运维与高级"
-    ]
+    ],
+    "runtime_key": "ENABLE_CRYPTO_MODULE"
   },
   {
     "key": "strategy.volatility.campaigns",
@@ -8804,7 +9173,8 @@
     "tags": [
       "波动率策略",
       "期权"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_CAMPAIGNS"
   },
   {
     "key": "strategy.gamma.campaigns",
@@ -8829,7 +9199,8 @@
     ],
     "tags": [
       "期权"
-    ]
+    ],
+    "runtime_key": "GAMMA_CAMPAIGNS"
   },
   {
     "key": "strategy.volatility.symbols",
@@ -8854,7 +9225,8 @@
     ],
     "tags": [
       "波动率策略"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_SYMBOLS"
   },
   {
     "key": "strategy.volatility.radar_budgets",
@@ -8878,7 +9250,8 @@
     ],
     "tags": [
       "波动率策略"
-    ]
+    ],
+    "runtime_key": "VOLATILITY_RADAR_BUDGETS"
   },
   {
     "key": "strategy.core_satellite.daily_validation",
@@ -8902,7 +9275,8 @@
     ],
     "tags": [
       "Core Satellite"
-    ]
+    ],
+    "runtime_key": "CORE_SATELLITE_DAILY_VALIDATION"
   },
   {
     "key": "notification.alert_mute_list",
@@ -8926,7 +9300,8 @@
     ],
     "tags": [
       "通知与可观测性"
-    ]
+    ],
+    "runtime_key": "alert_mute_list"
   },
   {
     "key": "notification.daily_review_im_pending",
@@ -8950,7 +9325,8 @@
     ],
     "tags": [
       "通知与可观测性"
-    ]
+    ],
+    "runtime_key": "DAILY_STRATEGY_REVIEW_IM_PENDING"
   },
   {
     "key": "runtime.env_settings",
@@ -8974,7 +9350,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "ENV_SETTINGS"
   },
   {
     "key": "safety.real.account_config",
@@ -8998,7 +9375,8 @@
     ],
     "tags": [
       "交易安全与实盘门禁"
-    ]
+    ],
+    "runtime_key": "real_account_config:{account}"
   },
   {
     "key": "risk.limits.tenant",
@@ -9022,7 +9400,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "risk_limits:{tenant}"
   },
   {
     "key": "control.volatility.new_entries_paused",
@@ -9049,7 +9428,8 @@
     "tags": [
       "急停与运行控制",
       "波动率策略"
-    ]
+    ],
+    "runtime_key": "volatility_new_entries_paused"
   },
   {
     "key": "control.strategy.enabled",
@@ -9074,7 +9454,8 @@
     ],
     "tags": [
       "急停与运行控制"
-    ]
+    ],
+    "runtime_key": "strategy_enabled:{tenant}:{strategy}"
   },
   {
     "key": "runtime.strategy.execution_mode",
@@ -9099,7 +9480,8 @@
     ],
     "tags": [
       "运行环境与连接"
-    ]
+    ],
+    "runtime_key": "strategy_execution_mode:{tenant}:{strategy}"
   },
   {
     "key": "control.tenant.active",
@@ -9123,7 +9505,8 @@
     ],
     "tags": [
       "急停与运行控制"
-    ]
+    ],
+    "runtime_key": "tenant_active:{tenant}"
   },
   {
     "key": "risk.circuit_breaker.mode",
@@ -9147,7 +9530,8 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "risk_breaker_mode:{tenant}"
   },
   {
     "key": "risk.circuit_breaker.thresholds",
@@ -9173,6 +9557,7 @@
     ],
     "tags": [
       "风控边界"
-    ]
+    ],
+    "runtime_key": "risk_drawdown_warn_pct:{tenant}"
   }
 ]

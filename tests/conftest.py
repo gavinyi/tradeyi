@@ -18,22 +18,24 @@ import sys
 import tempfile
 from pathlib import Path
 
-# 统一重定向 tempfile 根目录至工作区内部，杜绝在系统 Temp 目录下创建 sqlite 数据库导致的 WinError 5 沙箱拦截
+# 统一重定向 tempfile 根目录至工作区内部 E 盘 (data/qa/_pytest_tmp_<pid>_<uuid8>)，
+# 彻底杜绝回落至 C 盘导致的磁盘跑满 (2026-10-27 事故)，且保证多进程并发执行绝对唯一无冲突。
 _qa_dir = pathlib.Path("data/qa").resolve()
 try:
     _qa_dir.mkdir(parents=True, exist_ok=True)
 except Exception:
     pass
 
-_external_temp = os.environ.get("TEMP") or os.environ.get("TMP")
-if not _external_temp or not Path(_external_temp).exists():
-    if _qa_dir.exists():
-        tempfile.tempdir = str(_qa_dir)
-        os.environ["TMP"] = str(_qa_dir)
-        os.environ["TEMP"] = str(_qa_dir)
-        os.environ["TMPDIR"] = str(_qa_dir)
-else:
-    tempfile.tempdir = _external_temp
+import uuid as _conftest_uuid
+_session_tmp_dir = _qa_dir / f"_pytest_tmp_{os.getpid()}_{_conftest_uuid.uuid4().hex[:8]}"
+try:
+    _session_tmp_dir.mkdir(parents=True, exist_ok=True)
+    tempfile.tempdir = str(_session_tmp_dir)
+    os.environ["TMP"] = str(_session_tmp_dir)
+    os.environ["TEMP"] = str(_session_tmp_dir)
+    os.environ["TMPDIR"] = str(_session_tmp_dir)
+except Exception:
+    pass
 
 # 测试环境：允许临时库 bootstrap（生产路径必须显式 bootstrap=True）
 os.environ.setdefault("TRADEYI_ALLOW_BOOTSTRAP", "1")

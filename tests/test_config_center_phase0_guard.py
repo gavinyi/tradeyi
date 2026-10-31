@@ -10,7 +10,10 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
+import tempfile
+import pytest
 
 from futu_quant.config import Settings
 from futu_quant.config_center import GLOBAL_REGISTRY
@@ -405,6 +408,7 @@ def test_get_draftable_config_keys_filters_critical_and_non_runtime():
             activation="next_cycle",
             consumers=(),
             tags=(),
+            runtime_key=aliases[0] if aliases else key,
         )
 
     mock_specs = [
@@ -488,3 +492,191 @@ def test_registry_specs_types_and_defaults_are_consistent():
                 mismatches.append((spec.key, spec.value_type, type(spec.default)))
 
     assert not mismatches, f"发现类型声明与默认值不匹配的配置项: {mismatches}"
+
+
+def test_runtime_key_is_mandatory_unique_and_member_of_aliases():
+    """Phase 2 前置守卫：
+    1. 断言 Registry 每一个 spec 的 runtime_key 均非空；
+    2. 断言每一个 runtime_key 必须属于自身的 aliases；
+    3. 断言全局所有 runtime_key 无任何重复（全局唯一）；
+    4. 负向测试：构造 runtime_key 不属于 aliases 或存在冲突的配置项，断言注册表构建必抛 ValueError。
+    """
+    from futu_quant.config_center import ConfigSpec, ConfigRegistry
+
+    specs = GLOBAL_REGISTRY.all_specs()
+    assert len(specs) >= 381, f"注册表配置项数量异常: {len(specs)}"
+
+    runtime_keys = []
+    for s in specs:
+        assert s.runtime_key, f"配置项 {s.key} 缺失必填的 runtime_key！"
+        assert s.runtime_key in s.aliases, f"配置项 {s.key} 的 runtime_key '{s.runtime_key}' 必须属于 aliases: {s.aliases}"
+        runtime_keys.append(s.runtime_key)
+
+    assert len(runtime_keys) == len(set(runtime_keys)), "发现重复的 runtime_key！必须全局唯一！"
+
+    # 负向 1：runtime_key 不属于 aliases
+    bad_spec = ConfigSpec(
+        key="test.bad",
+        aliases=("REAL_ALIAS",),
+        category="cat",
+        title="title",
+        description="",
+        value_type="string",
+        default="",
+        scope="global",
+        storage="runtime_config",
+        risk_level="LOW",
+        editable=True,
+        requires_admin=False,
+        requires_confirmation=False,
+        activation="immediate",
+        consumers=(),
+        tags=(),
+        runtime_key="FAKE_KEY",  # 违规：不在 aliases 中
+    )
+    with pytest.raises(ValueError, match="必须属于其已声明的 aliases"):
+        ConfigRegistry([bad_spec])
+
+    # 负向 2：重复的 runtime_key
+    dup_spec1 = ConfigSpec(
+        key="test.dup1",
+        aliases=("DUP_KEY",),
+        category="cat",
+        title="title",
+        description="",
+        value_type="string",
+        default="",
+        scope="global",
+        storage="runtime_config",
+        risk_level="LOW",
+        editable=True,
+        requires_admin=False,
+        requires_confirmation=False,
+        activation="immediate",
+        consumers=(),
+        tags=(),
+        runtime_key="DUP_KEY",
+    )
+    dup_spec2 = ConfigSpec(
+        key="test.dup2",
+        aliases=("DUP_KEY",),
+        category="cat",
+        title="title",
+        description="",
+        value_type="string",
+        default="",
+        scope="global",
+        storage="runtime_config",
+        risk_level="LOW",
+        editable=True,
+        requires_admin=False,
+        requires_confirmation=False,
+        activation="immediate",
+        consumers=(),
+        tags=(),
+        runtime_key="DUP_KEY",
+    )
+    with pytest.raises(ValueError, match="全局必须唯一"):
+        ConfigRegistry([dup_spec1, dup_spec2])
+
+
+def test_template_key_tenant_suffix_validation_fails_closed(tmp_path):
+    """Phase 2 前置守卫：
+    1. 正向验证：真实已登记租户的模板实例键（如 VOLATILITY_CAMPAIGNS:futu_real_master）必须被 Registry 承认；
+    2. 负向验证：非法/未登记租户（如 VOLATILITY_CAMPAIGNS:invalid_tenant_xyz）必须 fail-closed 拒识（contains 返回 False）；
+    3. 端到端负向验证：向 store.create_config_release 传入非法租户后缀实例键，必须抛出 ValueError 阻断草稿创建。
+    """
+    # 1. 正向放行已知租户
+    assert GLOBAL_REGISTRY.contains("VOLATILITY_CAMPAIGNS:futu_real_master")
+    assert GLOBAL_REGISTRY.contains("VOLATILITY_CAMPAIGNS:futu_paper_sandbox")
+    assert GLOBAL_REGISTRY.contains("risk_limits:futu_real_master")
+
+    # 2. 负向阻断非法租户
+    assert not GLOBAL_REGISTRY.contains("VOLATILITY_CAMPAIGNS:invalid_tenant_xyz")
+    assert not GLOBAL_REGISTRY.contains("VOLATILITY_CAMPAIGNS:evil_hacker_test")
+    assert not GLOBAL_REGISTRY.contains("risk_limits:non_existent_tenant")
+
+    # 3. 端到端草稿创建强门禁阻断
+    from futu_quant.store import TradingStore
+    store = TradingStore(tmp_path / "test_tenant_guard.db")
+    with pytest.raises(ValueError, match="未在统一配置中心登记"):
+        store.create_config_release("VOLATILITY_CAMPAIGNS:invalid_tenant_xyz", {}, "streamlit_admin", "bad test")
+
+
+def test_conftest_tempdir_is_on_drive_e_with_pid_and_uuid():
+    """Phase 2 前置守卫：
+    1. 断言 tempfile.gettempdir() 路径在 E 盘，杜绝 C 盘跑满；
+    2. 断言路径包含当前进程 PID 与唯一标识，杜绝并发冲突；
+    3. 断言 pyproject.toml 中不再包含任何固定 --basetemp 参数。
+    """
+    temp_dir = Path(tempfile.gettempdir()).resolve()
+    assert temp_dir.drive.upper() == "E:", f"临时目录必须位于 E 盘，实际为: {temp_dir}"
+    assert f"{os.getpid()}_" in temp_dir.name or "_pytest_tmp" in str(temp_dir), f"临时目录必须具备隔离标识: {temp_dir}"
+
+    repo_root = Path(__file__).resolve().parents[1]
+    pyproject = repo_root / "pyproject.toml"
+    assert pyproject.exists()
+    content = pyproject.read_text(encoding="utf-8")
+    assert "--basetemp" not in content, "pyproject.toml 严禁回流固定 --basetemp 参数！"
+
+
+def test_page43_unified_config_center_is_strictly_read_only():
+    """Phase 2 只读页面守卫：
+    1. 严格 AST 扫描 pages/43_unified_config_center.py，断言绝对不存在任何写操作调用
+       (set_runtime_config, mutate_runtime_config, create_config_release, publish_config_release,
+        set_setting, delete_setting, save_setting, rollback_config)；
+    2. 断言页面导入并调用 GLOBAL_REGISTRY 获取配置规范，元数据直接来自注册表而非本地硬编码；
+    3. 负向测试：构造包含写操作调用的 AST 代码，断言扫描器必然检测出违规并报错。
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    page_43 = repo_root / "pages" / "43_unified_config_center.py"
+    assert page_43.exists(), f"未找到 Phase 2 统一配置中心页面: {page_43}"
+
+    forbidden_call_names = {
+        "set_runtime_config",
+        "mutate_runtime_config",
+        "create_config_release",
+        "publish_config_release",
+        "set_setting",
+        "delete_setting",
+        "save_setting",
+        "rollback_config",
+    }
+
+    def _check_ast_for_writes(code_str: str, filename: str = "test.py") -> list[str]:
+        tree = ast.parse(code_str, filename=filename)
+        violations = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = None
+                if isinstance(node.func, ast.Name):
+                    name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    name = node.func.attr
+                if name in forbidden_call_names:
+                    violations.append(f"{name} at line {getattr(node, 'lineno', 0)}")
+        return violations
+
+    page_content = page_43.read_text(encoding="utf-8-sig")
+    page_violations = _check_ast_for_writes(page_content, str(page_43))
+    assert not page_violations, f"pages/43 违反只读原则，发现了配置写操作调用: {page_violations}"
+
+    # 验证元数据来源：必须从 GLOBAL_REGISTRY 读取
+    tree = ast.parse(page_content, filename=str(page_43))
+    imports_registry = False
+    calls_all_specs = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(a.name == "GLOBAL_REGISTRY" for a in node.names):
+            imports_registry = True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "all_specs":
+            calls_all_specs = True
+
+    assert imports_registry, "pages/43 必须从 futu_quant.config_center 导入 GLOBAL_REGISTRY！"
+    assert calls_all_specs, "pages/43 必须调用 GLOBAL_REGISTRY.all_specs() 展示权威元数据！"
+
+    # 负向可失败验证：如果页面包含写调用，必须能被捕获
+    bad_code = "from futu_quant.store import store\nstore.set_runtime_config('k', 'v')\n"
+    bad_violations = _check_ast_for_writes(bad_code, "bad_page.py")
+    assert len(bad_violations) > 0, "AST 写入扫描器未能捕获 set_runtime_config 违规！"
+
+

@@ -100,6 +100,7 @@ navigation = {
         st.Page("pages/8_runtime_log.py", title="运行日志", icon=":material/article:"),
         st.Page("pages/19_stability_operations_center.py", title="稳定性运营中心", icon=":material/monitor_heart:"),
         st.Page("pages/18_infrastructure_disaster_recovery.py", title="基础设施与灾备", icon=":material/dns:"),
+        st.Page("pages/43_unified_config_center.py", title="统一配置中心", icon=":material/tune:"),
     ],
 }
 if os.getenv("ENABLE_CRYPTO_MODULE", "false").lower() == "true":
