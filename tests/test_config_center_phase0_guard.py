@@ -349,17 +349,35 @@ def test_get_draftable_config_keys_filters_critical_and_non_runtime():
 
     for k in keys:
         assert GLOBAL_REGISTRY.contains(k), f"草稿配置键 {k} 必须在注册表中登记！"
-        canonical = GLOBAL_REGISTRY.resolve_canonical_key(k)
-        spec = GLOBAL_REGISTRY._specs_by_key[canonical]
+        spec = GLOBAL_REGISTRY.get(k)
+        assert spec is not None, f"未找到键 {k} 对应的配置规范！"
         assert spec.storage == "runtime_config", f"键 {k} 存储必须为 runtime_config，实际为 {spec.storage}"
         assert spec.editable, f"键 {k} 必须标记为 editable"
         assert spec.risk_level != "CRITICAL", f"键 {k} 严禁为 CRITICAL 风险级别"
         assert not spec.requires_confirmation, f"键 {k} 严禁包含二次确认敏感标记"
 
-    # 严格门禁：候选列表中绝不得出现点号规范键 (spec.key)，必须全为实际落库别名 (alias)
+    # 1. 默认置顶推荐配置必须在列表中
+    assert "CORE_SATELLITE_DAILY_VALIDATION" in keys, "常用推荐配置 CORE_SATELLITE_DAILY_VALIDATION 必须在草稿列表中！"
+
+    # 2. 严格门禁：候选列表中绝不得出现点号规范键 (spec.key)，必须全为实际落库别名 (alias)
     all_canonical_keys = {s.key for s in GLOBAL_REGISTRY.all_specs()}
     leaked_canonical_keys = set(keys) & all_canonical_keys
     assert not leaked_canonical_keys, f"草稿候选列表严禁泄露规范点号键 (spec.key)，违规项: {leaked_canonical_keys}"
+
+    # 3. 完备性防静默黑洞：所有符合条件的 spec 必须至少登记一个非模板具体落库 alias
+    eligible_specs = [
+        s for s in GLOBAL_REGISTRY.all_specs()
+        if s.storage == "runtime_config"
+        and s.editable
+        and s.risk_level != "CRITICAL"
+        and not s.requires_confirmation
+    ]
+    for s in eligible_specs:
+        concrete_aliases = [a for a in s.aliases if not ("{" in a and "}" in a)]
+        assert len(concrete_aliases) > 0, (
+            f"配置规范 {s.key} 属于允许编辑的非 CRITICAL 配置，但未登记任何具体非模板 alias！"
+            "此缺陷会导致配置项从草稿候选列表中静默丢失，必须补登真实落库别名！"
+        )
 
     # 负向可失败验证：用包含 CRITICAL 的桩注册表测试
     def _make_spec(
