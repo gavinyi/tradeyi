@@ -342,6 +342,9 @@ def _isolate_environment(monkeypatch, tmp_path):
 
     _real_init = _TradingStore.__init__
 
+    import uuid
+    case_db_name = f"isolated_{os.getpid()}_{uuid.uuid4().hex[:8]}.db"
+
     def _isolated_init(
         self, path=None, tenant_registry=None, read_only=False, bootstrap=False,
         allow_migrations=False, migration_actor="",
@@ -357,10 +360,8 @@ def _isolate_environment(monkeypatch, tmp_path):
                        bootstrap=effective_bootstrap,
                        allow_migrations=allow_migrations, migration_actor=migration_actor)
         else:
-            # Reviewer 要求：每次生成唯一 DB 文件名（pid + uuid8），彻底根除跨测试或中断导致的半截库复用
-            import uuid
-            unique_name = f"isolated_{os.getpid()}_{uuid.uuid4().hex[:8]}.db"
-            _real_init(self, tmp_path / unique_name, tenant_registry,
+            # 用例级唯一库名：同用例内多次实例化共享同一库，跨用例/跨运行天然隔离消灭半截库复用
+            _real_init(self, tmp_path / case_db_name, tenant_registry,
                        read_only=read_only, bootstrap=effective_bootstrap,
                        allow_migrations=allow_migrations, migration_actor=migration_actor)
 

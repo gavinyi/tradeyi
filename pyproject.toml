@@ -37,9 +37,6 @@ ml = [
 pythonpath = ["src"]
 testpaths = ["tests"]
 norecursedirs = [".*", "build", "dist", "data", "scripts", ".venv", ".uv-cache"]
-# 临时目录固定到 E 盘：C 盘余量紧张，默认 tmp 满了会让测试伪装成大批假红
-# （2026-10-27 事故：C 盘仅剩 29GB，跑出 22 条假失败，误导排查）。
-addopts = ["--basetemp=data/qa/_pytest_tmp"]
 
 [tool.ruff]
 line-length = 100
