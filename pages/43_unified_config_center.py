@@ -8,12 +8,18 @@
 
 from __future__ import annotations
 
+import json
 import pandas as pd
 import streamlit as st
 
 from futu_quant.config import Settings
-from futu_quant.config_center import GLOBAL_REGISTRY
-from futu_quant.ui import render_sidebar
+from futu_quant.config_center import (
+    BATCH_3_ALLOWED_EDIT_KEYS,
+    GLOBAL_REGISTRY,
+    edit_low_risk_config,
+    rollback_low_risk_config,
+)
+from futu_quant.ui import open_trading_store as TradingStore, render_admin_login, render_sidebar
 
 st.set_page_config(page_title="统一配置中心", page_icon="🧭", layout="wide")
 settings = Settings.load()
@@ -132,3 +138,61 @@ if spec_keys:
             "secret": inspect_spec.secret,
             "deprecated": inspect_spec.deprecated,
         })
+
+st.divider()
+st.subheader("🛡️ 低风险配置受控编辑与一键回滚 (Batch 3 准入专区)")
+store = TradingStore()
+admin = render_admin_login()
+
+if not admin:
+    st.info("🔒 当前处于只读模式。修改低风险配置需要先在侧边栏完成管理员认证。")
+else:
+    edit_tab, rollback_tab = st.tabs(["受控配置编辑", "版本追溯与一键回滚"])
+    with edit_tab:
+        target_key = st.selectbox("选择要编辑的低风险配置", options=sorted(BATCH_3_ALLOWED_EDIT_KEYS), index=0)
+        current = store.get_runtime_config(target_key)
+        cur_val, cur_ver = current if current else ([], 0)
+        st.write(f"**当前版本**: `v{cur_ver}` | **当前生效值**: `{cur_val}`")
+        new_val_text = st.text_area("输入新配置值 (JSON 格式列表)", value=json.dumps(cur_val, ensure_ascii=False))
+        edit_reason = st.text_input("变更原因说明 (必填，写入审计日志)", placeholder="例如：测试期间临时静音 ORDER_TIMEOUT 异常")
+
+        col_btn1, col_btn2 = st.columns([1, 4])
+        with col_btn1:
+            submit_change = st.button("提交并二次确认发布", type="primary")
+        if submit_change:
+            try:
+                parsed_val = json.loads(new_val_text)
+                res = edit_low_risk_config(
+                    store,
+                    target_key,
+                    parsed_val,
+                    actor="streamlit_admin:shared_admin_credential",
+                    reason=edit_reason,
+                )
+                st.success(f"发布成功！发布单号: #{res['release_id']}，已记录完整审计日志。")
+                st.rerun()
+            except Exception as e:
+                st.error(f"提交失败被门禁阻断: {e}")
+
+    with rollback_tab:
+        releases = store.config_releases(limit=20)
+        published_releases = [r for r in releases if r["status"] == "PUBLISHED" and r["config_key"] in BATCH_3_ALLOWED_EDIT_KEYS]
+        if published_releases:
+            rel_options = {f"#{r['id']} - {r['config_key']} (原因: {r['reason']})": r["id"] for r in published_releases}
+            selected_rel_label = st.selectbox("选择要回滚的已发布版本", options=list(rel_options.keys()))
+            selected_rel_id = rel_options[selected_rel_label]
+            rb_reason = st.text_input("回滚原因 (必填)", placeholder="例如：测试结束，一键恢复至上一版本")
+            if st.button("确认一键回滚", type="secondary"):
+                try:
+                    rb_res = rollback_low_risk_config(
+                        store,
+                        selected_rel_id,
+                        actor="streamlit_admin:shared_admin_credential",
+                        reason=rb_reason,
+                    )
+                    st.success(f"回滚成功！新回滚单号: #{rb_res['rollback_release_id']}，配置已安全还原。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"回滚失败被门禁阻断: {e}")
+        else:
+            st.caption("暂无可回滚的低风险配置发布版本。")

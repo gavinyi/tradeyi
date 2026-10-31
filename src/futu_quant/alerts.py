@@ -168,6 +168,11 @@ def update_mute_list(
     变成新的不可解释状态。
     """
     accepted, rejected = parse_mute_list(list(event_types))
+    # 写入侧门禁 (Reviewer 铁律)：直接调用 is_never_mutable 拦截不可静音项，严禁静默写库
+    for item in list(accepted):
+        if is_never_mutable(item):
+            rejected.append(item)
+            accepted.remove(item)
     if rejected:
         return set(), rejected
     store.mutate_runtime_config(
