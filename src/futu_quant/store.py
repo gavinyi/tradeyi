@@ -2537,44 +2537,31 @@ class TradingStore:
             return int(cursor.lastrowid)
 
     def publish_config_release(self, release_id: int, approved_by: str) -> int:
-        with self.connection() as connection:
-            release = connection.execute(
-                "SELECT * FROM config_releases WHERE id=?", (release_id,)
-            ).fetchone()
-            if not release or release["status"] != "DRAFT":
-                raise ValueError("配置草稿不存在或已经处理")
-            current = connection.execute(
-                "SELECT version FROM runtime_config WHERE config_key=?", (release["config_key"],)
-            ).fetchone()
-            current_version = int(current["version"]) if current else 0
-            if current_version != int(release["base_version"]):
-                raise ValueError("配置基线已变化，请重新创建草稿")
-        previous = json.loads(release["diff_json"]).get("before")
-        version = self.set_runtime_config(release["config_key"], json.loads(release["draft_json"]), approved_by)
-        try:
-            with self.connection() as connection:
-                connection.execute(
-                    """UPDATE config_releases SET status='PUBLISHED',approved_by=?,published_at=?
-                    WHERE id=?""", (approved_by, self.now(), release_id),
-                )
-        except Exception:
-            self.set_runtime_config(release["config_key"], previous, "service:publish_rollback")
-            raise
-        return version
+        """发布配置草稿 (全系统统一委托原子化实现，保持单一套状态机，拒绝逻辑分叉)。"""
+        return self.publish_config_release_with_audit(
+            release_id, approved_by, audit_event_type="", audit_payload=None,
+        )
 
     def publish_config_release_with_audit(
         self,
         release_id: int,
         approved_by: str,
-        audit_event_type: str,
-        audit_payload: dict,
+        audit_event_type: str = "",
+        audit_payload: dict | None = None,
     ) -> int:
-        """在同一个 SQLite 事务中原子化发布配置草稿并落库审计日志。
+        """在同一个 SQLite 事务中原子化发布配置草稿并可选落库审计日志。
 
-        ACID 强保障：更新 runtime_config、config_versions、发布单状态、audit_events
-        必须全部在同一事务内完成，任何一步失败全量回滚，彻底根除账实/审计脱节。
+        原子性关键机制与环境依赖：
+        依赖 TradingStore.connection() 在上下文退出时，仅当代码块无未捕获异常退出时才调用 commit()；
+        若抛出任何异常，代码块直接中断且不会执行 commit()，并在 finally 阶段调用 close()，由 SQLite
+        底层自动隐式回滚整笔未提交事务 (ACID 强保障)。严禁在外部或连接上下文内配置 autocommit 破坏此保证。
+
+        全系统唯一发布状态机实现：
+        同时更新 runtime_config、config_versions、config_releases (PUBLISHED 终态) 以及可选的 audit_events，
+        彻底根除两套状态机代码分叉风险。
         """
-        validate_actor(approved_by)
+        if audit_event_type:
+            validate_actor(approved_by)
         with self.connection() as connection:
             release = connection.execute(
                 "SELECT * FROM config_releases WHERE id=?", (release_id,)
@@ -2615,12 +2602,13 @@ class TradingStore:
                 (approved_by, now_iso, release_id),
             )
 
-            # 3. 同事务原子落审计日志
-            connection.execute(
-                """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
-                VALUES(?,?,?,?,?)""",
-                (audit_event_type, _json_dumps(audit_payload), "config_center", approved_by, now_iso),
-            )
+            # 3. 若声明了审计事件，在同事务内原子落库
+            if audit_event_type:
+                connection.execute(
+                    """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
+                    VALUES(?,?,?,?,?)""",
+                    (audit_event_type, _json_dumps(audit_payload or {}), "config_center", approved_by, now_iso),
+                )
             return next_version
 
     def rollback_config_release(self, release_id: int, actor: str) -> int:
