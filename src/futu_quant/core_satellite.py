@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import pandas as pd
@@ -495,9 +496,15 @@ def build_rebalance_plan(
                 # 价格优先取持仓真实均价或已匹配的行情价格；无真实价时 fail-closed 归零，严禁拍脑袋默认 100.0
                 matching_frame_key = next((k for k in frames if normalize_us_symbol(k) == norm_yield), None)
                 if h.get("qty", 0) > 0 and h.get("market_val", 0) > 0:
-                    yield_p = h["market_val"] / h["qty"]
+                    raw_p = h["market_val"] / h["qty"]
                 elif matching_frame_key and "close" in frames[matching_frame_key].columns and not frames[matching_frame_key].empty:
-                    yield_p = float(frames[matching_frame_key]["close"].iloc[-1])
+                    raw_p = float(frames[matching_frame_key]["close"].iloc[-1])
+                else:
+                    raw_p = 0.0
+
+                # 必须严格校验有限且大于 0，防止 NaN 或 inf 绕过检查导致可用流动性变成无穷大
+                if math.isfinite(raw_p) and raw_p > 0:
+                    yield_p = raw_p
                 else:
                     yield_p = 0.0
 

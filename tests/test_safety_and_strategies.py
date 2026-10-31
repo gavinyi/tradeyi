@@ -363,3 +363,26 @@ def test_core_satellite_sgov_missing_price_fails_closed_zero_sellable_value():
     )
     buys = [o for o in plan if o.side == "BUY" and o.symbol != "US.SGOV"]
     assert len(buys) == 0, f"缺少真实 SGOV 价格时其可变现额必须 fail-closed 归零阻断买入，实际生成: {buys}"
+
+
+def test_core_satellite_sgov_infinite_or_non_positive_price_fails_closed():
+    """Bug 1 追加守卫（inf/非正行情防御）：
+    当行情返回 inf、NaN 或 <= 0 时，math.isfinite 校验必须将 yield_p 归零并 fail-closed，
+    绝不能让 inf 放宽 buy_budget 导致现金约束失效。
+    """
+    frames_inf_sgov = {
+        "US.SPY": core_frame(),
+        "US.AAPL": trend_frame(start=100, step=1.0),
+        "US.SGOV": core_frame(price=float("inf")),
+    }
+    positions = pd.DataFrame([
+        {"code": "sgov", "qty": 700, "can_sell_qty": 700, "market_val": 0.0},
+        {"code": "US.OTHER", "qty": 300, "can_sell_qty": 300, "market_val": 30_000},
+    ])
+    plan, _ = build_rebalance_plan(
+        frames_inf_sgov, positions, 100_000, ("US.SPY", "US.AAPL"),
+        min_trade_usd=100, cash_yield_enabled=True, cash_yield_symbol="US.SGOV",
+        cash_buffer=0.05,
+    )
+    buys = [o for o in plan if o.side == "BUY" and o.symbol != "US.SGOV"]
+    assert len(buys) == 0, f"SGOV 行情为 inf 时必须 fail-closed 阻断买入，实际生成: {buys}"

@@ -212,3 +212,20 @@ def test_sell_exit_liquidity_vacuum_alerts_with_multi_leg_distinction():
     assert key_leg1 != key_leg2, f"同一合约代码的不同腿不能生成相同 incident_key: {key_leg1}"
     assert key_leg1 == f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:1:{code}"
     assert key_leg2 == f"OPTION_EXIT_LIQUIDITY_VACUUM:{campaign_id}:2:{code}"
+
+
+def test_sell_exit_liquidity_vacuum_alerts_fallback_when_campaign_id_none_or_blank():
+    """Bug 4 追加守卫：
+    当 campaign.get('campaign_id') 显式为 None 或空串时，
+    incident_key 必须稳定回落至 code 或 strategy_id，绝不能生成空维度键。
+    """
+    _exit_liquidity_incident_key = getattr(module, "_exit_liquidity_incident_key", None)
+    assert _exit_liquidity_incident_key is not None
+
+    code = "US.XYZ261120C100000"
+    for blank in (None, "", "   "):
+        resolved = str(blank or code).strip() or "strat-default"
+        key = _exit_liquidity_incident_key(resolved, 1, code)
+        assert "::" not in key, f"incident_key 不能包含连续空冒号: {key}"
+        assert f":{code}" in key, f"incident_key 必须包含有效标的: {key}"
+        assert not key.endswith(":"), f"incident_key 不能以冒号结尾: {key}"
