@@ -8819,5 +8819,29 @@
     "tags": [
       "Core"
     ]
+  },
+  {
+    "key": "runtime.module.enable_crypto",
+    "aliases": [
+      "ENABLE_CRYPTO_MODULE"
+    ],
+    "category": "⑫ 运维与高级",
+    "title": "ENABLE_CRYPTO_MODULE",
+    "description": "是否在主应用侧边栏加载加密货币模块页面",
+    "value_type": "bool",
+    "default": false,
+    "scope": "global",
+    "storage": "env",
+    "risk_level": "MEDIUM",
+    "editable": true,
+    "requires_admin": false,
+    "requires_confirmation": false,
+    "activation": "restart",
+    "consumers": [
+      "app.py"
+    ],
+    "tags": [
+      "运维与高级"
+    ]
   }
 ]
