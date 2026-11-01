@@ -133,6 +133,21 @@ def test_guard_would_catch_a_missing_module_and_symbol():
     assert "get_tenant_broker" in ui_defined
 
 
+def test_today_overview_uses_ui_store_gateway():
+    """页面必须走 `ui.open_trading_store()`（待迁移库显示「系统升级中」，不炸堆栈）。
+
+    这条同时解释了事故成因：页面原先写的 `ui_store` 是**不存在的模块名**，
+    设计上真正要调的是 `ui.open_trading_store()`。
+    """
+    path = PAGES_DIR / "00_today_overview.py"
+    source = path.read_text(encoding="utf-8")
+
+    assert "open_trading_store" in source, "页面必须走 UI 专用 store 入口（迁移门禁要求）"
+    assert "from futu_quant.store import TradingStore" not in source, (
+        "页面不得直接构造 TradingStore —— 会绕过待迁移库的「系统升级中」保护"
+    )
+
+
 def test_guard_passes_without_optional_runtime_dependencies(tmp_path):
     """硬要求（Chief 2026-11-01）：未装 `futu` / `exchange_calendars` 时也必须绿。
 
