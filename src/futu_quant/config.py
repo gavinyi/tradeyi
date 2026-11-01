@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
 import re
+import time
 from typing import TYPE_CHECKING
 
 from dotenv import dotenv_values, set_key
@@ -92,6 +94,22 @@ def _mirror_env(key: str, value: str) -> None:
     _set_env(key, value)
 
 
+logger = logging.getLogger("futu_quant.config")
+_last_store_warn_time: float = 0.0
+
+
+def _warn_store_read_fallback(context: str, exc: Exception) -> None:
+    """对只读 store 访问异常去重记警告（每 900 秒一次），明确告知回退 env 镜像。"""
+    global _last_store_warn_time
+    now = time.time()
+    if now - _last_store_warn_time >= 900:
+        _last_store_warn_time = now
+        logger.warning(
+            "只读访问配置数据库失败 (%s: %s)，已安全回退到 .env 镜像值（注意：.env 仅为镜像，可能与数据库权威配置存在漂移）",
+            context, exc,
+        )
+
+
 def _get_active_store(store: "TradingStore | None" = None) -> "TradingStore | None":
     """获取配置读取可用的 store：优先使用注入，无注入时仅当默认库存在且处于默认 env 文件时以只读模式连接（绝不自建空库、绝不触发迁移）。"""
     if store is not None:
@@ -102,8 +120,8 @@ def _get_active_store(store: "TradingStore | None" = None) -> "TradingStore | No
         from .store import DEFAULT_DB, TradingStore
         if DEFAULT_DB.exists():
             return TradingStore(DEFAULT_DB, read_only=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn_store_read_fallback("初始化只读配置数据库失败", exc)
     return None
 
 
@@ -115,8 +133,8 @@ def _load_runtime_value(key: str, default, store: "TradingStore | None" = None):
             saved = active_store.get_runtime_config(key)
             if saved is not None:
                 return saved[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_store_read_fallback(f"读取配置键 {key} 异常", exc)
 
     # 兜底回落从当前 ENV_FILE 读取
     raw = dotenv_values(ENV_FILE).get(key)
@@ -643,8 +661,8 @@ def refresh_runtime_environment(override: bool = False, store: "TradingStore | N
             saved = active_store.get_runtime_config("ENV_SETTINGS")
             if saved is not None and isinstance(saved[0], dict):
                 values.update({key: str(value) for key, value in saved[0].items()})
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_store_read_fallback("刷新 ENV_SETTINGS 动态配置失败", exc)
     for key, value in values.items():
         if override or key not in os.environ:
             _set_env(key, value)
@@ -700,7 +718,8 @@ class Settings:
     @classmethod
     def load(cls, refresh: bool = False, store: "TradingStore | None" = None) -> "Settings":
         _apply_dotenv(override=refresh)
-        refresh_runtime_environment(override=refresh, store=store)
+        active_store = _get_active_store(store)
+        refresh_runtime_environment(override=refresh, store=active_store)
         env = os.getenv("FUTU_TRADING_ENV", "SIMULATE").upper()
         market = os.getenv("FUTU_MARKET", "US").upper()
         if env not in {"SIMULATE", "REAL"}:
@@ -832,8 +851,8 @@ class Settings:
         option_exit_price_deviation_anchor_pct = float(os.getenv("OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT", "0.40"))
         if not 0.01 <= option_exit_price_deviation_anchor_pct <= 0.80:
             raise RuntimeError("OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT 必须在 0.01 到 0.80 之间")
-        cash_yield_enabled = _load_runtime_value("core_satellite_cash_yield_enabled", False, store=store)
-        cash_yield_symbol = normalize_us_symbol(str(_load_runtime_value("core_satellite_cash_yield_symbol", "US.SGOV", store=store)))
+        cash_yield_enabled = _load_runtime_value("core_satellite_cash_yield_enabled", False, store=active_store)
+        cash_yield_symbol = normalize_us_symbol(str(_load_runtime_value("core_satellite_cash_yield_symbol", "US.SGOV", store=active_store)))
         return cls(
             host=os.getenv("FUTU_HOST", "127.0.0.1"),
             port=int(os.getenv("FUTU_PORT", "11111")),

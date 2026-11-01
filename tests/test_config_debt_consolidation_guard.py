@@ -62,6 +62,25 @@ def test_g6_env_settings_dynamic_read_and_zero_write_path(tmp_path, monkeypatch)
     assert len(write_calls) == 0, f"读配置期间发生了非预期反向写库: {write_calls}"
 
 
+def test_g6_fallback_warns_with_drift_notice_on_exception(tmp_path, monkeypatch, caplog):
+    """G6 守卫：证明只读访问异常时，输出包含漂移风险警告的 WARNING 日志，且安全回退 env 镜像。"""
+    import logging
+    # 构造损坏数据库
+    corrupt_db = tmp_path / "corrupt.db"
+    corrupt_db.write_bytes(b"not a valid sqlite database header content")
+
+    monkeypatch.setattr("futu_quant.store.DEFAULT_DB", corrupt_db)
+    monkeypatch.setattr("futu_quant.config.DEFAULT_ENV_FILE", cfg_mod.ENV_FILE)
+
+    with caplog.at_level(logging.WARNING):
+        val = cfg_mod._load_runtime_value("SOME_KEY", "default_val")
+
+    assert val == "default_val"
+    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    matched = [m for m in warn_msgs if "安全回退到 .env 镜像值" in m and "漂移" in m]
+    assert len(matched) >= 1, f"未捕获到漂移警告日志: {warn_msgs}"
+
+
 def test_g6_negative_injection_raises_if_written(monkeypatch):
     """G6 负向必红：如果读配置触发了反向写库，断言必须红。"""
     write_happened = False
