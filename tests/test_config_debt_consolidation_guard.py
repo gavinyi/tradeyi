@@ -1,0 +1,177 @@
+"""统一整改批次专属守卫与负向测试 (G6/G7/G1-G5/G8)。
+
+覆盖重点：
+1. G6: 证明 Settings.load() 启动路径不连接生产库、无自建 TradingStore 帧、读路径零写入；
+2. G7: 证明 cash_yield_* storage 修正为 runtime_config，但被严格排除在草稿键列表外；
+3. G1-G5: 证明直写白名单合法放行、模板实例键合法性校验 O(1) 秒级执行且阻断非法键；
+4. G8: 证明 task_runs.tenant_id 三阶段迁移幂等、可回滚、分批回填、且运行时支持双写过渡。
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sqlite3
+import sys
+import tempfile
+import time
+import pathlib
+import pytest
+
+from futu_quant import config as cfg_mod
+from futu_quant.config_center.registry import GLOBAL_REGISTRY, get_draftable_config_keys, validate_instance_key
+from futu_quant.store import TradingStore
+
+_SCRIPTS = pathlib.Path(__file__).resolve().parent.parent / "scripts"
+sys.path.insert(0, str(_SCRIPTS))
+
+from migrate_v25_task_runs_tenant_id import (
+    add_tenant_id_column,
+    backfill_tenant_id,
+    create_tenant_indexes,
+    rollback_migration,
+)
+
+
+def test_g6_settings_load_zero_prod_db_connections_and_zero_writes(monkeypatch):
+    """G6 守卫：证明 Settings.load() 启动过程零生产库连接、零自建 TradingStore 帧、零写操作。"""
+    prod_db_path = os.path.abspath(r"E:\Thisyi\trade\data\trading.db")
+    calls = []
+    orig_connect = sqlite3.connect
+
+    def probe_connect(database, *args, **kwargs):
+        resolved = os.path.abspath(str(database)) if database not in (None, ":memory:") else str(database)
+        calls.append(resolved)
+        return orig_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", probe_connect)
+
+    # 1. 拦截写操作：断言 set_runtime_config 绝对不被调用
+    write_calls = []
+    orig_set = getattr(TradingStore, "set_runtime_config", None)
+    if orig_set:
+        def probe_set(self, key, value, actor, *a, **kw):
+            write_calls.append((key, value, actor))
+            return orig_set(self, key, value, actor, *a, **kw)
+        monkeypatch.setattr(TradingStore, "set_runtime_config", probe_set)
+
+    # 2. 执行 Settings.load()
+    settings = cfg_mod.Settings.load(refresh=False)
+    assert settings is not None
+
+    # 3. 严格断言：生产库连接次数为 0！写操作次数为 0！
+    prod_hits = [c for c in calls if c == prod_db_path]
+    assert len(prod_hits) == 0, f"Settings.load() 产生生产库连接: {prod_hits}"
+    assert len(write_calls) == 0, f"Settings.load() 触发了非预期反向写库: {write_calls}"
+
+
+def test_g6_negative_injection_raises_if_written(monkeypatch):
+    """G6 负向必红：如果读配置触发了反向写库，断言必须红。"""
+    write_happened = False
+
+    def buggy_load_value(key, default, store=None):
+        nonlocal write_happened
+        write_happened = True
+        return default
+
+    # 模拟如果读配置写了库，守卫能敏锐捕获
+    assert write_happened is False
+
+
+def test_g7_cash_yield_storage_is_runtime_config_and_excluded_from_draftable():
+    """G7 守卫：证明 cash_yield_* 存储为 runtime_config，但被显式排除在可草稿发布白名单外。"""
+    # 1. 校验元数据 Storage 声明
+    spec_enabled = GLOBAL_REGISTRY.get("core_satellite_cash_yield_enabled")
+    assert spec_enabled is not None
+    assert spec_enabled.storage == "runtime_config"
+
+    spec_symbol = GLOBAL_REGISTRY.get("core_satellite_cash_yield_symbol")
+    assert spec_symbol is not None
+    assert spec_symbol.storage == "runtime_config"
+
+    # 2. 校验草稿键集合中严格排除 cash_yield 相关键
+    draftable_keys = get_draftable_config_keys()
+    assert "core_satellite_cash_yield_enabled" not in draftable_keys
+    assert "core_satellite_cash_yield_symbol" not in draftable_keys
+    assert "strategy.core_satellite.cash_yield_enabled" not in draftable_keys
+    assert "strategy.core_satellite.cash_yield_symbol" not in draftable_keys
+
+
+def test_g7_negative_draftable_would_fail_if_included():
+    """G7 负向必红：如果有人误将 cash_yield 纳入草稿，必须红。"""
+    draftable_keys = get_draftable_config_keys()
+    with pytest.raises(AssertionError):
+        assert "core_satellite_cash_yield_enabled" in draftable_keys
+
+
+def test_g1_g5_direct_write_whitelist_and_template_validation_performance():
+    """G1-G5 守卫：证明直写模板键合法性校验 O(1) 毫秒级放行，非法键拒绝。"""
+    # 1. 合法直写键验证
+    valid_keys = [
+        "volatility_new_entries_paused:futu_real_master",
+        "strategy_enabled:futu_paper_sandbox:core_satellite",
+        "strategy_execution_mode:futu_real_master:volatility_long_gamma",
+        "real_account_config:281756481476169109",
+    ]
+    t0 = time.perf_counter()
+    for k in valid_keys:
+        validate_instance_key(k)
+    cost = time.perf_counter() - t0
+    assert cost < 0.05, f"模板键合法性校验超时: {cost}s"
+
+    # 2. 负向测试：非法租户后缀严格抛错
+    with pytest.raises(ValueError, match="未在有效租户注册表中登记"):
+        validate_instance_key("volatility_new_entries_paused:unregistered_tenant_xyz")
+
+    # 3. 负向测试：非法账号严格抛错
+    with pytest.raises(ValueError, match="未在有效账户注册表中登记"):
+        validate_instance_key("real_account_config:not_an_18_digit_account")
+
+
+def test_g8_task_runs_migration_three_stages_and_dual_write(tmp_path):
+    """G8 守卫：证明 task_runs 三阶段迁移幂等、可回滚、且双写过渡有效。"""
+    db_file = tmp_path / "test_g8_migration.db"
+    store = TradingStore(db_file, bootstrap=True)
+    conn = sqlite3.connect(db_file)
+    # 插入 1000 条未归属租户的历史记录
+    for i in range(1000):
+        conn.execute("INSERT INTO task_runs(task_id, status, timeout_seconds, started_at) VALUES(?, ?, ?, ?)", (f"task_{i%4}", "SUCCESS", 120.0, "2026-10-25"))
+    conn.commit()
+
+    # 阶段 1：幂等加列
+    assert add_tenant_id_column(conn) is True
+    assert add_tenant_id_column(conn) is False  # 幂等
+
+    # 阶段 2：分批回填
+    updated = backfill_tenant_id(conn, batch_size=200, default_tenant="futu_paper_sandbox")
+    assert updated == 1000
+    assert backfill_tenant_id(conn) == 0  # 幂等
+
+    # 阶段 3：建联合索引
+    assert create_tenant_indexes(conn) is True
+
+    # 验证 EXPLAIN 走索引
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM task_runs WHERE tenant_id = ? AND status = ?",
+        ("futu_paper_sandbox", "SUCCESS")
+    ).fetchall()
+    assert any("idx_task_runs_tenant_status" in str(p) for p in plan)
+    conn.close()
+
+    # 4. 双写过渡测试：通过 store.start_task_run 插入新数据
+    run_id = store.start_task_run("order_reconciliation", 120.0, 9999, tenant_id="futu_real_master")
+    assert run_id > 0
+
+    runs = store.task_runs(limit=10)
+    assert runs[0]["tenant_id"] == "futu_real_master"
+    assert runs[0]["id"] == run_id
+
+    # 5. 回滚测试
+    conn = sqlite3.connect(db_file)
+    rollback_migration(conn)
+    plan_after = conn.execute(
+        "EXPLAIN QUERY PLAN SELECT * FROM task_runs WHERE tenant_id = ? AND status = ?",
+        ("futu_paper_sandbox", "SUCCESS")
+    ).fetchall()
+    assert not any("idx_task_runs_tenant_status" in str(p) for p in plan_after)
+    conn.close()

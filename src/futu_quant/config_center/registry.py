@@ -283,13 +283,18 @@ def get_draftable_config_keys(registry: ConfigRegistry | None = None) -> list[st
     """
     reg = registry or GLOBAL_REGISTRY
     candidate_keys: list[str] = []
+    # 显式禁止草稿编辑的非门禁键（如策略核心运行参数，须走专用通道或配置脚本）
+    non_draftable_keys = {
+        "core_satellite_cash_yield_enabled",
+        "core_satellite_cash_yield_symbol",
+    }
     for s in reg.all_specs():
         if s.storage != "runtime_config" or not s.editable:
             continue
         if s.risk_level == "CRITICAL" or s.requires_confirmation:
             continue
         rk = s.runtime_key
-        if "{" in rk and "}" in rk:
+        if "{" in rk and "}" in rk or rk in non_draftable_keys:
             continue
         if rk not in candidate_keys:
             candidate_keys.append(rk)

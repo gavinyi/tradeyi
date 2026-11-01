@@ -2130,13 +2130,24 @@ class TradingStore:
                 "SELECT * FROM strategy_heartbeats ORDER BY strategy_id"
             ).fetchall()]
 
-    def start_task_run(self, task_id: str, timeout_seconds: float, pid: int | None) -> int:
+    def start_task_run(
+        self, task_id: str, timeout_seconds: float, pid: int | None, tenant_id: str | None = None,
+    ) -> int:
+        # 支持双写过渡：如果表里已有 tenant_id 列，则写入 tenant_id，否则回退写入基础列
         with self.connection() as connection:
-            cursor = connection.execute(
-                """INSERT INTO task_runs(task_id,status,timeout_seconds,pid,started_at)
-                VALUES(?,?,?,?,?)""",
-                (task_id, "RUNNING", timeout_seconds, pid, self.now()),
-            )
+            columns = [r[1] for r in connection.execute("PRAGMA table_info(task_runs)").fetchall()]
+            if "tenant_id" in columns:
+                cursor = connection.execute(
+                    """INSERT INTO task_runs(task_id,status,timeout_seconds,pid,started_at,tenant_id)
+                    VALUES(?,?,?,?,?,?)""",
+                    (task_id, "RUNNING", timeout_seconds, pid, self.now(), tenant_id),
+                )
+            else:
+                cursor = connection.execute(
+                    """INSERT INTO task_runs(task_id,status,timeout_seconds,pid,started_at)
+                    VALUES(?,?,?,?,?)""",
+                    (task_id, "RUNNING", timeout_seconds, pid, self.now()),
+                )
             return int(cursor.lastrowid)
 
     def finish_task_run(

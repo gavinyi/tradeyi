@@ -92,29 +92,26 @@ def _mirror_env(key: str, value: str) -> None:
     _set_env(key, value)
 
 
-def _load_runtime_value(key: str, default):
+def _load_runtime_value(key: str, default, store: "TradingStore | None" = None):
     # Isolated tests and alternate deployments may deliberately point at another file.
-    if ENV_FILE != DEFAULT_ENV_FILE:
+    if ENV_FILE != DEFAULT_ENV_FILE or store is None:
         raw = dotenv_values(ENV_FILE).get(key)
         try:
             return json.loads(raw) if raw is not None else default
         except (TypeError, json.JSONDecodeError):
             return default
-    from .store import TradingStore
-    store = TradingStore()
+
+    # 显式注入 store 时才只读拉取 runtime_config，且绝对不反向写库 (防启动期写锁争抢)
     saved = store.get_runtime_config(key)
     if saved is not None:
         return saved[0]
     raw = dotenv_values(ENV_FILE).get(key)
     if raw is None:
-        value = default
-    else:
-        try:
-            value = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
-            value = default
-    store.set_runtime_config(key, value, "env_migration")
-    return value
+        return default
+    try:
+        return json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return default
 
 
 def normalize_us_symbol(value: str) -> str:
@@ -623,30 +620,11 @@ def save_real_trading_settings(
     })
 
 
-def refresh_runtime_environment(override: bool = False) -> dict[str, str]:
-    """Load file + SQLite dynamic settings into the current process."""
+def refresh_runtime_environment(override: bool = False, store: "TradingStore | None" = None) -> dict[str, str]:
+    """Load file + optional SQLite dynamic settings into the current process."""
     values = {key: str(value) for key, value in dotenv_values(ENV_FILE).items() if value is not None}
-    if ENV_FILE == DEFAULT_ENV_FILE:
-        from .store import TradingStore
-        store = TradingStore()
+    if ENV_FILE == DEFAULT_ENV_FILE and store is not None:
         saved = store.get_runtime_config("ENV_SETTINGS")
-        if saved is None:
-            dynamic_prefixes = (
-                "CORE_", "GAMMA_", "VOLATILITY_", "RISK_", "EXEC_", "STRATEGY_",
-                "APPROVAL_", "SHADOW_", "SERVICE_", "ORDER_", "EARNINGS_", "REAL_",
-            )
-            explicit = {
-                "WATCHLIST", "ORDER_QUANTITIES", "ORDER_QUANTITY", "OPTION_CONTRACTS",
-                "ENABLE_PAPER_ORDERS", "EXECUTION_MODE", "ENFORCE_VIRTUAL_POSITIONS",
-                "REQUIRE_STRATEGY_APPROVAL", "DATA_RETENTION_DAYS", "BACKUP_RETENTION_DAYS",
-                "FUTU_TRADING_ENV",
-            }
-            migrated = {
-                key: value for key, value in values.items()
-                if key in explicit or key.startswith(dynamic_prefixes)
-            }
-            store.set_runtime_config("ENV_SETTINGS", migrated, "env_migration")
-            saved = (migrated, 1)
         if saved is not None and isinstance(saved[0], dict):
             values.update({key: str(value) for key, value in saved[0].items()})
     for key, value in values.items():

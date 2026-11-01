@@ -841,7 +841,8 @@ def run_task(
         store.heartbeat(strategy_id, "DEGRADED", "故障退避中，等待自动重试", os.getpid())
         return False
     timeout = float(timeout_seconds or TASK_TIMEOUTS.get(strategy_id, 120))
-    run_id = store.start_task_run(strategy_id, timeout, os.getpid())
+    tenant_for_run = _ACTIVE_TENANT_ID.get() or None
+    run_id = store.start_task_run(strategy_id, timeout, os.getpid(), tenant_id=tenant_for_run)
     started = time.monotonic()
     run_started_at = store.now()
     store.heartbeat(strategy_id, "RUNNING", "正在执行", os.getpid())
