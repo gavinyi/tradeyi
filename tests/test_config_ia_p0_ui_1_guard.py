@@ -194,6 +194,120 @@ def test_today_overview_no_fake_zeros_and_hasattr_must_have_explicit_notice():
     # 2. 检查两处 hasattr 分支均有显式的“未统计”提示
     assert 'value="未统计"' in content, "hasattr 探测必须伴随显式未统计提示！"
 
+    # 3. 断言不得存在取不到租户时的静默 is_real 默认值兜底
+    assert 'is_real = current_tenant.get("is_real", False)' not in content, "禁止对 is_real 做静默默认 False 兜底伪造模拟环境！"
+
+
+def test_today_overview_resolve_trading_env_status_branches():
+    """Reviewer & Product 守卫：测试交易环境判定函数的 4 个关键分支，严禁默认值伪造模拟绿标。"""
+    import subprocess
+    from types import SimpleNamespace
+    overview_path = pathlib.Path(__file__).resolve().parent.parent / "pages/00_today_overview.py"
+    with open(overview_path, "r", encoding="utf-8") as f:
+        src = f.read()
+
+    local_ns = {}
+    func_code = "def resolve_trading_env_status" + src.split("def resolve_trading_env_status")[1].split("def resolve_pending_restart_status")[0]
+    exec(func_code, globals(), local_ns)
+    resolve_trading_env_status = local_ns["resolve_trading_env_status"]
+
+    # 分支 1：租户字典为空或 None -> 必须为未知环境，不许为模拟盘，且禁止 normal 绿色
+    val1, delta1, col1 = resolve_trading_env_status(None, SimpleNamespace(real_trading_enabled=False))
+    assert "未知" in val1 and col1 != "normal"
+    val1_b, _, col1_b = resolve_trading_env_status({}, SimpleNamespace(real_trading_enabled=False))
+    assert "未知" in val1_b and col1_b != "normal"
+
+    # 分支 2：缺失 is_real 键 -> 必须为未知环境，绝不能兜底成模拟
+    val2, delta2, col2 = resolve_trading_env_status({"tenant_id": "foo"}, SimpleNamespace(real_trading_enabled=False))
+    assert "未知" in val2 and col2 != "normal"
+
+    # 分支 3：is_real 为 True -> 实盘，区分 real_trading_enabled
+    val3, delta3, col3 = resolve_trading_env_status({"is_real": True}, SimpleNamespace(real_trading_enabled=True))
+    assert "实盘" in val3 and "允许真金交易" in delta3 and col3 == "inverse"
+    val3_b, delta3_b, col3_b = resolve_trading_env_status({"is_real": True}, SimpleNamespace(real_trading_enabled=False))
+    assert "实盘" in val3_b and "实盘总闸已关闭" in delta3_b and col3_b == "off"
+
+    # 分支 4：确凿 is_real 为 False -> 模拟仿真
+    val4, delta4, col4 = resolve_trading_env_status({"is_real": False}, SimpleNamespace(real_trading_enabled=False))
+    assert "模拟" in val4 and col4 == "normal"
+
+
+def test_today_overview_resolve_pending_restart_status_branches(tmp_path, monkeypatch):
+    """Reviewer 守卫：测试待重启变更纯函数的 5 个分支（无pid / git空 / diff=0 / diff=N / 异常），value 与 delta 同源。"""
+    import subprocess
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    overview_path = pathlib.Path(__file__).resolve().parent.parent / "pages/00_today_overview.py"
+    src = overview_path.read_text(encoding="utf-8")
+    env_globals = dict(globals())
+    env_globals.update({"datetime": datetime, "timezone": timezone, "subprocess": subprocess})
+    local_ns = {}
+    func_code = "def resolve_pending_restart_status" + src.split("def resolve_pending_restart_status")[1].split("# 1. 核心状态卡片")[0]
+    exec(func_code, env_globals, local_ns)
+    resolve_pending_restart_status = local_ns["resolve_pending_restart_status"]
+
+    fake_repo = tmp_path / "repo"
+    fake_repo.mkdir()
+    fake_pid = fake_repo / "data" / "trading-service.pid"
+
+    # 分支 1：pid 文件不存在 -> 服务未启动，delta 提示需 start.bat，禁止出现“一致/无需重启”
+    val1, delta1, col1 = resolve_pending_restart_status(fake_pid, fake_repo)
+    assert val1 == "服务未启动"
+    assert "start.bat" in delta1
+    assert "一致" not in delta1 and "无需重启" not in val1
+
+    # 建立假 pid 文件
+    fake_pid.parent.mkdir(parents=True, exist_ok=True)
+    fake_pid.write_text("12345", encoding="utf-8")
+
+    # 分支 2：git log 返回空 base_commit -> 未统计，delta 明确说明未能获取基线
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=""))
+    val2, delta2, col2 = resolve_pending_restart_status(fake_pid, fake_repo)
+    assert val2 == "未统计"
+    assert "基线" in delta2
+    assert "一致" not in delta2 and "无需重启" not in val2
+
+    # 分支 3：git diff 失败 (returncode != 0) -> 未统计，delta 提示 diff 失败
+    def mock_run_fail(cmd, *args, **kwargs):
+        if "log" in cmd:
+            return SimpleNamespace(returncode=0, stdout="b1e78ef\n")
+        return SimpleNamespace(returncode=1, stdout="")
+    monkeypatch.setattr(subprocess, "run", mock_run_fail)
+    val3, delta3, col3 = resolve_pending_restart_status(fake_pid, fake_repo)
+    assert val3 == "未统计"
+    assert "失败" in delta3
+    assert "一致" not in delta3
+
+    # 分支 4：diff_count > 0 -> N 个文件待重启，同源提示需 stop/start
+    def mock_run_diff_n(cmd, *args, **kwargs):
+        if "log" in cmd:
+            return SimpleNamespace(returncode=0, stdout="b1e78ef\n")
+        return SimpleNamespace(returncode=0, stdout="src/a.py\npages/b.py\n")
+    monkeypatch.setattr(subprocess, "run", mock_run_diff_n)
+    val4, delta4, col4 = resolve_pending_restart_status(fake_pid, fake_repo)
+    assert "2 个文件待重启" == val4
+    assert "stop.bat → start.bat" in delta4
+    assert col4 == "inverse"
+
+    # 分支 5：diff_count == 0 -> 无，无需重启，且 delta 提示一致
+    def mock_run_diff_0(cmd, *args, **kwargs):
+        if "log" in cmd:
+            return SimpleNamespace(returncode=0, stdout="b1e78ef\n")
+        return SimpleNamespace(returncode=0, stdout="\n")
+    monkeypatch.setattr(subprocess, "run", mock_run_diff_0)
+    val5, delta5, col5 = resolve_pending_restart_status(fake_pid, fake_repo)
+    assert val5 == "无，无需重启"
+    assert "一致" in delta5
+    assert col5 == "normal"
+
+    # 分支 6：发生未预期异常 -> 未统计
+    def mock_run_crash(*args, **kwargs):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(subprocess, "run", mock_run_crash)
+    val6, delta6, col6 = resolve_pending_restart_status(fake_pid, fake_repo)
+    assert val6 == "未统计"
+    assert "boom" in delta6
+
 
 def test_strategy_center_card_hides_runtime_key_from_main_body():
     """守卫：策略中心等入口卡片正文禁止铺露底层 runtime_key，键名必须折叠在 expander 中。"""

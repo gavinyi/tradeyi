@@ -19,10 +19,9 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from futu_quant.config import Settings
-from futu_quant.ui import render_sidebar
+from futu_quant.ui import render_sidebar, get_current_tenant
 from futu_quant.ui_store import ui_store
 from futu_quant.broker import get_tenant_broker
-from futu_quant.tenant import get_current_tenant
 
 st.set_page_config(page_title="今日总览 - 统一配置中心", page_icon="🧭", layout="wide")
 
@@ -40,18 +39,80 @@ st.caption(
 store = ui_store()
 broker = get_tenant_broker(settings)
 
+def resolve_trading_env_status(tenant: dict | None, settings: Settings) -> tuple[str, str, str]:
+    """判定当前交易环境卡片的 (value, delta, delta_color)。
+
+    安全哲学：
+    - “安全态（模拟仿真）”必须由确凿证据证明，绝不能由默认值兜底产生。
+    - 取不到租户信息或缺失关键字段时，严禁显示绿色模拟，一律提示中性/未知警示。
+    """
+    if not isinstance(tenant, dict) or "is_real" not in tenant:
+        return "⚪ 未知环境", "租户配置缺失或未就绪", "off"
+
+    is_real = tenant.get("is_real")
+    if is_real is True:
+        real_enabled = getattr(settings, "real_trading_enabled", False)
+        if real_enabled:
+            return "🔴 实盘 (REAL)", "允许真金交易", "inverse"
+        return "🔴 实盘 (REAL)", "实盘总闸已关闭", "off"
+
+    if is_real is False:
+        return "🟢 模拟 (SIMULATE)", "模拟仿真环境", "normal"
+
+    return "⚪ 未知环境", "无法判定环境类型", "off"
+
+
+def resolve_pending_restart_status(
+    pid_path: Path,
+    repo_root: Path,
+) -> tuple[str, str, str]:
+    """判定代码与元数据待重启生效状态的 (value, delta, delta_color)。
+
+    口径（Ops 推荐的文件级净差异算法）：
+    - 5 个分支：无 pid / git 异常 / diff=0 / diff=N / 异常；
+    - value 与 delta 同源计算返回，彻底杜绝各自独立判定导致的假正常。
+    """
+    if not pid_path.exists():
+        return "服务未启动", "需桌面 start.bat 启动", "off"
+
+    try:
+        pid_mtime = datetime.fromtimestamp(pid_path.stat().st_mtime, tz=timezone.utc)
+        res_base = subprocess.run(
+            ["git", "log", "-1", f"--before={pid_mtime.isoformat()}", "--format=%h", "master"],
+            cwd=str(repo_root), capture_output=True, text=True, check=False,
+        )
+        base_commit = res_base.stdout.strip()
+        if not base_commit:
+            return "未统计", "未能获取进程启动基线 commit", "off"
+
+        res_diff = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_commit}..HEAD", "--", "src/", "pages/", "app.py"],
+            cwd=str(repo_root), capture_output=True, text=True, check=False,
+        )
+        if res_diff.returncode != 0:
+            return "未统计", "git diff 执行失败", "off"
+
+        diff_files = [f for f in res_diff.stdout.strip().splitlines() if f]
+        diff_count = len(diff_files)
+        if diff_count > 0:
+            return f"{diff_count} 个文件待重启", "需桌面 stop.bat → start.bat", "inverse"
+        return "无，无需重启", "运行中代码与磁盘一致", "normal"
+    except Exception as e:
+        return "未统计", f"计算异常: {e}", "off"
+
+
 # 1. 核心状态卡片 (3秒内回答能不能交易)
 col1, col2, col3, col4 = st.columns(4)
 
 current_tenant = get_current_tenant(settings)
-is_real = current_tenant.get("is_real", False)
-real_enabled = settings.real_trading_enabled
+env_val, env_delta, env_color = resolve_trading_env_status(current_tenant, settings)
 
 with col1:
     st.metric(
         label="当前交易环境",
-        value="🔴 实盘 (REAL)" if is_real else "🟢 模拟 (SIMULATE)",
-        delta="允许真金交易" if (is_real and real_enabled) else ("模拟仿真" if not is_real else "实盘已关闭"),
+        value=env_val,
+        delta=env_delta,
+        delta_color=env_color,
     )
 
 with col2:
@@ -79,37 +140,16 @@ with col3:
         )
 
 with col4:
-    # 待重启变更：采用 Ops 实测推荐的文件级净差异算法，杜绝硬编码 0
-    diff_count = 0
-    pid_file = Path("data/trading-service.pid")
-    status_label = "无，无需重启"
-    try:
-        if pid_file.exists():
-            pid_mtime = datetime.fromtimestamp(pid_file.stat().st_mtime, tz=timezone.utc)
-            res_base = subprocess.run(
-                ["git", "log", "-1", f"--before={pid_mtime.isoformat()}", "--format=%h", "master"],
-                capture_output=True, text=True, check=False,
-            )
-            base_commit = res_base.stdout.strip()
-            if base_commit:
-                res_diff = subprocess.run(
-                    ["git", "diff", "--name-only", f"{base_commit}..HEAD", "--", "src/", "pages/", "app.py"],
-                    capture_output=True, text=True, check=False,
-                )
-                diff_files = [f for f in res_diff.stdout.strip().splitlines() if f]
-                diff_count = len(diff_files)
-                if diff_count > 0:
-                    status_label = f"{diff_count} 个文件待重启"
-        else:
-            status_label = "服务未启动"
-    except Exception:
-        status_label = "未统计"
+    # 待重启变更：采用绝对路径与同源判定函数，杜绝相对路径失效与硬编码假正常
+    repo_root = Path(__file__).resolve().parents[1]
+    pid_file = repo_root / "data" / "trading-service.pid"
+    status_label, restart_delta, restart_color = resolve_pending_restart_status(pid_file, repo_root)
 
     st.metric(
         label="代码与元数据生效状态",
         value=status_label,
-        delta="需桌面 stop.bat → start.bat" if diff_count > 0 else "运行中代码与磁盘一致",
-        delta_color="inverse" if diff_count > 0 else "normal",
+        delta=restart_delta,
+        delta_color=restart_color,
     )
 
 st.info("💡 **动态配置更新机制**：数据库内日限额、静音清单、策略启停等业务参数已存库，由 Worker 轮询秒级自动重读（≤2分钟），无需停服重启。")
