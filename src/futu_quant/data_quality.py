@@ -23,7 +23,7 @@ def _quote_trade_age(row, current: datetime) -> tuple[float | None, str]:
     if pd.isna(timestamp):
         return None, f"无法识别行情更新时间：{raw}"
     if timestamp.tzinfo is None:
-        timestamp = timestamp.tz_localize(NEW_YORK, ambiguous="NaT", nonexistent="shift_forward")
+        timestamp = timestamp.tz_localize(NEW_YORK, ambiguous=False, nonexistent="shift_forward")
     else:
         timestamp = timestamp.tz_convert(NEW_YORK)
     return max(0.0, (current - timestamp.to_pydatetime()).total_seconds()), ""

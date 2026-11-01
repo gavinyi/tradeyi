@@ -20,7 +20,7 @@ def combo_market_snapshot(legs: list[dict], quotes: pd.DataFrame) -> tuple[pd.Da
         quote_time = pd.to_datetime(quote.get("update_time"), errors="coerce")
         if not pd.isna(quote_time):
             if quote_time.tzinfo is None:
-                quote_time = quote_time.tz_localize(ZoneInfo("America/New_York"))
+                quote_time = quote_time.tz_localize(ZoneInfo("America/New_York"), ambiguous=False, nonexistent="shift_forward")
             quote_age = max(0.0, (datetime.now(timezone.utc) - quote_time.tz_convert("UTC").to_pydatetime()).total_seconds())
         else:
             quote_age = inf
