@@ -82,6 +82,14 @@ def resolve_trading_env_status(
             logger.warning(f"交易环境门禁返回空 (acc_id={account_id})")
             return "⚪ 未知环境", "门禁未返回有效限额对象", "off"
 
+        # 坏键（2026-11-01 拍板）：账户级配置损坏时门禁只拦 BUY，
+        # 界面不能笼统显示「总闸已关闭」—— 那会把「配置坏了」伪装成「主动关闭」。
+        if getattr(real_limits, "config_corrupt", False):
+            logger.warning(
+                f"实盘账户 {account_id} 账户级配置损坏：{real_limits.corrupt_reason}"
+            )
+            return "🔴 实盘 (REAL)", "账户配置损坏·开仓已禁 (SELL 仍可执行)", "inverse"
+
         real_allowed = real_limits.enabled
         requires_confirm = real_limits.require_manual_confirm
 

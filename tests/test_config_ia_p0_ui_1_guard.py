@@ -253,6 +253,16 @@ def test_today_overview_resolve_trading_env_status_branches():
     )
     assert "实盘" in val3_c and "实盘总闸已关闭" in delta3_c and col3_c == "off"
 
+    # 分支 3c2：账户级配置损坏 -> 不得伪装成「总闸已关闭」，必须点名配置损坏
+    fake_store_corrupt = SimpleNamespace(get_setting=lambda k, d: "{not json")
+    val3_c2, delta3_c2, col3_c2 = resolve_trading_env_status(
+        {"is_real": True, "acc_id": "281756481476169109"},
+        SimpleNamespace(real_trading_enabled=True),
+        store=fake_store_corrupt,
+    )
+    assert "实盘" in val3_c2 and "账户配置损坏" in delta3_c2 and col3_c2 != "normal"
+    assert "总闸已关闭" not in delta3_c2, "坏键被伪装成主动关闭 —— 假状态"
+
     # 分支 3d：实盘租户缺少 acc_id -> 拒绝猜测 settings，直接未知且 off 颜色
     val3_d, delta3_d, col3_d = resolve_trading_env_status(
         {"is_real": True},

@@ -23,7 +23,11 @@ from .approval import (
     strategy_fingerprint, strategy_requires_approval,
 )
 from .fee_model import estimate_fees
-from .real_trading import check_real_trade, resolve_real_account_limits
+from .real_trading import (
+    check_real_trade,
+    notify_corrupt_account_config,
+    resolve_real_account_limits,
+)
 from .risk_limits import RiskLimitsConfigError, resolve_risk_limits
 from .strategy_pause import is_strategy_entries_paused
 from .execution_mode import strategy_execution_mode_override
@@ -148,9 +152,31 @@ class ExecutionManager:
                 self.store, broker_settings_obj, broker_account_id,
             )
             if not limits.enabled:
-                reason = f"账户管理安全铁律：实盘账户 {broker_account_id} 已关闭统一管理，禁止向其提交任何订单"
-                self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id}, actor="service:execution")
-                return ExecutionResult(0, "REJECTED", reason)
+                if limits.config_corrupt:
+                    # 坏键：BUY 拒单；SELL 不被该门禁拦截，继续走对账 / 风控 / 减仓额度校验。
+                    notify_corrupt_account_config(
+                        self.store, broker_account_id, limits.corrupt_reason,
+                    )
+                    if str(side or "").upper() != "SELL":
+                        reason = (
+                            f"实盘账户 {broker_account_id} 的账户级配置损坏"
+                            f"（{limits.corrupt_reason}）：已禁止提交买入订单，请修复后重试"
+                        )
+                        self.store.audit(
+                            "REAL_ACCOUNT_CONFIG_CORRUPT",
+                            {
+                                "account_id": str(broker_account_id),
+                                "strategy_id": strategy_id,
+                                "side": side,
+                                "reason": limits.corrupt_reason,
+                            },
+                            actor="service:execution",
+                        )
+                        return ExecutionResult(0, "REJECTED", reason)
+                else:
+                    reason = f"账户管理安全铁律：实盘账户 {broker_account_id} 已关闭统一管理，禁止向其提交任何订单"
+                    self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id}, actor="service:execution")
+                    return ExecutionResult(0, "REJECTED", reason)
         global_mode = self.store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER"))
         tenant_id = (
             getattr(self.tenant, "tenant_id", "") if self.tenant else ""

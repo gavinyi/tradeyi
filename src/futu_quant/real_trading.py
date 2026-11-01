@@ -44,6 +44,10 @@ class RealAccountLimits:
     max_daily_notional: float
     require_manual_confirm: bool
     config_present: bool = False
+    # 坏键标记（Reviewer 第 1 条）：必须由解析函数**显式返回**，不让上层靠捕获异常去猜 ——
+    # 异常会把「配置坏了」和「代码有 bug」混成一类，两类处置完全不同。
+    config_corrupt: bool = False
+    corrupt_reason: str = ""
 
 
 def _setting_or_env(settings: Any, attr: str, env_key: str, default: Any) -> Any:
@@ -65,47 +69,108 @@ def _setting_or_env(settings: Any, attr: str, env_key: str, default: Any) -> Any
         return default
 
 
+def _strict_float(value: Any) -> tuple[float | None, str]:
+    """账户级数字字段严格解析：非法返回 ``(None, 原因)``，绝不静默回落。"""
+    try:
+        return float(value), ""
+    except (TypeError, ValueError):
+        return None, f"值 {value!r} 无法转换为数字"
+
+
+def notify_corrupt_account_config(store: TradingStore, account_id: Any, reason: str) -> None:
+    """坏键强告警（不可静音，Reviewer 第 4 条）。
+
+    为什么必须真推：坏键的直接后果是「开仓被拦」，如果这条告警能被静音或只落库，
+    门禁坏了没人知道 —— 与既有的静默拦截事故同一母题。
+    """
+    from .alerts import AlertManager  # 局部导入：alerts 依赖 store，避免模块环
+
+    try:
+        AlertManager(store).send(
+            "ERROR",
+            "REAL_ACCOUNT_CONFIG_CORRUPT",
+            f"实盘账户 {account_id} 的账户级配置损坏：{reason} —— 已禁止 BUY 开仓，SELL 仍走原有安全校验",
+        )
+    except Exception:  # noqa: BLE001
+        pass  # silent-ok: 告警投递失败不得反过来阻断门禁判定本身
+
+
 def resolve_real_account_limits(
     store: TradingStore, settings: Settings, account_id: int | str,
 ) -> RealAccountLimits:
-    """解析某实盘账户的生效限额：账户级配置存在则优先，缺项回落全局。"""
+    """解析某实盘账户的生效限额：账户级优先、全局兜底；**坏键 fail-closed**。
+
+    三种情形必须分开（Product 裁定，任何一条含糊都会变成 fail-open）：
+    1. 键不存在 / 空串 → 未配置，走全局兜底，**不是**故障（本仓有大量空串占位键）；
+    2. 键存在但损坏（JSON 非法 / 顶层非对象 / 字段非法）→ 坏键：
+       ``config_corrupt=True`` 且 ``enabled=False``，由上层只拦 BUY；
+    3. 键存在且合法 → 账户级覆盖全局。
+    """
     raw = store.get_setting(f"real_account_config:{str(account_id)}", "")
     cfg: dict = {}
+    corrupt_reason = ""
     if raw:
         try:
             parsed = json.loads(raw)
-            cfg = parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            cfg = {}
+        except Exception as exc:  # noqa: BLE001 - 解析失败即坏键，原因落到 corrupt_reason
+            parsed = None
+            corrupt_reason = f"JSON 解析失败：{exc}"
+        if not corrupt_reason:
+            if isinstance(parsed, dict):
+                cfg = parsed
+            else:
+                corrupt_reason = f"顶层不是 JSON 对象（{type(parsed).__name__}）"
+
     allowed = cfg.get("allowed_strategies")
+    if allowed and not isinstance(allowed, (list, tuple, set, frozenset)):
+        corrupt_reason = corrupt_reason or (
+            f"allowed_strategies 类型非法（{type(allowed).__name__}）"
+        )
+        allowed = None
     if not allowed:
         allowed = _setting_or_env(
             settings, "real_allowed_strategies", "REAL_ALLOWED_STRATEGIES", ()
         )
+
+    def _number(key: str, attr: str, env_key: str, default: Any) -> float:
+        """账户级数字：非空才覆盖；非法则记坏键并回落全局（数值本身仍用全局）。"""
+        nonlocal corrupt_reason
+        value = cfg.get(key)
+        if value:
+            number, reason = _strict_float(value)
+            if number is None:
+                corrupt_reason = corrupt_reason or f"{key} {reason}"
+                return float(_setting_or_env(settings, attr, env_key, default))
+            return number
+        return float(_setting_or_env(settings, attr, env_key, default))
+
+    max_order = _number(
+        "max_order_notional", "real_max_order_notional", "REAL_MAX_ORDER_NOTIONAL", 0.0
+    )
+    max_daily = _number(
+        "max_daily_notional", "real_max_daily_notional", "REAL_MAX_DAILY_NOTIONAL", 0.0
+    )
+
+    confirm_raw = cfg.get("require_manual_confirm")
+    require_confirm = (
+        bool(_setting_or_env(
+            settings, "real_require_manual_confirm", "REAL_REQUIRE_MANUAL_CONFIRM", False
+        ))
+        if confirm_raw is None
+        else bool(confirm_raw)
+    )
+
+    corrupt = bool(corrupt_reason)
     return RealAccountLimits(
-        enabled=bool(cfg.get("enabled", True)),
+        # 坏键一律按「开关关闭」返回：BUY 由上层拒绝，SELL 由上层显式放行到既有校验链。
+        enabled=False if corrupt else bool(cfg.get("enabled", True)),
         allowed_strategies=frozenset(allowed),
-        max_order_notional=float(
-            cfg.get("max_order_notional")
-            or _setting_or_env(
-                settings, "real_max_order_notional", "REAL_MAX_ORDER_NOTIONAL", 0.0
-            )
-        ),
-        max_daily_notional=float(
-            cfg.get("max_daily_notional")
-            or _setting_or_env(
-                settings, "real_max_daily_notional", "REAL_MAX_DAILY_NOTIONAL", 0.0
-            )
-        ),
-        require_manual_confirm=bool(
-            cfg.get(
-                "require_manual_confirm",
-                _setting_or_env(
-                    settings, "real_require_manual_confirm", "REAL_REQUIRE_MANUAL_CONFIRM", False
-                ),
-            )
-        ),
+        max_order_notional=max_order,
+        max_daily_notional=max_daily,
+        require_manual_confirm=require_confirm,
         config_present=bool(raw),
+        config_corrupt=corrupt,
+        corrupt_reason=corrupt_reason,
     )
 
 
@@ -376,7 +441,19 @@ def check_real_trade(
 
     # 2. 读取各账户在 runtime_config 中的独立配置（账户级优先、全局兜底）
     limits = resolve_real_account_limits(store, settings, target_account)
-    if not limits.enabled:
+    _is_sell = str(side or "").upper() == "SELL"
+    if limits.config_corrupt:
+        # 坏键（Reviewer 第 2 条）：拦截点就在既有判定链里，由 submit_limit 天然调用，
+        # 不另建判断点。只拦开仓方向；SELL 继续走持仓 / 减仓额度 / 对账等既有校验。
+        notify_corrupt_account_config(store, target_account, limits.corrupt_reason)
+        if not _is_sell:
+            return RealTradeDecision(
+                False,
+                f"实盘账户 {target_account} 的账户级配置损坏（{limits.corrupt_reason}）："
+                "已禁止开仓买入，请修复 real_account_config 后重试",
+                {"account_id": target_account, "config_corrupt": True},
+            )
+    elif not limits.enabled:
         return RealTradeDecision(False, f"实盘账户 {target_account} 的独立交易开关已关闭", {})
     allowed_strategies = limits.allowed_strategies
     max_order = limits.max_order_notional

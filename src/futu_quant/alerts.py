@@ -84,6 +84,9 @@ ALERT_NEVER_MUTE = {
     # 默认不静音，但规则一改就可能被静音，而「服务死了没人知道」比告警噪音严重得多。
     "PROCESS_TERMINATED",
     "PROCESS_HEARTBEAT_TIMEOUT",
+    # 实盘账户级配置损坏（坏键 fail-closed，2026-11-01 用户拍板）：这条一旦被静音，
+    # 「开仓门禁坏了」就变成无人知晓的静默拦截 —— 必须进代码常量，不可配置。
+    "REAL_ACCOUNT_CONFIG_CORRUPT",
 }
 
 # 探针事件名与间隔（S3）。间隔由 `ALERT_PROBE_INTERVAL_SECONDS` 覆盖。
