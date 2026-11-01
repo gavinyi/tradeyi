@@ -192,14 +192,10 @@ def rollback_low_risk_config(
             )
         target_value = sorted(accepted)
 
+    # 业务审计上下文 (Reviewer 单一事实来源口径：真实 before/after/base_version/result_version 全部由 store 事务内当下实时取值为准填充，避免双重来源)
     audit_payload = {
         "actor": actor,
         "reason": reason,
-        "before": diff.get("after"),
-        "after": target_value,
-        "base_version": int(release["base_version"]),
-        "release_id": release_id,
-        "config_key": config_key,
     }
 
     # 单事务原子化执行回滚、插入版本历史并落库审计日志 (彻底杜绝回滚半状态风险)
