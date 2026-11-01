@@ -199,16 +199,18 @@ def test_today_overview_no_fake_zeros_and_hasattr_must_have_explicit_notice():
 
 
 def test_today_overview_resolve_trading_env_status_branches():
-    """Reviewer & Product 守卫：测试交易环境判定函数的 4 个关键分支，严禁默认值伪造模拟绿标。"""
-    import subprocess
+    """Reviewer & Product 守卫：测试交易环境判定函数的关键分支，严禁默认值伪造模拟绿标，且同源暴露无确认会话风险。"""
     from types import SimpleNamespace
+    from futu_quant.real_trading import resolve_real_account_limits, RealAccountLimits
     overview_path = pathlib.Path(__file__).resolve().parent.parent / "pages/00_today_overview.py"
     with open(overview_path, "r", encoding="utf-8") as f:
         src = f.read()
 
+    env_globals = dict(globals())
+    env_globals["resolve_real_account_limits"] = resolve_real_account_limits
     local_ns = {}
     func_code = "def resolve_trading_env_status" + src.split("def resolve_trading_env_status")[1].split("def resolve_pending_restart_status")[0]
-    exec(func_code, globals(), local_ns)
+    exec(func_code, env_globals, local_ns)
     resolve_trading_env_status = local_ns["resolve_trading_env_status"]
 
     # 分支 1：租户字典为空或 None -> 必须为未知环境，不许为模拟盘，且禁止 normal 绿色
@@ -221,11 +223,33 @@ def test_today_overview_resolve_trading_env_status_branches():
     val2, delta2, col2 = resolve_trading_env_status({"tenant_id": "foo"}, SimpleNamespace(real_trading_enabled=False))
     assert "未知" in val2 and col2 != "normal"
 
-    # 分支 3：is_real 为 True -> 实盘，区分 real_trading_enabled
-    val3, delta3, col3 = resolve_trading_env_status({"is_real": True}, SimpleNamespace(real_trading_enabled=True))
-    assert "实盘" in val3 and "允许真金交易" in delta3 and col3 == "inverse"
-    val3_b, delta3_b, col3_b = resolve_trading_env_status({"is_real": True}, SimpleNamespace(real_trading_enabled=False))
-    assert "实盘" in val3_b and "实盘总闸已关闭" in delta3_b and col3_b == "off"
+    # 分支 3：is_real 为 True -> 实盘，测试无二次确认高风险态暴露
+    # 模拟真实门禁返回 limits (enabled=True, require_manual_confirm=False)
+    fake_store = SimpleNamespace(get_setting=lambda k, d: '{"enabled": true, "require_manual_confirm": false}')
+    val3, delta3, col3 = resolve_trading_env_status(
+        {"is_real": True, "acc_id": "281756481476169109"},
+        SimpleNamespace(real_trading_enabled=True, real_require_manual_confirm=False),
+        store=fake_store,
+    )
+    assert "实盘" in val3 and "实盘·无二次确认" in delta3 and col3 == "inverse"
+
+    # 分支 3b：实盘且启用了二次确认
+    fake_store_confirm = SimpleNamespace(get_setting=lambda k, d: '{"enabled": true, "require_manual_confirm": true}')
+    val3_b, delta3_b, col3_b = resolve_trading_env_status(
+        {"is_real": True, "acc_id": "281756481476169109"},
+        SimpleNamespace(real_trading_enabled=True, real_require_manual_confirm=True),
+        store=fake_store_confirm,
+    )
+    assert "实盘" in val3_b and "允许真金交易" in delta3_b and col3_b == "inverse"
+
+    # 分支 3c：实盘但账户级开关被关闭 (单真值：门禁拒绝，卡片绝不显示允许交易)
+    fake_store_disabled = SimpleNamespace(get_setting=lambda k, d: '{"enabled": false}')
+    val3_c, delta3_c, col3_c = resolve_trading_env_status(
+        {"is_real": True, "acc_id": "281756481476169109"},
+        SimpleNamespace(real_trading_enabled=True),
+        store=fake_store_disabled,
+    )
+    assert "实盘" in val3_c and "实盘总闸已关闭" in delta3_c and col3_c == "off"
 
     # 分支 4：确凿 is_real 为 False -> 模拟仿真
     val4, delta4, col4 = resolve_trading_env_status({"is_real": False}, SimpleNamespace(real_trading_enabled=False))

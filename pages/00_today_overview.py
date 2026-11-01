@@ -22,6 +22,7 @@ from futu_quant.config import Settings
 from futu_quant.ui import render_sidebar, get_current_tenant
 from futu_quant.ui_store import ui_store
 from futu_quant.broker import get_tenant_broker
+from futu_quant.real_trading import resolve_real_account_limits
 
 st.set_page_config(page_title="今日总览 - 统一配置中心", page_icon="🧭", layout="wide")
 
@@ -39,20 +40,39 @@ st.caption(
 store = ui_store()
 broker = get_tenant_broker(settings)
 
-def resolve_trading_env_status(tenant: dict | None, settings: Settings) -> tuple[str, str, str]:
+def resolve_trading_env_status(
+    tenant: dict | None,
+    settings: Settings,
+    store: Any = None,
+) -> tuple[str, str, str]:
     """判定当前交易环境卡片的 (value, delta, delta_color)。
 
-    安全哲学：
-    - “安全态（模拟仿真）”必须由确凿证据证明，绝不能由默认值兜底产生。
-    - 取不到租户信息或缺失关键字段时，严禁显示绿色模拟，一律提示中性/未知警示。
+    单真值原则（Reviewer & Product & Ops 铁律）：
+    - 允许实盘交易的唯一来源必须是门禁同源函数 `resolve_real_account_limits(store, settings, account_id).enabled`；
+    - 严禁页面层自行组合 `is_real` + `settings.real_trading_enabled` 产生第二套真值；
+    - 显式暴露高风险态：`require_manual_confirm=False` 时直接在 delta 标明「实盘·无二次确认」；
+    - 未知状态严禁兜底为模拟绿标，统一中性/未知警示。
     """
     if not isinstance(tenant, dict) or "is_real" not in tenant:
         return "⚪ 未知环境", "租户配置缺失或未就绪", "off"
 
     is_real = tenant.get("is_real")
     if is_real is True:
-        real_enabled = getattr(settings, "real_trading_enabled", False)
-        if real_enabled:
+        account_id = tenant.get("acc_id") or getattr(settings, "real_account_id", "")
+        # 与真实下单门禁完全同源解析账户生效限额与开关
+        real_limits = None
+        if store is not None and account_id:
+            try:
+                real_limits = resolve_real_account_limits(store, settings, account_id)
+            except Exception:
+                pass
+
+        real_allowed = real_limits.enabled if real_limits is not None else getattr(settings, "real_trading_enabled", False)
+        requires_confirm = real_limits.require_manual_confirm if real_limits is not None else getattr(settings, "real_require_manual_confirm", False)
+
+        if real_allowed:
+            if not requires_confirm:
+                return "🔴 实盘 (REAL)", "实盘·无二次确认 (高风险)", "inverse"
             return "🔴 实盘 (REAL)", "允许真金交易", "inverse"
         return "🔴 实盘 (REAL)", "实盘总闸已关闭", "off"
 
@@ -105,7 +125,7 @@ def resolve_pending_restart_status(
 col1, col2, col3, col4 = st.columns(4)
 
 current_tenant = get_current_tenant(settings)
-env_val, env_delta, env_color = resolve_trading_env_status(current_tenant, settings)
+env_val, env_delta, env_color = resolve_trading_env_status(current_tenant, settings, store)
 
 with col1:
     st.metric(
