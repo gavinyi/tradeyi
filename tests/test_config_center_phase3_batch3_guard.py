@@ -143,8 +143,8 @@ def test_low_risk_edit_and_rollback_positive_lifecycle(tmp_path):
     cfg = store.get_runtime_config("alert_mute_list")
     assert cfg[0] == ["ORDER_TIMEOUT"]
 
-    # 验证审计日志
-    audits = [r for r in store.audit_events(limit=10) if r["event_type"] == "CONFIG_LOW_RISK_UPDATED"]
+    # 验证审计日志 (统一使用规范化的 CONFIG_RELEASE_PUBLISHED)
+    audits = [r for r in store.audit_events(limit=10) if r["event_type"] == "CONFIG_RELEASE_PUBLISHED"]
     assert len(audits) >= 1
     payload = json.loads(audits[0]["payload_json"])
     assert payload["actor"] == actor

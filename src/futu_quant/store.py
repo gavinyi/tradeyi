@@ -2612,8 +2612,25 @@ class TradingStore:
                 )
             return next_version
 
-    def rollback_config_release(self, release_id: int, actor: str) -> int:
-        """回滚已发布配置版本 (原子化事务保障：三账一致回退)。"""
+    def rollback_config_release(self, release_id: int, actor: str, reason: str = "") -> int:
+        """回滚已发布配置版本 (全系统统一委托原子化实现)。"""
+        return self.rollback_config_release_with_audit(
+            release_id, actor, reason=reason, audit_event_type="", audit_payload=None,
+        )
+
+    def rollback_config_release_with_audit(
+        self,
+        release_id: int,
+        actor: str,
+        reason: str = "",
+        audit_event_type: str = "",
+        audit_payload: dict | None = None,
+    ) -> int:
+        """在同一个 SQLite 事务中原子化执行配置回滚并可选落库审计日志。
+
+        ACID 强保障：值回退、新版本行插入、发布单状态变更 ROLLED_BACK、audit_events 审计
+        必须全部在同一事务内完成，任何一步失败全量回滚，彻底杜绝回滚半状态风险。
+        """
         validate_actor(actor)
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -2647,7 +2664,7 @@ class TradingStore:
             )
 
             # 2. 新增一行独立的版本记录 (非原地篡改)
-            reason_text = f"回滚发布单 #{release_id}"
+            reason_text = reason.strip() if reason and reason.strip() else f"回滚发布单 #{release_id}"
             connection.execute(
                 """INSERT INTO config_versions(config_key, value_json, actor, reason, created_at)
                 VALUES(?,?,?,?,?)""",
@@ -2658,13 +2675,54 @@ class TradingStore:
             connection.execute(
                 "UPDATE config_releases SET status='ROLLED_BACK' WHERE id=?", (release_id,)
             )
+
+            # 4. 同事务原子落库审计日志
+            if audit_event_type:
+                connection.execute(
+                    """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
+                    VALUES(?,?,?,?,?)""",
+                    (audit_event_type, _json_dumps(audit_payload or {}), "config_center", actor, now_iso),
+                )
             return next_version
 
-    def reject_config_release(self, release_id: int, approved_by: str) -> None:
+    def reject_config_release(self, release_id: int, approved_by: str, reason: str = "") -> None:
+        """拒绝草稿并原子写入审计日志 (Chief & Reviewer 必严门禁：reason 必填且非空白)。"""
+        validate_actor(approved_by)
+        clean_reason = str(reason or "").strip()
+        if not clean_reason:
+            raise ValueError(f"拒绝配置草稿 #{release_id} 必须填写有效原因说明 (reason)，禁止空原因作废！")
+
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            release = connection.execute(
+                "SELECT * FROM config_releases WHERE id=?", (release_id,)
+            ).fetchone()
+            if not release or release["status"] != "DRAFT":
+                raise ValueError("配置草稿不存在或状态不是 DRAFT，无法执行拒绝操作")
+
+            now_iso = self.now()
+            # 1. 状态置为 REJECTED
             connection.execute(
-                """UPDATE config_releases SET status='REJECTED',approved_by=?,published_at=?
-                WHERE id=? AND status='DRAFT'""", (approved_by, self.now(), release_id),
+                """UPDATE config_releases SET status='REJECTED', approved_by=?, published_at=?
+                WHERE id=? AND status='DRAFT'""",
+                (approved_by, now_iso, release_id),
+            )
+
+            # 2. 同事务原子落审计日志 (完整包含 6 个标准审计字段)
+            diff = json.loads(release["diff_json"]) if isinstance(release["diff_json"], str) else (release["diff_json"] or {})
+            payload = {
+                "actor": approved_by,
+                "reason": clean_reason,
+                "before": diff.get("before"),
+                "after": json.loads(release["draft_json"]) if isinstance(release["draft_json"], str) else release["draft_json"],
+                "base_version": int(release["base_version"]),
+                "release_id": release_id,
+                "config_key": release["config_key"],
+            }
+            connection.execute(
+                """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
+                VALUES(?,?,?,?,?)""",
+                ("CONFIG_RELEASE_REJECTED", _json_dumps(payload), "config_center", approved_by, now_iso),
             )
 
     def config_releases(self, limit: int = 200) -> list[dict]:

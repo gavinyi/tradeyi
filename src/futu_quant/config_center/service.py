@@ -90,18 +90,18 @@ def edit_low_risk_config(
 
     # 2. 同事务原子化发布并落库审计日志 (Reviewer 首选方案：ACID 事务保证绝不脱节)
     audit_payload = {
-        "config_key": config_key,
+        "actor": actor,
+        "reason": reason,
         "before": before_value,
         "after": new_value,
         "base_version": base_version,
         "release_id": release_id,
-        "actor": actor,
-        "reason": reason,
+        "config_key": config_key,
     }
 
     try:
         store.publish_config_release_with_audit(
-            release_id, actor, "CONFIG_LOW_RISK_UPDATED", audit_payload,
+            release_id, actor, "CONFIG_RELEASE_PUBLISHED", audit_payload,
         )
     except Exception as exc:
         # 若原子发布过程发生异常，兜底确保草稿单与运行时账本一致，且绝不吞原异常
@@ -192,31 +192,29 @@ def rollback_low_risk_config(
             )
         target_value = sorted(accepted)
 
-    rollback_release_id = store.rollback_config_release(release_id, actor)
+    audit_payload = {
+        "actor": actor,
+        "reason": reason,
+        "before": diff.get("after"),
+        "after": target_value,
+        "base_version": int(release["base_version"]),
+        "release_id": release_id,
+        "config_key": config_key,
+    }
 
-    # 强制记录审计日志
-    try:
-        store.audit(
-            "CONFIG_LOW_RISK_ROLLED_BACK",
-            {
-                "original_release_id": release_id,
-                "rollback_release_id": rollback_release_id,
-                "config_key": config_key,
-                "restored_value": target_value,
-                "actor": actor,
-                "reason": reason,
-            },
-            strategy_id="config_center",
-            actor=actor,
-        )
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).error("配置回滚后写入审计日志失败: %s", exc)
+    # 单事务原子化执行回滚、插入版本历史并落库审计日志 (彻底杜绝回滚半状态风险)
+    next_ver = store.rollback_config_release_with_audit(
+        release_id,
+        actor,
+        reason=reason,
+        audit_event_type="CONFIG_RELEASE_ROLLED_BACK",
+        audit_payload=audit_payload,
+    )
 
     return {
         "status": "ROLLED_BACK",
-        "original_release_id": release_id,
-        "rollback_release_id": rollback_release_id,
+        "release_id": release_id,
         "config_key": config_key,
         "restored_value": target_value,
+        "version": next_ver,
     }

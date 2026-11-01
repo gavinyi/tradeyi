@@ -133,14 +133,20 @@ with config_tab:
                     "该草稿无法直接发布，请点击【拒绝草稿】进行归档作废，并重新创建新草稿。"
                 )
 
+            reject_reason = st.text_input("拒绝原因 (作废归档必填)", key=f"reject_reason_{release_id}", placeholder="例如：基线已过期作废，或业务方案调整")
+
             with st.container(horizontal=True):
                 if st.button("审批并发布", type="primary", disabled=not admin or is_stale_baseline):
                     store.publish_config_release(int(release_id), admin_actor)
                     st.success("配置已原子发布；服务下一循环读取。")
                     st.rerun()
-                if st.button("拒绝草稿", disabled=not admin):
-                    store.reject_config_release(int(release_id), admin_actor)
-                    st.rerun()
+                if st.button("拒绝草稿", disabled=not admin or not reject_reason.strip()):
+                    try:
+                        store.reject_config_release(int(release_id), admin_actor, reject_reason)
+                        st.success("草稿已安全拒绝并归档作废，已记入审计事件。")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
         published = releases[releases["status"] == "PUBLISHED"]
         if not published.empty:
             rollback_id = st.selectbox("选择已发布版本回滚", published["id"].astype(int).tolist())

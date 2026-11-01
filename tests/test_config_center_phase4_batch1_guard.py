@@ -198,7 +198,7 @@ def test_stale_baseline_draft_has_clear_rejection_exit(tmp_path):
         store.publish_config_release(draft_id, actor)
 
     # 4. 管理员通过拒绝出口将其干净归档作废
-    store.reject_config_release(draft_id, actor)
+    store.reject_config_release(draft_id, actor, "基线过期干净归档作废")
 
     # 验证终态已变为 REJECTED，草稿已清除
     drafts = [r for r in store.config_releases() if r["status"] == "DRAFT"]
