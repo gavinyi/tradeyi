@@ -230,6 +230,10 @@ def test_submit_limit_does_not_block_sell_when_corrupt(tmp_path, monkeypatch):
     assert not any(
         e["event_type"] == "REAL_ACCOUNT_CONFIG_CORRUPT" for e in store.audit_events()
     ), "SELL 不该写坏键拒单审计"
+    assert any(
+        e["event_type"] == "REAL_ACCOUNT_CONFIG_CORRUPT_SELL_ALLOWED"
+        for e in store.audit_events()
+    ), "SELL 放行未留审计 —— 事后无法解释「为什么这笔没被拦」"
 
 
 # ---------------------------------------------------------------------------
@@ -245,18 +249,89 @@ def test_corrupt_event_is_never_mutable():
 def test_corrupt_emits_alert(tmp_path, monkeypatch):
     store = TradingStore(tmp_path / "a1.db")
     store.set_setting(KEY, "{not json")
-    sent: list[tuple[str, str, str]] = []
+    sent: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         AlertManager, "send",
         lambda self, severity, event_type, message, incident_key=None: sent.append(
-            (severity, event_type, message)
+            (severity, event_type, message, incident_key)
         ),
     )
 
     check_real_trade(store, _settings(monkeypatch), STRATEGY_ID, "US.SPY", "BUY", 1, 100.0, {})
 
-    assert [e for _, e, _ in sent] == ["REAL_ACCOUNT_CONFIG_CORRUPT"]
+    assert [e for _, e, _, _ in sent] == ["REAL_ACCOUNT_CONFIG_CORRUPT"]
     assert sent[0][0] == "ERROR"
+
+
+def test_corrupt_alert_uses_stable_incident_key(tmp_path, monkeypatch):
+    """Reviewer 第 1 条：不带稳定 incident_key 会每笔尝试新开一条 incident + 一张飞书卡。"""
+    store = TradingStore(tmp_path / "a2.db")
+    store.set_setting(KEY, "{not json")
+    keys: list[str] = []
+    monkeypatch.setattr(
+        AlertManager, "send",
+        lambda self, severity, event_type, message, incident_key=None: keys.append(
+            incident_key
+        ),
+    )
+
+    check_real_trade(store, _settings(monkeypatch), STRATEGY_ID, "US.SPY", "BUY", 1, 100.0, {})
+    check_real_trade(store, _settings(monkeypatch), STRATEGY_ID, "US.SPY", "BUY", 1, 100.0, {})
+
+    assert keys == [f"REAL_ACCOUNT_CONFIG_CORRUPT:{ACCOUNT}"] * 2
+
+
+def test_corrupt_alert_dedupes_into_single_incident(tmp_path, monkeypatch):
+    """稳定 incident_key + AlertManager 去重窗口 ⇒ 同一坏键只留一条 incident。"""
+    store = TradingStore(tmp_path / "a3.db")
+    store.set_setting(KEY, "{not json")
+    settings = _settings(monkeypatch)
+
+    for _ in range(3):
+        check_real_trade(store, settings, STRATEGY_ID, "US.SPY", "BUY", 1, 100.0, {})
+
+    rows = [r for r in store.incidents("OPEN") if "REAL_ACCOUNT_CONFIG_CORRUPT" in str(r)]
+    assert len(rows) == 1, f"同一坏键被开成了 {len(rows)} 条 incident —— 会刷屏"
+
+
+def test_sell_does_not_alert_when_corrupt(tmp_path, monkeypatch):
+    """Reviewer 第 2 条：SELL 只落审计，不推送（否则坏键期每笔减仓都会弹卡）。"""
+    store = TradingStore(tmp_path / "a4.db")
+    store.set_setting(KEY, "{not json")
+    sent: list[str] = []
+    monkeypatch.setattr(
+        AlertManager, "send",
+        lambda self, severity, event_type, message, incident_key=None: sent.append(event_type),
+    )
+
+    decision = check_real_trade(
+        store, _settings(monkeypatch), STRATEGY_ID, "US.SPY", "SELL", 1, 100.0, {},
+    )
+
+    assert decision.allowed is True
+    assert sent == [], "坏键期间的减仓仍然推送了告警 —— 会刷屏"
+    assert any(
+        e["event_type"] == "REAL_ACCOUNT_CONFIG_CORRUPT_SELL_ALLOWED"
+        for e in store.audit_events()
+    ), "SELL 放行必须留审计，否则「为什么这笔没被拦」无据可查"
+
+
+def test_corrupt_uses_global_limits_so_sell_not_deadlocked(tmp_path, monkeypatch):
+    """Reviewer 第 3 条显式约定：坏键时数值回落全局，绝不置 0。
+
+    一旦有人把它改成 0，SELL 会因「单笔减仓超过 0」被自己的坏配置锁死 —— 本用例转红。
+    """
+    store = TradingStore(tmp_path / "a5.db")
+    store.set_setting(KEY, '{"max_order_notional": "abc"}')
+
+    limits = resolve_real_account_limits(store, _settings(monkeypatch), ACCOUNT)
+
+    assert limits.max_order_notional == 2500.0, "坏键把单笔限额变成 0 —— 减仓通道会被锁死"
+    assert limits.max_daily_notional == 5000.0
+    decision = check_real_trade(
+        store, _settings(monkeypatch), STRATEGY_ID, "US.SPY", "SELL", 1, 100.0, {},
+    )
+    assert decision.allowed is True
 
 
 # ---------------------------------------------------------------------------

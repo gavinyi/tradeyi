@@ -82,6 +82,11 @@ def notify_corrupt_account_config(store: TradingStore, account_id: Any, reason: 
 
     为什么必须真推：坏键的直接后果是「开仓被拦」，如果这条告警能被静音或只落库，
     门禁坏了没人知道 —— 与既有的静默拦截事故同一母题。
+
+    **防轰炸（Reviewer 第 1 条）**：必须带稳定 `incident_key`，否则每笔尝试都会
+    新开一条 incident 并推一张飞书卡。稳定键 + `AlertManager` 的
+    `ALERT_DEDUPE_SECONDS`（默认 900s）精确去重共同保证「一个坏键只刷一张卡」。
+    **调用方职责**：只有 BUY 被拦时才调本函数，SELL 一律不推（见 execution / check_real_trade）。
     """
     from .alerts import AlertManager  # 局部导入：alerts 依赖 store，避免模块环
 
@@ -90,6 +95,7 @@ def notify_corrupt_account_config(store: TradingStore, account_id: Any, reason: 
             "ERROR",
             "REAL_ACCOUNT_CONFIG_CORRUPT",
             f"实盘账户 {account_id} 的账户级配置损坏：{reason} —— 已禁止 BUY 开仓，SELL 仍走原有安全校验",
+            incident_key=f"REAL_ACCOUNT_CONFIG_CORRUPT:{account_id}",
         )
     except Exception:  # noqa: BLE001
         pass  # silent-ok: 告警投递失败不得反过来阻断门禁判定本身
@@ -133,7 +139,13 @@ def resolve_real_account_limits(
         )
 
     def _number(key: str, attr: str, env_key: str, default: Any) -> float:
-        """账户级数字：非空才覆盖；非法则记坏键并回落全局（数值本身仍用全局）。"""
+        """账户级数字：非空才覆盖；非法则记坏键并回落全局。
+
+        **显式约定（Reviewer 第 3 条，改动前须先改这条注释与守卫）**：
+        坏键下数值字段**回落全局口径，绝不置 0** —— 因为 SELL 仍要使用这份限额，
+        一旦变成 0 就等于「配置写坏 ⇒ 减仓也被锁死」，平仓通道会被自己的坏配置堵死。
+        对应守卫：`test_corrupt_uses_global_limits_so_sell_not_deadlocked`。
+        """
         nonlocal corrupt_reason
         value = cfg.get(key)
         if value:
@@ -445,14 +457,27 @@ def check_real_trade(
     if limits.config_corrupt:
         # 坏键（Reviewer 第 2 条）：拦截点就在既有判定链里，由 submit_limit 天然调用，
         # 不另建判断点。只拦开仓方向；SELL 继续走持仓 / 减仓额度 / 对账等既有校验。
-        notify_corrupt_account_config(store, target_account, limits.corrupt_reason)
         if not _is_sell:
+            notify_corrupt_account_config(store, target_account, limits.corrupt_reason)
             return RealTradeDecision(
                 False,
                 f"实盘账户 {target_account} 的账户级配置损坏（{limits.corrupt_reason}）："
                 "已禁止开仓买入，请修复 real_account_config 后重试",
                 {"account_id": target_account, "config_corrupt": True},
             )
+        # SELL：只落审计、**不推送**（Reviewer 第 2 条）—— 坏键期间每笔减仓都弹卡
+        # 会把真告警淹没，用户最反感这种刷屏。
+        store.audit(
+            "REAL_ACCOUNT_CONFIG_CORRUPT_SELL_ALLOWED",
+            {
+                "account_id": target_account,
+                "strategy_id": strategy_id,
+                "symbol": symbol,
+                "reason": limits.corrupt_reason,
+            },
+            strategy_id,
+            actor="service:real_gate",
+        )
     elif not limits.enabled:
         return RealTradeDecision(False, f"实盘账户 {target_account} 的独立交易开关已关闭", {})
     allowed_strategies = limits.allowed_strategies

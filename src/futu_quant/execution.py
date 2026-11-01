@@ -153,11 +153,13 @@ class ExecutionManager:
             )
             if not limits.enabled:
                 if limits.config_corrupt:
-                    # 坏键：BUY 拒单；SELL 不被该门禁拦截，继续走对账 / 风控 / 减仓额度校验。
-                    notify_corrupt_account_config(
-                        self.store, broker_account_id, limits.corrupt_reason,
-                    )
+                    # 坏键：BUY 拒单 + 强告警；SELL 不被该门禁拦截，继续走对账 / 风控 /
+                    # 减仓额度校验，且**只落审计不推送**（Reviewer 第 2 条：坏键期每笔
+                    # 减仓都弹卡会把真告警淹没）。
                     if str(side or "").upper() != "SELL":
+                        notify_corrupt_account_config(
+                            self.store, broker_account_id, limits.corrupt_reason,
+                        )
                         reason = (
                             f"实盘账户 {broker_account_id} 的账户级配置损坏"
                             f"（{limits.corrupt_reason}）：已禁止提交买入订单，请修复后重试"
@@ -173,6 +175,16 @@ class ExecutionManager:
                             actor="service:execution",
                         )
                         return ExecutionResult(0, "REJECTED", reason)
+                    self.store.audit(
+                        "REAL_ACCOUNT_CONFIG_CORRUPT_SELL_ALLOWED",
+                        {
+                            "account_id": str(broker_account_id),
+                            "strategy_id": strategy_id,
+                            "side": side,
+                            "reason": limits.corrupt_reason,
+                        },
+                        actor="service:execution",
+                    )
                 else:
                     reason = f"账户管理安全铁律：实盘账户 {broker_account_id} 已关闭统一管理，禁止向其提交任何订单"
                     self.store.audit("DISABLED_ACCOUNT_ORDER_REJECTED", {"account_id": str(broker_account_id), "strategy_id": strategy_id}, actor="service:execution")
