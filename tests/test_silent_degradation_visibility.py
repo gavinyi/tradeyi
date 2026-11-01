@@ -110,7 +110,8 @@ def test_option_history_missing_contract_is_audited(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "futu_quant.option_history.load_all_volatility_campaigns", lambda: []
     )
-    fresh = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
+    from datetime import timezone
+    fresh = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
 
     class Broker:
         @staticmethod
@@ -151,7 +152,8 @@ def test_option_history_sixty_percent_usable_threshold_guard(tmp_path, monkeypat
     3. 若 records 完全为空，必须判定为 DEGRADED。
     """
     store = TradingStore(tmp_path / "opt_hist_guard.db")
-    fresh = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
+    from datetime import timezone
+    fresh = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
 
     # 1. 场景 A: 80% 可用 -> HEALTHY
     test_codes = [f"US.AAPL260720C{300000 + i * 1000}" for i in range(10)]

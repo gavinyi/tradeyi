@@ -371,9 +371,10 @@ def test_exclusion_roundtrip_and_prune(tmp_path):
 
 
 def _quiet_but_usable_row(age_seconds: float) -> dict:
+    from datetime import timezone
     return {
         "bid_price": 4.9, "ask_price": 5.1,
-        "update_time": (datetime.now(NEW_YORK) - timedelta(seconds=age_seconds)).isoformat(),
+        "update_time": (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).astimezone(NEW_YORK).isoformat(),
     }
 
 

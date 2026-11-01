@@ -43,7 +43,8 @@ def test_event_backtest_uses_ask_entry_and_bid_exit():
 
 def test_collector_records_point_in_time_snapshot(tmp_path, monkeypatch):
     store = TradingStore(tmp_path / "trading.db")
-    fresh_market_time = datetime.now(ZoneInfo("America/New_York")).strftime(
+    from datetime import timezone
+    fresh_market_time = datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
     monkeypatch.setattr(

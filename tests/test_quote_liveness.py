@@ -28,8 +28,10 @@ def _row(bid: float, ask: float, last: float = 0.0) -> dict:
 
 
 def _quote_at(seconds_ago: int) -> str:
-    stamp = datetime.now(NY) - timedelta(seconds=seconds_ago)
-    return stamp.strftime("%Y-%m-%d %H:%M:%S")
+    # 严格遵循测试时区纪律：先生成 UTC-aware 时间，转为带时区偏移的 ISO 字符串，杜绝 naive 丢失时区信息
+    from datetime import timezone
+    utc_stamp = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    return utc_stamp.astimezone(NY).isoformat()
 
 
 # ---------------------------------------------------------------------------
