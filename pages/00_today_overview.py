@@ -22,9 +22,8 @@ import streamlit as st
 logger = logging.getLogger(__name__)
 
 from futu_quant.config import Settings
-from futu_quant.ui import render_sidebar, get_current_tenant
-from futu_quant.ui_store import ui_store
-from futu_quant.broker import get_tenant_broker
+from futu_quant.ui import render_sidebar, get_current_tenant, get_tenant_broker
+from futu_quant.store import TradingStore
 from futu_quant.real_trading import resolve_real_account_limits
 
 st.set_page_config(page_title="今日总览 - 统一配置中心", page_icon="🧭", layout="wide")
@@ -40,7 +39,7 @@ st.caption(
     "按 F5 刷新无效：元数据在进程启动时一次性载入内存。"
 )
 
-store = ui_store()
+store = TradingStore()
 broker = get_tenant_broker(settings)
 
 def resolve_trading_env_status(
