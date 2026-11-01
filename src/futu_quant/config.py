@@ -597,12 +597,20 @@ def update_volatility_symbol(symbol: str, add: bool) -> tuple[str, ...]:
     return tuple(value)
 
 
-def save_runtime_settings(values: dict[str, str]) -> None:
-    """Persist validated operational settings from the monitoring page."""
+def save_runtime_settings(values: dict[str, str], store=None) -> None:
+    """Persist validated operational settings from the monitoring page.
+
+    `store`：调用方**应当**传入自己已打开的 store（UI 里是 `ui.open_trading_store()`）。
+    不传时才退回无参 `TradingStore()` —— 那会在页面进程里自建连接，
+    既是 2026-11-01 面板事故里那条老红线，也让「页面写的库」与「页面读的库」可能不是同一个。
+    """
     normalized = {str(key): str(value) for key, value in values.items()}
     if ENV_FILE == DEFAULT_ENV_FILE:
-        from .store import TradingStore
-        TradingStore().mutate_runtime_config(
+        if store is None:
+            from .store import TradingStore
+
+            store = TradingStore()
+        store.mutate_runtime_config(
             "ENV_SETTINGS", {}, lambda current: {**current, **normalized},
             "streamlit_or_service",
         )

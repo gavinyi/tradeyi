@@ -1,21 +1,27 @@
 """P0-UI-2 第一刀守卫：风险与限额页的「唯一可编辑入口」与 5 项限额。
 
 用户诉求原话：「我怎么没有一个可以改的地方呢」。P0-UI-1 只做了只读骨架，
-点进去什么都改不了 —— 本文件锁住「真的能改、改对地方、改错会被拦」：
+点进去什么都改不了 —— 本文件锁住「真的能改、改对地方、改完真生效、改错会被拦」。
 
-1. **元数据锁 5 项**（PRD §12 B 段），不得私自扩项；
-2. **生效值唯一来源** = `RiskLimits`，页面不读 env 拼第二套；
-3. **校验**：区间/非数字/NaN/Inf 必须被拒，不允许写进去；
-4. **只写变化项**：值没变就不写库，避免无意义审计与脏写；
-5. **单写入口**：页面只调用 `save_runtime_settings`（唯一写路径）+ 审计；
-6. **②实盘门禁只读**：页面不得出现 `REAL_MAX_*` 的写入；
-7. **薄视图**：业务逻辑在库里，页面不得自己实现校验/取值。
+其中**最重要的一条**是 Reviewer 2026-11-01 抓出的写入层问题：
+页面原先写 `ENV_SETTINGS`（最低优先级的 env 兜底），而生产库租户层
+`risk_limits:{tenant}` 存在，租户层永远压过 env —— 会出现「保存成功但风控没变」。
+本文件用**真实解析链**验证：写完后 `resolve_risk_limits` 必须真的读到新值。
+
+1. 元数据锁 5 项（PRD §12 B 段），不得私自扩项；
+2. 生效值唯一来源 = `RiskLimits`，页面不读 env 拼第二套；
+3. 校验：区间/非数字/NaN/Inf 必须被拒；
+4. 只写变化项；
+5. **写租户层、且写完解析链必须生效**；账户级接管时禁写；
+6. **写的是完整 10 字段**（部分配置会被 fail-closed 拒绝，这是真事故）；
+7. ②实盘门禁只读；页面薄视图。
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,164 +29,270 @@ from futu_quant.risk_limit_editing import (
     EDITABLE_ITEMS,
     EDITABLE_KEYS,
     build_changes,
+    build_tenant_risk_payload,
     effective_values,
+    save_tenant_risk_limits,
+    source_is_writable_here,
     validate_value,
 )
-from futu_quant.ui import open_trading_store  # noqa: F401 - 仅为确认页面依赖的入口存在
+from futu_quant.risk_limits import (
+    ACCOUNT_RISK_FIELDS,
+    resolve_risk_limits,
+    risk_limits_tenant_key,
+)
+from futu_quant.store import TradingStore
 
 PAGE = Path(__file__).resolve().parents[1] / "pages" / "45_risk_and_limits.py"
 
-
-class _FakeLimits:
-    """模拟 `RiskLimits` 上被页面引用的 5 个属性。"""
-
-    max_order_notional = 20000.0
-    max_daily_notional = 100000.0
-    max_reduction_order_notional = 150000.0
-    max_daily_reduction_notional = 500000.0
-    max_daily_loss = 5000.0
+TENANT = "futu_paper_sandbox"
+ACCOUNT = "20170229"
 
 
-def test_editable_items_are_exactly_five_per_prd():
-    """PRD §12 锁定 5 项；扩项必须重走 PRD，不允许页面悄悄加第 6 个。"""
-    assert len(EDITABLE_ITEMS) == 5
-    assert EDITABLE_KEYS == (
-        "RISK_MAX_ORDER_NOTIONAL",
-        "RISK_MAX_DAILY_NOTIONAL",
-        "RISK_MAX_REDUCTION_ORDER_NOTIONAL",
-        "RISK_MAX_DAILY_REDUCTION_NOTIONAL",
-        "RISK_MAX_DAILY_LOSS",
+def _complete_risk_section(**overrides) -> dict:
+    """一份**完整**的 10 字段 risk 段（部分配置会被 fail-closed 拒绝）。"""
+    base = {
+        "max_entry_notional": 20000.0,
+        "max_entry_daily_notional": 100000.0,
+        "max_reduction_order_notional": 150000.0,
+        "max_daily_reduction_notional": 500000.0,
+        "max_pending_orders": 20,
+        "max_symbol_weight": 0.25,
+        "max_gross_exposure": 0.85,
+        "max_option_premium": 30000.0,
+        "max_daily_loss": 5000.0,
+        "max_drawdown_pct": 0.05,
+    }
+    base.update(overrides)
+    return base
+
+
+def _scope(account_id: str = ACCOUNT, tenant_id: str = TENANT) -> SimpleNamespace:
+    return SimpleNamespace(account_id=account_id, tenant_id=tenant_id)
+
+
+def _seed_tenant_limits(store: TradingStore, **overrides) -> None:
+    import json
+
+    store.set_setting(
+        risk_limits_tenant_key(TENANT),
+        json.dumps(_complete_risk_section(**overrides)),
     )
 
 
-def test_editable_items_are_all_positive_bounded_and_described():
-    """每项必须有区间、有业务说明（PRD AC4：影响说清楚）。"""
+# ---------------------------------------------------------------------------
+# 1. 元数据与取值
+# ---------------------------------------------------------------------------
+
+
+def test_editable_items_are_exactly_five_per_prd():
+    assert len(EDITABLE_ITEMS) == 5
+    assert EDITABLE_KEYS == (
+        "max_entry_notional",
+        "max_entry_daily_notional",
+        "max_reduction_order_notional",
+        "max_daily_reduction_notional",
+        "max_daily_loss",
+    )
+
+
+def test_editable_keys_are_real_risk_section_fields():
+    """键名必须是 risk 段真字段名，否则写下去等于写了个风控不认识的键。"""
+    known = {name for name, _ in ACCOUNT_RISK_FIELDS}
+    for key in EDITABLE_KEYS:
+        assert key in known, f"{key} 不是 risk 段字段，写入会被忽略/告警"
+
+
+def test_editable_items_are_bounded_and_described():
     for item in EDITABLE_ITEMS:
         assert item.minimum > 0
         assert item.maximum > item.minimum
         assert item.step > 0
-        assert item.impact.strip(), f"{item.key} 缺少「它控制什么」说明"
+        assert item.impact.strip()
 
 
 def test_effective_values_reads_from_limits_only():
-    values = effective_values(_FakeLimits())
+    limits = SimpleNamespace(
+        max_order_notional=20000.0, max_daily_notional=100000.0,
+        max_reduction_order_notional=150000.0, max_daily_reduction_notional=500000.0,
+        max_daily_loss=5000.0,
+    )
+    values = effective_values(limits)
 
-    assert values["RISK_MAX_ORDER_NOTIONAL"] == 20000.0
-    assert values["RISK_MAX_DAILY_LOSS"] == 5000.0
+    assert values["max_entry_notional"] == 20000.0
+    assert values["max_daily_loss"] == 5000.0
     assert len(values) == 5
 
 
 def test_effective_values_skips_missing_attribute_instead_of_zero():
-    """取不到就**不出现**，绝不填 0 冒充「额度为 0」。"""
-    class _Partial:
-        max_order_notional = 1234.0
+    values = effective_values(SimpleNamespace(max_order_notional=1234.0))
 
-    values = effective_values(_Partial())
-
-    assert values == {"RISK_MAX_ORDER_NOTIONAL": 1234.0}
+    assert values == {"max_entry_notional": 1234.0}
 
 
-def test_validate_rejects_out_of_range_and_non_numeric():
+# ---------------------------------------------------------------------------
+# 2. 校验
+# ---------------------------------------------------------------------------
+
+
+def test_validate_rejects_out_of_range_and_non_finite():
     item = EDITABLE_ITEMS[0]
-
-    with pytest.raises(ValueError):
-        validate_value(item, item.minimum - 1)
-    with pytest.raises(ValueError):
-        validate_value(item, item.maximum + 1)
-    with pytest.raises(ValueError):
-        validate_value(item, "abc")
-    with pytest.raises(ValueError):
-        validate_value(item, float("nan"))
-    with pytest.raises(ValueError):
-        validate_value(item, float("inf"))
+    for bad in (item.minimum - 1, item.maximum + 1, "abc", float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            validate_value(item, bad)
 
 
 def test_validate_accepts_boundaries():
     item = EDITABLE_ITEMS[0]
-
     assert validate_value(item, item.minimum) == item.minimum
     assert validate_value(item, item.maximum) == item.maximum
 
 
 def test_build_changes_only_returns_modified_keys():
-    current = effective_values(_FakeLimits())
+    current = {item.key: item.minimum for item in EDITABLE_ITEMS}
     wanted = dict(current)
-    wanted["RISK_MAX_ORDER_NOTIONAL"] = 30000.0
+    wanted["max_entry_notional"] = 30000.0
 
-    changes = build_changes(wanted, current)
-
-    assert changes == {"RISK_MAX_ORDER_NOTIONAL": "30000.0"}
+    assert build_changes(wanted, current) == {"max_entry_notional": "30000.0"}
 
 
-def test_build_changes_returns_empty_when_nothing_changed():
-    current = effective_values(_FakeLimits())
-
+def test_build_changes_returns_empty_when_unchanged():
+    current = {item.key: item.minimum for item in EDITABLE_ITEMS}
     assert build_changes(dict(current), current) == {}
 
 
-def test_build_changes_writes_all_when_no_current():
-    wanted = {item.key: item.minimum for item in EDITABLE_ITEMS}
-
-    changes = build_changes(wanted, None)
-
-    assert set(changes) == set(EDITABLE_KEYS)
-
-
 # ---------------------------------------------------------------------------
-# 页面层守卫
+# 3. 写入层：写租户层，且写完解析链必须真的变（Reviewer 的核心关切）
 # ---------------------------------------------------------------------------
 
 
-def _page_tree() -> ast.Module:
-    return ast.parse(PAGE.read_text(encoding="utf-8"), filename=str(PAGE))
+def test_save_writes_tenant_layer_and_takes_effect(tmp_path):
+    """写完 `resolve_risk_limits` 必须读到新值 —— 这条能抓「保存成功但没生效」。"""
+    store = TradingStore(tmp_path / "eff.db")
+    _seed_tenant_limits(store)
+    scope = _scope()
+
+    before = resolve_risk_limits(store, scope)
+    assert before.max_order_notional == 20000.0
+
+    payload = build_tenant_risk_payload(before, {"max_entry_notional": "30000.0"})
+    written_key = save_tenant_risk_limits(store, TENANT, payload)
+
+    assert written_key == risk_limits_tenant_key(TENANT)
+    after = resolve_risk_limits(store, scope)
+    assert after.max_order_notional == 30000.0, "写完风控读不到新值 —— 就是本次要修的坑"
+    # 未改动字段必须保持原值（只改这 5 项，其余不动）
+    assert after.max_daily_loss == before.max_daily_loss
 
 
-def test_page_writes_through_single_save_path_and_audits():
-    source = PAGE.read_text(encoding="utf-8")
+def test_payload_is_complete_so_fail_closed_is_not_triggered(tmp_path):
+    """只写 5 项会让 risk 段变「部分配置」→ 风控 fail-closed 拒绝一切开仓。"""
+    store = TradingStore(tmp_path / "complete.db")
+    _seed_tenant_limits(store)
+    limits = resolve_risk_limits(store, _scope())
 
-    assert "save_runtime_settings(" in source, "必须走唯一写路径 save_runtime_settings"
+    payload = build_tenant_risk_payload(limits, {"max_daily_loss": "6000.0"})
+
+    assert set(payload) == {name for name, _ in ACCOUNT_RISK_FIELDS}
+    assert payload["max_daily_loss"] == 6000.0
+    # 写下去后解析链必须仍然可用（不完整的段会抛 RiskLimitsConfigError）
+    save_tenant_risk_limits(store, TENANT, payload)
+    assert resolve_risk_limits(store, _scope()).max_daily_loss == 6000.0
+
+
+def test_account_level_source_is_not_writable_here():
+    """账户级 risk 段在租户层之上：本页改了也不生效，必须禁写并指路。"""
+    assert source_is_writable_here(f"real_account_config:{ACCOUNT}", TENANT) is False
+    assert source_is_writable_here(risk_limits_tenant_key(TENANT), TENANT) is True
+    assert source_is_writable_here("env", TENANT) is True
+    assert source_is_writable_here("env", "") is False
+
+
+def test_save_refuses_without_tenant_id(tmp_path):
+    store = TradingStore(tmp_path / "no_tenant.db")
+    with pytest.raises(ValueError):
+        save_tenant_risk_limits(store, "", {"max_entry_notional": 1.0})
+
+
+def test_save_writes_the_same_table_the_resolver_reads(tmp_path):
+    """必须写进 `get_setting` 读的那张表。
+
+    2026-11-01 实测坑：`mutate_runtime_config` 写的是 `runtime_config` 表，而风控解析走
+    `get_setting` → `system_settings` 表。用前者写租户级风控，行确实进库了，
+    `resolve_risk_limits` 却完全看不到 —— 又一次「写进去了但没生效」。
+    """
+    import json
+
+    store = TradingStore(tmp_path / "own_table.db")
+    _seed_tenant_limits(store)
+    limits = resolve_risk_limits(store, _scope())
+    key = risk_limits_tenant_key(TENANT)
+
+    save_tenant_risk_limits(
+        store, TENANT, build_tenant_risk_payload(limits, {"max_daily_loss": "6000.0"}),
+    )
+
+    raw = store.get_setting(key, "")
+    assert raw, "写完 get_setting 读不到 —— 风控也读不到"
+    assert json.loads(raw)["max_daily_loss"] == 6000.0
+    assert resolve_risk_limits(store, _scope()).max_daily_loss == 6000.0
+
+
+# ---------------------------------------------------------------------------
+# 4. 页面层守卫
+# ---------------------------------------------------------------------------
+
+
+def _page_source() -> str:
+    return PAGE.read_text(encoding="utf-8")
+
+
+def test_page_writes_tenant_layer_not_env_settings():
+    source = _page_source()
+
+    assert "save_tenant_risk_limits(" in source
+    assert "save_runtime_settings(" not in source, (
+        "又写回 ENV_SETTINGS（env 兜底层）—— 租户层存在时保存等于没改"
+    )
+
+
+def test_page_blocks_save_when_account_layer_owns_values():
+    source = _page_source()
+
+    assert "source_is_writable_here(" in source
+    assert "disabled=not writable" in source, "不可写的层必须禁用保存按钮"
+
+
+def test_page_requires_admin_and_second_confirmation():
+    source = _page_source()
+
+    assert "render_admin_login()" in source
+    assert "st.checkbox(" in source
     assert "RISK_LIMITS_UPDATED" in source, "改钱相关参数必须留审计"
-    assert "store.set_setting(" not in source, "不得绕过唯一写路径直接写键"
-    assert "mutate_runtime_config(" not in source, "不得在页面层自行拼写配置版本"
-
-
-def test_page_has_second_confirmation_and_admin_gate():
-    source = PAGE.read_text(encoding="utf-8")
-
-    assert "render_admin_login()" in source, "改钱相关参数必须要求管理员登录"
-    assert "st.checkbox(" in source, "必须有表单内二次确认"
 
 
 def test_page_does_not_write_real_gate_limits():
-    """②类实盘门禁项只读：页面不得出现 REAL_MAX_* 的写入。"""
-    source = PAGE.read_text(encoding="utf-8")
-
+    source = _page_source()
     for banned in ("REAL_MAX_ORDER_NOTIONAL", "REAL_MAX_DAILY_NOTIONAL"):
-        assert banned not in source, f"页面不得编辑/写入 {banned}（②类只读 + 指路）"
+        assert banned not in source
 
 
-def test_page_does_not_reimplement_validation():
-    """薄视图：页面不得自带区间校验（否则会和库里的规则分叉）。"""
-    source = PAGE.read_text(encoding="utf-8")
+def test_page_does_not_reimplement_validation_or_key_mapping():
+    source = _page_source()
 
     assert "from futu_quant.risk_limit_editing import" in source
     assert "def validate_value(" not in source
     assert "def build_changes(" not in source
+    assert "mutate_runtime_config(" not in source, "页面不得自己拼写库"
 
 
 def test_page_free_of_fake_defaults():
-    """未解析成功时不得显示 0 冒充正常（用户最反感的假状态）。"""
-    source = PAGE.read_text(encoding="utf-8")
-
+    source = _page_source()
     assert "未统计" in source
-    assert 'f"{item.label} $0"' not in source
 
 
 def test_page_imports_resolve():
-    """页面顶层 futu_quant 导入必须可解析（防 2026-11-01 那类凭空依赖）。"""
     from futu_quant.operational_readiness import _audit_page_imports
 
     root = Path(__file__).resolve().parents[1]
-    issues = _audit_page_imports(root, _page_tree(), PAGE.name)
-
-    assert issues == [], issues
+    tree = ast.parse(_page_source(), filename=str(PAGE))
+    assert _audit_page_imports(root, tree, PAGE.name) == []

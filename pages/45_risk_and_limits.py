@@ -4,24 +4,36 @@
 
 归属技术域：④风控边界 + ②交易安全（②只读展示 + 指路，不在本页编辑）。
 
-口径（PRD §12 + §13）：
+口径（PRD §12 + §13 + Reviewer 2026-11-01 的写入层修正）：
 - **A 限额全景（只读）**：本归属全部配置项列出，只做说明与指路；
 - **B 可编辑（primary = 5）**：单笔开仓 / 日累计开仓 / 单笔减仓 / 日累计减仓 / 日亏损急停线，
-  需管理员登录 + 表单内二次确认，写入 `runtime_config` 并留审计；
+  需管理员登录 + 表单内二次确认，写入**租户层 `risk_limits:{tenant}`**（风控真正读取的层），
+  并落审计；
+- **写不生效就禁用保存**：生效来源是账户级 `risk` 段时，改租户层无效，必须禁用并指路；
 - **②实盘门禁项只读**：`REAL_MAX_*` 与「允许真金交易」来自门禁同源函数，只展示 + 指路；
-- **单真值**：生效值一律来自 `resolve_risk_limits()` / `resolve_real_account_limits()`；
-- **薄视图**：元数据与校验在 `futu_quant.risk_limit_editing`，本页只负责渲染与提交。
+- **薄视图**：元数据/校验/写路径在 `futu_quant.risk_limit_editing`，本页只渲染与提交。
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
-from futu_quant.config import Settings, save_runtime_settings
+from futu_quant.config import Settings
 from futu_quant.config_center import GLOBAL_REGISTRY
 from futu_quant.real_trading import resolve_real_account_limits
-from futu_quant.risk_limit_editing import EDITABLE_ITEMS, build_changes, effective_values
-from futu_quant.risk_limits import RiskLimitsConfigError, resolve_risk_limits
+from futu_quant.risk_limit_editing import (
+    EDITABLE_ITEMS,
+    build_changes,
+    build_tenant_risk_payload,
+    effective_values,
+    save_tenant_risk_limits,
+    source_is_writable_here,
+)
+from futu_quant.risk_limits import (
+    RiskLimitsConfigError,
+    resolve_risk_limits_detail,
+    risk_limits_tenant_key,
+)
 from futu_quant.ui import (
     get_current_tenant,
     get_tenant_broker,
@@ -82,33 +94,58 @@ def _render_real_gate_readonly(store, settings) -> None:
     st.caption("这几项属交易安全门禁（②类），只读展示；修改入口在「账户与交易环境」页。")
 
 
+def _source_label(source: str, tenant_id: str) -> str:
+    if source.startswith("real_account_config:"):
+        return "账户级配置（risk 段）"
+    if tenant_id and source == risk_limits_tenant_key(tenant_id):
+        return f"租户级配置（risk_limits:{tenant_id}）"
+    if source == "env":
+        return "环境变量兜底（尚未写入数据库）"
+    return "无前缀旧键（迁移期兜底）"
+
+
 def main() -> None:
     settings = Settings.load()
     render_sidebar(settings)
 
     st.title("🛡️ 风险与限额")
     st.caption(
-        "这 5 项写入数据库后由 Worker 每轮自动重读，**≤2 分钟生效，无需重启**。"
-        "若账户级配置里已存在同名 risk 字段，则以账户级为准（保存后下方会提示）。"
+        "这 5 项写入数据库的**租户层**（风控真正读取的那一层），Worker 每轮自动重读，"
+        "**≤2 分钟生效，无需重启**。"
     )
 
     store = open_trading_store()
     broker = get_tenant_broker(settings)
 
     try:
-        current = effective_values(resolve_risk_limits(store, broker))
+        resolution = resolve_risk_limits_detail(store, broker)
+        current = effective_values(resolution.limits)
         limits_error = ""
     except RiskLimitsConfigError as exc:
+        resolution = None
         current = {}
         limits_error = str(exc)
 
     _render_panorama()
 
     st.subheader("✏️ 可编辑（5 项 · 需二次确认）")
+
+    writable = False
+    if resolution is not None:
+        source = resolution.source
+        tenant_id = resolution.tenant_id
+        writable = source_is_writable_here(source, tenant_id)
+        st.caption(f"当前生效来源：**{_source_label(source, tenant_id)}**（改这里就是改这一层）")
+        if not writable:
+            st.warning(
+                "该账户的额度已被**账户级配置**接管（账户级优先级高于租户级）："
+                "在本页保存不会生效，因此已禁用保存。请到「账户与交易环境」页修改账户级 risk 段。"
+            )
+
     if limits_error:
         st.error(
             f"当前生效值无法解析：{limits_error} —— 这是 fail-closed 提示，不是页面故障；"
-            "先修复账户级 risk 配置，再回到本页修改。"
+            "先修复配置，再回到本页修改。"
         )
     if current:
         st.caption(
@@ -142,10 +179,14 @@ def main() -> None:
         confirmed = st.checkbox(
             "我确认修改的是真实生效的风控/资金参数（影响下单额度与急停线）",
         )
-        submitted = st.form_submit_button("保存这 5 项", type="primary")
+        submitted = st.form_submit_button(
+            "保存这 5 项", type="primary", disabled=not writable,
+        )
 
-    if submitted:
-        if not confirmed:
+    if submitted and resolution is not None:
+        if not writable:
+            st.error("当前生效层不可在本页修改（见上方提示），未保存。")
+        elif not confirmed:
             st.warning("未勾选确认框，本次不保存。")
         else:
             try:
@@ -156,27 +197,36 @@ def main() -> None:
                 if not changes:
                     st.info("输入与当前生效值相同，未做任何修改。")
                 else:
-                    before = {key: current.get(key) for key in changes}
-                    save_runtime_settings(changes)
-                    store.audit(
-                        "RISK_LIMITS_UPDATED",
-                        {
-                            "actor": "streamlit_admin",
-                            "before": before,
-                            "after": changes,
-                            "source": "pages/45_risk_and_limits.py",
-                        },
-                        actor="streamlit_admin:panel",
-                    )
-                    st.success(
-                        "已保存："
-                        + " · ".join(f"{key} → {value}" for key, value in changes.items())
-                        + "（Worker 下一轮自动重读，≤2 分钟生效）"
-                    )
-                    st.caption(
-                        "若 2 分钟后限额没变，说明该账户在账户级配置里已有同名 risk 字段 —— "
-                        "账户级优先，请在「账户与交易环境」页确认。"
-                    )
+                    try:
+                        payload = build_tenant_risk_payload(resolution.limits, changes)
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        before = {key: current.get(key) for key in changes}
+                        written_key = save_tenant_risk_limits(
+                            store, resolution.tenant_id, payload,
+                        )
+                        store.audit(
+                            "RISK_LIMITS_UPDATED",
+                            {
+                                "actor": "streamlit_admin",
+                                "layer": written_key,
+                                "tenant_id": resolution.tenant_id,
+                                "before": before,
+                                "after": changes,
+                                "source": "pages/45_risk_and_limits.py",
+                            },
+                            actor="streamlit_admin:panel",
+                        )
+                        st.success(
+                            f"已写入 {written_key}："
+                            + " · ".join(f"{key} → {value}" for key, value in changes.items())
+                            + "（Worker 下一轮自动重读，≤2 分钟生效）"
+                        )
+                        st.caption(
+                            "本次写入的是**完整** risk 段（未改动字段沿用当前生效值），"
+                            "因此不会因为「部分配置」被风控 fail-closed 拦下。"
+                        )
 
     _render_real_gate_readonly(store, settings)
 
