@@ -208,7 +208,7 @@ class AlertManager:
     def _mute_list(self) -> set[str]:
         """读静音清单。优先读取 runtime_config 运行时配置，回落 system_settings。"""
         try:
-            cfg = self.store.get_runtime_config(ALERT_MUTE_LIST_KEY)
+            cfg = getattr(self.store, "get_runtime_config", lambda k: None)(ALERT_MUTE_LIST_KEY)
             raw = cfg[0] if cfg else self.store.get_setting(ALERT_MUTE_LIST_KEY, "")
         except Exception:  # noqa: BLE001 - 读配置失败绝不能阻断告警
             return set()
