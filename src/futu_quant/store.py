@@ -2552,9 +2552,10 @@ class TradingStore:
         """在同一个 SQLite 事务中原子化发布配置草稿并可选落库审计日志。
 
         原子性关键机制与环境依赖：
-        依赖 TradingStore.connection() 在上下文退出时，仅当代码块无未捕获异常退出时才调用 commit()；
-        若抛出任何异常，代码块直接中断且不会执行 commit()，并在 finally 阶段调用 close()，由 SQLite
-        底层自动隐式回滚整笔未提交事务 (ACID 强保障)。严禁在外部或连接上下文内配置 autocommit 破坏此保证。
+        1. 显式执行 BEGIN IMMEDIATE 取得 RESERVED 写排他锁，先锁后读基线，根除并发竞态；
+        2. 依赖 TradingStore.connection() 在上下文退出时，仅当代码块无未捕获异常退出时才调用 commit()；
+           若抛出任何异常，代码块直接中断且不会执行 commit()，并在 finally 阶段调用 close()，由 SQLite
+           底层自动隐式回滚整笔未提交事务 (ACID 强保障)。严禁在外部或连接上下文内配置 autocommit 破坏此保证。
 
         全系统唯一发布状态机实现：
         同时更新 runtime_config、config_versions、config_releases (PUBLISHED 终态) 以及可选的 audit_events，
@@ -2562,6 +2563,7 @@ class TradingStore:
         """
         validate_actor(approved_by)
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             release = connection.execute(
                 "SELECT * FROM config_releases WHERE id=?", (release_id,)
             ).fetchone()
@@ -2611,19 +2613,52 @@ class TradingStore:
             return next_version
 
     def rollback_config_release(self, release_id: int, actor: str) -> int:
+        """回滚已发布配置版本 (原子化事务保障：三账一致回退)。"""
+        validate_actor(actor)
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             release = connection.execute(
                 "SELECT * FROM config_releases WHERE id=?", (release_id,)
             ).fetchone()
             if not release or release["status"] != "PUBLISHED":
                 raise ValueError("只有已发布配置可以回滚")
-        previous = json.loads(release["diff_json"]).get("before")
-        version = self.set_runtime_config(release["config_key"], previous, actor)
-        with self.connection() as connection:
+
+            config_key = release["config_key"]
+            diff = json.loads(release["diff_json"]) if isinstance(release["diff_json"], str) else (release["diff_json"] or {})
+            previous_value = diff.get("before")
+
+            current = connection.execute(
+                "SELECT version FROM runtime_config WHERE config_key=?", (config_key,)
+            ).fetchone()
+            current_version = int(current["version"]) if current else 0
+            next_version = current_version + 1
+            now_iso = self.now()
+            value_json = json.dumps(previous_value, ensure_ascii=False, default=str)
+
+            # 1. 运行时配置还原为前序值，版本严格 +1
+            connection.execute(
+                """INSERT INTO runtime_config(config_key, value_json, version, updated_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(config_key) DO UPDATE SET
+                    value_json=excluded.value_json,
+                    version=excluded.version,
+                    updated_at=excluded.updated_at""",
+                (config_key, value_json, next_version, now_iso),
+            )
+
+            # 2. 新增一行独立的版本记录 (非原地篡改)
+            reason_text = f"回滚发布单 #{release_id}"
+            connection.execute(
+                """INSERT INTO config_versions(config_key, value_json, actor, reason, created_at)
+                VALUES(?,?,?,?,?)""",
+                (config_key, value_json, actor, reason_text, now_iso),
+            )
+
+            # 3. 发布单状态原子置为 ROLLED_BACK
             connection.execute(
                 "UPDATE config_releases SET status='ROLLED_BACK' WHERE id=?", (release_id,)
             )
-        return version
+            return next_version
 
     def reject_config_release(self, release_id: int, approved_by: str) -> None:
         with self.connection() as connection:
