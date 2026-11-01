@@ -93,7 +93,7 @@ def _mirror_env(key: str, value: str) -> None:
 
 
 def _get_active_store(store: "TradingStore | None" = None) -> "TradingStore | None":
-    """获取配置读取可用的 store：优先使用注入，无注入时仅当默认库存在时以只读模式连接（绝不自建空库、绝不触发迁移）。"""
+    """获取配置读取可用的 store：优先使用注入，无注入时仅当默认库存在且处于默认 env 文件时以只读模式连接（绝不自建空库、绝不触发迁移）。"""
     if store is not None:
         return store
     if ENV_FILE != DEFAULT_ENV_FILE:
@@ -108,14 +108,7 @@ def _get_active_store(store: "TradingStore | None" = None) -> "TradingStore | No
 
 
 def _load_runtime_value(key: str, default, store: "TradingStore | None" = None):
-    # Isolated tests and alternate deployments may deliberately point at another file.
-    if ENV_FILE != DEFAULT_ENV_FILE:
-        raw = dotenv_values(ENV_FILE).get(key)
-        try:
-            return json.loads(raw) if raw is not None else default
-        except (TypeError, json.JSONDecodeError):
-            return default
-
+    # 优先从显式注入或有效只读 store 中拉取 runtime_config，且绝对不反向写库 (防启动期写锁争抢)
     active_store = _get_active_store(store)
     if active_store is not None:
         try:
@@ -125,6 +118,7 @@ def _load_runtime_value(key: str, default, store: "TradingStore | None" = None):
         except Exception:
             pass
 
+    # 兜底回落从当前 ENV_FILE 读取
     raw = dotenv_values(ENV_FILE).get(key)
     if raw is None:
         return default
@@ -643,15 +637,14 @@ def save_real_trading_settings(
 def refresh_runtime_environment(override: bool = False, store: "TradingStore | None" = None) -> dict[str, str]:
     """Load file + SQLite dynamic settings into the current process."""
     values = {key: str(value) for key, value in dotenv_values(ENV_FILE).items() if value is not None}
-    if ENV_FILE == DEFAULT_ENV_FILE:
-        active_store = _get_active_store(store)
-        if active_store is not None:
-            try:
-                saved = active_store.get_runtime_config("ENV_SETTINGS")
-                if saved is not None and isinstance(saved[0], dict):
-                    values.update({key: str(value) for key, value in saved[0].items()})
-            except Exception:
-                pass
+    active_store = _get_active_store(store)
+    if active_store is not None:
+        try:
+            saved = active_store.get_runtime_config("ENV_SETTINGS")
+            if saved is not None and isinstance(saved[0], dict):
+                values.update({key: str(value) for key, value in saved[0].items()})
+        except Exception:
+            pass
     for key, value in values.items():
         if override or key not in os.environ:
             _set_env(key, value)
