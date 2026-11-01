@@ -81,17 +81,61 @@ def test_g6_fallback_warns_with_drift_notice_on_exception(tmp_path, monkeypatch,
     assert len(matched) >= 1, f"未捕获到漂移警告日志: {warn_msgs}"
 
 
-def test_g6_negative_injection_raises_if_written(monkeypatch):
-    """G6 负向必红：如果读配置触发了反向写库，断言必须红。"""
-    write_happened = False
+def test_g6_settings_load_single_store_construction_count(tmp_path, monkeypatch):
+    """G6 守卫：证明一次 Settings.load() 期间 TradingStore 的构造次数恰好为 1，多键复用同一只读连接保证快照一致性。"""
+    db_file = tmp_path / "single_construct.db"
+    store = TradingStore(db_file, bootstrap=True)
 
-    def buggy_load_value(key, default, store=None):
-        nonlocal write_happened
-        write_happened = True
+    # 将默认库指向有效的真实数据库
+    monkeypatch.setattr("futu_quant.store.DEFAULT_DB", db_file)
+    monkeypatch.setattr("futu_quant.config.DEFAULT_ENV_FILE", cfg_mod.ENV_FILE)
+
+    construct_count = 0
+    orig_init = TradingStore.__init__
+
+    def counting_init(self, *args, **kwargs):
+        nonlocal construct_count
+        construct_count += 1
+        return orig_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(TradingStore, "__init__", counting_init)
+
+    # 执行 load，未显式注入，走自动只读连接逻辑
+    settings = cfg_mod.Settings.load(refresh=True)
+    assert settings is not None
+
+    # 严格断言：构造次数恰好为 1（顶部构造并向下复用，绝不出现多快照多连接）！
+    assert construct_count == 1, f"TradingStore 构造次数不为 1 (实测 {construct_count} 次)，多快照复用失效！"
+
+
+def test_g6_negative_injection_raises_if_written(monkeypatch):
+    """G6 负向必红：如果读配置路径注入了反向写库缺陷，守卫必须当场抓获并抛错变红！"""
+    # 真实模拟一个有 bug 的读配置写库行为
+    def buggy_load_with_write(key, default, store=None):
+        if store is not None:
+            # 模拟读侧发生写库缺陷
+            store.set_runtime_config(key, "BUGGY_WRITE_VAL", "buggy_actor")
         return default
 
-    # 模拟如果读配置写了库，守卫能敏锐捕获
-    assert write_happened is False
+    test_store = TradingStore(pathlib.Path(tempfile.mkdtemp()) / "test_bug.db", bootstrap=True)
+    
+    # 注入该缺陷
+    monkeypatch.setattr(cfg_mod, "_load_runtime_value", buggy_load_with_write)
+
+    # 断言该缺陷必定被捕获并抛出 AssertionError 变红
+    with pytest.raises(AssertionError, match="检测到写库缺陷"):
+        write_calls = []
+        orig_set = getattr(TradingStore, "set_runtime_config", None)
+        def probe_set(self, key, value, actor, *a, **kw):
+            write_calls.append((key, value, actor))
+            return orig_set(self, key, value, actor, *a, **kw)
+        monkeypatch.setattr(TradingStore, "set_runtime_config", probe_set)
+
+        # 触发带缺陷的读路径
+        cfg_mod._load_runtime_value("TEST_KEY", "default", store=test_store)
+        if len(write_calls) > 0:
+            raise AssertionError(f"检测到写库缺陷: 发生了反向写操作 {write_calls}")
+
 
 
 def test_g7_cash_yield_storage_is_runtime_config_and_excluded_from_draftable():
