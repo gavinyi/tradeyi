@@ -270,6 +270,28 @@ def test_page_requires_admin_and_second_confirmation():
     assert "RISK_LIMITS_UPDATED" in source, "改钱相关参数必须留审计"
 
 
+def test_audit_records_the_full_written_payload():
+    """Reviewer 2026-11-01：审计必须能回答「当时把 10 项固化成了什么」。
+
+    只记 `changes`（5 项）时，事后查不出「另外 5 项被固化成了什么值」。
+    """
+    source = _page_source()
+
+    assert '"written_payload": dict(payload)' in source, (
+        "审计里必须有实际写入的完整 payload，否则无法事后还原"
+    )
+    assert '"after": changes' in source, "改动集仍要保留，便于人读"
+
+
+def test_page_shows_presave_preview_of_all_written_fields():
+    """保存前必须列出将写入的 10 项，并标出哪些是本次修改。"""
+    source = _page_source()
+
+    assert "preview_payload" in source
+    assert "本次修改" in source and "沿用当前值" in source
+    assert "固化" in source, "必须讲清「会把其余项一起钉住」这个后果"
+
+
 def test_page_does_not_write_real_gate_limits():
     source = _page_source()
     for banned in ("REAL_MAX_ORDER_NOTIONAL", "REAL_MAX_DAILY_NOTIONAL"):

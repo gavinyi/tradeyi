@@ -164,24 +164,52 @@ def main() -> None:
         _render_real_gate_readonly(store, settings)
         return
 
-    with st.form("risk_limits_primary_edit"):
-        submitted_values: dict[str, float] = {}
-        for item in EDITABLE_ITEMS:
-            st.caption(item.impact)
-            submitted_values[item.key] = st.number_input(
-                f"{item.label}（美元）",
-                min_value=float(item.minimum),
-                max_value=float(item.maximum),
-                value=float(current.get(item.key, item.minimum)),
-                step=float(item.step),
-                key=f"risk_edit_{item.key}",
-            )
-        confirmed = st.checkbox(
-            "我确认修改的是真实生效的风控/资金参数（影响下单额度与急停线）",
+    submitted_values: dict[str, float] = {}
+    for item in EDITABLE_ITEMS:
+        st.caption(item.impact)
+        submitted_values[item.key] = st.number_input(
+            f"{item.label}（美元）",
+            min_value=float(item.minimum),
+            max_value=float(item.maximum),
+            value=float(current.get(item.key, item.minimum)),
+            step=float(item.step),
+            key=f"risk_edit_{item.key}",
         )
-        submitted = st.form_submit_button(
-            "保存这 5 项", type="primary", disabled=not writable,
+
+    # 保存前把**实际将写入的完整 10 项**摆出来（Reviewer 要求）：
+    # 保存会把当前生效的 10 项一起固化进租户层，原本来自 env 兜底的项从此"钉住"，
+    # 用户不知道就会踩 —— 必须能看到「哪些是本次改动、哪些是沿用当前值」。
+    preview_changes: dict[str, str] = {}
+    preview_payload: dict[str, float] | None = None
+    preview_error = ""
+    if resolution is not None:
+        try:
+            preview_changes = build_changes(submitted_values, current)
+            preview_payload = build_tenant_risk_payload(resolution.limits, preview_changes)
+        except ValueError as exc:
+            preview_error = str(exc)
+
+    st.markdown("**保存后将写入租户层的完整 risk 段（10 项）**")
+    if preview_error:
+        st.warning(f"暂无法生成写入预览：{preview_error}")
+    elif preview_payload is not None:
+        rows = []
+        for field_name, value in preview_payload.items():
+            mark = "★ 本次修改" if field_name in preview_changes else "沿用当前值"
+            rows.append(f"- {'★' if field_name in preview_changes else '·'} "
+                        f"`{field_name}` = {value} —— {mark}")
+        st.markdown("\n".join(rows))
+        st.caption(
+            "★ 项是本次改动；其余为**沿用当前生效值**。写入后这 10 项都固定在租户层："
+            "原本由环境变量兜底的项从此以库为准，改 `.env` 不再生效。"
+            "（这是有意为之：风控对「部分配置」是 fail-closed 拒绝，只写 5 项会让风控不可用。）"
         )
+
+    confirmed = st.checkbox(
+        "我确认修改的是真实生效的风控/资金参数（影响下单额度与急停线），"
+        "并已将上面列出的 10 项一起固化进租户层",
+    )
+    submitted = st.button("保存这 5 项", type="primary", disabled=not writable)
 
     if submitted and resolution is not None:
         if not writable:
@@ -213,7 +241,10 @@ def main() -> None:
                                 "layer": written_key,
                                 "tenant_id": resolution.tenant_id,
                                 "before": before,
+                                # 改动集：便于人读「这次改了什么」
                                 "after": changes,
+                                # 实际写进库的完整 10 项：事后要能回答「当时固化成了什么」
+                                "written_payload": dict(payload),
                                 "source": "pages/45_risk_and_limits.py",
                             },
                             actor="streamlit_admin:panel",
