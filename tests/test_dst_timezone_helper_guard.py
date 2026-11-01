@@ -42,7 +42,7 @@ def test_dst_deterministic_naive_ambiguity_reproduction():
 
 
 def test_test_helpers_ast_guard_no_naive_ny_strftime():
-    """守卫：扫描 tests/ 下 helper，断言不包含 'datetime.now(NY).strftime' 这种制造歧义 naive 字符串的模式。"""
+    """守卫：断言所有 6 处 helper/行情时间戳生成物被 pd.to_datetime 解析后必须 tz-aware，且不包含 naive strftime。"""
     import ast
     tests_dir = pathlib.Path(__file__).resolve().parent
 
@@ -51,10 +51,30 @@ def test_test_helpers_ast_guard_no_naive_ny_strftime():
         tests_dir / "test_silent_degradation_visibility.py",
         tests_dir / "test_option_history_backtest.py",
         tests_dir / "test_candidate_quality_filter.py",
+        tests_dir / "test_decision_tenant_scope.py",
+        tests_dir / "test_shadow_acceptance_fees.py",
+        tests_dir / "test_validation_loop.py",
     ]
 
     for p in scanned_files:
         content = p.read_text(encoding="utf-8")
-        # 断言旧模式已经被完全消除
         assert "datetime.now(NY) - timedelta" not in content, f"{p.name} 仍包含 datetime.now(NY) - timedelta"
         assert 'datetime.now(ZoneInfo("America/New_York")).strftime' not in content, f"{p.name} 仍包含旧时区 strftime"
+        assert 'pd.Timestamp.now(tz="America/New_York").strftime' not in content, f"{p.name} 仍包含旧时区 strftime"
+
+
+def test_helper_outputs_are_strictly_timezone_aware():
+    """断言 helper 生成的时间字符串被 pd.to_datetime 解析后 tzinfo 绝对不为 None。"""
+    from tests.test_quote_liveness import _quote_at
+    from tests.test_candidate_quality_filter import _quiet_but_usable_row
+
+    # 1. _quote_at 产物带时区
+    q_str = _quote_at(300)
+    t_q = pd.to_datetime(q_str)
+    assert t_q.tzinfo is not None, f"_quote_at 产出的字符串解析后丢失时区: {q_str}"
+
+    # 2. _quiet_but_usable_row 产物带时区
+    row = _quiet_but_usable_row(300)
+    t_row = pd.to_datetime(row["update_time"])
+    assert t_row.tzinfo is not None, f"_quiet_but_usable_row 产出的字符串解析后丢失时区: {row['update_time']}"
+

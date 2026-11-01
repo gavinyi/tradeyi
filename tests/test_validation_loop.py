@@ -74,7 +74,7 @@ class SnapshotBroker:
             "code": symbol, "bid_price": 0.95, "ask_price": 1.05,
             "option_delta": 0.5, "option_gamma": 0.02, "option_theta": -0.03,
             "option_vega": 0.08, "option_volume": 1000, "option_open_interest": 5000,
-            "update_time": pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S"),
+            "update_time": pd.Timestamp.now(tz="America/New_York").isoformat(),
         } for symbol in symbols])
 
     def candles(self, symbol, count=60):

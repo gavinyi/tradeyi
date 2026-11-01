@@ -162,7 +162,7 @@ def test_worker_run_campaign_records_tenant_id(tmp_path, monkeypatch):
 
         def snapshots(self, symbols):
             """批 B 起入场先取期权/正股快照判盘口活性，桩要按请求的代码逐条回。"""
-            stamp = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S")
+            stamp = pd.Timestamp.now(tz="America/New_York").isoformat()
             rows = []
             for symbol in symbols:
                 if symbol == code:
@@ -235,7 +235,7 @@ def test_campaign_without_tenant_falls_back_to_executor_tenant(tmp_path, monkeyp
             return pd.DataFrame()
 
         def snapshots(self, symbols):
-            stamp = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S")
+            stamp = pd.Timestamp.now(tz="America/New_York").isoformat()
             return pd.DataFrame([
                 {"code": symbol, "bid_price": 1.95, "ask_price": 2.05,
                  "last_price": 2.0, "update_time": stamp}
@@ -299,7 +299,7 @@ def test_missing_tenant_both_sides_emits_error_event(tmp_path, monkeypatch):
             return pd.DataFrame()
 
         def snapshots(self, symbols):
-            stamp = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d %H:%M:%S")
+            stamp = pd.Timestamp.now(tz="America/New_York").isoformat()
             return pd.DataFrame([
                 {"code": symbol, "bid_price": 1.95, "ask_price": 2.05,
                  "last_price": 2.0, "update_time": stamp}

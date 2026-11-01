@@ -86,7 +86,7 @@ def test_shadow_timeout_can_reprice_and_continue_chasing(tmp_path, monkeypatch):
     class ChaseBroker(QuoteBroker):
         def snapshots(self, symbols):
             ny_now = datetime(2026, 7, 17, 11, 0, tzinfo=ZoneInfo("America/New_York"))
-            update_time = (ny_now - timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
+            update_time = (ny_now - timedelta(seconds=30)).isoformat()
             return pd.DataFrame([{
                 "code": symbols[0], "bid_price": 8.00, "ask_price": 8.10,
                 "bid_vol": 10, "ask_vol": 10, "update_time": update_time,
