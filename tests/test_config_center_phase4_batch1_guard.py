@@ -175,3 +175,46 @@ def test_ast_guard_forbids_bypass_set_runtime_config_in_config_center():
 
     # service.py 中不再调用 set_runtime_config (已全部收敛为 rollback_config_release)
     assert not violations, f"配置中心代码违反规范，发现了直接调用 set_runtime_config: {violations}"
+
+
+def test_stale_baseline_draft_has_clear_rejection_exit(tmp_path):
+    """必验项 5：过期草稿出口保障：
+    并发败者或演进过期的草稿无法发布，但必须允许管理员调用 reject_config_release 顺利作废归档，
+    状态变为 REJECTED，不堆积死草稿，且审计可查。
+    """
+    db_path = tmp_path / "stale_exit.db"
+    store = TradingStore(db_path)
+    actor = "streamlit_admin:shared_admin_credential"
+    key = "alert_mute_list"
+
+    # 1. 建立 base_version=0 的草稿
+    draft_id = store.create_config_release(key, ["TASK_X"], actor, "草稿 X")
+
+    # 2. 模拟配置已被其他发布推高到版本 1
+    store.set_runtime_config(key, ["TASK_OTHER"], actor)
+
+    # 3. 此时发布该草稿必被基线校验拦截
+    with pytest.raises(ValueError, match="配置基线已变化"):
+        store.publish_config_release(draft_id, actor)
+
+    # 4. 管理员通过拒绝出口将其干净归档作废
+    store.reject_config_release(draft_id, actor)
+
+    # 验证终态已变为 REJECTED，草稿已清除
+    drafts = [r for r in store.config_releases() if r["status"] == "DRAFT"]
+    assert len(drafts) == 0
+    rejected = [r for r in store.config_releases() if r["id"] == draft_id]
+    assert len(rejected) == 1
+    assert rejected[0]["status"] == "REJECTED"
+
+
+def test_page18_ast_guard_disables_publish_on_stale_baseline():
+    """必验项 6：AST 守卫扫描：pages/18 必须包含基线过期检测逻辑，并在过期时禁用发布按钮，杜绝无意义盲点。"""
+    repo_root = Path(__file__).resolve().parents[1]
+    page_18 = repo_root / "pages" / "18_infrastructure_disaster_recovery.py"
+    assert page_18.exists()
+
+    content = page_18.read_text(encoding="utf-8-sig")
+    assert "is_stale_baseline" in content, "pages/18 必须包含 is_stale_baseline 基线过期判定！"
+    assert "当前草稿基线版本已过期" in content, "pages/18 必须展示基线已过期的明确警告文案！"
+

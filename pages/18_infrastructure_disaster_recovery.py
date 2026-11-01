@@ -120,8 +120,21 @@ with config_tab:
             release_id = st.selectbox("待审批草稿", drafts["id"].astype(int).tolist())
             release = drafts[drafts["id"] == release_id].iloc[0]
             st.json(json.loads(release["diff_json"]))
+
+            # 基线有效性事前检查 (Reviewer 要求：过期草稿明确出口，禁止盲目点击)
+            cur_runtime = store.get_runtime_config(release["config_key"])
+            cur_version = int(cur_runtime[1]) if cur_runtime else 0
+            base_version = int(release["base_version"])
+            is_stale_baseline = cur_version != base_version
+
+            if is_stale_baseline:
+                st.warning(
+                    f"⚠️ 当前草稿基线版本已过期！草稿基线为 v{base_version}，但当前配置已演进至 v{cur_version}。"
+                    "该草稿无法直接发布，请点击【拒绝草稿】进行归档作废，并重新创建新草稿。"
+                )
+
             with st.container(horizontal=True):
-                if st.button("审批并发布", type="primary", disabled=not admin):
+                if st.button("审批并发布", type="primary", disabled=not admin or is_stale_baseline):
                     store.publish_config_release(int(release_id), admin_actor)
                     st.success("配置已原子发布；服务下一循环读取。")
                     st.rerun()
