@@ -4,6 +4,7 @@ import json
 import hashlib
 import hmac
 import os
+import time
 from urllib.request import Request, urlopen
 
 from .store import TradingStore
@@ -204,13 +205,21 @@ class AlertManager:
         self.store = store
         self.webhook = os.getenv("ALERT_WEBHOOK_URL", "").strip()
         self.rejected_mute_count: int = 0
+        self._last_mute_read_warn_time: float = 0.0
 
     def _mute_list(self) -> set[str]:
         """读静音清单。优先读取 runtime_config 运行时配置，回落 system_settings。"""
         try:
-            cfg = getattr(self.store, "get_runtime_config", lambda k: None)(ALERT_MUTE_LIST_KEY)
+            cfg = self.store.get_runtime_config(ALERT_MUTE_LIST_KEY)
             raw = cfg[0] if cfg else self.store.get_setting(ALERT_MUTE_LIST_KEY, "")
-        except Exception:  # noqa: BLE001 - 读配置失败绝不能阻断告警
+        except Exception as exc:  # noqa: BLE001 - 读配置失败绝不能阻断告警，按空处理并去重警告
+            now = time.time()
+            if now - self._last_mute_read_warn_time >= 900:
+                self._last_mute_read_warn_time = now
+                import logging
+                logging.getLogger("futu_quant.alerts").warning(
+                    "本轮静音清单读取失败、按空处理 (fail-open，不静音任何告警): %s", exc
+                )
             return set()
         accepted, rejected = parse_mute_list(raw)
         if rejected:

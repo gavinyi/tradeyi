@@ -164,3 +164,35 @@ def test_alert_incident_recovery_audit_failure_warns_and_does_not_break(tmp_path
     ]
     assert len(matched) >= 1, f"Expected warning log not found in: {warning_logs}"
 
+
+def test_alert_manager_mute_list_read_failure_warns_with_dedupe_and_fails_open(tmp_path, caplog):
+    """必验项 7：静音清单读取异常时，输出包含异常信息的 WARNING，且连续调用去重，同时安全 fail-open 返回空集。"""
+    import logging
+    store = TradingStore(tmp_path / "test_mute_read_failure.db")
+    alerts = AlertManager(store)
+
+    # 注入 get_runtime_config 抛出异常
+    def broken_get_runtime_config(key):
+        raise RuntimeError("database disk I/O error during config read")
+
+    store.get_runtime_config = broken_get_runtime_config
+
+    with caplog.at_level(logging.WARNING):
+        # 第一次调用：必须记录 WARNING，并返回空集
+        mutes1 = alerts._mute_list()
+        assert mutes1 == set()
+
+        # 连续调用：必须去重，不会产生第二次 WARNING
+        mutes2 = alerts._mute_list()
+        assert mutes2 == set()
+
+    warning_logs = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    matched = [
+        msg for msg in warning_logs
+        if "本轮静音清单读取失败、按空处理" in msg
+        and "database disk I/O error during config read" in msg
+    ]
+    # 严格断言恰好 1 条警告（去重生效）
+    assert len(matched) == 1, f"Expected exactly 1 deduped warning log, got: {len(matched)}"
+
+

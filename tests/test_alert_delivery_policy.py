@@ -55,6 +55,16 @@ class FakeStore:
         # 与生产同序：最新在前。
         return list(reversed(self.rows))[:limit]
 
+    def get_runtime_config(self, key: str):
+        if key == ALERT_MUTE_LIST_KEY and self.mute_list:
+            import json
+            try:
+                parsed = json.loads(self.mute_list)
+                return (parsed, 1)
+            except Exception:
+                return (self.mute_list, 1)
+        return None
+
     def get_setting(self, key, default=""):
         if key in ("FEISHU_WEBHOOK_URL", "FEISHU_GROUP_CHAT_ID"):
             return "https://example.invalid/hook" if self.feishu_ok else ""
