@@ -22,7 +22,6 @@ from futu_quant.alerts import (
     AlertManager,
     is_never_mutable,
     parse_mute_list,
-    update_mute_list,
 )
 from futu_quant.config import Settings
 from futu_quant.ui import open_trading_store as TradingStore
@@ -138,32 +137,17 @@ with st.container(border=True):
             icon=":material/error:",
         )
 
-    with st.form("alert_mute_list_form"):
-        raw_entries = st.text_area(
-            "静音事件名（每行一个）",
-            value="\n".join(sorted(current)),
-            height=120,
-            help="只接受完整 event_type，例如 PORTFOLIO_STRESS_BREACH。禁止 RECONCILIATION_* 这类通配。",
+    with st.container():
+        st.info(
+            "静音清单的编辑入口已统一到「通知与运维」页（唯一写入点）。"
+            "本页只做只读展示，避免同一配置两处可改。",
+            icon=":material/info:",
         )
-        approver = st.text_input("批准人", value="", help="写入配置版本留痕（actor）。")
-        reason = st.text_input("原因", value="", help="写入审计留痕。")
-        submitted = st.form_submit_button("保存静音清单", disabled=not admin)
-        if submitted:
-            entries = [line.strip() for line in raw_entries.splitlines() if line.strip()]
-            if not approver.strip():
-                st.error("必须填写批准人 —— 静音是人工决策，必须能追溯到人。")
-            else:
-                accepted, rejected = update_mute_list(
-                    store, entries, approver.strip(), reason.strip(),
-                )
-                if rejected:
-                    st.error(
-                        f"已拒绝，未写入：这些不是合法事件名（禁止通配）：{rejected}",
-                        icon=":material/error:",
-                    )
-                else:
-                    st.success(f"已保存 {len(accepted)} 项静音事件。")
-                    st.cache_data.clear()
+        st.page_link(
+            "pages/47_ops_and_notifications.py",
+            label="前往「通知与运维」修改静音清单",
+            icon=":material/campaign:",
+        )
 
     with st.expander("查看不可静音清单（代码常量，不可配置）", expanded=False):
         st.caption(
