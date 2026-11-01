@@ -202,12 +202,14 @@ def test_today_overview_resolve_trading_env_status_branches():
     """Reviewer & Product 守卫：测试交易环境判定函数的关键分支，严禁默认值伪造模拟绿标，且同源暴露无确认会话风险。"""
     from types import SimpleNamespace
     from futu_quant.real_trading import resolve_real_account_limits, RealAccountLimits
+    import logging
     overview_path = pathlib.Path(__file__).resolve().parent.parent / "pages/00_today_overview.py"
     with open(overview_path, "r", encoding="utf-8") as f:
         src = f.read()
 
     env_globals = dict(globals())
     env_globals["resolve_real_account_limits"] = resolve_real_account_limits
+    env_globals["logger"] = logging.getLogger("test_guard")
     local_ns = {}
     func_code = "def resolve_trading_env_status" + src.split("def resolve_trading_env_status")[1].split("def resolve_pending_restart_status")[0]
     exec(func_code, env_globals, local_ns)
@@ -250,6 +252,31 @@ def test_today_overview_resolve_trading_env_status_branches():
         store=fake_store_disabled,
     )
     assert "实盘" in val3_c and "实盘总闸已关闭" in delta3_c and col3_c == "off"
+
+    # 分支 3d：实盘租户缺少 acc_id -> 拒绝猜测 settings，直接未知且 off 颜色
+    val3_d, delta3_d, col3_d = resolve_trading_env_status(
+        {"is_real": True},
+        SimpleNamespace(real_trading_enabled=True, real_account_id="281756481476169109"),
+        store=fake_store,
+    )
+    assert "未知" in val3_d and "缺少账户ID" in delta3_d and col3_d != "normal"
+
+    # 分支 3e：未注入 store -> 未知且 off 颜色
+    val3_e, delta3_e, col3_e = resolve_trading_env_status(
+        {"is_real": True, "acc_id": "281756481476169109"},
+        SimpleNamespace(real_trading_enabled=True),
+        store=None,
+    )
+    assert "未知" in val3_e and "存储未就绪" in delta3_e and col3_e != "normal"
+
+    # 分支 3f：门禁解析抛出异常 -> 严禁回退 settings 兜底，直接报告未知/门禁解析失败且 off 颜色
+    fake_store_error = SimpleNamespace(get_setting=lambda k, d: (_ for _ in ()).throw(RuntimeError("DB_LOCK_FAIL")))
+    val3_f, delta3_f, col3_f = resolve_trading_env_status(
+        {"is_real": True, "acc_id": "281756481476169109"},
+        SimpleNamespace(real_trading_enabled=True),
+        store=fake_store_error,
+    )
+    assert "未知" in val3_f and "门禁解析失败" in delta3_f and col3_f != "normal"
 
     # 分支 4：确凿 is_real 为 False -> 模拟仿真
     val4, delta4, col4 = resolve_trading_env_status({"is_real": False}, SimpleNamespace(real_trading_enabled=False))

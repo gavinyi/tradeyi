@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import os
+import logging
 import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 from futu_quant.config import Settings
 from futu_quant.ui import render_sidebar, get_current_tenant
@@ -50,6 +53,8 @@ def resolve_trading_env_status(
     单真值原则（Reviewer & Product & Ops 铁律）：
     - 允许实盘交易的唯一来源必须是门禁同源函数 `resolve_real_account_limits(store, settings, account_id).enabled`；
     - 严禁页面层自行组合 `is_real` + `settings.real_trading_enabled` 产生第二套真值；
+    - 门禁解析异常或返回空时，直接报告「⚪ 未知环境 / 门禁解析失败」并 WARN 留痕，严禁回退 settings 兜底；
+    - account_id 为空直接报「⚪ 未知环境 / 缺少账户ID」，不跨层猜测 settings.real_account_id；
     - 显式暴露高风险态：`require_manual_confirm=False` 时直接在 delta 标明「实盘·无二次确认」；
     - 未知状态严禁兜底为模拟绿标，统一中性/未知警示。
     """
@@ -58,17 +63,27 @@ def resolve_trading_env_status(
 
     is_real = tenant.get("is_real")
     if is_real is True:
-        account_id = tenant.get("acc_id") or getattr(settings, "real_account_id", "")
-        # 与真实下单门禁完全同源解析账户生效限额与开关
-        real_limits = None
-        if store is not None and account_id:
-            try:
-                real_limits = resolve_real_account_limits(store, settings, account_id)
-            except Exception:
-                pass
+        account_id = tenant.get("acc_id")
+        if not account_id:
+            logger.warning("交易环境判定失败: 实盘租户缺少 acc_id，拒绝猜测 settings.real_account_id")
+            return "⚪ 未知环境", "实盘租户缺少账户ID", "off"
 
-        real_allowed = real_limits.enabled if real_limits is not None else getattr(settings, "real_trading_enabled", False)
-        requires_confirm = real_limits.require_manual_confirm if real_limits is not None else getattr(settings, "real_require_manual_confirm", False)
+        if store is None:
+            logger.warning("交易环境判定失败: 未注入 store，无法执行同源门禁解析")
+            return "⚪ 未知环境", "存储未就绪，门禁未解析", "off"
+
+        try:
+            real_limits = resolve_real_account_limits(store, settings, account_id)
+        except Exception as e:
+            logger.warning(f"交易环境门禁解析异常 (acc_id={account_id}): {e}", exc_info=True)
+            return "⚪ 未知环境", f"门禁解析失败: {e}", "off"
+
+        if real_limits is None:
+            logger.warning(f"交易环境门禁返回空 (acc_id={account_id})")
+            return "⚪ 未知环境", "门禁未返回有效限额对象", "off"
+
+        real_allowed = real_limits.enabled
+        requires_confirm = real_limits.require_manual_confirm
 
         if real_allowed:
             if not requires_confirm:
