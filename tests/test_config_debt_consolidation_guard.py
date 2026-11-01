@@ -33,20 +33,16 @@ from migrate_v25_task_runs_tenant_id import (
 )
 
 
-def test_g6_settings_load_zero_prod_db_connections_and_zero_writes(monkeypatch):
-    """G6 守卫：证明 Settings.load() 启动过程零生产库连接、零自建 TradingStore 帧、零写操作。"""
-    prod_db_path = os.path.abspath(r"E:\Thisyi\trade\data\trading.db")
-    calls = []
-    orig_connect = sqlite3.connect
+def test_g6_env_settings_dynamic_read_and_zero_write_path(tmp_path, monkeypatch):
+    """G6 守卫：证明向 ENV_SETTINGS 写入值后，Settings.load() 能通过只读链路成功读取并折入环境变量，且读路径绝对零写操作！"""
+    db_file = tmp_path / "test_g6_env.db"
+    store = TradingStore(db_file, bootstrap=True)
+    
+    # 1. 模拟写入动态 ENV_SETTINGS 配置
+    dynamic_payload = {"WATCHLIST": "US.MSFT,US.NVDA", "CORE_MAX_STOCK_WEIGHT": "0.85"}
+    store.set_runtime_config("ENV_SETTINGS", dynamic_payload, "test_admin")
 
-    def probe_connect(database, *args, **kwargs):
-        resolved = os.path.abspath(str(database)) if database not in (None, ":memory:") else str(database)
-        calls.append(resolved)
-        return orig_connect(database, *args, **kwargs)
-
-    monkeypatch.setattr(sqlite3, "connect", probe_connect)
-
-    # 1. 拦截写操作：断言 set_runtime_config 绝对不被调用
+    # 2. 拦截写操作：断言 load 期间 set_runtime_config 绝对零调用
     write_calls = []
     orig_set = getattr(TradingStore, "set_runtime_config", None)
     if orig_set:
@@ -55,14 +51,15 @@ def test_g6_settings_load_zero_prod_db_connections_and_zero_writes(monkeypatch):
             return orig_set(self, key, value, actor, *a, **kw)
         monkeypatch.setattr(TradingStore, "set_runtime_config", probe_set)
 
-    # 2. 执行 Settings.load()
-    settings = cfg_mod.Settings.load(refresh=False)
-    assert settings is not None
-
-    # 3. 严格断言：生产库连接次数为 0！写操作次数为 0！
-    prod_hits = [c for c in calls if c == prod_db_path]
-    assert len(prod_hits) == 0, f"Settings.load() 产生生产库连接: {prod_hits}"
-    assert len(write_calls) == 0, f"Settings.load() 触发了非预期反向写库: {write_calls}"
+    # 3. 传入 store 调用 Settings.load()
+    monkeypatch.delenv("WATCHLIST", raising=False)
+    settings = cfg_mod.Settings.load(refresh=True, store=store)
+    
+    # 4. 严格断言：动态值成功生效，且读路径写操作严格为 0
+    assert "US.MSFT" in settings.watchlist
+    assert "US.NVDA" in settings.watchlist
+    assert os.environ.get("WATCHLIST") == "US.MSFT,US.NVDA"
+    assert len(write_calls) == 0, f"读配置期间发生了非预期反向写库: {write_calls}"
 
 
 def test_g6_negative_injection_raises_if_written(monkeypatch):

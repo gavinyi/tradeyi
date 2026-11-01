@@ -92,19 +92,39 @@ def _mirror_env(key: str, value: str) -> None:
     _set_env(key, value)
 
 
+def _get_active_store(store: "TradingStore | None" = None) -> "TradingStore | None":
+    """获取配置读取可用的 store：优先使用注入，无注入时仅当默认库存在时以只读模式连接（绝不自建空库、绝不触发迁移）。"""
+    if store is not None:
+        return store
+    if ENV_FILE != DEFAULT_ENV_FILE:
+        return None
+    try:
+        from .store import DEFAULT_DB, TradingStore
+        if DEFAULT_DB.exists():
+            return TradingStore(DEFAULT_DB, read_only=True)
+    except Exception:
+        pass
+    return None
+
+
 def _load_runtime_value(key: str, default, store: "TradingStore | None" = None):
     # Isolated tests and alternate deployments may deliberately point at another file.
-    if ENV_FILE != DEFAULT_ENV_FILE or store is None:
+    if ENV_FILE != DEFAULT_ENV_FILE:
         raw = dotenv_values(ENV_FILE).get(key)
         try:
             return json.loads(raw) if raw is not None else default
         except (TypeError, json.JSONDecodeError):
             return default
 
-    # 显式注入 store 时才只读拉取 runtime_config，且绝对不反向写库 (防启动期写锁争抢)
-    saved = store.get_runtime_config(key)
-    if saved is not None:
-        return saved[0]
+    active_store = _get_active_store(store)
+    if active_store is not None:
+        try:
+            saved = active_store.get_runtime_config(key)
+            if saved is not None:
+                return saved[0]
+        except Exception:
+            pass
+
     raw = dotenv_values(ENV_FILE).get(key)
     if raw is None:
         return default
@@ -621,12 +641,17 @@ def save_real_trading_settings(
 
 
 def refresh_runtime_environment(override: bool = False, store: "TradingStore | None" = None) -> dict[str, str]:
-    """Load file + optional SQLite dynamic settings into the current process."""
+    """Load file + SQLite dynamic settings into the current process."""
     values = {key: str(value) for key, value in dotenv_values(ENV_FILE).items() if value is not None}
-    if ENV_FILE == DEFAULT_ENV_FILE and store is not None:
-        saved = store.get_runtime_config("ENV_SETTINGS")
-        if saved is not None and isinstance(saved[0], dict):
-            values.update({key: str(value) for key, value in saved[0].items()})
+    if ENV_FILE == DEFAULT_ENV_FILE:
+        active_store = _get_active_store(store)
+        if active_store is not None:
+            try:
+                saved = active_store.get_runtime_config("ENV_SETTINGS")
+                if saved is not None and isinstance(saved[0], dict):
+                    values.update({key: str(value) for key, value in saved[0].items()})
+            except Exception:
+                pass
     for key, value in values.items():
         if override or key not in os.environ:
             _set_env(key, value)
@@ -680,9 +705,9 @@ class Settings:
     option_exit_price_deviation_anchor_pct: float
 
     @classmethod
-    def load(cls, refresh: bool = False) -> "Settings":
+    def load(cls, refresh: bool = False, store: "TradingStore | None" = None) -> "Settings":
         _apply_dotenv(override=refresh)
-        refresh_runtime_environment(override=refresh)
+        refresh_runtime_environment(override=refresh, store=store)
         env = os.getenv("FUTU_TRADING_ENV", "SIMULATE").upper()
         market = os.getenv("FUTU_MARKET", "US").upper()
         if env not in {"SIMULATE", "REAL"}:
@@ -814,8 +839,8 @@ class Settings:
         option_exit_price_deviation_anchor_pct = float(os.getenv("OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT", "0.40"))
         if not 0.01 <= option_exit_price_deviation_anchor_pct <= 0.80:
             raise RuntimeError("OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT 必须在 0.01 到 0.80 之间")
-        cash_yield_enabled = _load_runtime_value("core_satellite_cash_yield_enabled", False)
-        cash_yield_symbol = normalize_us_symbol(str(_load_runtime_value("core_satellite_cash_yield_symbol", "US.SGOV")))
+        cash_yield_enabled = _load_runtime_value("core_satellite_cash_yield_enabled", False, store=store)
+        cash_yield_symbol = normalize_us_symbol(str(_load_runtime_value("core_satellite_cash_yield_symbol", "US.SGOV", store=store)))
         return cls(
             host=os.getenv("FUTU_HOST", "127.0.0.1"),
             port=int(os.getenv("FUTU_PORT", "11111")),
