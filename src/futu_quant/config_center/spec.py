@@ -34,3 +34,4 @@ class ConfigSpec:
     secret: bool = False             # 是否涉密
     deprecated: bool = False         # 是否已弃用
     runtime_key: str = ""            # 真实落库键名 (Phase 2 显式化，必须属于 aliases 且全局唯一)
+    user_area: str = "strategy_center" # 业务入口归属 (PRD: strategy_center / risk_limits / account_env / ops_notify)

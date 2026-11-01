@@ -145,6 +145,24 @@ class ConfigRegistry:
     def __len__(self) -> int:
         return len(self._specs_by_key)
 
+    def search_user_area(self, query: str) -> dict[str, list[ConfigSpec]]:
+        """按 AC5 中文词/别名/键名检索，返回命中的 user_area 及其匹配项列表。"""
+        if not query or not query.strip():
+            return {}
+        q = query.strip().lower()
+        results: dict[str, list[ConfigSpec]] = {}
+        for spec in self._specs_by_key.values():
+            # 匹配 title、description、key、aliases、tags
+            haystack = [spec.title.lower(), spec.description.lower(), spec.key.lower()]
+            haystack.extend(a.lower() for a in spec.aliases)
+            haystack.extend(t.lower() for t in spec.tags)
+            if any(q in text for text in haystack):
+                area = spec.user_area
+                if area not in results:
+                    results[area] = []
+                results[area].append(spec)
+        return results
+
 
 def validate_instance_key(
     key: str,
@@ -239,6 +257,13 @@ def _load_default_specs() -> list[ConfigSpec]:
         runtime_key = item.get("runtime_key")
         if not runtime_key:
             raise ValueError(f"配置项 {item.get('key')} 缺失必填字段 runtime_key！严禁任何默认回退或静默推导！")
+        user_area = item.get("user_area")
+        valid_areas = {"strategy_center", "risk_limits", "account_env", "ops_notify"}
+        if not user_area or user_area not in valid_areas:
+            raise ValueError(
+                f"配置项 {item.get('key')} user_area 非法或缺失: {user_area!r}！"
+                f"必须为 {sorted(valid_areas)} 之一，严禁空值或未分类！"
+            )
         spec = ConfigSpec(
             key=item["key"],
             aliases=aliases,
@@ -261,6 +286,7 @@ def _load_default_specs() -> list[ConfigSpec]:
             secret=bool(item.get("secret", False)),
             deprecated=bool(item.get("deprecated", False)),
             runtime_key=runtime_key,
+            user_area=user_area,
         )
         specs.append(spec)
     return specs

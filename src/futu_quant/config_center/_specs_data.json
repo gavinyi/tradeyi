@@ -20,9 +20,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ADMIN_LOCKOUT_SECONDS"
+    "runtime_key": "ADMIN_LOCKOUT_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "admin.max.login.attempts",
@@ -45,9 +47,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ADMIN_MAX_LOGIN_ATTEMPTS"
+    "runtime_key": "ADMIN_MAX_LOGIN_ATTEMPTS",
+    "user_area": "strategy_center"
   },
   {
     "key": "admin.password.hash",
@@ -70,10 +74,12 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
     "secret": true,
-    "runtime_key": "ADMIN_PASSWORD_HASH"
+    "runtime_key": "ADMIN_PASSWORD_HASH",
+    "user_area": "strategy_center"
   },
   {
     "key": "admin.session.timeout.seconds",
@@ -96,9 +102,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ADMIN_SESSION_TIMEOUT_SECONDS"
+    "runtime_key": "ADMIN_SESSION_TIMEOUT_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "alert.dedupe.seconds",
@@ -121,9 +129,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ALERT_DEDUPE_SECONDS"
+    "runtime_key": "ALERT_DEDUPE_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "alert.probe.interval.seconds",
@@ -146,9 +156,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ALERT_PROBE_INTERVAL_SECONDS"
+    "runtime_key": "ALERT_PROBE_INTERVAL_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "alert.webhook.secret",
@@ -171,10 +183,12 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
     "secret": true,
-    "runtime_key": "ALERT_WEBHOOK_SECRET"
+    "runtime_key": "ALERT_WEBHOOK_SECRET",
+    "user_area": "strategy_center"
   },
   {
     "key": "alert.webhook.url",
@@ -197,9 +211,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ALERT_WEBHOOK_URL"
+    "runtime_key": "ALERT_WEBHOOK_URL",
+    "user_area": "strategy_center"
   },
   {
     "key": "alpaca.api.key",
@@ -222,10 +238,12 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
     "secret": true,
-    "runtime_key": "ALPACA_API_KEY"
+    "runtime_key": "ALPACA_API_KEY",
+    "user_area": "strategy_center"
   },
   {
     "key": "alpaca.api.secret",
@@ -248,10 +266,12 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
     "secret": true,
-    "runtime_key": "ALPACA_API_SECRET"
+    "runtime_key": "ALPACA_API_SECRET",
+    "user_area": "strategy_center"
   },
   {
     "key": "approval.error.window.hours",
@@ -274,9 +294,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "APPROVAL_ERROR_WINDOW_HOURS"
+    "runtime_key": "APPROVAL_ERROR_WINDOW_HOURS",
+    "user_area": "strategy_center"
   },
   {
     "key": "approval.exempt.strategies",
@@ -299,9 +321,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "APPROVAL_EXEMPT_STRATEGIES"
+    "runtime_key": "APPROVAL_EXEMPT_STRATEGIES",
+    "user_area": "strategy_center"
   },
   {
     "key": "approval.max.shadow.slippage.pct",
@@ -324,9 +348,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "APPROVAL_MAX_SHADOW_SLIPPAGE_PCT"
+    "runtime_key": "APPROVAL_MAX_SHADOW_SLIPPAGE_PCT",
+    "user_area": "strategy_center"
   },
   {
     "key": "approval.min.shadow.days",
@@ -349,9 +375,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "APPROVAL_MIN_SHADOW_DAYS"
+    "runtime_key": "APPROVAL_MIN_SHADOW_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "approval.min.shadow.fill.rate",
@@ -374,9 +402,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "APPROVAL_MIN_SHADOW_FILL_RATE"
+    "runtime_key": "APPROVAL_MIN_SHADOW_FILL_RATE",
+    "user_area": "strategy_center"
   },
   {
     "key": "approval.min.shadow.orders",
@@ -399,9 +429,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "APPROVAL_MIN_SHADOW_ORDERS"
+    "runtime_key": "APPROVAL_MIN_SHADOW_ORDERS",
+    "user_area": "strategy_center"
   },
   {
     "key": "auto.computer.shutdown.enabled",
@@ -424,9 +456,10 @@
       "config.Settings"
     ],
     "tags": [
-      "急停与运行控制"
+      "需不需要重启"
     ],
-    "runtime_key": "AUTO_COMPUTER_SHUTDOWN_ENABLED"
+    "runtime_key": "AUTO_COMPUTER_SHUTDOWN_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "auto.daily.universe.ranking.enabled",
@@ -449,9 +482,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "AUTO_DAILY_UNIVERSE_RANKING_ENABLED"
+    "runtime_key": "AUTO_DAILY_UNIVERSE_RANKING_ENABLED",
+    "user_area": "strategy_center"
   },
   {
     "key": "auto.shutdown.dry.run",
@@ -474,9 +509,10 @@
       "config.Settings"
     ],
     "tags": [
-      "急停与运行控制"
+      "需不需要重启"
     ],
-    "runtime_key": "AUTO_SHUTDOWN_DRY_RUN"
+    "runtime_key": "AUTO_SHUTDOWN_DRY_RUN",
+    "user_area": "ops_notify"
   },
   {
     "key": "auto.weekly.universe.recall.enabled",
@@ -499,9 +535,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "AUTO_WEEKLY_UNIVERSE_RECALL_ENABLED"
+    "runtime_key": "AUTO_WEEKLY_UNIVERSE_RECALL_ENABLED",
+    "user_area": "strategy_center"
   },
   {
     "key": "backup.dir",
@@ -524,9 +562,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "BACKUP_DIR"
+    "runtime_key": "BACKUP_DIR",
+    "user_area": "strategy_center"
   },
   {
     "key": "backup.retention.days",
@@ -549,9 +589,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "BACKUP_RETENTION_DAYS"
+    "runtime_key": "BACKUP_RETENTION_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "candidate.exclusions.retain.days",
@@ -574,9 +616,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "CANDIDATE_EXCLUSIONS_RETAIN_DAYS"
+    "runtime_key": "CANDIDATE_EXCLUSIONS_RETAIN_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "config.version.retain.days",
@@ -599,9 +643,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "CONFIG_VERSION_RETAIN_DAYS"
+    "runtime_key": "CONFIG_VERSION_RETAIN_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.catchup.after.open.minutes",
@@ -624,9 +670,11 @@
       "runtime"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_CATCHUP_AFTER_OPEN_MINUTES"
+    "runtime_key": "CORE_CATCHUP_AFTER_OPEN_MINUTES",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.cash.buffer",
@@ -650,9 +698,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_CASH_BUFFER"
+    "runtime_key": "CORE_SAT_CASH_BUFFER",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.core.budget",
@@ -676,9 +726,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_CORE_BUDGET"
+    "runtime_key": "CORE_SAT_CORE_BUDGET",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.high.vol.daily.std",
@@ -702,9 +754,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_HIGH_VOL_DAILY_STD"
+    "runtime_key": "CORE_SAT_HIGH_VOL_DAILY_STD",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.high.vol.trade.factor",
@@ -728,9 +782,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_HIGH_VOL_TRADE_FACTOR"
+    "runtime_key": "CORE_SAT_HIGH_VOL_TRADE_FACTOR",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.max.order.notional",
@@ -754,9 +810,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_MAX_ORDER_NOTIONAL"
+    "runtime_key": "CORE_SAT_MAX_ORDER_NOTIONAL",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.max.single.rebalance.pct",
@@ -780,9 +838,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_MAX_SINGLE_REBALANCE_PCT"
+    "runtime_key": "CORE_SAT_MAX_SINGLE_REBALANCE_PCT",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.max.stock.weight",
@@ -806,9 +866,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_MAX_STOCK_WEIGHT"
+    "runtime_key": "CORE_SAT_MAX_STOCK_WEIGHT",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.max.target.change",
@@ -832,9 +894,11 @@
       "runtime"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_MAX_TARGET_CHANGE"
+    "runtime_key": "CORE_SAT_MAX_TARGET_CHANGE",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.min.trade.usd",
@@ -858,9 +922,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_MIN_TRADE_USD"
+    "runtime_key": "CORE_SAT_MIN_TRADE_USD",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.profile",
@@ -884,9 +950,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_PROFILE"
+    "runtime_key": "CORE_SAT_PROFILE",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.rebalance.frequency",
@@ -910,9 +978,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_REBALANCE_FREQUENCY"
+    "runtime_key": "CORE_SAT_REBALANCE_FREQUENCY",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.satellite.budget",
@@ -936,9 +1006,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_SATELLITE_BUDGET"
+    "runtime_key": "CORE_SAT_SATELLITE_BUDGET",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.satellite.daily.scan",
@@ -962,9 +1034,11 @@
       "runtime"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_SATELLITE_DAILY_SCAN"
+    "runtime_key": "CORE_SAT_SATELLITE_DAILY_SCAN",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.satellite.min.score",
@@ -988,9 +1062,11 @@
       "runtime"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_SATELLITE_MIN_SCORE"
+    "runtime_key": "CORE_SAT_SATELLITE_MIN_SCORE",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.symbols",
@@ -1014,9 +1090,12 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "标的白名单",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_SYMBOLS"
+    "runtime_key": "CORE_SAT_SYMBOLS",
+    "user_area": "strategy_center"
   },
   {
     "key": "core.sat.weight.tolerance",
@@ -1040,9 +1119,11 @@
       "config.Settings"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SAT_WEIGHT_TOLERANCE"
+    "runtime_key": "CORE_SAT_WEIGHT_TOLERANCE",
+    "user_area": "strategy_center"
   },
   {
     "key": "crypto.breakout.enabled",
@@ -1065,9 +1146,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_BREAKOUT_ENABLED"
+    "runtime_key": "CRYPTO_BREAKOUT_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.confirmation.bars",
@@ -1090,9 +1173,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_CONFIRMATION_BARS"
+    "runtime_key": "CRYPTO_CONFIRMATION_BARS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.contraction.confirmations",
@@ -1115,9 +1200,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_CONTRACTION_CONFIRMATIONS"
+    "runtime_key": "CRYPTO_CONTRACTION_CONFIRMATIONS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.contraction.ratio",
@@ -1140,9 +1227,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_CONTRACTION_RATIO"
+    "runtime_key": "CRYPTO_CONTRACTION_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.cooldown.hours",
@@ -1165,9 +1254,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_COOLDOWN_HOURS"
+    "runtime_key": "CRYPTO_COOLDOWN_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.execution.mode",
@@ -1190,9 +1281,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_EXECUTION_MODE"
+    "runtime_key": "CRYPTO_EXECUTION_MODE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.higher.timeframe.bar",
@@ -1215,9 +1308,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_BAR"
+    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_BAR",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.higher.timeframe.enabled",
@@ -1240,9 +1335,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_ENABLED"
+    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.higher.timeframe.min.bars",
@@ -1265,9 +1362,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_MIN_BARS"
+    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_MIN_BARS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.higher.timeframe.min.trend.return",
@@ -1290,9 +1389,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_MIN_TREND_RETURN"
+    "runtime_key": "CRYPTO_HIGHER_TIMEFRAME_MIN_TREND_RETURN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.interval.seconds",
@@ -1315,9 +1416,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_INTERVAL_SECONDS"
+    "runtime_key": "CRYPTO_INTERVAL_SECONDS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.loss.lock.hours",
@@ -1340,9 +1443,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_LOSS_LOCK_HOURS"
+    "runtime_key": "CRYPTO_LOSS_LOCK_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.max.chase.atr",
@@ -1365,9 +1470,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MAX_CHASE_ATR"
+    "runtime_key": "CRYPTO_MAX_CHASE_ATR",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.max.consecutive.losses",
@@ -1390,9 +1497,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MAX_CONSECUTIVE_LOSSES"
+    "runtime_key": "CRYPTO_MAX_CONSECUTIVE_LOSSES",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.max.daily.trades",
@@ -1415,9 +1524,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MAX_DAILY_TRADES"
+    "runtime_key": "CRYPTO_MAX_DAILY_TRADES",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.max.hold.hours",
@@ -1440,9 +1551,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MAX_HOLD_HOURS"
+    "runtime_key": "CRYPTO_MAX_HOLD_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.max.open.positions",
@@ -1465,9 +1578,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MAX_OPEN_POSITIONS"
+    "runtime_key": "CRYPTO_MAX_OPEN_POSITIONS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.max.order.notional",
@@ -1490,9 +1605,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MAX_ORDER_NOTIONAL"
+    "runtime_key": "CRYPTO_MAX_ORDER_NOTIONAL",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.max.portfolio.drawdown",
@@ -1515,9 +1632,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MAX_PORTFOLIO_DRAWDOWN"
+    "runtime_key": "CRYPTO_MAX_PORTFOLIO_DRAWDOWN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.max.total.exposure",
@@ -1540,9 +1659,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MAX_TOTAL_EXPOSURE"
+    "runtime_key": "CRYPTO_MAX_TOTAL_EXPOSURE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.min.trend.strength",
@@ -1565,9 +1686,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_MIN_TREND_STRENGTH"
+    "runtime_key": "CRYPTO_MIN_TREND_STRENGTH",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.partial.profit.tier1",
@@ -1590,9 +1713,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER1"
+    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER1",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.partial.profit.tier1.fraction",
@@ -1615,9 +1740,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER1_FRACTION"
+    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER1_FRACTION",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.partial.profit.tier2",
@@ -1640,9 +1767,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER2"
+    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER2",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.partial.profit.tier2.fraction",
@@ -1665,9 +1794,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER2_FRACTION"
+    "runtime_key": "CRYPTO_PARTIAL_PROFIT_TIER2_FRACTION",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.pullback.depth",
@@ -1690,9 +1821,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PULLBACK_DEPTH"
+    "runtime_key": "CRYPTO_PULLBACK_DEPTH",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.pullback.enabled",
@@ -1715,9 +1848,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PULLBACK_ENABLED"
+    "runtime_key": "CRYPTO_PULLBACK_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.pullback.max.bollinger",
@@ -1740,9 +1875,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PULLBACK_MAX_BOLLINGER"
+    "runtime_key": "CRYPTO_PULLBACK_MAX_BOLLINGER",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.pullback.max.rsi",
@@ -1765,9 +1902,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PULLBACK_MAX_RSI"
+    "runtime_key": "CRYPTO_PULLBACK_MAX_RSI",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.pullback.min.last.return",
@@ -1790,9 +1929,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PULLBACK_MIN_LAST_RETURN"
+    "runtime_key": "CRYPTO_PULLBACK_MIN_LAST_RETURN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.pullback.min.trend.return",
@@ -1815,9 +1956,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_PULLBACK_MIN_TREND_RETURN"
+    "runtime_key": "CRYPTO_PULLBACK_MIN_TREND_RETURN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.radar.auto.add",
@@ -1840,9 +1983,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_AUTO_ADD"
+    "runtime_key": "CRYPTO_RADAR_AUTO_ADD",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.radar.enabled",
@@ -1865,9 +2010,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_ENABLED"
+    "runtime_key": "CRYPTO_RADAR_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.radar.exit.inactive.cycles",
@@ -1890,9 +2037,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_EXIT_INACTIVE_CYCLES"
+    "runtime_key": "CRYPTO_RADAR_EXIT_INACTIVE_CYCLES",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.radar.full.scan.enabled",
@@ -1915,9 +2064,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_FULL_SCAN_ENABLED"
+    "runtime_key": "CRYPTO_RADAR_FULL_SCAN_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.radar.managed.symbols",
@@ -1940,9 +2091,12 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "标的白名单",
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_MANAGED_SYMBOLS"
+    "runtime_key": "CRYPTO_RADAR_MANAGED_SYMBOLS",
+    "user_area": "strategy_center"
   },
   {
     "key": "crypto.radar.max.managed.symbols",
@@ -1965,9 +2119,12 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "标的白名单",
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_MAX_MANAGED_SYMBOLS"
+    "runtime_key": "CRYPTO_RADAR_MAX_MANAGED_SYMBOLS",
+    "user_area": "strategy_center"
   },
   {
     "key": "crypto.radar.max.symbols.per.cycle",
@@ -1990,9 +2147,12 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "标的白名单",
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_MAX_SYMBOLS_PER_CYCLE"
+    "runtime_key": "CRYPTO_RADAR_MAX_SYMBOLS_PER_CYCLE",
+    "user_area": "strategy_center"
   },
   {
     "key": "crypto.radar.min.auto.add.score",
@@ -2015,9 +2175,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_MIN_AUTO_ADD_SCORE"
+    "runtime_key": "CRYPTO_RADAR_MIN_AUTO_ADD_SCORE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.radar.universe",
@@ -2040,9 +2202,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_RADAR_UNIVERSE"
+    "runtime_key": "CRYPTO_RADAR_UNIVERSE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.regime.filter.enabled",
@@ -2065,9 +2229,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_REGIME_FILTER_ENABLED"
+    "runtime_key": "CRYPTO_REGIME_FILTER_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.allow.major.short",
@@ -2090,9 +2256,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALLOW_MAJOR_SHORT"
+    "runtime_key": "CRYPTO_SWAP_ALLOW_MAJOR_SHORT",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.alt.short.add.loss.steps",
@@ -2115,9 +2283,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ADD_LOSS_STEPS"
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ADD_LOSS_STEPS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.alt.short.add.margin.multipliers",
@@ -2140,9 +2310,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ADD_MARGIN_MULTIPLIERS"
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ADD_MARGIN_MULTIPLIERS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.alt.short.enabled",
@@ -2165,9 +2337,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.alt.short.excluded.bases",
@@ -2190,9 +2364,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_EXCLUDED_BASES"
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_EXCLUDED_BASES",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.alt.short.initial.margin.fraction",
@@ -2215,9 +2391,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_INITIAL_MARGIN_FRACTION"
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_INITIAL_MARGIN_FRACTION",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.alt.short.max.layers",
@@ -2240,9 +2418,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_MAX_LAYERS"
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_MAX_LAYERS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.alt.short.max.position.loss",
@@ -2265,9 +2445,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_MAX_POSITION_LOSS"
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_MAX_POSITION_LOSS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.alt.short.recovery.take.profit",
@@ -2290,9 +2472,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_RECOVERY_TAKE_PROFIT"
+    "runtime_key": "CRYPTO_SWAP_ALT_SHORT_RECOVERY_TAKE_PROFIT",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.breakout.window",
@@ -2315,9 +2499,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_BREAKOUT_WINDOW"
+    "runtime_key": "CRYPTO_SWAP_BREAKOUT_WINDOW",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.confirmation.bars",
@@ -2340,9 +2526,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_CONFIRMATION_BARS"
+    "runtime_key": "CRYPTO_SWAP_CONFIRMATION_BARS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.continuation.bars",
@@ -2365,9 +2553,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_CONTINUATION_BARS"
+    "runtime_key": "CRYPTO_SWAP_CONTINUATION_BARS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.continuation.min.return",
@@ -2390,9 +2580,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_CONTINUATION_MIN_RETURN"
+    "runtime_key": "CRYPTO_SWAP_CONTINUATION_MIN_RETURN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.contraction.confirmations",
@@ -2415,9 +2607,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_CONTRACTION_CONFIRMATIONS"
+    "runtime_key": "CRYPTO_SWAP_CONTRACTION_CONFIRMATIONS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.contraction.ratio",
@@ -2440,9 +2634,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_CONTRACTION_RATIO"
+    "runtime_key": "CRYPTO_SWAP_CONTRACTION_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.emergency.reverse.loss",
@@ -2465,9 +2661,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_EMERGENCY_REVERSE_LOSS"
+    "runtime_key": "CRYPTO_SWAP_EMERGENCY_REVERSE_LOSS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.engine",
@@ -2490,9 +2688,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ENGINE"
+    "runtime_key": "CRYPTO_SWAP_ENGINE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.entry.enabled",
@@ -2515,9 +2715,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ENTRY_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_ENTRY_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.execution.mode",
@@ -2540,9 +2742,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_EXECUTION_MODE"
+    "runtime_key": "CRYPTO_SWAP_EXECUTION_MODE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.fast.window",
@@ -2565,9 +2769,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_FAST_WINDOW"
+    "runtime_key": "CRYPTO_SWAP_FAST_WINDOW",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.funding.exit.rate",
@@ -2590,9 +2796,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_FUNDING_EXIT_RATE"
+    "runtime_key": "CRYPTO_SWAP_FUNDING_EXIT_RATE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.hard.stop",
@@ -2615,9 +2823,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_HARD_STOP"
+    "runtime_key": "CRYPTO_SWAP_HARD_STOP",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.higher.timeframe.bar",
@@ -2640,9 +2850,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_BAR"
+    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_BAR",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.higher.timeframe.enabled",
@@ -2665,9 +2877,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.higher.timeframe.min.bars",
@@ -2690,9 +2904,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_MIN_BARS"
+    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_MIN_BARS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.higher.timeframe.min.trend.return",
@@ -2715,9 +2931,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_MIN_TREND_RETURN"
+    "runtime_key": "CRYPTO_SWAP_HIGHER_TIMEFRAME_MIN_TREND_RETURN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.interval.seconds",
@@ -2740,9 +2958,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_INTERVAL_SECONDS"
+    "runtime_key": "CRYPTO_SWAP_INTERVAL_SECONDS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.leverage",
@@ -2765,9 +2985,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_LEVERAGE"
+    "runtime_key": "CRYPTO_SWAP_LEVERAGE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.liquidation.buffer.exit",
@@ -2790,9 +3012,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_LIQUIDATION_BUFFER_EXIT"
+    "runtime_key": "CRYPTO_SWAP_LIQUIDATION_BUFFER_EXIT",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.long.hard.stop",
@@ -2815,9 +3039,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_LONG_HARD_STOP"
+    "runtime_key": "CRYPTO_SWAP_LONG_HARD_STOP",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.long.max.hold.hours",
@@ -2840,9 +3066,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_LONG_MAX_HOLD_HOURS"
+    "runtime_key": "CRYPTO_SWAP_LONG_MAX_HOLD_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.long.min.trend.strength",
@@ -2865,9 +3093,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_LONG_MIN_TREND_STRENGTH"
+    "runtime_key": "CRYPTO_SWAP_LONG_MIN_TREND_STRENGTH",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.long.min.volume.ratio",
@@ -2890,9 +3120,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_LONG_MIN_VOLUME_RATIO"
+    "runtime_key": "CRYPTO_SWAP_LONG_MIN_VOLUME_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.long.profit.giveback",
@@ -2915,9 +3147,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_LONG_PROFIT_GIVEBACK"
+    "runtime_key": "CRYPTO_SWAP_LONG_PROFIT_GIVEBACK",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.long.profit.protection.start",
@@ -2940,9 +3174,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_LONG_PROFIT_PROTECTION_START"
+    "runtime_key": "CRYPTO_SWAP_LONG_PROFIT_PROTECTION_START",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.margin.budget",
@@ -2965,9 +3201,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MARGIN_BUDGET"
+    "runtime_key": "CRYPTO_SWAP_MARGIN_BUDGET",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.max.abs.funding.rate",
@@ -2990,9 +3228,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MAX_ABS_FUNDING_RATE"
+    "runtime_key": "CRYPTO_SWAP_MAX_ABS_FUNDING_RATE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.max.chase.atr",
@@ -3015,9 +3255,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MAX_CHASE_ATR"
+    "runtime_key": "CRYPTO_SWAP_MAX_CHASE_ATR",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.max.hold.hours",
@@ -3040,9 +3282,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MAX_HOLD_HOURS"
+    "runtime_key": "CRYPTO_SWAP_MAX_HOLD_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.max.leverage",
@@ -3065,9 +3309,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MAX_LEVERAGE"
+    "runtime_key": "CRYPTO_SWAP_MAX_LEVERAGE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.max.margin.per.position",
@@ -3090,9 +3336,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MAX_MARGIN_PER_POSITION"
+    "runtime_key": "CRYPTO_SWAP_MAX_MARGIN_PER_POSITION",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.max.open.positions",
@@ -3115,9 +3363,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MAX_OPEN_POSITIONS"
+    "runtime_key": "CRYPTO_SWAP_MAX_OPEN_POSITIONS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.max.spread.ratio",
@@ -3140,9 +3390,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MAX_SPREAD_RATIO"
+    "runtime_key": "CRYPTO_SWAP_MAX_SPREAD_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.max.total.margin",
@@ -3165,9 +3417,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MAX_TOTAL_MARGIN"
+    "runtime_key": "CRYPTO_SWAP_MAX_TOTAL_MARGIN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mean.reversion.bollinger.lower",
@@ -3190,9 +3444,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_BOLLINGER_LOWER"
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_BOLLINGER_LOWER",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mean.reversion.bollinger.upper",
@@ -3215,9 +3471,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_BOLLINGER_UPPER"
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_BOLLINGER_UPPER",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mean.reversion.enabled",
@@ -3240,9 +3498,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mean.reversion.min.volume.ratio",
@@ -3265,9 +3525,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_MIN_VOLUME_RATIO"
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_MIN_VOLUME_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mean.reversion.position.scale",
@@ -3290,9 +3552,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_POSITION_SCALE"
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_POSITION_SCALE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mean.reversion.rsi.overbought",
@@ -3315,9 +3579,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_RSI_OVERBOUGHT"
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_RSI_OVERBOUGHT",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mean.reversion.rsi.oversold",
@@ -3340,9 +3606,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_RSI_OVERSOLD"
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_RSI_OVERSOLD",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mean.reversion.zscore",
@@ -3365,9 +3633,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_ZSCORE"
+    "runtime_key": "CRYPTO_SWAP_MEAN_REVERSION_ZSCORE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mf.benchmark.symbol",
@@ -3390,9 +3660,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MF_BENCHMARK_SYMBOL"
+    "runtime_key": "CRYPTO_SWAP_MF_BENCHMARK_SYMBOL",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mf.max.negative.funding.short",
@@ -3415,9 +3687,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MF_MAX_NEGATIVE_FUNDING_SHORT"
+    "runtime_key": "CRYPTO_SWAP_MF_MAX_NEGATIVE_FUNDING_SHORT",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mf.min.volume.ratio",
@@ -3440,9 +3714,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MF_MIN_VOLUME_RATIO"
+    "runtime_key": "CRYPTO_SWAP_MF_MIN_VOLUME_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mf.relative.weakness",
@@ -3465,9 +3741,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MF_RELATIVE_WEAKNESS"
+    "runtime_key": "CRYPTO_SWAP_MF_RELATIVE_WEAKNESS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mf.score.threshold",
@@ -3490,9 +3768,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MF_SCORE_THRESHOLD"
+    "runtime_key": "CRYPTO_SWAP_MF_SCORE_THRESHOLD",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.mf.trend.invalidation.score",
@@ -3515,9 +3795,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MF_TREND_INVALIDATION_SCORE"
+    "runtime_key": "CRYPTO_SWAP_MF_TREND_INVALIDATION_SCORE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.min.hold.hours",
@@ -3540,9 +3822,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MIN_HOLD_HOURS"
+    "runtime_key": "CRYPTO_SWAP_MIN_HOLD_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.min.trend.strength",
@@ -3565,9 +3849,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MIN_TREND_STRENGTH"
+    "runtime_key": "CRYPTO_SWAP_MIN_TREND_STRENGTH",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.min.volume.ratio",
@@ -3590,9 +3876,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_MIN_VOLUME_RATIO"
+    "runtime_key": "CRYPTO_SWAP_MIN_VOLUME_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.partial.profit.tier1",
@@ -3615,9 +3903,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER1"
+    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER1",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.partial.profit.tier1.fraction",
@@ -3640,9 +3930,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER1_FRACTION"
+    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER1_FRACTION",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.partial.profit.tier2",
@@ -3665,9 +3957,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER2"
+    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER2",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.partial.profit.tier2.fraction",
@@ -3690,9 +3984,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER2_FRACTION"
+    "runtime_key": "CRYPTO_SWAP_PARTIAL_PROFIT_TIER2_FRACTION",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.profit.giveback",
@@ -3715,9 +4011,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_PROFIT_GIVEBACK"
+    "runtime_key": "CRYPTO_SWAP_PROFIT_GIVEBACK",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.profit.protection.start",
@@ -3740,9 +4038,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_PROFIT_PROTECTION_START"
+    "runtime_key": "CRYPTO_SWAP_PROFIT_PROTECTION_START",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.radar.auto.add",
@@ -3765,9 +4065,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_RADAR_AUTO_ADD"
+    "runtime_key": "CRYPTO_SWAP_RADAR_AUTO_ADD",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.radar.enabled",
@@ -3790,9 +4092,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_RADAR_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_RADAR_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.radar.exit.cycles",
@@ -3815,9 +4119,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_RADAR_EXIT_CYCLES"
+    "runtime_key": "CRYPTO_SWAP_RADAR_EXIT_CYCLES",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.radar.full.scan.enabled",
@@ -3840,9 +4146,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_RADAR_FULL_SCAN_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_RADAR_FULL_SCAN_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.radar.max.managed",
@@ -3865,9 +4173,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_RADAR_MAX_MANAGED"
+    "runtime_key": "CRYPTO_SWAP_RADAR_MAX_MANAGED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.radar.max.per.cycle",
@@ -3890,9 +4200,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_RADAR_MAX_PER_CYCLE"
+    "runtime_key": "CRYPTO_SWAP_RADAR_MAX_PER_CYCLE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.radar.min.auto.add.score",
@@ -3915,9 +4227,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_RADAR_MIN_AUTO_ADD_SCORE"
+    "runtime_key": "CRYPTO_SWAP_RADAR_MIN_AUTO_ADD_SCORE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.radar.universe",
@@ -3940,9 +4254,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_RADAR_UNIVERSE"
+    "runtime_key": "CRYPTO_SWAP_RADAR_UNIVERSE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.regime.filter.enabled",
@@ -3965,9 +4281,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_REGIME_FILTER_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_REGIME_FILTER_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.short.continuation.min.return",
@@ -3990,9 +4308,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SHORT_CONTINUATION_MIN_RETURN"
+    "runtime_key": "CRYPTO_SWAP_SHORT_CONTINUATION_MIN_RETURN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.short.hard.stop",
@@ -4015,9 +4335,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SHORT_HARD_STOP"
+    "runtime_key": "CRYPTO_SWAP_SHORT_HARD_STOP",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.short.max.hold.hours",
@@ -4040,9 +4362,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SHORT_MAX_HOLD_HOURS"
+    "runtime_key": "CRYPTO_SWAP_SHORT_MAX_HOLD_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.short.min.trend.strength",
@@ -4065,9 +4389,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SHORT_MIN_TREND_STRENGTH"
+    "runtime_key": "CRYPTO_SWAP_SHORT_MIN_TREND_STRENGTH",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.short.min.volume.ratio",
@@ -4090,9 +4416,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SHORT_MIN_VOLUME_RATIO"
+    "runtime_key": "CRYPTO_SWAP_SHORT_MIN_VOLUME_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.short.profit.giveback",
@@ -4115,9 +4443,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SHORT_PROFIT_GIVEBACK"
+    "runtime_key": "CRYPTO_SWAP_SHORT_PROFIT_GIVEBACK",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.short.profit.protection.start",
@@ -4140,9 +4470,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SHORT_PROFIT_PROTECTION_START"
+    "runtime_key": "CRYPTO_SWAP_SHORT_PROFIT_PROTECTION_START",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.slow.window",
@@ -4165,9 +4497,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SLOW_WINDOW"
+    "runtime_key": "CRYPTO_SWAP_SLOW_WINDOW",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.symbols",
@@ -4190,9 +4524,12 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "标的白名单",
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_SYMBOLS"
+    "runtime_key": "CRYPTO_SWAP_SYMBOLS",
+    "user_area": "strategy_center"
   },
   {
     "key": "crypto.swap.trend.breakout.enabled",
@@ -4215,9 +4552,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_TREND_BREAKOUT_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_TREND_BREAKOUT_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.trend.window",
@@ -4240,9 +4579,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_TREND_WINDOW"
+    "runtime_key": "CRYPTO_SWAP_TREND_WINDOW",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.vol.expansion",
@@ -4265,9 +4606,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_VOL_EXPANSION"
+    "runtime_key": "CRYPTO_SWAP_VOL_EXPANSION",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.weak.momentum.exit.enabled",
@@ -4290,9 +4633,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_ENABLED"
+    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.weak.momentum.exit.hours",
@@ -4315,9 +4660,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_HOURS"
+    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.weak.momentum.exit.max.pnl",
@@ -4340,9 +4687,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_MAX_PNL"
+    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_MAX_PNL",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.weak.momentum.exit.min.peak.pnl",
@@ -4365,9 +4714,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_MIN_PEAK_PNL"
+    "runtime_key": "CRYPTO_SWAP_WEAK_MOMENTUM_EXIT_MIN_PEAK_PNL",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.swap.zscore",
@@ -4390,9 +4741,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_SWAP_ZSCORE"
+    "runtime_key": "CRYPTO_SWAP_ZSCORE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.trend.participation.enabled",
@@ -4415,9 +4768,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_TREND_PARTICIPATION_ENABLED"
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.trend.participation.max.bollinger",
@@ -4440,9 +4795,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MAX_BOLLINGER"
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MAX_BOLLINGER",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.trend.participation.max.rsi",
@@ -4465,9 +4822,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MAX_RSI"
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MAX_RSI",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.trend.participation.min.24h.return",
@@ -4490,9 +4849,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_24H_RETURN"
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_24H_RETURN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.trend.participation.min.72h.return",
@@ -4515,9 +4876,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_72H_RETURN"
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_72H_RETURN",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.trend.participation.min.volume.ratio",
@@ -4540,9 +4903,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_VOLUME_RATIO"
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_MIN_VOLUME_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.trend.participation.position.scale",
@@ -4565,9 +4930,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_TREND_PARTICIPATION_POSITION_SCALE"
+    "runtime_key": "CRYPTO_TREND_PARTICIPATION_POSITION_SCALE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.trend.window",
@@ -4590,9 +4957,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_TREND_WINDOW"
+    "runtime_key": "CRYPTO_TREND_WINDOW",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.volatility.budget",
@@ -4615,9 +4984,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOLATILITY_BUDGET"
+    "runtime_key": "CRYPTO_VOLATILITY_BUDGET",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.volatility.symbols",
@@ -4640,9 +5011,12 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "标的白名单",
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOLATILITY_SYMBOLS"
+    "runtime_key": "CRYPTO_VOLATILITY_SYMBOLS",
+    "user_area": "strategy_center"
   },
   {
     "key": "crypto.vol.breakout.window",
@@ -4665,9 +5039,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_BREAKOUT_WINDOW"
+    "runtime_key": "CRYPTO_VOL_BREAKOUT_WINDOW",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.expansion",
@@ -4690,9 +5066,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_EXPANSION"
+    "runtime_key": "CRYPTO_VOL_EXPANSION",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.fast.window",
@@ -4715,9 +5093,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_FAST_WINDOW"
+    "runtime_key": "CRYPTO_VOL_FAST_WINDOW",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.hard.stop",
@@ -4740,9 +5120,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_HARD_STOP"
+    "runtime_key": "CRYPTO_VOL_HARD_STOP",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.minimum.locked.profit",
@@ -4765,9 +5147,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_MINIMUM_LOCKED_PROFIT"
+    "runtime_key": "CRYPTO_VOL_MINIMUM_LOCKED_PROFIT",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.min.volume.ratio",
@@ -4790,9 +5174,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_MIN_VOLUME_RATIO"
+    "runtime_key": "CRYPTO_VOL_MIN_VOLUME_RATIO",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.profit.giveback",
@@ -4815,9 +5201,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_PROFIT_GIVEBACK"
+    "runtime_key": "CRYPTO_VOL_PROFIT_GIVEBACK",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.profit.protection.start",
@@ -4840,9 +5228,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_PROFIT_PROTECTION_START"
+    "runtime_key": "CRYPTO_VOL_PROFIT_PROTECTION_START",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.slow.window",
@@ -4865,9 +5255,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_SLOW_WINDOW"
+    "runtime_key": "CRYPTO_VOL_SLOW_WINDOW",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.tactical.minimum.locked.profit",
@@ -4890,9 +5282,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_TACTICAL_MINIMUM_LOCKED_PROFIT"
+    "runtime_key": "CRYPTO_VOL_TACTICAL_MINIMUM_LOCKED_PROFIT",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.tactical.profit.giveback",
@@ -4915,9 +5309,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_TACTICAL_PROFIT_GIVEBACK"
+    "runtime_key": "CRYPTO_VOL_TACTICAL_PROFIT_GIVEBACK",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.tactical.profit.protection.start",
@@ -4940,9 +5336,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_TACTICAL_PROFIT_PROTECTION_START"
+    "runtime_key": "CRYPTO_VOL_TACTICAL_PROFIT_PROTECTION_START",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.target.volatility",
@@ -4965,9 +5363,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_TARGET_VOLATILITY"
+    "runtime_key": "CRYPTO_VOL_TARGET_VOLATILITY",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.vol.zscore",
@@ -4990,9 +5390,11 @@
       "runtime"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_VOL_ZSCORE"
+    "runtime_key": "CRYPTO_VOL_ZSCORE",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.weak.momentum.exit.enabled",
@@ -5015,9 +5417,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_ENABLED"
+    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.weak.momentum.exit.hours",
@@ -5040,9 +5444,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_HOURS"
+    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_HOURS",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.weak.momentum.exit.max.pnl",
@@ -5065,9 +5471,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_MAX_PNL"
+    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_MAX_PNL",
+    "user_area": "ops_notify"
   },
   {
     "key": "crypto.weak.momentum.exit.min.peak.pnl",
@@ -5090,9 +5498,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_MIN_PEAK_PNL"
+    "runtime_key": "CRYPTO_WEAK_MOMENTUM_EXIT_MIN_PEAK_PNL",
+    "user_area": "ops_notify"
   },
   {
     "key": "database.backend",
@@ -5115,9 +5525,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "DATABASE_BACKEND"
+    "runtime_key": "DATABASE_BACKEND",
+    "user_area": "strategy_center"
   },
   {
     "key": "database.url",
@@ -5140,9 +5552,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "DATABASE_URL"
+    "runtime_key": "DATABASE_URL",
+    "user_area": "strategy_center"
   },
   {
     "key": "data.retention.days",
@@ -5165,9 +5579,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "DATA_RETENTION_DAYS"
+    "runtime_key": "DATA_RETENTION_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "decision.log.retain.days",
@@ -5190,9 +5606,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "DECISION_LOG_RETAIN_DAYS"
+    "runtime_key": "DECISION_LOG_RETAIN_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "dw.reexec",
@@ -5215,9 +5633,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "DW_REEXEC"
+    "runtime_key": "DW_REEXEC",
+    "user_area": "strategy_center"
   },
   {
     "key": "earnings.source.overall.timeout.seconds",
@@ -5240,9 +5660,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "EARNINGS_SOURCE_OVERALL_TIMEOUT_SECONDS"
+    "runtime_key": "EARNINGS_SOURCE_OVERALL_TIMEOUT_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "earnings.source.retries",
@@ -5265,9 +5687,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "EARNINGS_SOURCE_RETRIES"
+    "runtime_key": "EARNINGS_SOURCE_RETRIES",
+    "user_area": "strategy_center"
   },
   {
     "key": "earnings.source.timeout.seconds",
@@ -5290,9 +5714,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "EARNINGS_SOURCE_TIMEOUT_SECONDS"
+    "runtime_key": "EARNINGS_SOURCE_TIMEOUT_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "earnings.source.workers",
@@ -5315,9 +5741,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "EARNINGS_SOURCE_WORKERS"
+    "runtime_key": "EARNINGS_SOURCE_WORKERS",
+    "user_area": "strategy_center"
   },
   {
     "key": "enable.paper.orders",
@@ -5340,9 +5768,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ENABLE_PAPER_ORDERS"
+    "runtime_key": "ENABLE_PAPER_ORDERS",
+    "user_area": "strategy_center"
   },
   {
     "key": "enforce.virtual.positions",
@@ -5365,9 +5795,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ENFORCE_VIRTUAL_POSITIONS"
+    "runtime_key": "ENFORCE_VIRTUAL_POSITIONS",
+    "user_area": "strategy_center"
   },
   {
     "key": "execution.mode",
@@ -5390,9 +5822,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "EXECUTION_MODE"
+    "runtime_key": "EXECUTION_MODE",
+    "user_area": "strategy_center"
   },
   {
     "key": "exec.max.reprice.attempts",
@@ -5415,9 +5849,11 @@
       "config.Settings"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "EXEC_MAX_REPRICE_ATTEMPTS"
+    "runtime_key": "EXEC_MAX_REPRICE_ATTEMPTS",
+    "user_area": "account_env"
   },
   {
     "key": "exec.max.slippage.pct",
@@ -5440,9 +5876,11 @@
       "config.Settings"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "EXEC_MAX_SLIPPAGE_PCT"
+    "runtime_key": "EXEC_MAX_SLIPPAGE_PCT",
+    "user_area": "account_env"
   },
   {
     "key": "exec.max.spread.pct",
@@ -5465,9 +5903,11 @@
       "config.Settings"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "EXEC_MAX_SPREAD_PCT"
+    "runtime_key": "EXEC_MAX_SPREAD_PCT",
+    "user_area": "account_env"
   },
   {
     "key": "exec.reprice.interval.seconds",
@@ -5490,9 +5930,11 @@
       "config.Settings"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "EXEC_REPRICE_INTERVAL_SECONDS"
+    "runtime_key": "EXEC_REPRICE_INTERVAL_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "exec.reprice.step.pct",
@@ -5515,9 +5957,11 @@
       "config.Settings"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "EXEC_REPRICE_STEP_PCT"
+    "runtime_key": "EXEC_REPRICE_STEP_PCT",
+    "user_area": "account_env"
   },
   {
     "key": "exec.urgent.max.reprice.attempts",
@@ -5540,9 +5984,11 @@
       "runtime"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "EXEC_URGENT_MAX_REPRICE_ATTEMPTS"
+    "runtime_key": "EXEC_URGENT_MAX_REPRICE_ATTEMPTS",
+    "user_area": "account_env"
   },
   {
     "key": "exec.urgent.order.timeout.seconds",
@@ -5565,9 +6011,11 @@
       "runtime"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "EXEC_URGENT_ORDER_TIMEOUT_SECONDS"
+    "runtime_key": "EXEC_URGENT_ORDER_TIMEOUT_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "exec.urgent.reprice.interval.seconds",
@@ -5590,9 +6038,11 @@
       "runtime"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "EXEC_URGENT_REPRICE_INTERVAL_SECONDS"
+    "runtime_key": "EXEC_URGENT_REPRICE_INTERVAL_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "fee.option.minimum",
@@ -5615,9 +6065,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "FEE_OPTION_MINIMUM"
+    "runtime_key": "FEE_OPTION_MINIMUM",
+    "user_area": "strategy_center"
   },
   {
     "key": "fee.option.per.contract",
@@ -5640,9 +6092,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "FEE_OPTION_PER_CONTRACT"
+    "runtime_key": "FEE_OPTION_PER_CONTRACT",
+    "user_area": "strategy_center"
   },
   {
     "key": "fee.sell.regulatory.rate",
@@ -5665,9 +6119,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "FEE_SELL_REGULATORY_RATE"
+    "runtime_key": "FEE_SELL_REGULATORY_RATE",
+    "user_area": "strategy_center"
   },
   {
     "key": "fee.stock.minimum",
@@ -5690,9 +6146,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "FEE_STOCK_MINIMUM"
+    "runtime_key": "FEE_STOCK_MINIMUM",
+    "user_area": "strategy_center"
   },
   {
     "key": "fee.stock.per.share",
@@ -5715,9 +6173,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "FEE_STOCK_PER_SHARE"
+    "runtime_key": "FEE_STOCK_PER_SHARE",
+    "user_area": "strategy_center"
   },
   {
     "key": "feishu.allow.test.network",
@@ -5740,9 +6200,10 @@
       "runtime"
     ],
     "tags": [
-      "通知与可观测性"
+      "需不需要重启"
     ],
-    "runtime_key": "FEISHU_ALLOW_TEST_NETWORK"
+    "runtime_key": "FEISHU_ALLOW_TEST_NETWORK",
+    "user_area": "ops_notify"
   },
   {
     "key": "feishu.chat.id",
@@ -5765,9 +6226,10 @@
       "runtime"
     ],
     "tags": [
-      "通知与可观测性"
+      "需不需要重启"
     ],
-    "runtime_key": "FEISHU_CHAT_ID"
+    "runtime_key": "FEISHU_CHAT_ID",
+    "user_area": "ops_notify"
   },
   {
     "key": "feishu.folder.token",
@@ -5790,9 +6252,10 @@
       "runtime"
     ],
     "tags": [
-      "通知与可观测性"
+      "需不需要重启"
     ],
-    "runtime_key": "FEISHU_FOLDER_TOKEN"
+    "runtime_key": "FEISHU_FOLDER_TOKEN",
+    "user_area": "ops_notify"
   },
   {
     "key": "feishu.group.chat.id",
@@ -5815,9 +6278,10 @@
       "runtime"
     ],
     "tags": [
-      "通知与可观测性"
+      "需不需要重启"
     ],
-    "runtime_key": "FEISHU_GROUP_CHAT_ID"
+    "runtime_key": "FEISHU_GROUP_CHAT_ID",
+    "user_area": "ops_notify"
   },
   {
     "key": "feishu.webhook.secret",
@@ -5840,10 +6304,11 @@
       "runtime"
     ],
     "tags": [
-      "通知与可观测性"
+      "需不需要重启"
     ],
     "secret": true,
-    "runtime_key": "FEISHU_WEBHOOK_SECRET"
+    "runtime_key": "FEISHU_WEBHOOK_SECRET",
+    "user_area": "ops_notify"
   },
   {
     "key": "feishu.webhook.url",
@@ -5866,9 +6331,13 @@
       "runtime"
     ],
     "tags": [
-      "通知与可观测性"
+      "告警",
+      "通知",
+      "需不需要重启",
+      "飞书"
     ],
-    "runtime_key": "FEISHU_WEBHOOK_URL"
+    "runtime_key": "FEISHU_WEBHOOK_URL",
+    "user_area": "ops_notify"
   },
   {
     "key": "futu.acc.id",
@@ -5891,9 +6360,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_ACC_ID"
+    "runtime_key": "FUTU_ACC_ID",
+    "user_area": "account_env"
   },
   {
     "key": "futu.connect.timeout.seconds",
@@ -5916,9 +6387,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_CONNECT_TIMEOUT_SECONDS"
+    "runtime_key": "FUTU_CONNECT_TIMEOUT_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.host",
@@ -5941,9 +6414,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_HOST"
+    "runtime_key": "FUTU_HOST",
+    "user_area": "account_env"
   },
   {
     "key": "futu.log.backups",
@@ -5966,9 +6441,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_LOG_BACKUPS"
+    "runtime_key": "FUTU_LOG_BACKUPS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.log.dir",
@@ -5991,9 +6468,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_LOG_DIR"
+    "runtime_key": "FUTU_LOG_DIR",
+    "user_area": "account_env"
   },
   {
     "key": "futu.log.max.bytes",
@@ -6016,9 +6495,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_LOG_MAX_BYTES"
+    "runtime_key": "FUTU_LOG_MAX_BYTES",
+    "user_area": "account_env"
   },
   {
     "key": "futu.log.role",
@@ -6041,9 +6522,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_LOG_ROLE"
+    "runtime_key": "FUTU_LOG_ROLE",
+    "user_area": "account_env"
   },
   {
     "key": "futu.market",
@@ -6066,9 +6549,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_MARKET"
+    "runtime_key": "FUTU_MARKET",
+    "user_area": "account_env"
   },
   {
     "key": "futu.opend.app.name",
@@ -6091,9 +6576,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_OPEND_APP_NAME"
+    "runtime_key": "FUTU_OPEND_APP_NAME",
+    "user_area": "account_env"
   },
   {
     "key": "futu.opend.auto.restart",
@@ -6116,9 +6603,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_OPEND_AUTO_RESTART"
+    "runtime_key": "FUTU_OPEND_AUTO_RESTART",
+    "user_area": "account_env"
   },
   {
     "key": "futu.opend.max.backoff.seconds",
@@ -6141,9 +6630,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_OPEND_MAX_BACKOFF_SECONDS"
+    "runtime_key": "FUTU_OPEND_MAX_BACKOFF_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.opend.restart.command",
@@ -6166,9 +6657,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_OPEND_RESTART_COMMAND"
+    "runtime_key": "FUTU_OPEND_RESTART_COMMAND",
+    "user_area": "account_env"
   },
   {
     "key": "futu.opend.restart.min.interval.seconds",
@@ -6191,9 +6684,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_OPEND_RESTART_MIN_INTERVAL_SECONDS"
+    "runtime_key": "FUTU_OPEND_RESTART_MIN_INTERVAL_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.opend.restart.on.failures",
@@ -6216,9 +6711,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_OPEND_RESTART_ON_FAILURES"
+    "runtime_key": "FUTU_OPEND_RESTART_ON_FAILURES",
+    "user_area": "account_env"
   },
   {
     "key": "futu.opend.restart.timeout.seconds",
@@ -6241,9 +6738,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_OPEND_RESTART_TIMEOUT_SECONDS"
+    "runtime_key": "FUTU_OPEND_RESTART_TIMEOUT_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.opend.restart.wait.seconds",
@@ -6266,9 +6765,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_OPEND_RESTART_WAIT_SECONDS"
+    "runtime_key": "FUTU_OPEND_RESTART_WAIT_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.port",
@@ -6291,9 +6792,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_PORT"
+    "runtime_key": "FUTU_PORT",
+    "user_area": "account_env"
   },
   {
     "key": "futu.preflight.timeout.seconds",
@@ -6316,9 +6819,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_PREFLIGHT_TIMEOUT_SECONDS"
+    "runtime_key": "FUTU_PREFLIGHT_TIMEOUT_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.sdk.preflight.cache.seconds",
@@ -6341,9 +6846,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_SDK_PREFLIGHT_CACHE_SECONDS"
+    "runtime_key": "FUTU_SDK_PREFLIGHT_CACHE_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.sdk.preflight.timeout.seconds",
@@ -6366,9 +6873,11 @@
       "runtime"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_SDK_PREFLIGHT_TIMEOUT_SECONDS"
+    "runtime_key": "FUTU_SDK_PREFLIGHT_TIMEOUT_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "futu.security.firm",
@@ -6391,9 +6900,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_SECURITY_FIRM"
+    "runtime_key": "FUTU_SECURITY_FIRM",
+    "user_area": "account_env"
   },
   {
     "key": "futu.trading.env",
@@ -6416,9 +6927,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "FUTU_TRADING_ENV"
+    "runtime_key": "FUTU_TRADING_ENV",
+    "user_area": "account_env"
   },
   {
     "key": "gamma.interval.seconds",
@@ -6441,9 +6954,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_INTERVAL_SECONDS"
+    "runtime_key": "GAMMA_INTERVAL_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.max.abs.delta",
@@ -6466,9 +6981,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_MAX_ABS_DELTA"
+    "runtime_key": "GAMMA_MAX_ABS_DELTA",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.max.abs.gamma",
@@ -6491,9 +7008,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_MAX_ABS_GAMMA"
+    "runtime_key": "GAMMA_MAX_ABS_GAMMA",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.max.abs.vega",
@@ -6516,9 +7035,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_MAX_ABS_VEGA"
+    "runtime_key": "GAMMA_MAX_ABS_VEGA",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.max.iv.percentile",
@@ -6541,9 +7062,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_MAX_IV_PERCENTILE"
+    "runtime_key": "GAMMA_MAX_IV_PERCENTILE",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.max.iv.rv",
@@ -6566,9 +7089,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_MAX_IV_RV"
+    "runtime_key": "GAMMA_MAX_IV_RV",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.symbols",
@@ -6591,9 +7116,12 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "标的白名单",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_SYMBOLS"
+    "runtime_key": "GAMMA_SYMBOLS",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.volatility.max.absolute.iv",
@@ -6616,9 +7144,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_VOLATILITY_MAX_ABSOLUTE_IV"
+    "runtime_key": "GAMMA_VOLATILITY_MAX_ABSOLUTE_IV",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.volatility.max.iv.percentile",
@@ -6641,9 +7171,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_VOLATILITY_MAX_IV_PERCENTILE"
+    "runtime_key": "GAMMA_VOLATILITY_MAX_IV_PERCENTILE",
+    "user_area": "strategy_center"
   },
   {
     "key": "gamma.volatility.max.iv.rv",
@@ -6666,9 +7198,11 @@
       "config.Settings"
     ],
     "tags": [
-      "期权与"
+      "期权与",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_VOLATILITY_MAX_IV_RV"
+    "runtime_key": "GAMMA_VOLATILITY_MAX_IV_RV",
+    "user_area": "strategy_center"
   },
   {
     "key": "max.log.bytes",
@@ -6691,9 +7225,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "MAX_LOG_BYTES"
+    "runtime_key": "MAX_LOG_BYTES",
+    "user_area": "strategy_center"
   },
   {
     "key": "ml.auc.guard",
@@ -6716,9 +7252,11 @@
       "runtime"
     ],
     "tags": [
-      "行情与数据"
+      "行情与数据",
+      "需不需要重启"
     ],
-    "runtime_key": "ML_AUC_GUARD"
+    "runtime_key": "ML_AUC_GUARD",
+    "user_area": "ops_notify"
   },
   {
     "key": "ml.enabled",
@@ -6741,9 +7279,11 @@
       "config.Settings"
     ],
     "tags": [
-      "行情与数据"
+      "行情与数据",
+      "需不需要重启"
     ],
-    "runtime_key": "ML_ENABLED"
+    "runtime_key": "ML_ENABLED",
+    "user_area": "ops_notify"
   },
   {
     "key": "ml.health.interval.seconds",
@@ -6766,9 +7306,11 @@
       "runtime"
     ],
     "tags": [
-      "行情与数据"
+      "行情与数据",
+      "需不需要重启"
     ],
-    "runtime_key": "ML_HEALTH_INTERVAL_SECONDS"
+    "runtime_key": "ML_HEALTH_INTERVAL_SECONDS",
+    "user_area": "ops_notify"
   },
   {
     "key": "ml.min.improvement.margin",
@@ -6791,9 +7333,11 @@
       "runtime"
     ],
     "tags": [
-      "行情与数据"
+      "行情与数据",
+      "需不需要重启"
     ],
-    "runtime_key": "ML_MIN_IMPROVEMENT_MARGIN"
+    "runtime_key": "ML_MIN_IMPROVEMENT_MARGIN",
+    "user_area": "ops_notify"
   },
   {
     "key": "ml.model.path",
@@ -6816,9 +7360,11 @@
       "config.Settings"
     ],
     "tags": [
-      "行情与数据"
+      "行情与数据",
+      "需不需要重启"
     ],
-    "runtime_key": "ML_MODEL_PATH"
+    "runtime_key": "ML_MODEL_PATH",
+    "user_area": "ops_notify"
   },
   {
     "key": "ml.threshold",
@@ -6841,9 +7387,11 @@
       "config.Settings"
     ],
     "tags": [
-      "行情与数据"
+      "行情与数据",
+      "需不需要重启"
     ],
-    "runtime_key": "ML_THRESHOLD"
+    "runtime_key": "ML_THRESHOLD",
+    "user_area": "ops_notify"
   },
   {
     "key": "ml.weight",
@@ -6866,9 +7414,11 @@
       "config.Settings"
     ],
     "tags": [
-      "行情与数据"
+      "行情与数据",
+      "需不需要重启"
     ],
-    "runtime_key": "ML_WEIGHT"
+    "runtime_key": "ML_WEIGHT",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.api.key",
@@ -6891,10 +7441,12 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
     "secret": true,
-    "runtime_key": "OKX_API_KEY"
+    "runtime_key": "OKX_API_KEY",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.base.url",
@@ -6917,9 +7469,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "OKX_BASE_URL"
+    "runtime_key": "OKX_BASE_URL",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.enable.demo.orders",
@@ -6942,9 +7496,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "OKX_ENABLE_DEMO_ORDERS"
+    "runtime_key": "OKX_ENABLE_DEMO_ORDERS",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.max.order.notional",
@@ -6967,9 +7523,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "OKX_MAX_ORDER_NOTIONAL"
+    "runtime_key": "OKX_MAX_ORDER_NOTIONAL",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.passphrase",
@@ -6992,9 +7550,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "OKX_PASSPHRASE"
+    "runtime_key": "OKX_PASSPHRASE",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.retry.attempts",
@@ -7017,9 +7577,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "OKX_RETRY_ATTEMPTS"
+    "runtime_key": "OKX_RETRY_ATTEMPTS",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.retry.backoff.seconds",
@@ -7042,9 +7604,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "OKX_RETRY_BACKOFF_SECONDS"
+    "runtime_key": "OKX_RETRY_BACKOFF_SECONDS",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.secret.key",
@@ -7067,10 +7631,12 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
     "secret": true,
-    "runtime_key": "OKX_SECRET_KEY"
+    "runtime_key": "OKX_SECRET_KEY",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.timeout.seconds",
@@ -7093,9 +7659,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "OKX_TIMEOUT_SECONDS"
+    "runtime_key": "OKX_TIMEOUT_SECONDS",
+    "user_area": "ops_notify"
   },
   {
     "key": "okx.trading.mode",
@@ -7118,9 +7686,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "OKX_TRADING_MODE"
+    "runtime_key": "OKX_TRADING_MODE",
+    "user_area": "ops_notify"
   },
   {
     "key": "option.contracts",
@@ -7143,9 +7713,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "OPTION_CONTRACTS"
+    "runtime_key": "OPTION_CONTRACTS",
+    "user_area": "strategy_center"
   },
   {
     "key": "option.exit.max.spread.pct",
@@ -7168,9 +7740,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "OPTION_EXIT_MAX_SPREAD_PCT"
+    "runtime_key": "OPTION_EXIT_MAX_SPREAD_PCT",
+    "user_area": "strategy_center"
   },
   {
     "key": "option.exit.price.deviation.anchor.pct",
@@ -7193,9 +7767,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT"
+    "runtime_key": "OPTION_EXIT_PRICE_DEVIATION_ANCHOR_PCT",
+    "user_area": "strategy_center"
   },
   {
     "key": "option.risk.free.rate",
@@ -7218,9 +7794,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "OPTION_RISK_FREE_RATE"
+    "runtime_key": "OPTION_RISK_FREE_RATE",
+    "user_area": "strategy_center"
   },
   {
     "key": "order.quantities",
@@ -7243,9 +7821,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ORDER_QUANTITIES"
+    "runtime_key": "ORDER_QUANTITIES",
+    "user_area": "strategy_center"
   },
   {
     "key": "order.quantity",
@@ -7268,9 +7848,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ORDER_QUANTITY"
+    "runtime_key": "ORDER_QUANTITY",
+    "user_area": "strategy_center"
   },
   {
     "key": "order.timeout.seconds",
@@ -7293,9 +7875,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ORDER_TIMEOUT_SECONDS"
+    "runtime_key": "ORDER_TIMEOUT_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "order.unknown.after.seconds",
@@ -7318,9 +7902,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "ORDER_UNKNOWN_AFTER_SECONDS"
+    "runtime_key": "ORDER_UNKNOWN_AFTER_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "paper.acceptance.max.reject.rate",
@@ -7343,9 +7929,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "PAPER_ACCEPTANCE_MAX_REJECT_RATE"
+    "runtime_key": "PAPER_ACCEPTANCE_MAX_REJECT_RATE",
+    "user_area": "strategy_center"
   },
   {
     "key": "paper.acceptance.max.slippage",
@@ -7368,9 +7956,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "PAPER_ACCEPTANCE_MAX_SLIPPAGE"
+    "runtime_key": "PAPER_ACCEPTANCE_MAX_SLIPPAGE",
+    "user_area": "strategy_center"
   },
   {
     "key": "paper.acceptance.min.days",
@@ -7393,9 +7983,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "PAPER_ACCEPTANCE_MIN_DAYS"
+    "runtime_key": "PAPER_ACCEPTANCE_MIN_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "paper.acceptance.min.fill.rate",
@@ -7418,9 +8010,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "PAPER_ACCEPTANCE_MIN_FILL_RATE"
+    "runtime_key": "PAPER_ACCEPTANCE_MIN_FILL_RATE",
+    "user_area": "strategy_center"
   },
   {
     "key": "paper.acceptance.min.orders",
@@ -7443,9 +8037,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "PAPER_ACCEPTANCE_MIN_ORDERS"
+    "runtime_key": "PAPER_ACCEPTANCE_MIN_ORDERS",
+    "user_area": "strategy_center"
   },
   {
     "key": "protective.radar.restart.min.interval.seconds",
@@ -7468,9 +8064,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "PROTECTIVE_RADAR_RESTART_MIN_INTERVAL_SECONDS"
+    "runtime_key": "PROTECTIVE_RADAR_RESTART_MIN_INTERVAL_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "protective.restart.on.failures",
@@ -7493,9 +8091,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "PROTECTIVE_RESTART_ON_FAILURES"
+    "runtime_key": "PROTECTIVE_RESTART_ON_FAILURES",
+    "user_area": "strategy_center"
   },
   {
     "key": "protective.service.restart.min.interval.seconds",
@@ -7518,9 +8118,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "PROTECTIVE_SERVICE_RESTART_MIN_INTERVAL_SECONDS"
+    "runtime_key": "PROTECTIVE_SERVICE_RESTART_MIN_INTERVAL_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "radar.api.timeout.seconds",
@@ -7543,9 +8145,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "RADAR_API_TIMEOUT_SECONDS"
+    "runtime_key": "RADAR_API_TIMEOUT_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "radar.max.symbols.per.scan",
@@ -7568,9 +8172,12 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "标的白名单",
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "RADAR_MAX_SYMBOLS_PER_SCAN"
+    "runtime_key": "RADAR_MAX_SYMBOLS_PER_SCAN",
+    "user_area": "strategy_center"
   },
   {
     "key": "radar.stop.timeout.seconds",
@@ -7593,9 +8200,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "RADAR_STOP_TIMEOUT_SECONDS"
+    "runtime_key": "RADAR_STOP_TIMEOUT_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "real.account.id",
@@ -7618,9 +8227,11 @@
       "config.Settings"
     ],
     "tags": [
-      "交易安全与实盘门禁"
+      "交易安全与实盘门禁",
+      "需不需要重启"
     ],
-    "runtime_key": "REAL_ACCOUNT_ID"
+    "runtime_key": "REAL_ACCOUNT_ID",
+    "user_area": "risk_limits"
   },
   {
     "key": "real.allowed.strategies",
@@ -7643,9 +8254,11 @@
       "config.Settings"
     ],
     "tags": [
-      "交易安全与实盘门禁"
+      "交易安全与实盘门禁",
+      "需不需要重启"
     ],
-    "runtime_key": "REAL_ALLOWED_STRATEGIES"
+    "runtime_key": "REAL_ALLOWED_STRATEGIES",
+    "user_area": "risk_limits"
   },
   {
     "key": "real.max.daily.notional",
@@ -7668,9 +8281,14 @@
       "config.Settings"
     ],
     "tags": [
-      "交易安全与实盘门禁"
+      "交易安全与实盘门禁",
+      "单笔限额",
+      "实盘额度",
+      "日限额",
+      "需不需要重启"
     ],
-    "runtime_key": "REAL_MAX_DAILY_NOTIONAL"
+    "runtime_key": "REAL_MAX_DAILY_NOTIONAL",
+    "user_area": "risk_limits"
   },
   {
     "key": "real.max.order.notional",
@@ -7693,9 +8311,14 @@
       "config.Settings"
     ],
     "tags": [
-      "交易安全与实盘门禁"
+      "交易安全与实盘门禁",
+      "单笔限额",
+      "实盘额度",
+      "日限额",
+      "需不需要重启"
     ],
-    "runtime_key": "REAL_MAX_ORDER_NOTIONAL"
+    "runtime_key": "REAL_MAX_ORDER_NOTIONAL",
+    "user_area": "risk_limits"
   },
   {
     "key": "real.require.manual.confirm",
@@ -7718,9 +8341,11 @@
       "config.Settings"
     ],
     "tags": [
-      "交易安全与实盘门禁"
+      "交易安全与实盘门禁",
+      "需不需要重启"
     ],
-    "runtime_key": "REAL_REQUIRE_MANUAL_CONFIRM"
+    "runtime_key": "REAL_REQUIRE_MANUAL_CONFIRM",
+    "user_area": "risk_limits"
   },
   {
     "key": "real.shutdown.enabled",
@@ -7743,9 +8368,11 @@
       "config.Settings"
     ],
     "tags": [
-      "交易安全与实盘门禁"
+      "交易安全与实盘门禁",
+      "需不需要重启"
     ],
-    "runtime_key": "REAL_SHUTDOWN_ENABLED"
+    "runtime_key": "REAL_SHUTDOWN_ENABLED",
+    "user_area": "risk_limits"
   },
   {
     "key": "real.trading.enabled",
@@ -7768,9 +8395,11 @@
       "config.Settings"
     ],
     "tags": [
-      "交易安全与实盘门禁"
+      "交易安全与实盘门禁",
+      "需不需要重启"
     ],
-    "runtime_key": "REAL_TRADING_ENABLED"
+    "runtime_key": "REAL_TRADING_ENABLED",
+    "user_area": "risk_limits"
   },
   {
     "key": "reconciliation.retain.days",
@@ -7793,9 +8422,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "RECONCILIATION_RETAIN_DAYS"
+    "runtime_key": "RECONCILIATION_RETAIN_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "recovery.point.retention.count",
@@ -7818,9 +8449,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "RECOVERY_POINT_RETENTION_COUNT"
+    "runtime_key": "RECOVERY_POINT_RETENTION_COUNT",
+    "user_area": "strategy_center"
   },
   {
     "key": "recovery.point.retention.days",
@@ -7843,9 +8476,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "RECOVERY_POINT_RETENTION_DAYS"
+    "runtime_key": "RECOVERY_POINT_RETENTION_DAYS",
+    "user_area": "strategy_center"
   },
   {
     "key": "require.strategy.approval",
@@ -7868,9 +8503,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "REQUIRE_STRATEGY_APPROVAL"
+    "runtime_key": "REQUIRE_STRATEGY_APPROVAL",
+    "user_area": "strategy_center"
   },
   {
     "key": "risk.correlation.clusters",
@@ -7893,9 +8530,11 @@
       "runtime"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_CORRELATION_CLUSTERS"
+    "runtime_key": "RISK_CORRELATION_CLUSTERS",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.correlation.threshold",
@@ -7918,9 +8557,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_CORRELATION_THRESHOLD"
+    "runtime_key": "RISK_CORRELATION_THRESHOLD",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.abs.gamma",
@@ -7943,9 +8584,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_ABS_GAMMA"
+    "runtime_key": "RISK_MAX_ABS_GAMMA",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.abs.theta",
@@ -7968,9 +8611,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_ABS_THETA"
+    "runtime_key": "RISK_MAX_ABS_THETA",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.abs.vega",
@@ -7993,9 +8638,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_ABS_VEGA"
+    "runtime_key": "RISK_MAX_ABS_VEGA",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.correlated.delta.pct",
@@ -8018,9 +8665,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_CORRELATED_DELTA_PCT"
+    "runtime_key": "RISK_MAX_CORRELATED_DELTA_PCT",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.daily.loss",
@@ -8043,9 +8692,14 @@
       "config.Settings"
     ],
     "tags": [
+      "回撤",
+      "日亏",
+      "止损",
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_DAILY_LOSS"
+    "runtime_key": "RISK_MAX_DAILY_LOSS",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.daily.notional",
@@ -8068,9 +8722,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_DAILY_NOTIONAL"
+    "runtime_key": "RISK_MAX_DAILY_NOTIONAL",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.daily.reduction.notional",
@@ -8093,9 +8749,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_DAILY_REDUCTION_NOTIONAL"
+    "runtime_key": "RISK_MAX_DAILY_REDUCTION_NOTIONAL",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.drawdown.pct",
@@ -8118,9 +8776,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_DRAWDOWN_PCT"
+    "runtime_key": "RISK_MAX_DRAWDOWN_PCT",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.family.delta.pct",
@@ -8143,9 +8803,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_FAMILY_DELTA_PCT"
+    "runtime_key": "RISK_MAX_FAMILY_DELTA_PCT",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.gross.exposure",
@@ -8168,9 +8830,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_GROSS_EXPOSURE"
+    "runtime_key": "RISK_MAX_GROSS_EXPOSURE",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.net.delta.pct",
@@ -8193,9 +8857,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_NET_DELTA_PCT"
+    "runtime_key": "RISK_MAX_NET_DELTA_PCT",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.option.premium",
@@ -8218,9 +8884,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_OPTION_PREMIUM"
+    "runtime_key": "RISK_MAX_OPTION_PREMIUM",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.order.notional",
@@ -8243,9 +8911,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_ORDER_NOTIONAL"
+    "runtime_key": "RISK_MAX_ORDER_NOTIONAL",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.pending.orders",
@@ -8268,9 +8938,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_PENDING_ORDERS"
+    "runtime_key": "RISK_MAX_PENDING_ORDERS",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.reduction.order.notional",
@@ -8293,9 +8965,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_REDUCTION_ORDER_NOTIONAL"
+    "runtime_key": "RISK_MAX_REDUCTION_ORDER_NOTIONAL",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.max.symbol.weight",
@@ -8318,9 +8992,11 @@
       "config.Settings"
     ],
     "tags": [
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "RISK_MAX_SYMBOL_WEIGHT"
+    "runtime_key": "RISK_MAX_SYMBOL_WEIGHT",
+    "user_area": "risk_limits"
   },
   {
     "key": "sec.user.agent",
@@ -8343,9 +9019,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "SEC_USER_AGENT"
+    "runtime_key": "SEC_USER_AGENT",
+    "user_area": "strategy_center"
   },
   {
     "key": "service.stop.timeout.seconds",
@@ -8368,9 +9046,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "SERVICE_STOP_TIMEOUT_SECONDS"
+    "runtime_key": "SERVICE_STOP_TIMEOUT_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "service.strategies",
@@ -8393,9 +9073,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "SERVICE_STRATEGIES"
+    "runtime_key": "SERVICE_STRATEGIES",
+    "user_area": "strategy_center"
   },
   {
     "key": "shadow.extended.hours.liquidity",
@@ -8418,9 +9100,11 @@
       "config.Settings"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "SHADOW_EXTENDED_HOURS_LIQUIDITY"
+    "runtime_key": "SHADOW_EXTENDED_HOURS_LIQUIDITY",
+    "user_area": "account_env"
   },
   {
     "key": "shadow.max.reprice.attempts",
@@ -8443,9 +9127,11 @@
       "runtime"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "SHADOW_MAX_REPRICE_ATTEMPTS"
+    "runtime_key": "SHADOW_MAX_REPRICE_ATTEMPTS",
+    "user_area": "account_env"
   },
   {
     "key": "shadow.max.slippage.pct",
@@ -8468,9 +9154,11 @@
       "runtime"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "SHADOW_MAX_SLIPPAGE_PCT"
+    "runtime_key": "SHADOW_MAX_SLIPPAGE_PCT",
+    "user_area": "account_env"
   },
   {
     "key": "shadow.order.timeout.seconds",
@@ -8493,9 +9181,11 @@
       "config.Settings"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "SHADOW_ORDER_TIMEOUT_SECONDS"
+    "runtime_key": "SHADOW_ORDER_TIMEOUT_SECONDS",
+    "user_area": "account_env"
   },
   {
     "key": "shadow.participation.rate",
@@ -8518,9 +9208,11 @@
       "config.Settings"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "SHADOW_PARTICIPATION_RATE"
+    "runtime_key": "SHADOW_PARTICIPATION_RATE",
+    "user_area": "account_env"
   },
   {
     "key": "shadow.reprice.step.pct",
@@ -8543,9 +9235,11 @@
       "runtime"
     ],
     "tags": [
-      "执行与订单"
+      "执行与订单",
+      "需不需要重启"
     ],
-    "runtime_key": "SHADOW_REPRICE_STEP_PCT"
+    "runtime_key": "SHADOW_REPRICE_STEP_PCT",
+    "user_area": "account_env"
   },
   {
     "key": "stock.stress.loss.ratio",
@@ -8568,9 +9262,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "STOCK_STRESS_LOSS_RATIO"
+    "runtime_key": "STOCK_STRESS_LOSS_RATIO",
+    "user_area": "strategy_center"
   },
   {
     "key": "strategy.budgets",
@@ -8593,9 +9289,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "STRATEGY_BUDGETS"
+    "runtime_key": "STRATEGY_BUDGETS",
+    "user_area": "strategy_center"
   },
   {
     "key": "strategy.interval.seconds",
@@ -8619,9 +9317,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "STRATEGY_INTERVAL_SECONDS"
+    "runtime_key": "STRATEGY_INTERVAL_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "tradeyi.allow.dirty.tree",
@@ -8644,9 +9344,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "TRADEYI_ALLOW_DIRTY_TREE"
+    "runtime_key": "TRADEYI_ALLOW_DIRTY_TREE",
+    "user_area": "strategy_center"
   },
   {
     "key": "tradeyi.dev.root",
@@ -8669,9 +9371,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "TRADEYI_DEV_ROOT"
+    "runtime_key": "TRADEYI_DEV_ROOT",
+    "user_area": "strategy_center"
   },
   {
     "key": "tradeyi.env",
@@ -8694,9 +9398,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "TRADEYI_ENV"
+    "runtime_key": "TRADEYI_ENV",
+    "user_area": "strategy_center"
   },
   {
     "key": "tradeyi.prod.root",
@@ -8719,9 +9425,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "TRADEYI_PROD_ROOT"
+    "runtime_key": "TRADEYI_PROD_ROOT",
+    "user_area": "strategy_center"
   },
   {
     "key": "tradeyi.test.root",
@@ -8744,9 +9452,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "TRADEYI_TEST_ROOT"
+    "runtime_key": "TRADEYI_TEST_ROOT",
+    "user_area": "strategy_center"
   },
   {
     "key": "transient.incident.auto.recover.hours",
@@ -8769,9 +9479,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "TRANSIENT_INCIDENT_AUTO_RECOVER_HOURS"
+    "runtime_key": "TRANSIENT_INCIDENT_AUTO_RECOVER_HOURS",
+    "user_area": "strategy_center"
   },
   {
     "key": "volatility.candidate.retry.seconds",
@@ -8794,9 +9506,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_CANDIDATE_RETRY_SECONDS"
+    "runtime_key": "VOLATILITY_CANDIDATE_RETRY_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "volatility.expected.return.min.dynamic",
@@ -8819,9 +9533,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_DYNAMIC"
+    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_DYNAMIC",
+    "user_area": "strategy_center"
   },
   {
     "key": "volatility.expected.return.min.normal",
@@ -8844,9 +9560,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_NORMAL"
+    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_NORMAL",
+    "user_area": "strategy_center"
   },
   {
     "key": "volatility.expected.return.min.strong",
@@ -8869,9 +9587,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_STRONG"
+    "runtime_key": "VOLATILITY_EXPECTED_RETURN_MIN_STRONG",
+    "user_area": "strategy_center"
   },
   {
     "key": "volatility.expression.review.seconds",
@@ -8894,9 +9614,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_EXPRESSION_REVIEW_SECONDS"
+    "runtime_key": "VOLATILITY_EXPRESSION_REVIEW_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "volatility.interval.seconds",
@@ -8919,9 +9641,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_INTERVAL_SECONDS"
+    "runtime_key": "VOLATILITY_INTERVAL_SECONDS",
+    "user_area": "strategy_center"
   },
   {
     "key": "volatility.orphan.position.policy",
@@ -8944,9 +9668,11 @@
       "runtime"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_ORPHAN_POSITION_POLICY"
+    "runtime_key": "VOLATILITY_ORPHAN_POSITION_POLICY",
+    "user_area": "strategy_center"
   },
   {
     "key": "watchlist",
@@ -8969,9 +9695,11 @@
       "config.Settings"
     ],
     "tags": [
-      "策略总览"
+      "策略总览",
+      "需不需要重启"
     ],
-    "runtime_key": "WATCHLIST"
+    "runtime_key": "WATCHLIST",
+    "user_area": "strategy_center"
   },
   {
     "key": "control.kill_switch",
@@ -8994,9 +9722,12 @@
       "store.TradingStore"
     ],
     "tags": [
-      "急停与运行控制"
+      "急停",
+      "暂停",
+      "需不需要重启"
     ],
-    "runtime_key": "kill_switch"
+    "runtime_key": "kill_switch",
+    "user_area": "ops_notify"
   },
   {
     "key": "control.strategies_paused",
@@ -9019,9 +9750,10 @@
       "store.TradingStore"
     ],
     "tags": [
-      "急停与运行控制"
+      "需不需要重启"
     ],
-    "runtime_key": "strategies_paused"
+    "runtime_key": "strategies_paused",
+    "user_area": "ops_notify"
   },
   {
     "key": "runtime.execution_mode",
@@ -9044,9 +9776,12 @@
       "store.TradingStore"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行模式",
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "execution_mode"
+    "runtime_key": "execution_mode",
+    "user_area": "strategy_center"
   },
   {
     "key": "security.admin_password_hash",
@@ -9069,9 +9804,11 @@
       "store.TradingStore"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "admin_password_hash"
+    "runtime_key": "admin_password_hash",
+    "user_area": "account_env"
   },
   {
     "key": "strategy.core_satellite.cash_yield_enabled",
@@ -9094,9 +9831,11 @@
       "store.TradingStore"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "core_satellite_cash_yield_enabled"
+    "runtime_key": "core_satellite_cash_yield_enabled",
+    "user_area": "strategy_center"
   },
   {
     "key": "strategy.core_satellite.cash_yield_symbol",
@@ -9119,9 +9858,11 @@
       "store.TradingStore"
     ],
     "tags": [
-      "Core"
+      "Core",
+      "需不需要重启"
     ],
-    "runtime_key": "core_satellite_cash_yield_symbol"
+    "runtime_key": "core_satellite_cash_yield_symbol",
+    "user_area": "strategy_center"
   },
   {
     "key": "runtime.module.enable_crypto",
@@ -9144,9 +9885,11 @@
       "app.py"
     ],
     "tags": [
-      "运维与高级"
+      "运维与高级",
+      "需不需要重启"
     ],
-    "runtime_key": "ENABLE_CRYPTO_MODULE"
+    "runtime_key": "ENABLE_CRYPTO_MODULE",
+    "user_area": "ops_notify"
   },
   {
     "key": "strategy.volatility.campaigns",
@@ -9171,10 +9914,12 @@
       "run_gamma_strategy"
     ],
     "tags": [
+      "期权",
       "波动率策略",
-      "期权"
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_CAMPAIGNS"
+    "runtime_key": "VOLATILITY_CAMPAIGNS",
+    "user_area": "strategy_center"
   },
   {
     "key": "strategy.gamma.campaigns",
@@ -9198,9 +9943,11 @@
       "run_gamma_strategy"
     ],
     "tags": [
-      "期权"
+      "期权",
+      "需不需要重启"
     ],
-    "runtime_key": "GAMMA_CAMPAIGNS"
+    "runtime_key": "GAMMA_CAMPAIGNS",
+    "user_area": "strategy_center"
   },
   {
     "key": "strategy.volatility.symbols",
@@ -9224,9 +9971,12 @@
       "run_gamma_strategy"
     ],
     "tags": [
-      "波动率策略"
+      "标的白名单",
+      "波动率策略",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_SYMBOLS"
+    "runtime_key": "VOLATILITY_SYMBOLS",
+    "user_area": "strategy_center"
   },
   {
     "key": "strategy.volatility.radar_budgets",
@@ -9249,9 +9999,11 @@
       "volatility_scanner"
     ],
     "tags": [
-      "波动率策略"
+      "波动率策略",
+      "需不需要重启"
     ],
-    "runtime_key": "VOLATILITY_RADAR_BUDGETS"
+    "runtime_key": "VOLATILITY_RADAR_BUDGETS",
+    "user_area": "strategy_center"
   },
   {
     "key": "strategy.core_satellite.daily_validation",
@@ -9274,9 +10026,11 @@
       "core_validation"
     ],
     "tags": [
-      "Core Satellite"
+      "Core Satellite",
+      "需不需要重启"
     ],
-    "runtime_key": "CORE_SATELLITE_DAILY_VALIDATION"
+    "runtime_key": "CORE_SATELLITE_DAILY_VALIDATION",
+    "user_area": "strategy_center"
   },
   {
     "key": "notification.alert_mute_list",
@@ -9299,9 +10053,13 @@
       "alerts.AlertManager"
     ],
     "tags": [
-      "通知与可观测性"
+      "告警",
+      "通知",
+      "需不需要重启",
+      "飞书"
     ],
-    "runtime_key": "alert_mute_list"
+    "runtime_key": "alert_mute_list",
+    "user_area": "ops_notify"
   },
   {
     "key": "notification.daily_review_im_pending",
@@ -9324,9 +10082,10 @@
       "scheduled_tasks"
     ],
     "tags": [
-      "通知与可观测性"
+      "需不需要重启"
     ],
-    "runtime_key": "DAILY_STRATEGY_REVIEW_IM_PENDING"
+    "runtime_key": "DAILY_STRATEGY_REVIEW_IM_PENDING",
+    "user_area": "ops_notify"
   },
   {
     "key": "runtime.env_settings",
@@ -9349,9 +10108,11 @@
       "config.Settings"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "ENV_SETTINGS"
+    "runtime_key": "ENV_SETTINGS",
+    "user_area": "account_env"
   },
   {
     "key": "safety.real.account_config",
@@ -9374,9 +10135,11 @@
       "real_trading.resolve_real_account_limits"
     ],
     "tags": [
-      "交易安全与实盘门禁"
+      "交易安全与实盘门禁",
+      "需不需要重启"
     ],
-    "runtime_key": "real_account_config:{account}"
+    "runtime_key": "real_account_config:{account}",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.limits.tenant",
@@ -9399,9 +10162,17 @@
       "risk.resolve_risk_limits"
     ],
     "tags": [
+      "单笔限额",
+      "回撤",
+      "实盘额度",
+      "日亏",
+      "日限额",
+      "止损",
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "risk_limits:{tenant}"
+    "runtime_key": "risk_limits:{tenant}",
+    "user_area": "risk_limits"
   },
   {
     "key": "control.volatility.new_entries_paused",
@@ -9426,10 +10197,12 @@
       "run_gamma_strategy"
     ],
     "tags": [
-      "急停与运行控制",
-      "波动率策略"
+      "停止开仓",
+      "波动率策略",
+      "需不需要重启"
     ],
-    "runtime_key": "volatility_new_entries_paused"
+    "runtime_key": "volatility_new_entries_paused",
+    "user_area": "account_env"
   },
   {
     "key": "control.strategy.enabled",
@@ -9452,9 +10225,11 @@
       "run_service.service_cycle"
     ],
     "tags": [
-      "急停与运行控制"
+      "策略开关",
+      "需不需要重启"
     ],
-    "runtime_key": "strategy_enabled:{tenant}:{strategy}"
+    "runtime_key": "strategy_enabled:{tenant}:{strategy}",
+    "user_area": "strategy_center"
   },
   {
     "key": "control.strategy.enabled.legacy",
@@ -9477,10 +10252,12 @@
       "run_service.service_cycle"
     ],
     "tags": [
-      "急停与运行控制"
+      "策略开关",
+      "需不需要重启"
     ],
     "runtime_key": "strategy_enabled:{strategy}",
-    "deprecated": true
+    "deprecated": true,
+    "user_area": "strategy_center"
   },
   {
     "key": "runtime.strategy.execution_mode",
@@ -9504,9 +10281,12 @@
       "execution_mode.resolve_configured_execution_mode"
     ],
     "tags": [
-      "运行环境与连接"
+      "运行模式",
+      "运行环境与连接",
+      "需不需要重启"
     ],
-    "runtime_key": "strategy_execution_mode:{tenant}:{strategy}"
+    "runtime_key": "strategy_execution_mode:{tenant}:{strategy}",
+    "user_area": "strategy_center"
   },
   {
     "key": "control.tenant.active",
@@ -9529,9 +10309,10 @@
       "run_service.main"
     ],
     "tags": [
-      "急停与运行控制"
+      "需不需要重启"
     ],
-    "runtime_key": "tenant_active:{tenant}"
+    "runtime_key": "tenant_active:{tenant}",
+    "user_area": "ops_notify"
   },
   {
     "key": "risk.circuit_breaker.mode",
@@ -9554,9 +10335,14 @@
       "risk.RiskEngine"
     ],
     "tags": [
+      "回撤",
+      "日亏",
+      "止损",
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "risk_breaker_mode:{tenant}"
+    "runtime_key": "risk_breaker_mode:{tenant}",
+    "user_area": "risk_limits"
   },
   {
     "key": "risk.circuit_breaker.thresholds",
@@ -9567,7 +10353,7 @@
     ],
     "category": "④ 风控边界",
     "title": "租户回撤熔断阈值",
-    "description": "租户回撤预警、急停与自愈恢复阈值设定",
+    "description": "租户回撤预警、熔断停止、恢复等指标阈值设定",
     "value_type": "float",
     "default": 0.1,
     "scope": "tenant",
@@ -9581,8 +10367,13 @@
       "risk.RiskEngine"
     ],
     "tags": [
+      "回撤",
+      "日亏",
+      "止损",
+      "需不需要重启",
       "风控边界"
     ],
-    "runtime_key": "risk_drawdown_warn_pct:{tenant}"
+    "runtime_key": "risk_drawdown_warn_pct:{tenant}",
+    "user_area": "risk_limits"
   }
 ]
