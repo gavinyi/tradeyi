@@ -21,7 +21,7 @@ from futu_quant.store import TradingStore, AuditActorError
 
 
 REQUIRED_AUDIT_PAYLOAD_FIELDS = {
-    "actor", "reason", "before", "after", "base_version", "release_id",
+    "actor", "reason", "before", "after", "base_version", "result_version", "release_id",
 }
 
 
@@ -39,6 +39,7 @@ def _verify_audit_event_payload(store: TradingStore, event_type: str) -> dict:
     assert payload["actor"] and ":" in payload["actor"], f"actor 格式不合规: {payload['actor']}"
     assert payload["reason"] and str(payload["reason"]).strip(), f"reason 不能为空: {payload['reason']}"
     assert isinstance(payload["base_version"], int), f"base_version 必须为整型: {payload['base_version']}"
+    assert isinstance(payload["result_version"], int), f"result_version 必须为整型: {payload['result_version']}"
     assert isinstance(payload["release_id"], int), f"release_id 必须为整型: {payload['release_id']}"
     return payload
 
@@ -57,15 +58,17 @@ def test_audit_chain_full_lifecycle_covers_publish_rollback_and_reject(tmp_path)
     assert pub_payload["before"] is None
     assert pub_payload["after"] == ["ORDER_FAILED"]
     assert pub_payload["base_version"] == 0
+    assert pub_payload["result_version"] == 1
 
     # 2. 验证回滚事件审计留痕 (CONFIG_RELEASE_ROLLED_BACK)
     rb_res = rollback_low_risk_config(store, pub_rel_id, actor=actor, reason="一键回滚发布单")
     assert rb_res["status"] == "ROLLED_BACK"
     rb_payload = _verify_audit_event_payload(store, "CONFIG_RELEASE_ROLLED_BACK")
     assert rb_payload["release_id"] == pub_rel_id
-    assert rb_payload["before"] == ["ORDER_FAILED"]
-    assert rb_payload["after"] is None
+    assert rb_payload["before"] == ["ORDER_FAILED"]  # 事务内读取当下真实运行值作为 before
+    assert rb_payload["after"] is None               # 恢复为初始值
     assert rb_payload["base_version"] == 0
+    assert rb_payload["result_version"] == 2         # 回滚生成新版本号 2
 
     # 3. 验证拒绝草稿事件审计留痕 (CONFIG_RELEASE_REJECTED)
     draft_id = store.create_config_release(key, ["TASK_NEW"], actor, "新建草稿待拒绝")
@@ -74,8 +77,9 @@ def test_audit_chain_full_lifecycle_covers_publish_rollback_and_reject(tmp_path)
     rej_payload = _verify_audit_event_payload(store, "CONFIG_RELEASE_REJECTED")
     assert rej_payload["release_id"] == draft_id
     assert rej_payload["reason"] == reject_reason
-    assert rej_payload["before"] is None
-    assert rej_payload["after"] == ["TASK_NEW"]
+    assert rej_payload["before"] is None             # 当前运行时仍是回滚后的 None
+    assert rej_payload["after"] is None              # 拒绝未生效，after 为 None
+    assert rej_payload["result_version"] == 2        # 拒绝不产生新版本号，保留当前版本 2
 
 
 def test_reject_config_release_enforces_mandatory_reason_and_actor(tmp_path):

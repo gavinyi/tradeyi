@@ -2605,10 +2605,12 @@ class TradingStore:
 
             # 3. 若声明了审计事件，在同事务内原子落库
             if audit_event_type:
+                final_payload = dict(audit_payload or {})
+                final_payload["result_version"] = next_version
                 connection.execute(
                     """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
                     VALUES(?,?,?,?,?)""",
-                    (audit_event_type, _json_dumps(audit_payload or {}), "config_center", approved_by, now_iso),
+                    (audit_event_type, _json_dumps(final_payload), "config_center", approved_by, now_iso),
                 )
             return next_version
 
@@ -2645,9 +2647,10 @@ class TradingStore:
             previous_value = diff.get("before")
 
             current = connection.execute(
-                "SELECT version FROM runtime_config WHERE config_key=?", (config_key,)
+                "SELECT version, value_json FROM runtime_config WHERE config_key=?", (config_key,)
             ).fetchone()
             current_version = int(current["version"]) if current else 0
+            current_runtime_val = json.loads(current["value_json"]) if current and current["value_json"] else None
             next_version = current_version + 1
             now_iso = self.now()
             value_json = json.dumps(previous_value, ensure_ascii=False, default=str)
@@ -2676,12 +2679,22 @@ class TradingStore:
                 "UPDATE config_releases SET status='ROLLED_BACK' WHERE id=?", (release_id,)
             )
 
-            # 4. 同事务原子落库审计日志
+            # 4. 同事务原子落库审计日志 (Reviewer 要求：before 必须取事务内当下真实运行值，补 result_version)
             if audit_event_type:
+                final_payload = dict(audit_payload or {})
+                final_payload["before"] = current_runtime_val
+                final_payload["after"] = previous_value
+                final_payload["result_version"] = next_version
+                final_payload["release_id"] = release_id
+                final_payload["config_key"] = config_key
+                final_payload["actor"] = actor
+                final_payload["reason"] = reason_text
+                final_payload["base_version"] = int(release["base_version"])
+
                 connection.execute(
                     """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
                     VALUES(?,?,?,?,?)""",
-                    (audit_event_type, _json_dumps(audit_payload or {}), "config_center", actor, now_iso),
+                    (audit_event_type, _json_dumps(final_payload), "config_center", actor, now_iso),
                 )
             return next_version
 
@@ -2700,6 +2713,13 @@ class TradingStore:
             if not release or release["status"] != "DRAFT":
                 raise ValueError("配置草稿不存在或状态不是 DRAFT，无法执行拒绝操作")
 
+            config_key = release["config_key"]
+            current = connection.execute(
+                "SELECT version, value_json FROM runtime_config WHERE config_key=?", (config_key,)
+            ).fetchone()
+            current_runtime_val = json.loads(current["value_json"]) if current and current["value_json"] else None
+            current_version = int(current["version"]) if current else 0
+
             now_iso = self.now()
             # 1. 状态置为 REJECTED
             connection.execute(
@@ -2708,16 +2728,16 @@ class TradingStore:
                 (approved_by, now_iso, release_id),
             )
 
-            # 2. 同事务原子落审计日志 (完整包含 6 个标准审计字段)
-            diff = json.loads(release["diff_json"]) if isinstance(release["diff_json"], str) else (release["diff_json"] or {})
+            # 2. 同事务原子落审计日志 (完整包含 6 个标准审计字段，before 为当下真实运行值，after 为 None 表达未生效)
             payload = {
                 "actor": approved_by,
                 "reason": clean_reason,
-                "before": diff.get("before"),
-                "after": json.loads(release["draft_json"]) if isinstance(release["draft_json"], str) else release["draft_json"],
+                "before": current_runtime_val,
+                "after": None,
                 "base_version": int(release["base_version"]),
+                "result_version": current_version,
                 "release_id": release_id,
-                "config_key": release["config_key"],
+                "config_key": config_key,
             }
             connection.execute(
                 """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
