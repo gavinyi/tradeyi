@@ -243,3 +243,24 @@ def test_streamlit_page_audit_accepts_valid_import(tmp_path):
 
     assert result["errors"] == 0
     assert result["passed"] is True
+
+
+def test_streamlit_page_audit_flags_missing_module_via_plain_import(tmp_path):
+    """Reviewer 补漏：`import futu_quant.ui_store` 这种写法同样必须被抓住。"""
+    from futu_quant.operational_readiness import audit_streamlit_pages
+
+    root = _fake_project(tmp_path, "import futu_quant.ui_store\n")
+    result = audit_streamlit_pages(root)
+
+    assert result["errors"] >= 1
+    assert any("ui_store" in issue["问题"] for issue in result["issues"])
+
+
+def test_streamlit_page_audit_accepts_plain_import_of_existing_module(tmp_path):
+    """正例：`import futu_quant.ui` 不得误报。"""
+    from futu_quant.operational_readiness import audit_streamlit_pages
+
+    root = _fake_project(tmp_path, "import futu_quant.ui\n")
+    result = audit_streamlit_pages(root)
+
+    assert result["errors"] == 0

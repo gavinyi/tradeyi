@@ -147,9 +147,25 @@ def _audit_page_imports(root: Path, tree: ast.AST, relative: str) -> list[dict]:
 
     **纯静态**：不 import 任何 `futu_quant` 模块，因此不会因缺少可选运行依赖
     （`futu`、`exchange_calendars` 等）在本巡检里误报。
+
+    覆盖两种顶层导入形态（Reviewer 2026-11-01 补 `ast.Import` 漏检）：
+    - ``from futu_quant.a import b`` → 模块必须存在，且顶层必须有符号 ``b``；
+    - ``import futu_quant.a.b`` → **模块必须存在**（这种写法没有符号可查，
+      但模块不存在同样是一打开就 ImportError）。
     """
     issues: list[dict] = []
     for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                full_name = alias.name
+                if not full_name.startswith("futu_quant"):
+                    continue
+                if _resolve_futu_quant_module(root, full_name) is None:
+                    issues.append({
+                        "页面": relative, "行号": node.lineno, "级别": "错误",
+                        "问题": f"import 的模块不存在：{full_name}（页面一打开即 ImportError）",
+                    })
+            continue
         if not isinstance(node, ast.ImportFrom):
             continue
         module_name = node.module or ""
