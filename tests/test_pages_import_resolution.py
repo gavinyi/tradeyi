@@ -13,6 +13,10 @@
 （`futu`、`exchange_calendars` 等可选运行依赖）。用 import 做校验会让守卫
 在没装可选依赖的环境（例如只装了 pytest 的精简 venv）**误红**，
 从而掩盖真实缺陷 —— 这与本守卫要解决的问题正好相反。
+
+同一份判定已接入 `scripts/check_streamlit_pages.py`
+（经 `operational_readiness.audit_streamlit_pages`）：迁移门禁只查「有没有直接
+`TradingStore()`」、静态巡检原本只查语法，两条各管一半就都漏；现在合流。
 """
 
 from __future__ import annotations
@@ -186,3 +190,56 @@ def test_guard_passes_without_optional_runtime_dependencies(tmp_path):
         f"{completed.stdout}\n{completed.stderr}"
     )
     assert "STATIC-GUARD-OK" in completed.stdout
+
+
+# ---------------------------------------------------------------------------
+# 合流：同一份判定必须挂进 `scripts/check_streamlit_pages.py` 走的巡检入口
+# ---------------------------------------------------------------------------
+
+
+def _fake_project(tmp_path, page_source: str):
+    root = tmp_path / "proj"
+    (root / "src" / "futu_quant").mkdir(parents=True)
+    (root / "src" / "futu_quant" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "src" / "futu_quant" / "ui.py").write_text(
+        "def render_sidebar(settings=None):\n    return None\n", encoding="utf-8",
+    )
+    (root / "pages").mkdir()
+    (root / "pages" / "99_bad.py").write_text(page_source, encoding="utf-8")
+    return root
+
+
+def test_streamlit_page_audit_flags_missing_module(tmp_path):
+    """巡检必须能抓到「凭空依赖」——这正是 2026-11-01 面板阻断的形态。"""
+    from futu_quant.operational_readiness import audit_streamlit_pages
+
+    root = _fake_project(
+        tmp_path, "from futu_quant.ui_store import ui_store\nstore = ui_store()\n",
+    )
+    result = audit_streamlit_pages(root)
+
+    assert result["errors"] >= 1
+    assert any("ui_store" in issue["问题"] for issue in result["issues"])
+    assert result["passed"] is False
+
+
+def test_streamlit_page_audit_flags_missing_symbol(tmp_path):
+    """模块存在但符号导错（`broker.get_tenant_broker`）同样必须抓。"""
+    from futu_quant.operational_readiness import audit_streamlit_pages
+
+    root = _fake_project(tmp_path, "from futu_quant.ui import no_such_helper\n")
+    result = audit_streamlit_pages(root)
+
+    assert result["errors"] >= 1
+    assert any("no_such_helper" in issue["问题"] for issue in result["issues"])
+
+
+def test_streamlit_page_audit_accepts_valid_import(tmp_path):
+    """正例：合法导入不得误报（否则巡检会被无视）。"""
+    from futu_quant.operational_readiness import audit_streamlit_pages
+
+    root = _fake_project(tmp_path, "from futu_quant.ui import render_sidebar\n")
+    result = audit_streamlit_pages(root)
+
+    assert result["errors"] == 0
+    assert result["passed"] is True

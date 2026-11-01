@@ -87,10 +87,90 @@ def audit_streamlit_pages(root: Path | str = ROOT) -> dict:
         for key in sorted(form_keys.keys() & state_assignments.keys()):
             issues.append({"页面": relative, "行号": state_assignments[key], "级别": "错误",
                            "问题": f"Session State 键 {key!r} 与表单键冲突"})
+        issues.extend(_audit_page_imports(root, tree, relative))
     errors = sum(item["级别"] == "错误" for item in issues)
     return {"passed": errors == 0, "pages_checked": checked, "errors": errors,
             "warnings": len(issues) - errors, "issues": issues,
             "checked_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _resolve_futu_quant_module(root: Path, module_name: str) -> Path | None:
+    """把 `futu_quant.a.b` 静态映射到源码文件（**不 import**，避免可选依赖误报）。"""
+    parts = module_name.split(".")
+    if not parts or parts[0] != "futu_quant":
+        return None
+    base = root.joinpath("src", *parts)
+    as_file = base.with_suffix(".py")
+    if as_file.is_file():
+        return as_file
+    as_package = base / "__init__.py"
+    return as_package if as_package.is_file() else None
+
+
+def _module_top_level_names(path: Path) -> tuple[set[str], bool]:
+    """模块顶层被定义/导入的名字集合；第二项表示是否存在无法静态枚举的 `import *`。"""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except SyntaxError:
+        return set(), True  # 目标模块自身语法坏掉时不在本检查范围内
+    names: set[str] = set()
+    has_star_import = False
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+                elif isinstance(target, ast.Tuple):
+                    names.update(el.id for el in target.elts if isinstance(el, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "*":
+                    has_star_import = True
+                else:
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+    return names, has_star_import
+
+
+def _audit_page_imports(root: Path, tree: ast.AST, relative: str) -> list[dict]:
+    """页面的模块级 `futu_quant` 导入必须真实存在（2026-11-01 面板阻断事故）。
+
+    事故根因：`pages/00_today_overview.py` 写了 `from futu_quant.ui_store import ui_store`，
+    该模块从未存在；而本巡检当时只查语法、不解析导入，`ImportError` 一路漏到生产。
+    同时页面把 `get_tenant_broker` 从 `futu_quant.broker` 导入（实际在 `ui.py`）。
+
+    **纯静态**：不 import 任何 `futu_quant` 模块，因此不会因缺少可选运行依赖
+    （`futu`、`exchange_calendars` 等）在本巡检里误报。
+    """
+    issues: list[dict] = []
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module_name = node.module or ""
+        if not module_name.startswith("futu_quant"):
+            continue
+        wanted = [alias.name for alias in node.names if alias.name != "*"]
+        if not wanted:
+            continue
+        module_file = _resolve_futu_quant_module(root, module_name)
+        if module_file is None:
+            issues.append({"页面": relative, "行号": node.lineno, "级别": "错误",
+                           "问题": f"导入的模块不存在：{module_name}（页面一打开即 ImportError）"})
+            continue
+        defined, has_star_import = _module_top_level_names(module_file)
+        if has_star_import:
+            continue
+        for name in wanted:
+            if name not in defined:
+                issues.append({"页面": relative, "行号": node.lineno, "级别": "错误",
+                               "问题": f"{module_name} 顶层没有符号 {name}（导入会失败）"})
+    return issues
 
 
 def _contains_streamlit_render_call(node: ast.AST) -> bool:
