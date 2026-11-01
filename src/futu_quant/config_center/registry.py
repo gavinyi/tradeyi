@@ -264,6 +264,13 @@ def _load_default_specs() -> list[ConfigSpec]:
                 f"配置项 {item.get('key')} user_area 非法或缺失: {user_area!r}！"
                 f"必须为 {sorted(valid_areas)} 之一，严禁空值或未分类！"
             )
+        surface = item.get("surface")
+        valid_surfaces = {"primary", "advanced"}
+        if not surface or surface not in valid_surfaces:
+            raise ValueError(
+                f"配置项 {item.get('key')} surface 非法或缺失: {surface!r}！"
+                f"必须为 {sorted(valid_surfaces)} 之一，严禁空值！"
+            )
         spec = ConfigSpec(
             key=item["key"],
             aliases=aliases,
@@ -287,6 +294,7 @@ def _load_default_specs() -> list[ConfigSpec]:
             deprecated=bool(item.get("deprecated", False)),
             runtime_key=runtime_key,
             user_area=user_area,
+            surface=surface,
         )
         specs.append(spec)
     return specs

@@ -29,9 +29,25 @@ class ConfigSpec:
     activation: str                  # immediate/next_cycle/restart/manual_release
     consumers: tuple[str, ...]       # 消费者模块、服务或入口
     tags: tuple[str, ...]            # 标签检索视图 (如 real_safety, risk, options)
+    runtime_key: str                 # 真实落库键名 (Phase 2 显式化，必须属于 aliases 且全局唯一)
+    user_area: str                   # 业务入口归属 (PRD: strategy_center / risk_limits / account_env / ops_notify，必填无默认)
+    surface: str                     # 展示层级 (PRD: primary / advanced，必填无默认，primary限制首屏<=30)
     validator: str = ""              # 命名校验器
     dependencies: tuple[str, ...] = () # 依赖项
     secret: bool = False             # 是否涉密
     deprecated: bool = False         # 是否已弃用
-    runtime_key: str = ""            # 真实落库键名 (Phase 2 显式化，必须属于 aliases 且全局唯一)
-    user_area: str = "strategy_center" # 业务入口归属 (PRD: strategy_center / risk_limits / account_env / ops_notify)
+
+    def __post_init__(self) -> None:
+        valid_areas = {"strategy_center", "risk_limits", "account_env", "ops_notify"}
+        if not self.user_area or self.user_area not in valid_areas:
+            raise ValueError(
+                f"ConfigSpec {self.key} 的 user_area 非法或缺失: {self.user_area!r}！"
+                f"必须为 {sorted(valid_areas)} 之一，严禁空值或未分类！"
+            )
+        valid_surfaces = {"primary", "advanced"}
+        if not self.surface or self.surface not in valid_surfaces:
+            raise ValueError(
+                f"ConfigSpec {self.key} 的 surface 非法或缺失: {self.surface!r}！"
+                f"必须为 {sorted(valid_surfaces)} 之一，严禁空值！"
+            )
+
