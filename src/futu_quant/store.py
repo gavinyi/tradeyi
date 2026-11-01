@@ -2570,15 +2570,17 @@ class TradingStore:
             if not release or release["status"] != "DRAFT":
                 raise ValueError("配置草稿不存在或已经处理")
             current = connection.execute(
-                "SELECT version FROM runtime_config WHERE config_key=?", (release["config_key"],)
+                "SELECT version, value_json FROM runtime_config WHERE config_key=?", (release["config_key"],)
             ).fetchone()
             current_version = int(current["version"]) if current else 0
+            current_runtime_val = json.loads(current["value_json"]) if current and current["value_json"] else None
             if current_version != int(release["base_version"]):
                 raise ValueError("配置基线已变化，请重新创建草稿")
 
             next_version = current_version + 1
             now_iso = self.now()
             value_json = release["draft_json"]
+            draft_value = json.loads(value_json) if isinstance(value_json, str) else value_json
 
             # 1. 运行时配置与版本历史
             connection.execute(
@@ -2603,10 +2605,25 @@ class TradingStore:
                 (approved_by, now_iso, release_id),
             )
 
-            # 3. 若声明了审计事件，在同事务内原子落库
+            # 3. 若声明了审计事件，在同事务内原子落库 (Reviewer 要求：事务内自填全部字段，缺一拒写)
             if audit_event_type:
                 final_payload = dict(audit_payload or {})
+                final_payload["actor"] = approved_by
+                final_payload["reason"] = final_payload.get("reason") or release["reason"]
+                final_payload["before"] = current_runtime_val
+                final_payload["after"] = draft_value
+                final_payload["base_version"] = int(release["base_version"])
                 final_payload["result_version"] = next_version
+                final_payload["release_id"] = release_id
+                final_payload["config_key"] = release["config_key"]
+
+                required_fields = {
+                    "actor", "reason", "before", "after", "base_version", "result_version", "release_id", "config_key",
+                }
+                missing_fields = required_fields - set(final_payload.keys())
+                if missing_fields:
+                    raise ValueError(f"发布审计 payload 缺失核心字段: {missing_fields}，拒绝写入！")
+
                 connection.execute(
                     """INSERT INTO audit_events(event_type, payload_json, strategy_id, actor, created_at)
                     VALUES(?,?,?,?,?)""",

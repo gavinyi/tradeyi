@@ -144,6 +144,13 @@ def parse_mute_list(raw) -> tuple[set[str], list[str]]:
             rejected.append(item)
             continue
         accepted.add(candidate)
+
+    if rejected:
+        import logging
+        logging.getLogger("futu_quant.alerts").warning(
+            "解析静音清单发现非法项 (禁止通配符/特殊字符/空串)，已被严格排除生效: %s", rejected
+        )
+
     return accepted, rejected
 
 
@@ -196,11 +203,13 @@ class AlertManager:
     def __init__(self, store: TradingStore):
         self.store = store
         self.webhook = os.getenv("ALERT_WEBHOOK_URL", "").strip()
+        self.rejected_mute_count: int = 0
 
     def _mute_list(self) -> set[str]:
-        """读静音清单。读不到 / 坏值 → 空集（**不静音任何东西**，fail-open 到「推」）。"""
+        """读静音清单。优先读取 runtime_config 运行时配置，回落 system_settings。"""
         try:
-            raw = self.store.get_setting(ALERT_MUTE_LIST_KEY, "")
+            cfg = self.store.get_runtime_config(ALERT_MUTE_LIST_KEY)
+            raw = cfg[0] if cfg else self.store.get_setting(ALERT_MUTE_LIST_KEY, "")
         except Exception:  # noqa: BLE001 - 读配置失败绝不能阻断告警
             return set()
         accepted, rejected = parse_mute_list(raw)
@@ -221,6 +230,7 @@ class AlertManager:
         上限 = 每窗口 1 行（默认 900 秒）。
         """
         message = f"静音清单含非法项（禁止通配，须为完整 event_type）：{rejected}"
+        self.rejected_mute_count += len(rejected)
         dedupe_seconds = max(0, int(os.getenv("ALERT_DEDUPE_SECONDS", "900")))
         try:
             if dedupe_seconds and self.store.alert_recently_exists(
@@ -426,6 +436,16 @@ class AlertManager:
         if event_type in FEISHU_GROUP_ALERT_WHITELIST:
             # 只有白名单事件才会尝试推恢复卡片：失败时区分「未配置」(-1) 与「推失败」(0)。
             feishu_state = 1 if feishu_recovered else (0 if feishu_configured(self.store) else -1)
+        inc_key = incident_key or event_type
+        try:
+            self.store.audit(
+                "INCIDENT_RECOVERED",
+                {"incident_key": inc_key, "event_type": event_type, "message": message},
+                actor="service:alerts",
+            )
+        except Exception:
+            pass
+
         self.store.add_alert(
             "INFO", f"{event_type}_RECOVERED", message, feishu_delivered=feishu_state,
         )
