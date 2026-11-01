@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import streamlit as st
 from futu_quant.config import Settings
-from futu_quant.store import TradingStore
+from futu_quant.ui import render_sidebar
+from futu_quant.ui_store import ui_store
 from futu_quant.broker import get_tenant_broker
-from futu_quant.tenant import get_current_tenant, active_tenants
+from futu_quant.tenant import get_current_tenant
 
 st.set_page_config(page_title="今日总览 - 统一配置中心", page_icon="🧭", layout="wide")
+
+settings = Settings.load()
+render_sidebar(settings)
 
 st.title("🧭 今日总览 (交易与风险状态)")
 
@@ -24,13 +28,8 @@ st.caption(
     "按 F5 刷新无效：元数据在进程启动时一次性载入内存。"
 )
 
-try:
-    settings = Settings.load()
-    store = TradingStore()
-    broker = get_tenant_broker(settings)
-except Exception as exc:
-    st.error(f"加载运行时状态失败: {exc}")
-    st.stop()
+store = ui_store()
+broker = get_tenant_broker(settings)
 
 # 1. 核心状态卡片 (3秒内回答能不能交易)
 col1, col2, col3, col4 = st.columns(4)
@@ -65,7 +64,6 @@ with col3:
     )
 
 with col4:
-    # 待重启变更提示
     st.metric(
         label="待重启生效变更",
         value="0 项",

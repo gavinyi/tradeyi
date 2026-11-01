@@ -409,6 +409,8 @@ def test_get_draftable_config_keys_filters_critical_and_non_runtime():
             consumers=(),
             tags=(),
             runtime_key=aliases[0] if aliases else key,
+            user_area="strategy_center",
+            surface="primary",
         )
 
     mock_specs = [
@@ -536,6 +538,8 @@ def test_runtime_key_is_mandatory_unique_and_member_of_aliases(tmp_path, monkeyp
         consumers=(),
         tags=(),
         runtime_key="FAKE_KEY",  # 违规：不在 aliases 中
+        user_area="strategy_center",
+        surface="primary",
     )
     with pytest.raises(ValueError, match="必须属于其已声明的 aliases"):
         ConfigRegistry([bad_spec])
@@ -559,6 +563,8 @@ def test_runtime_key_is_mandatory_unique_and_member_of_aliases(tmp_path, monkeyp
         consumers=(),
         tags=(),
         runtime_key="DUP_KEY",
+        user_area="strategy_center",
+        surface="primary",
     )
     dup_spec2 = ConfigSpec(
         key="test.dup2",
@@ -578,6 +584,8 @@ def test_runtime_key_is_mandatory_unique_and_member_of_aliases(tmp_path, monkeyp
         consumers=(),
         tags=(),
         runtime_key="DUP_KEY",
+        user_area="strategy_center",
+        surface="primary",
     )
     with pytest.raises(ValueError, match="全局必须唯一"):
         ConfigRegistry([dup_spec1, dup_spec2])

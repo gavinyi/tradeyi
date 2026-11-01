@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import streamlit as st
 from futu_quant.config import Settings
-from futu_quant.store import TradingStore
+from futu_quant.ui import render_sidebar
+from futu_quant.ui_store import ui_store
 from futu_quant.config_center import GLOBAL_REGISTRY
 
 st.set_page_config(page_title="策略中心 - 统一配置", page_icon="📈", layout="wide")
+
+settings = Settings.load()
+render_sidebar(settings)
+
 st.title("📈 策略中心")
 
 st.caption(
