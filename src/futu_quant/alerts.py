@@ -443,8 +443,14 @@ class AlertManager:
                 {"incident_key": inc_key, "event_type": event_type, "message": message},
                 actor="service:alerts",
             )
-        except Exception:
-            pass
+        except Exception as exc:  # silent-ok: 审计记录失败仅记录警告，不中断恢复主链路与告警状态更新
+            import logging
+            logging.getLogger("futu_quant.alerts").warning(
+                "incident_recovered_audit_failed: incident_key=%s, event_type=%s, err=%s",
+                inc_key,
+                event_type,
+                exc,
+            )
 
         self.store.add_alert(
             "INFO", f"{event_type}_RECOVERED", message, feishu_delivered=feishu_state,

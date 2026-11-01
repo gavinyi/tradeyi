@@ -131,3 +131,36 @@ def test_alert_incident_recovery_closed_loop(tmp_path):
     # 验证审计表留痕
     audits = [a for a in store.audit_events(limit=10) if incident_key in a["payload_json"]]
     assert len(audits) >= 1
+
+
+def test_alert_incident_recovery_audit_failure_warns_and_does_not_break(tmp_path, caplog):
+    """必验项 5：注入审计失败时，告警恢复必须记录包含 incident_key 和异常的 WARNING，且 recover 仍然返回 True。"""
+    import logging
+    store = TradingStore(tmp_path / "test_audit_failure.db")
+    alerts = AlertManager(store)
+    incident_key = "TASK_TIMEOUT:circuit_breaker"
+
+    # 1. 触发一次告警以初始化
+    alerts.send("ERROR", "TASK_TIMEOUT", "熔断异常", incident_key=incident_key)
+
+    # 2. 注入 store.audit 异常
+    def broken_audit(*args, **kwargs):
+        raise RuntimeError("simulated audit database failure")
+
+    store.audit = broken_audit
+
+    # 3. 执行恢复，断言返回 True 且记录了 WARNING
+    with caplog.at_level(logging.WARNING):
+        res = alerts.recover("TASK_TIMEOUT", "熔断已恢复", incident_key=incident_key)
+
+    assert res is True
+    # 断言捕获到了包含 incident_key 和异常内容的警告日志
+    warning_logs = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    matched = [
+        msg for msg in warning_logs
+        if "incident_recovered_audit_failed" in msg
+        and incident_key in msg
+        and "simulated audit database failure" in msg
+    ]
+    assert len(matched) >= 1, f"Expected warning log not found in: {warning_logs}"
+
