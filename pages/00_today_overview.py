@@ -3,12 +3,21 @@
 回答核心问题：现在能不能交易？有没有要处理的事？
 硬约束：
 1. 3秒内明确回答「是否允许交易」「有无待处理风险」；
-2. 纯聚合展示（双租户健康、待审批、告警、待重启变更），绝对零可写配置项。
+2. 纯聚合展示（双租户健康、待审批、告警、待重启变更），绝对零可写配置项；
+3. 杜绝硬编码“0 项”与静默 hasattr 兜底：缺失即明确提示未统计/未就绪；
+4. 待重启变更清晰区分两行：
+   - A 行：代码/元数据变更（需 stop/start 重启）：基于进程启动基线比对净差异文件数；
+   - B 行：动态配置已存库（无需重启）：提示 Worker 轮询自动生效。
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
+from pathlib import Path
+from datetime import datetime, timezone
 import streamlit as st
+
 from futu_quant.config import Settings
 from futu_quant.ui import render_sidebar
 from futu_quant.ui_store import ui_store
@@ -46,29 +55,64 @@ with col1:
     )
 
 with col2:
-    incidents = store.incidents("OPEN") if hasattr(store, "incidents") else []
-    st.metric(
-        label="未解决事故 (Incidents)",
-        value=f"{len(incidents)} 项",
-        delta="存在未恢复风险" if incidents else "系统健康",
-        delta_color="inverse" if incidents else "normal",
-    )
+    if not hasattr(store, "incidents"):
+        st.metric(label="未解决事故 (Incidents)", value="未统计", delta="存储未就绪/无此接口", delta_color="inverse")
+    else:
+        incidents = store.incidents("OPEN")
+        st.metric(
+            label="未解决事故 (Incidents)",
+            value=f"{len(incidents)} 项",
+            delta="存在未恢复风险" if incidents else "系统健康",
+            delta_color="inverse" if incidents else "normal",
+        )
 
 with col3:
-    pending_approvals = store.pending_approvals() if hasattr(store, "pending_approvals") else []
-    st.metric(
-        label="待处理审批 (Approvals)",
-        value=f"{len(pending_approvals)} 项",
-        delta="需要人工审核" if pending_approvals else "无待办",
-        delta_color="inverse" if pending_approvals else "normal",
-    )
+    if not hasattr(store, "pending_approvals"):
+        st.metric(label="待处理审批 (Approvals)", value="未统计", delta="存储未就绪/无此接口", delta_color="inverse")
+    else:
+        pending_approvals = store.pending_approvals()
+        st.metric(
+            label="待处理审批 (Approvals)",
+            value=f"{len(pending_approvals)} 项",
+            delta="需要人工审核" if pending_approvals else "无待办",
+            delta_color="inverse" if pending_approvals else "normal",
+        )
 
 with col4:
+    # 待重启变更：采用 Ops 实测推荐的文件级净差异算法，杜绝硬编码 0
+    diff_count = 0
+    pid_file = Path("data/trading-service.pid")
+    status_label = "无，无需重启"
+    try:
+        if pid_file.exists():
+            pid_mtime = datetime.fromtimestamp(pid_file.stat().st_mtime, tz=timezone.utc)
+            res_base = subprocess.run(
+                ["git", "log", "-1", f"--before={pid_mtime.isoformat()}", "--format=%h", "master"],
+                capture_output=True, text=True, check=False,
+            )
+            base_commit = res_base.stdout.strip()
+            if base_commit:
+                res_diff = subprocess.run(
+                    ["git", "diff", "--name-only", f"{base_commit}..HEAD", "--", "src/", "pages/", "app.py"],
+                    capture_output=True, text=True, check=False,
+                )
+                diff_files = [f for f in res_diff.stdout.strip().splitlines() if f]
+                diff_count = len(diff_files)
+                if diff_count > 0:
+                    status_label = f"{diff_count} 个文件待重启"
+        else:
+            status_label = "服务未启动"
+    except Exception:
+        status_label = "未统计"
+
     st.metric(
-        label="待重启生效变更",
-        value="0 项",
-        delta="配置与运行态一致",
+        label="代码与元数据生效状态",
+        value=status_label,
+        delta="需桌面 stop.bat → start.bat" if diff_count > 0 else "运行中代码与磁盘一致",
+        delta_color="inverse" if diff_count > 0 else "normal",
     )
+
+st.info("💡 **动态配置更新机制**：数据库内日限额、静音清单、策略启停等业务参数已存库，由 Worker 轮询秒级自动重读（≤2分钟），无需停服重启。")
 
 st.markdown("---")
 

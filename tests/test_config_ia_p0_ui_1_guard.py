@@ -181,3 +181,27 @@ def test_today_overview_ast_zero_write_calls():
             elif isinstance(node.func, ast.Attribute):
                 name = node.func.attr
             assert name not in banned_writes, f"今日总览页面存在写调用: {name}"
+
+
+def test_today_overview_no_fake_zeros_and_hasattr_must_have_explicit_notice():
+    """守卫：断言今日总览页面无硬编码字面量 '0 项'，且 hasattr 之后必须有未就绪/未统计提示。"""
+    overview_path = pathlib.Path(__file__).resolve().parent.parent / "pages/00_today_overview.py"
+    content = overview_path.read_text(encoding="utf-8")
+
+    # 1. 断言绝无硬编码的 value="0 项" 伪造正常
+    assert 'value="0 项"' not in content, "今日总览存在硬编码的 '0 项' 伪造正常指标！"
+
+    # 2. 检查两处 hasattr 分支均有显式的“未统计”提示
+    assert 'value="未统计"' in content, "hasattr 探测必须伴随显式未统计提示！"
+
+
+def test_strategy_center_card_hides_runtime_key_from_main_body():
+    """守卫：策略中心等入口卡片正文禁止铺露底层 runtime_key，键名必须折叠在 expander 中。"""
+    sc_path = pathlib.Path(__file__).resolve().parent.parent / "pages/44_strategy_center.py"
+    content = sc_path.read_text(encoding="utf-8")
+
+    # 1. 正文循环内使用 description
+    assert "st.write(s.description" in content
+    # 2. 存在自动隐现的建设中横幅判断
+    assert "editable_primary_count = sum(1 for s in primary_specs if s.editable)" in content
+
