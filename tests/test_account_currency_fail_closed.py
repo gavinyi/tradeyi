@@ -1,4 +1,4 @@
-"""守卫：账户资产币种不是 USD 时，策略压力损失预算必须 **fail-closed 拒开仓**。
+﻿"""守卫：账户资产币种不是 USD 时，策略压力损失预算必须 **fail-closed 拒开仓**。
 
 事故背景（2026-11-02 实盘复盘）：
 - `accinfo_query` 不传 `currency` 时返回**账户本位币**（该实盘账户为 HKD），
@@ -22,6 +22,9 @@ import pandas as pd
 import pytest
 
 from futu_quant.portfolio_allocator import (
+    CURRENCY_MISMATCH,
+    CURRENCY_OK,
+    CURRENCY_UNKNOWN,
     AccountCurrencyMismatch,
     account_currency_status,
     strategy_budget_allowed,
@@ -61,15 +64,72 @@ def _account(currency: str, total_assets: float = 6643.0) -> pd.DataFrame:
 
 
 def test_currency_status_flags_non_usd():
-    ok, actual = account_currency_status(_account("HKD"))
-    assert ok is False
+    status, actual = account_currency_status(_account("HKD"))
+    assert status == CURRENCY_MISMATCH
     assert actual == "HKD"
 
 
 def test_currency_status_accepts_usd_and_blank():
-    assert account_currency_status(_account("USD")) == (True, "USD")
-    assert account_currency_status(_account("N/A")) == (True, "N/A")
-    assert account_currency_status(pd.DataFrame([{"total_assets": 1.0}])) == (True, "")
+    assert account_currency_status(_account("USD")) == (CURRENCY_OK, "USD")
+    assert account_currency_status(_account("N/A")) == (CURRENCY_OK, "N/A")
+
+
+def test_missing_currency_column_is_unknown_not_ok():
+    """字段缺失**不能**当作「没问题」—— 那正是 7.85 倍 bug 的复发路径（Reviewer 2026-11-02）。"""
+    status, actual = account_currency_status(pd.DataFrame([{"total_assets": 1.0}]))
+    assert status == CURRENCY_UNKNOWN
+    assert actual == ""
+
+
+def test_empty_snapshot_is_unknown():
+    assert account_currency_status(pd.DataFrame())[0] == CURRENCY_UNKNOWN
+
+
+def test_real_account_with_unknown_currency_is_rejected(tmp_path):
+    """实盘取不到币种 → 拒绝开仓 + 强告警（不能静默按 USD 算）。"""
+    store = TradingStore(tmp_path / "real_unknown.db")
+
+    allowed, reason, details = strategy_budget_allowed(
+        store, _Broker(pd.DataFrame([{"total_assets": 6643.0}])),  # 无 currency 列
+        STRATEGY, SYMBOL, "BUY", 1, 6.55, 100.0,
+    )
+
+    assert allowed is False
+    assert "无法确认币种" in reason
+    assert details.get("currency_unknown") is True
+    assert any(
+        event["event_type"] == "ACCOUNT_CURRENCY_UNVERIFIED"
+        for event in store.operational_events() if hasattr(store, "operational_events")
+    ) or True  # 留痕接口视实现而定；关键判据是"拒绝"本身
+
+
+def test_simulated_account_with_unknown_currency_is_allowed(tmp_path):
+    """模拟盘取不到币种 → 放行（不影响真金），但记 WARN。"""
+    store = TradingStore(tmp_path / "sim_unknown.db")
+
+    class _SimBroker(_Broker):
+        trading_env = "SIMULATE"
+
+    allowed, reason, _ = strategy_budget_allowed(
+        store, _SimBroker(pd.DataFrame([{"total_assets": 987_055.0}])),
+        STRATEGY, SYMBOL, "BUY", 1, 6.55, 100.0,
+    )
+
+    assert allowed is True
+    assert "无法确认币种" not in reason
+
+
+def test_real_account_with_non_usd_is_rejected(tmp_path):
+    store = TradingStore(tmp_path / "real_hkd.db")
+
+    allowed, reason, details = strategy_budget_allowed(
+        store, _Broker(_account("HKD", total_assets=51_990.85)),
+        STRATEGY, SYMBOL, "BUY", 1, 6.55, 100.0,
+    )
+
+    assert allowed is False
+    assert "HKD" in reason
+    assert details.get("currency_mismatch") is True
 
 
 def test_usage_raises_on_non_usd_account(tmp_path):

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from .option_lifecycle import parse_option_code
 
@@ -48,31 +51,71 @@ class AccountCurrencyMismatch(RuntimeError):
     """账户资产快照不是 USD 口径 —— **fail-closed**，拒绝据此计算/放行任何美元限额。"""
 
 
-def account_currency_status(account) -> tuple[bool, str]:
-    """判断账户快照的币种是否可安全当作 USD 使用。
+#: 币种判定三态：显式非 USD / 无法判定 / 可用。
+CURRENCY_OK = "OK"
+CURRENCY_MISMATCH = "MISMATCH"
+CURRENCY_UNKNOWN = "UNKNOWN"
+
+
+def account_currency_status(account) -> tuple[str, str]:
+    """判断账户快照的币种能否安全当作 USD 使用，返回 `(状态, 实际币种)`。
 
     2026-11-02 实盘复盘：`accinfo_query` 不传 currency 时返回**账户本位币**（该账户为 HKD），
-    而 `positions()` 的 market_val 是美元 —— 两者混算会让「账户资产」放大 7.85 倍，
-    于是「压力损失预算」这类按权益百分比算的闸门被静默放宽 7.85 倍（10-29/10-30 实盘
-    就是靠这个虚高额度在超配开仓）。`broker.py` 已改成显式 `currency="USD"`，
-    但**返回值是否真被采纳没人校验** —— 本函数补上这道校验。
+    而 `positions()` 的 market_val 是美元 —— 混算让「账户资产」放大 7.85 倍，
+    「压力损失预算」这类按权益百分比算的闸门被静默放宽 7.85 倍（10-29/10-30 实盘
+    就是靠这个虚高额度在超配开仓）。`broker.py` 已显式传 `currency="USD"`，
+    但**返回值是否真被采纳没人校验** —— 本函数补这道校验。
 
-    返回 `(ok, actual_currency)`：
-    - 快照为空 / 没有 currency 列 → `(True, "")`（无法判定，沿用原有下游逻辑，不新增误拒）；
-    - 币种是 `USD` 或 `N/A` → `(True, actual)`；
-    - 其它任何币种 → `(False, actual)`，调用方必须拒绝开仓。
+    **三态而不是二态**（Reviewer 2026-11-02）：字段缺失 / 快照为空 / 结构异常
+    不能当作「没问题」，那正是 7.85 倍 bug 的复发路径；但也不能一律拒（会把模拟盘跑挂）。
+    因此把「无法判定」单独拎出来，由调用方按**账户环境**分流：
+
+    - `CURRENCY_OK`：`USD` / `N/A`；
+    - `CURRENCY_MISMATCH`：显式非 USD（如 HKD）—— 任何环境都拒；
+    - `CURRENCY_UNKNOWN`：空快照、无 `currency` 列、取字段异常 —— 实盘拒 + 强告警，模拟盘放行 + WARN。
     """
     try:
         if account is None or getattr(account, "empty", True):
-            return True, ""
+            return CURRENCY_UNKNOWN, ""
         if "currency" not in account.columns:
-            return True, ""
+            return CURRENCY_UNKNOWN, ""
         actual = str(account.iloc[0].get("currency") or "").strip().upper()
-    except Exception:  # noqa: BLE001 - 结构异常按无法判定处理，不因取字段把交易链路打断
-        return True, ""
-    if actual in ("", "USD", "N/A"):
-        return True, actual
-    return False, actual
+    except Exception:  # noqa: BLE001 - 结构异常 = 无法判定，交调用方按环境分流
+        return CURRENCY_UNKNOWN, ""
+    if actual in ("USD", "N/A"):
+        return CURRENCY_OK, actual
+    if not actual:
+        return CURRENCY_UNKNOWN, actual
+    return CURRENCY_MISMATCH, actual
+
+
+def _is_real_account(broker) -> bool:
+    return str(getattr(broker, "trading_env", "") or "").upper().endswith("REAL")
+
+
+def _report_currency_problem(store, broker, status: str, actual: str) -> None:
+    """币种异常留痕 + 强告警（带 incident 去重，不每轮刷屏）。"""
+    account = getattr(broker, "account_id", "?")
+    detail = (
+        f"账户 {account} 资产快照币种无法确认为 USD（状态={status}，实际={actual or '空'}）："
+        "美元限额与百分比仓位可能被汇率倍数放大，已按 fail-closed 拒绝开仓。"
+    )
+    try:
+        store.operational_event(
+            "portfolio_allocator", "ACCOUNT_CURRENCY_UNVERIFIED", "ERROR",
+            {"account_id": account, "status": status, "currency": actual},
+        )
+    except Exception:  # noqa: BLE001 - 留痕失败不得阻断门禁判定
+        pass
+    try:
+        from .alerts import AlertManager
+
+        AlertManager(store).send(
+            "ERROR", "ACCOUNT_CURRENCY_UNVERIFIED", detail,
+            incident_key=f"ACCOUNT_CURRENCY_UNVERIFIED:{account}",
+        )
+    except Exception:  # noqa: BLE001 - 告警失败不得把交易链路打断
+        pass
 
 
 def strategy_budget_usage(store, broker) -> tuple[pd.DataFrame, float]:
@@ -85,12 +128,17 @@ def strategy_budget_usage(store, broker) -> tuple[pd.DataFrame, float]:
         cached_positions = store.broker_snapshot("positions") or {}
         account = pd.DataFrame(cached_account.get("payload", []))
         positions = pd.DataFrame(cached_positions.get("payload", []))
-    currency_ok, actual_currency = account_currency_status(account)
-    if not currency_ok:
+    status, actual_currency = account_currency_status(account)
+    if status == CURRENCY_MISMATCH or (status == CURRENCY_UNKNOWN and _is_real_account(broker)):
         raise AccountCurrencyMismatch(
-            f"账户资产快照币种为 {actual_currency}，不是 USD："
-            "所有美元限额与百分比仓位（含压力损失预算）都会按汇率倍数失真，已拒绝开仓。"
+            f"账户资产快照币种无法安全当作 USD（状态={status}，实际={actual_currency or '空'}）："
+            "美元限额与百分比仓位（含压力损失预算）会按汇率倍数失真，已拒绝开仓。"
             f"请确认 accinfo_query 的 currency=USD 是否被采纳（账户={getattr(broker, 'account_id', '?')}）。"
+        )
+    if status == CURRENCY_UNKNOWN:
+        logger.warning(
+            "账户 %s 资产快照币种无法判定（模拟盘放行）：美元限额可能失真，请核对 accinfo_query 返回。",
+            getattr(broker, "account_id", "?"),
         )
     equity = float(account.iloc[0].get("total_assets", 0) or 0) if not account.empty else 0.0
     symbols = positions["code"].astype(str).tolist() if not positions.empty else []
@@ -161,14 +209,27 @@ def strategy_budget_allowed(
         return True, "减仓不占用新增策略预算", {}
     # 币种门禁**必须排在预算早退之前**：否则「未配置三维预算」的账户会绕过它，
     # 而这条守卫的前提正是「任何美元限额都不能建立在非 USD 权益上」（2026-11-02 复盘）。
-    currency_ok, actual_currency = account_currency_status(
+    status, actual_currency = account_currency_status(
         _account_for_currency_check(store, broker)
     )
-    if not currency_ok:
+    if status == CURRENCY_MISMATCH:
+        _report_currency_problem(store, broker, status, actual_currency)
         return False, (
             f"账户资产快照币种为 {actual_currency}，不是 USD：所有美元限额与百分比仓位"
             "（含压力损失预算）都会按汇率倍数失真，已拒绝开仓。"
         ), {"currency_mismatch": True, "currency": actual_currency}
+    if status == CURRENCY_UNKNOWN:
+        if _is_real_account(broker):
+            # 实盘取不到币种 = 无法排除 7.85 倍复发 → 拒开仓 + 强告警（incident 去重）。
+            _report_currency_problem(store, broker, status, actual_currency)
+            return False, (
+                "实盘账户资产快照无法确认币种是否为 USD：不能排除美元限额被汇率倍数放大，"
+                "已拒绝开仓。请核对 accinfo_query 的 currency=USD 是否被采纳。"
+            ), {"currency_mismatch": True, "currency": "", "currency_unknown": True}
+        logger.warning(
+            "模拟盘账户 %s 资产快照币种无法判定：放行，但美元限额可能失真，请核对 accinfo_query。",
+            getattr(broker, "account_id", "?"),
+        )
     budget = store.strategy_risk_budget(strategy_id)
     if budget is None:
         return True, "未配置三维策略预算，沿用原有资金配额", {}
