@@ -53,6 +53,7 @@ account_page = st.Page(
 )
 navigation = {
     "账户与交易": [
+        st.Page("pages/00_today_overview.py", title="今日总览", icon=":material/dashboard:"),
         dashboard_page,
         account_page,
         st.Page("pages/29_strategy_review_execution_quality.py", title="策略复盘与执行质量", icon=":material/summarize:"),
@@ -103,7 +104,6 @@ navigation = {
         st.Page("pages/43_unified_config_center.py", title="统一配置中心", icon=":material/tune:"),
     ],
     "业务配置": [
-        st.Page("pages/00_today_overview.py", title="今日总览", icon=":material/dashboard:"),
         st.Page("pages/44_strategy_center.py", title="策略中心", icon=":material/tune:"),
         st.Page("pages/45_risk_and_limits.py", title="风险与限额", icon=":material/shield:"),
         st.Page("pages/46_account_and_env.py", title="账户与交易环境", icon=":material/account_balance:"),
