@@ -2174,6 +2174,52 @@ def run_campaign(
 
         multiplier = float(option["option_contract_multiplier"])
         order_legs = list(legs)
+        # 【小账户试探护栏】Product 2026-11-02 定案，**必须与容量预检同批上线**：
+        # 只上护栏不上过滤 = 允许买临期深度虚值；只上过滤不上护栏 = 14 张同时可选时可能连开多张。
+        # 三条硬约束只作用于 `REAL + BUY` 新开仓：单笔 1 张、单日 1 笔、
+        # 当日累计权利金 ≤ 压力损失预算（`loss_limit`，与 6% 风控**同源**，不新建真值）。
+        low_cost_probe = False
+        if trigger_mode == "VOLATILITY" and len(order_legs) == 1:
+            from futu_quant.capacity_precheck import (
+                is_real_account, probe_entry_guard, today_real_buy_entries,
+            )
+            if is_real_account(executor.broker):
+                from futu_quant.portfolio_allocator import (
+                    AccountCurrencyMismatch, strategy_budget_usage,
+                )
+                premium_limit = 0.0
+                try:
+                    _usage, _equity = strategy_budget_usage(executor.store, executor.broker)
+                    _budget = _usage[_usage["strategy_id"] == strategy_id]
+                    if not _budget.empty:
+                        premium_limit = float(_budget.iloc[0]["loss_limit"])
+                except AccountCurrencyMismatch:
+                    # 币种不可信 → 上限按 0：不是「不限制」，而是「一笔也不批」。
+                    premium_limit = 0.0
+                probe_quantity = min(int(per_stage), 1)
+                allowed, guard_reason, guard_detail = probe_entry_guard(
+                    today_real_buy_entries(
+                        executor.store, tenant_id=_campaign_tenant or "",
+                        strategy_id=strategy_id,
+                    ),
+                    quantity=probe_quantity,
+                    price=float(option.get("ask_price") or 0),
+                    multiplier=multiplier,
+                    premium_limit=premium_limit,
+                )
+                if not allowed:
+                    record_pretrade_block("LOW_COST_PROBE_GUARD", guard_reason, {
+                        "probe_guard": guard_detail,
+                        "campaign_id": campaign.get("campaign_id"),
+                        "tenant_id": _campaign_tenant,
+                        "underlying": campaign.get("underlying"),
+                        "code": code,
+                    })
+                    print(f"{code}: BLOCKED ({guard_reason})")
+                    return
+                # 单笔只能 1 张（campaign 的 contracts_per_stage 多为 2，这里强制收窄）
+                per_stage = probe_quantity
+                low_cost_probe = True
         # 【入场价差门】2026-10-30：止损额撑不起价差就不建仓。
         # 只拦**单腿买方**：组合（PUT_DEBIT_SPREAD）的价差风险按腿逐条计价，
         # 组合本身的资金与滑点门禁在下方 combo 检查里，不能在这里混算。
@@ -2472,7 +2518,10 @@ def run_campaign(
                  "base_premium_budget": campaign.get("base_premium_budget"),
                  "effective_premium_budget": campaign.get(
                      "effective_premium_budget", campaign.get("max_premium_per_stage")
-                 )},
+                 ),
+                 # 成交打标：小账户试探仓与常规仓分开统计（Product 定案）
+                 "low_cost_probe": low_cost_probe,
+                 "probe_guard": None},
             )
             print(result)
     elif action == "SELL" and quantity > 0:

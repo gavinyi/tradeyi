@@ -8,6 +8,10 @@ import pandas as pd
 from .candidate_quality import (
     filter_candidates, resolve_candidate_quality_for_campaign,
 )
+from .capacity_precheck import (
+    filter_candidates as filter_candidates_for_capacity,
+    is_real_account, record_selection_round,
+)
 from .earnings_gamma import screen_gamma_contracts
 from .gamma_risk import contract_analysis, market_number, realized_volatility
 from .option_lifecycle import parse_option_code
@@ -20,6 +24,12 @@ from .volatility_optimizer import (
     volatility_threshold_profile, volatility_min_expected_return,
 )
 from .volatility_structures import build_volatility_structure_candidates
+
+# 本批**依赖币种门禁**（`fix/currency-fail-closed` / `d7a119e`）：容量线的分母必须是
+# **美元权益** —— 港币口径会把 `×3%` 放大 7.85 倍（10-29/10-30 超配开仓的形态）。
+# 因此不在基线缺该异常时做兼容垫片：导入失败就当场炸，
+# 好过带着虚高容量线静默上线。
+from .portfolio_allocator import AccountCurrencyMismatch  # noqa: E402  (顺序：见上)
 
 
 MAINTAIN_SCORE_IMPROVEMENT = 8.0
@@ -233,6 +243,53 @@ def should_replace_campaign(
 
 
 
+def _apply_real_capacity_precheck(store, broker, campaign, candidates, underlying, spot):
+    """实盘新开仓前的**容量预检**（2026-11-02 Product 定案六条）。
+
+    为什么必须在选约阶段做：2026-11-02 22:41 实盘 `AMZN261113C250000` 一路走到下单
+    才被 `portfolio_allocator` 的「压力损失预算将超过上限」挡下 —— 风控判定没错，
+    错在**选约时根本没看这个账户撑不撑得起**，于是每轮都在产出一笔注定被拒的单子，
+    日志看起来像「策略在开仓、只是被风控拒」，真实情况是「账户容量不够」。
+
+    三条边界（不可扩张）：
+    - **只作用于实盘**：模拟盘完全不受影响（`is_real_account` 之外不调用）；
+    - **只作用于新开仓候选**：不碰持仓、不碰退出/止损/换约的卖出侧；
+    - **不改变任何风控阈值**：6% 压力损失预算、单笔 $1,000、币种口径一律不动。
+
+    权益**只能复用** `portfolio_allocator.strategy_budget_usage` 的那一份 ——
+    风控闸门算 6% 预算用的就是它。自己再取一份账户快照就会变成两个真值。
+    """
+    # 延迟导入：`portfolio_allocator` 依赖 `option_lifecycle`/`store`，
+    # 放在模块顶层会拉长 volatility_roll 的导入链（页面/脚本都会 import 它）。
+    from .portfolio_allocator import strategy_budget_usage
+
+    tenant_id = str(campaign.get("tenant_id") or tenant_id_of_broker(broker) or "")
+    equity = 0.0
+    currency_blocked = False
+    try:
+        _usage, equity = strategy_budget_usage(store, broker)
+    except AccountCurrencyMismatch:
+        # 币种门禁已在下单前拦住；这里拿不到美元权益 → 容量线按 0（fail-closed）。
+        # **不重复做币种判定**：那是 portfolio_allocator 的单一真值。
+        currency_blocked = True
+    result = filter_candidates_for_capacity(candidates, equity=equity, spot=spot)
+    result.currency_blocked = currency_blocked
+    try:
+        record_selection_round(store, tenant_id, result, underlying=underlying)
+    except Exception as exc:  # noqa: BLE001
+        # 状态写失败**不得阻断选约**（退出管理照常），但绝不能静默：
+        # 「连续空轮不计数」意味着容量暂停永远不会触发，属于静默失效。
+        try:
+            store.operational_event(
+                "volatility_capacity", "CAPACITY_STATE_WRITE_FAILED", "ERROR", {
+                    "tenant_id": tenant_id, "underlying": underlying, "error": str(exc),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return result.eligible, result
+
+
 def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     underlying = campaign["underlying"]
     # 活动策略不能继续持有或复核已到期合约；到期合约必须滚动到未来期限。
@@ -331,6 +388,16 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         return _with_diagnostics(
             campaign, candidates, regime, "候选质量过滤后没有可评分的新合约"
         )
+    # 实盘容量预检：筛掉「买不起 / 流动性不够」的合约，避免产出注定被风控拒绝的单子。
+    # 模拟盘不走这里 —— 需求边界「只影响实盘新开仓」。
+    capacity_note = ""
+    if is_real_account(broker):
+        candidates, capacity = _apply_real_capacity_precheck(
+            store, broker, campaign, candidates, underlying, spot,
+        )
+        capacity_note = capacity.message()
+        if candidates.empty:
+            return _with_diagnostics(campaign, candidates, regime, capacity_note)
     candidates = rank_long_option_candidates(
         candidates, spot, profit_target=float(campaign.get("profit_target", .5)),
         stop_loss=float(campaign.get("stop_loss", .4)),
