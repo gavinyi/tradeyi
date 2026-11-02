@@ -190,9 +190,18 @@ def test_script_has_heartbeat_session_and_recovery_logic():
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert "strategy_heartbeats" in source, "主判据必须是心跳表"
+    assert "service_heartbeats" not in source, "不存在 service_heartbeats 表，注释/代码里不得出现"
     assert "USMarketCalendar" in source, "日志停滞必须受交易时段约束"
     assert "is_recovered=True" in source, "恢复时必须推一次恢复通知"
     assert "ESCALATE_AFTER" in source, "连续失败才升级 CRITICAL"
+
+
+def test_heartbeat_docstring_says_missing_means_alert():
+    """读不到心跳必须写成「异常并报警」，不能写成「未统计就不报」。"""
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "视为异常" in source, "docstring 必须声明读不到心跳=异常"
+    assert "按未统计处理" not in source, "这句会被下一手误改成静默跳过"
 
 
 def test_docstring_documents_scheduled_task_usage():

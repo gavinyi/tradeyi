@@ -125,11 +125,14 @@ def _latest_log_age_minutes(data_dir: Path | None = None) -> float | None:
 def heartbeat_age_minutes(tenant_id: str) -> float | None:
     """**主判据（逐租户）**：`trading_service:{tenant}` 这条心跳距今多少分钟。
 
-    `service_heartbeats` 是**按租户分行**的（`trading_service:futu_real_master` /
-    `trading_service:futu_paper_sandbox`）。只取「最新一条」会让「实盘停了、纸盘还在写」
-    被判成健康 —— 必须逐租户判，谁停了报谁（Reviewer 2026-11-02）。
+    数据来自 `strategy_heartbeats` 表：该表的 `strategy_id` 列里放的就是
+    形如 `trading_service:futu_real_master` / `trading_service:futu_paper_sandbox`
+    的**按租户分行**的键（由 `store.heartbeat()` 写入）。只取「最新一条」会让
+    「实盘停了、纸盘还在写」被判成健康 —— 必须逐租户判，谁停了报谁（Reviewer 2026-11-02）。
 
-    读不出来返回 `None`（由调用方按未统计处理）。
+    **读不到心跳视为异常并进入报警，不得静默跳过**：本函数返回 `None` 时，
+    调用方会把它计入 `problems`（「租户 X：读不到服务心跳…」），进而进入连续失败计数
+    并升级为 CRITICAL。把这里改成「未统计就不报」等于把最危险的静默形态装回来。
     """
     store = _open_store_readonly()
     if store is None:

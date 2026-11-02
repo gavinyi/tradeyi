@@ -52,13 +52,6 @@ account_page = st.Page(
     url_path="account-overview",
 )
 navigation = {
-    "业务配置": [
-        st.Page("pages/00_today_overview.py", title="今日总览", icon=":material/dashboard:"),
-        st.Page("pages/44_strategy_center.py", title="策略中心", icon=":material/tune:"),
-        st.Page("pages/45_risk_and_limits.py", title="风险与限额", icon=":material/shield:"),
-        st.Page("pages/46_account_and_env.py", title="账户与交易环境", icon=":material/account_balance:"),
-        st.Page("pages/47_ops_and_notifications.py", title="通知与运维", icon=":material/campaign:"),
-    ],
     "账户与交易": [
         dashboard_page,
         account_page,
@@ -108,6 +101,13 @@ navigation = {
         st.Page("pages/19_stability_operations_center.py", title="稳定性运营中心", icon=":material/monitor_heart:"),
         st.Page("pages/18_infrastructure_disaster_recovery.py", title="基础设施与灾备", icon=":material/dns:"),
         st.Page("pages/43_unified_config_center.py", title="统一配置中心", icon=":material/tune:"),
+    ],
+    "业务配置": [
+        st.Page("pages/00_today_overview.py", title="今日总览", icon=":material/dashboard:"),
+        st.Page("pages/44_strategy_center.py", title="策略中心", icon=":material/tune:"),
+        st.Page("pages/45_risk_and_limits.py", title="风险与限额", icon=":material/shield:"),
+        st.Page("pages/46_account_and_env.py", title="账户与交易环境", icon=":material/account_balance:"),
+        st.Page("pages/47_ops_and_notifications.py", title="通知与运维", icon=":material/campaign:"),
     ],
 }
 if os.getenv("ENABLE_CRYPTO_MODULE", "false").lower() == "true":
