@@ -270,3 +270,127 @@ def test_production_root_is_not_env_configurable():
     assert conftest.PRODUCTION_ROOT == Path(r"E:\Thisyi\trade").resolve()
     source = Path(conftest.__file__).read_text(encoding="utf-8")
     assert "TRADEYI_PROD_ROOT" not in source, "生产根不允许被环境变量接管（守卫可被静默绕过）"
+
+
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-02：整表指纹的**归因**（生产服务自写 vs 测试直写库）
+#
+# 背景：开盘后雷达按分钟级写 `VOLATILITY_CAMPAIGNS:<tenant>`（实测 32→34），
+# 用「指纹必须不变」当判据等于要求生产为测试让路。正确判据是
+# 「测试进程不能写生产库」：测试的 store 已被重定向到临时库，
+# 因此生产库里的改动只可能来自生产服务 —— 且必然带 `config_versions` 审计行。
+# 反过来，**没有审计行的改动 = 绕过 store 直写库**，正是 10-23 事故形态，必须继续红。
+# ---------------------------------------------------------------------------
+
+
+def _snapshot(rows):
+    return ("sha-" + str(len(rows)), tuple(rows))
+
+
+def _guarded_db(tmp_path, *, with_audit: bool):
+    """合成守卫库：`runtime_config`（供指纹）+ 可选 `config_versions`（供归因）。"""
+    import sqlite3
+
+    db = tmp_path / "guarded_runtime.db"
+    connection = sqlite3.connect(str(db))
+    try:
+        connection.execute(
+            "CREATE TABLE runtime_config ("
+            "config_key TEXT PRIMARY KEY, value_json TEXT, version INTEGER, updated_at TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE config_versions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, config_key TEXT, value_json TEXT,"
+            " actor TEXT, reason TEXT, created_at TEXT)"
+        )
+        if with_audit:
+            connection.executemany(
+                "INSERT INTO config_versions (config_key, value_json, actor, reason, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                [
+                    ("VOLATILITY_CAMPAIGNS:futu_real_master", "[]", "streamlit_or_service", "", "2026-11-02T15:00:00+00:00"),
+                    ("GAMMA_CAMPAIGNS", "[]", "streamlit_or_service", "", "2026-11-02T15:00:00+00:00"),
+                ],
+            )
+        connection.commit()
+    finally:
+        connection.close()
+    return db
+
+
+def _wire_guard(monkeypatch, db, since="2026-11-02T14:00:00+00:00"):
+    import conftest
+
+    monkeypatch.setattr(conftest, "_PROD_GUARD_DB_PATH", db)
+    monkeypatch.setattr(conftest, "_SESSION_STARTED_AT", since)
+    return conftest
+
+
+def test_campaign_change_with_audit_row_is_production_self_write(tmp_path, monkeypatch):
+    """有 store API 审计行的 campaign 变动 = 生产服务自写，不判失败。"""
+    conftest = _wire_guard(monkeypatch, _guarded_db(tmp_path, with_audit=True))
+
+    before = _snapshot([("VOLATILITY_CAMPAIGNS:futu_real_master", 32, "[]")])
+    after = _snapshot([("VOLATILITY_CAMPAIGNS:futu_real_master", 34, '[{"code": "US.QQQ"}]')])
+
+    assert conftest.prod_config_violation(before, after) is None
+
+
+def test_campaign_change_without_audit_row_still_hard_fails(tmp_path, monkeypatch):
+    """没有审计行 = 绕过 store 直写库（10-23 事故形态），必须红。"""
+    conftest = _wire_guard(monkeypatch, _guarded_db(tmp_path, with_audit=False))
+
+    before = _snapshot([("VOLATILITY_CAMPAIGNS:futu_real_master", 32, "[]")])
+    after = _snapshot([("VOLATILITY_CAMPAIGNS:futu_real_master", 34, "[]")])
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None
+    assert "VOLATILITY_CAMPAIGNS" in violation
+
+
+def test_config_key_change_still_hard_fails(tmp_path, monkeypatch):
+    """配置类键即便有审计行也不在白名单里 —— 测试写穿配置才是事故。"""
+    conftest = _wire_guard(monkeypatch, _guarded_db(tmp_path, with_audit=True))
+
+    before = _snapshot([("risk_limits:futu_real_master", 3, "{}")])
+    after = _snapshot([("risk_limits:futu_real_master", 4, '{"max_daily_loss": 1}')])
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None
+    assert "risk_limits:futu_real_master" in violation
+
+
+def test_mixed_change_is_not_excused(tmp_path, monkeypatch):
+    """只要有一个非白名单键变了，整次仍然红（白名单不能当挡箭牌）。"""
+    conftest = _wire_guard(monkeypatch, _guarded_db(tmp_path, with_audit=True))
+
+    before = _snapshot([
+        ("VOLATILITY_CAMPAIGNS:futu_real_master", 32, "[]"),
+        ("strategy_enabled:futu_real_master:core_satellite", 1, "true"),
+    ])
+    after = _snapshot([
+        ("VOLATILITY_CAMPAIGNS:futu_real_master", 34, "[]"),
+        ("strategy_enabled:futu_real_master:core_satellite", 2, "false"),
+    ])
+
+    assert conftest.prod_config_violation(before, after) is not None
+
+
+def test_self_write_whitelist_excludes_config_like_keys():
+    """白名单只放运行时业务状态；配置键一律不许进。"""
+    import conftest
+
+    assert conftest._is_production_self_write("VOLATILITY_CAMPAIGNS:futu_real_master")
+    assert conftest._is_production_self_write("GAMMA_CAMPAIGNS")
+    for key in (
+        "risk_limits:futu_real_master",
+        "real_account_config:281756481476169109",
+        "strategy_enabled:futu_real_master:core_satellite",
+        "alert_mute_list",
+    ):
+        assert not conftest._is_production_self_write(key), f"{key} 不该进白名单"

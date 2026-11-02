@@ -199,6 +199,69 @@ def db_path_under_guard() -> str:
     return str(_PROD_GUARD_DB_PATH)
 
 
+def _changed_keys(
+    before: tuple[str, tuple[tuple[str, int, str], ...]],
+    after: tuple[str, tuple[tuple[str, int, str], ...]],
+) -> list[str]:
+    old = {key: (version, value) for key, version, value in before[1]}
+    new = {key: (version, value) for key, version, value in after[1]}
+    return [key for key in sorted(set(old) | set(new)) if old.get(key) != new.get(key)]
+
+
+#: 生产服务**自己**会高频改写的键（前缀）。活着 Worker/雷达一直在写它们，
+#: 与「测试是否写穿生产」无关 —— 2026-11-02 实测：开盘后雷达按分钟级把
+#: `VOLATILITY_CAMPAIGNS:<tenant>` 从 32 涨到 34，整表指纹因此必然变化。
+#:
+#: 只放这类「运行时业务状态」；**配置类键一律不在白名单**：
+#: `risk_limits:*`、`real_account_config:*`、`strategy_enabled:*` 这些
+#: 被测试写穿才是事故，仍然一律硬红。
+PRODUCTION_SELF_WRITE_PREFIXES: tuple[str, ...] = (
+    "VOLATILITY_CAMPAIGNS",
+    "GAMMA_CAMPAIGNS",
+)
+
+#: 会话开始时刻（ISO）。用于判断某个键的改动是否**留下了 store API 审计记录**。
+_SESSION_STARTED_AT: str | None = None
+
+
+def _is_production_self_write(key: str) -> bool:
+    return any(
+        key == prefix or key.startswith(f"{prefix}:") for prefix in PRODUCTION_SELF_WRITE_PREFIXES
+    )
+
+
+def _has_audited_write_since(key: str, since_iso: str) -> bool:
+    """该键在 `since_iso` 之后是否有**通过 store API** 的写入记录（`config_versions`）。
+
+    判据意义：`TradingStore` 每次带版本写都会落一行 `config_versions`（含 actor）。
+    测试进程的 store 已在 autouse fixture 里被重定向到临时库、**根本打不到生产库**，
+    所以「生产库里有审计行的改动」只能是生产服务自己干的。
+    反过来，**没有审计行的改动 = 有人绕过 store 直接写库**（sqlite3 直写），
+    那正是 10-23 事故的形态，必须继续硬红。
+    """
+    import sqlite3
+
+    try:
+        connection = sqlite3.connect(f"file:{_PROD_GUARD_DB_PATH.as_posix()}?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                "SELECT 1 FROM config_versions WHERE config_key=? AND created_at>=? LIMIT 1",
+                (key, since_iso),
+            ).fetchone()
+        finally:
+            connection.close()
+    except Exception:  # noqa: BLE001 - 读不到就当没有审计记录（严格方向）
+        return False
+    return row is not None
+
+
+def _is_attributed_production_write(changed: list[str]) -> bool:
+    """所有变化键都能在生产 `config_versions` 里找到会话期内的审计行。"""
+    if not changed or not _SESSION_STARTED_AT:
+        return False
+    return all(_has_audited_write_since(key, _SESSION_STARTED_AT) for key in changed)
+
+
 def _compact_runtime_diff(
     before: tuple[str, tuple[tuple[str, int, str], ...]],
     after: tuple[str, tuple[tuple[str, int, str], ...]],
@@ -243,13 +306,28 @@ def prod_config_violation(
         if after is None:
             return f"生产 runtime_config 指纹不可读（数据源：{db_path_under_guard()}）—— fail-closed。"
         if before != after:
+            changed = _changed_keys(before, after)
+            # 归因：运行时业务状态键（campaign 生命周期）+ 会话期内有 store API 审计行
+            # ⇒ 生产服务自写，不是测试写穿（2026-11-02 开盘后雷达按分钟级写 campaign）。
+            production_only = bool(changed) and all(
+                _is_production_self_write(k) for k in changed
+            ) and _is_attributed_production_write(changed)
+            if production_only:
+                print(
+                    "\n[PROD-GUARD] 会话期间生产库变化来自**生产服务自写**（非测试写穿），不判失败："
+                    f"\n  数据源：{db_path_under_guard()}"
+                    f"\n  差异：\n{_compact_runtime_diff(before, after)}",
+                    file=sys.stderr, flush=True,
+                )
+                return None
             return (
                 "生产 runtime_config 在 pytest 会话期间被改动！\n"
                 f"  数据源：{db_path_under_guard()}\n"
                 f"  会话前：sha={before[0][:16]}\n"
                 f"  会话后：sha={after[0][:16]}\n"
                 f"  差异：\n{_compact_runtime_diff(before, after)}\n"
-                "  —— 未显式审计许可的生产配置变化一律硬失败。"
+                f"  变化键：{', '.join(changed[:8]) or '（无）'}\n"
+                "  —— 除已知「生产自写」的运行时键外，一律硬失败。"
             )
         return None
 
@@ -269,7 +347,10 @@ def pytest_sessionstart(session):
     if refusal:
         print(f"\n[PROD-GUARD] {refusal}", file=sys.stderr, flush=True)
         raise pytest.UsageError(refusal)
-    global _SESSION_PROD_BASELINE
+    global _SESSION_PROD_BASELINE, _SESSION_STARTED_AT
+    from datetime import datetime as _dt, timezone as _tz
+
+    _SESSION_STARTED_AT = _dt.now(_tz.utc).isoformat()
     override = os.environ.get("TRADEYI_PROD_DB_OVERRIDE")
     if override:
         message = (
