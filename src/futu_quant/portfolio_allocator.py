@@ -44,6 +44,37 @@ def ensure_default_budgets(store) -> list[dict]:
     return current
 
 
+class AccountCurrencyMismatch(RuntimeError):
+    """账户资产快照不是 USD 口径 —— **fail-closed**，拒绝据此计算/放行任何美元限额。"""
+
+
+def account_currency_status(account) -> tuple[bool, str]:
+    """判断账户快照的币种是否可安全当作 USD 使用。
+
+    2026-11-02 实盘复盘：`accinfo_query` 不传 currency 时返回**账户本位币**（该账户为 HKD），
+    而 `positions()` 的 market_val 是美元 —— 两者混算会让「账户资产」放大 7.85 倍，
+    于是「压力损失预算」这类按权益百分比算的闸门被静默放宽 7.85 倍（10-29/10-30 实盘
+    就是靠这个虚高额度在超配开仓）。`broker.py` 已改成显式 `currency="USD"`，
+    但**返回值是否真被采纳没人校验** —— 本函数补上这道校验。
+
+    返回 `(ok, actual_currency)`：
+    - 快照为空 / 没有 currency 列 → `(True, "")`（无法判定，沿用原有下游逻辑，不新增误拒）；
+    - 币种是 `USD` 或 `N/A` → `(True, actual)`；
+    - 其它任何币种 → `(False, actual)`，调用方必须拒绝开仓。
+    """
+    try:
+        if account is None or getattr(account, "empty", True):
+            return True, ""
+        if "currency" not in account.columns:
+            return True, ""
+        actual = str(account.iloc[0].get("currency") or "").strip().upper()
+    except Exception:  # noqa: BLE001 - 结构异常按无法判定处理，不因取字段把交易链路打断
+        return True, ""
+    if actual in ("", "USD", "N/A"):
+        return True, actual
+    return False, actual
+
+
 def strategy_budget_usage(store, broker) -> tuple[pd.DataFrame, float]:
     budgets = ensure_default_budgets(store)
     try:
@@ -54,6 +85,13 @@ def strategy_budget_usage(store, broker) -> tuple[pd.DataFrame, float]:
         cached_positions = store.broker_snapshot("positions") or {}
         account = pd.DataFrame(cached_account.get("payload", []))
         positions = pd.DataFrame(cached_positions.get("payload", []))
+    currency_ok, actual_currency = account_currency_status(account)
+    if not currency_ok:
+        raise AccountCurrencyMismatch(
+            f"账户资产快照币种为 {actual_currency}，不是 USD："
+            "所有美元限额与百分比仓位（含压力损失预算）都会按汇率倍数失真，已拒绝开仓。"
+            f"请确认 accinfo_query 的 currency=USD 是否被采纳（账户={getattr(broker, 'account_id', '?')}）。"
+        )
     equity = float(account.iloc[0].get("total_assets", 0) or 0) if not account.empty else 0.0
     symbols = positions["code"].astype(str).tolist() if not positions.empty else []
     quotes = broker.snapshots(symbols) if symbols else pd.DataFrame()
@@ -106,18 +144,42 @@ def strategy_budget_usage(store, broker) -> tuple[pd.DataFrame, float]:
     return pd.DataFrame(rows), equity
 
 
+def _account_for_currency_check(store, broker):
+    """取账户快照用于币种校验：live 优先，失败回落缓存 —— 两条都必须校验。"""
+    try:
+        return broker.account_info()
+    except Exception:  # noqa: BLE001 - 断线回落快照，但仍要过币种门禁
+        cached = store.broker_snapshot("account_info") or {}
+        return pd.DataFrame(cached.get("payload", []))
+
+
 def strategy_budget_allowed(
     store, broker, strategy_id: str | None, symbol: str, side: str,
     quantity: int, price: float, multiplier: float,
 ) -> tuple[bool, str, dict]:
     if side == "SELL" or not strategy_id:
         return True, "减仓不占用新增策略预算", {}
+    # 币种门禁**必须排在预算早退之前**：否则「未配置三维预算」的账户会绕过它，
+    # 而这条守卫的前提正是「任何美元限额都不能建立在非 USD 权益上」（2026-11-02 复盘）。
+    currency_ok, actual_currency = account_currency_status(
+        _account_for_currency_check(store, broker)
+    )
+    if not currency_ok:
+        return False, (
+            f"账户资产快照币种为 {actual_currency}，不是 USD：所有美元限额与百分比仓位"
+            "（含压力损失预算）都会按汇率倍数失真，已拒绝开仓。"
+        ), {"currency_mismatch": True, "currency": actual_currency}
     budget = store.strategy_risk_budget(strategy_id)
     if budget is None:
         return True, "未配置三维策略预算，沿用原有资金配额", {}
     if not budget["enabled"]:
         return False, f"{strategy_id} 已在组合资金分配器中停用", {}
-    usage, equity = strategy_budget_usage(store, broker)
+    usage, equity = None, 0.0
+    try:
+        usage, equity = strategy_budget_usage(store, broker)
+    except AccountCurrencyMismatch as exc:
+        # fail-closed：币种不是 USD 时绝不能按虚高权益放行，但也不能把异常抛进主循环。
+        return False, str(exc), {"currency_mismatch": True}
     current = usage[usage["strategy_id"] == strategy_id]
     if current.empty or equity <= 0:
         return False, "无法计算策略预算使用率", {}
