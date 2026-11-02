@@ -371,12 +371,22 @@ def test_today_overview_resolve_pending_restart_status_branches(tmp_path, monkey
 
 
 def test_strategy_center_card_hides_runtime_key_from_main_body():
-    """守卫：策略中心等入口卡片正文禁止铺露底层 runtime_key，键名必须折叠在 expander 中。"""
+    """守卫：策略中心卡片正文禁止铺露底层 runtime_key，键名必须折叠在 expander 中。
+
+    2026-11-02 P0-UI-2：策略中心已升级为**真实可编辑**（策略启停 / 暂停新开仓），
+    原先「只读骨架 + 建设中横幅」的判据随之作废 —— 页面有真控件时不该再挂横幅。
+    保留的仍然是这条原始意图：**正文用中文 description，不铺底层键名**。
+    """
     sc_path = pathlib.Path(__file__).resolve().parent.parent / "pages/44_strategy_center.py"
     content = sc_path.read_text(encoding="utf-8")
 
-    # 1. 正文循环内使用 description
-    assert "st.write(s.description" in content
-    # 2. 存在自动隐现的建设中横幅判断
-    assert "editable_primary_count = sum(1 for s in primary_specs if s.editable)" in content
+    # 1. 正文展示中文业务描述
+    assert "spec.description" in content
+
+    # 2. 正文（高级详情折叠之前的部分）不得出现底层 runtime_key
+    main_body = content.split("高级技术参数与策略细项")[0]
+    assert "runtime_key" not in main_body, "正文仍在铺底层键名"
+
+    # 3. 页面确实具备真实可编辑控件（不再是只读骨架）
+    assert "set_strategy_enabled(" in content
 

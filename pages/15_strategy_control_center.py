@@ -299,66 +299,22 @@ with service_tab:
 
 with overview_tab:
     st.info(
-        "这里管策略是否运行、运行到 SHADOW 还是 PAPER；资金比例请到右侧“策略资金”Tab 调整。",
+        "策略启停 / 暂停新开仓的编辑入口已统一到「策略中心」页（唯一写入点）。"
+        "本页只做只读展示，避免同一配置两处可改。",
         icon=":material/info:",
     )
-    editable = control[["strategy_id", "display_name", "enabled", "execution_mode", "entries_paused"]].copy()
-    edited = st.data_editor(
-        editable, hide_index=True, width="stretch",
-        disabled=["strategy_id", "display_name"],
+    st.page_link(
+        "pages/44_strategy_center.py",
+        label="前往「策略中心」修改策略启停 / 暂停新开仓",
+        icon=":material/tune:",
+    )
+    st.dataframe(
+        control.drop(columns=["execution_mode", "entries_paused"], errors="ignore"),
+        hide_index=True, width="stretch",
         column_config={
             "strategy_id": st.column_config.TextColumn("策略ID"),
             "display_name": st.column_config.TextColumn("策略"),
             "enabled": st.column_config.CheckboxColumn("启用自动调度"),
-            "execution_mode": st.column_config.SelectboxColumn(
-                "执行模式", options=["INHERIT", "SHADOW", "PAPER"]
-            ),
-            "entries_paused": st.column_config.CheckboxColumn(
-                "⏸️ 暂停新开仓 (只减仓)",
-                help="开启后该策略坚决不建新仓；已有持仓继续由策略执行止盈、止损与退出管理",
-            ),
-        }, key="unified_strategy_control",
-    )
-    if st.button("保存策略控制", type="primary", disabled=not admin):
-        by_id = {plugin.strategy_id: plugin for plugin in strategy_plugins()}
-        changes = []
-        for item in edited.to_dict("records"):
-            plugin = by_id[item["strategy_id"]]
-            # 启停键必须落到**本租户**并覆盖所有拼法变体：调度器先看显示名键、
-            # 再看策略 ID 键，只写其中一个会出现「界面关了、调度器照跑」。
-            # 拿不到租户就拒绝保存，绝不回落旧全局键（旧键被租户键盖过 = 写了不生效）。
-            if not tenant_id:
-                st.error("无法解析当前租户，已拒绝保存策略启停（避免写到别的租户/无效键）")
-                st.stop()
-            set_strategy_enabled(
-                store, plugin.strategy_id, bool(item["enabled"]), tenant_id=tenant_id,
-            )
-            mode = item["execution_mode"]
-            # P1-6：只写当前租户键；拿不到租户就拒绝写，绝不回落旧全局键 ——
-            # 旧键被租户键盖过，写它等于「保存成功但实际没生效」。
-            if not tenant_id:
-                st.error("无法解析当前租户，已拒绝保存执行模式（避免写到别的租户/无效键）")
-                st.stop()
-            if mode == "INHERIT":
-                store.delete_setting(f"strategy_execution_mode:{tenant_id}:{plugin.strategy_id}")
-            else:
-                store.set_setting(
-                    f"strategy_execution_mode:{tenant_id}:{plugin.strategy_id}", str(mode),
-                )
-            # P1-9：单策略暂停新开仓 (Reduce-Only) 多租户保存
-            paused = bool(item.get("entries_paused", False))
-            set_strategy_entries_paused(store, plugin.strategy_id, paused, tenant_id=tenant_id)
-            changes.append(item)
-        store.audit(
-            "UNIFIED_STRATEGY_CONTROL_CHANGED",
-            {"source": "automation_control_center", "changes": changes},
-         actor="streamlit_admin:panel")
-        st.success("策略控制已保存，下一个调度周期生效。")
-        st.rerun()
-    st.dataframe(
-        control.drop(columns=["enabled", "execution_mode", "entries_paused"], errors="ignore"),
-        hide_index=True, width="stretch",
-        column_config={
             "capital_ratio": st.column_config.NumberColumn("资金配额", format="percent"),
             "version_drift": st.column_config.CheckboxColumn("版本漂移"),
         },
