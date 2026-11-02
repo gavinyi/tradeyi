@@ -130,13 +130,41 @@ def test_center_page_warns_stop_also_stops_exit_monitoring():
 
 
 def test_center_page_blocks_stop_when_positions_exist():
-    """有持仓时停用必须红色阻断，而不是只提示。"""
+    """有持仓时默认拒绝，但**必须给出强确认出口**（紧急时仍能停手）。"""
     source = _source(CENTER)
 
     assert "open_positions_by_strategy(" in source, "必须真的去查持仓，不能凭感觉"
-    assert "st.error(" in source
-    assert "已拒绝保存" in source, "有持仓时必须是阻断，而非 warning 放行"
-    assert ":material/block:" in source
+    assert "已拒绝保存" in source, "默认路径应是阻断"
+    # 出口：强确认勾选 + 审计留证
+    assert "我已了解：停用后该策略的退出/止盈/止损监控将停止，现有持仓需人工接管" in source
+    assert "forced_stop_with_positions" in source, "强制停用必须进审计，事后可复盘"
+    assert "positions_snapshot" in source
+
+
+def test_center_page_forced_stop_requires_ack(tmp_path):
+    """勾了强确认才允许写；不勾仍然拒绝。这条锁住「紧急出口真的能用」。"""
+    source = _source(CENTER)
+
+    assert "if pending_stop and not forced_ack:" in source
+    # 未知持仓与有持仓走同一条出口（否则持仓表一坏就彻底锁死）
+    assert '"held": None if holdings_unknown else held' in source
+
+
+def test_forced_stop_audit_payload_shape(tmp_path):
+    """审计必须能回答：是否在持仓状态下强停、当时各策略持仓多少。"""
+    from futu_quant.store import TradingStore
+
+    store = TradingStore(tmp_path / "audit.db")
+    payload = {
+        "forced_stop_with_positions": True,
+        "positions_snapshot": {"core_satellite": 5.0},
+        "positions_unknown": False,
+    }
+    store.audit("STRATEGY_CONTROLS_UPDATED", payload, actor="streamlit_admin:panel")
+
+    events = [e for e in store.audit_events() if e["event_type"] == "STRATEGY_CONTROLS_UPDATED"]
+    assert events, "审计没落库"
+    assert "forced_stop_with_positions" in events[-1]["payload_json"]
 
 
 def test_open_positions_helper_reports_unknown_instead_of_zero():

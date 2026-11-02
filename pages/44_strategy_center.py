@@ -181,32 +181,50 @@ def main() -> None:
         )
 
     confirmed = st.checkbox("我确认以上改动会立即影响策略是否运行与新开仓行为")
+
+    # 紧急出口（Reviewer 2026-11-02）：策略跑飞时「停用」是唯一能立刻停手的动作，
+    # 因此**不禁止**，只要求强确认 —— 否则最急的时候用户只能去杀进程或改代码。
+    # 持仓有量 与 持仓未统计 走同一条出口，只是阻断文案不同。
+    pending_stop: list[dict] = []
+    for row in rows:
+        if bool(row["enabled"]) and not wanted_enabled[row["strategy_id"]]:
+            held = holdings.get(row["strategy_id"], 0.0)
+            pending_stop.append({
+                "strategy_id": row["strategy_id"],
+                "display_name": row["display_name"],
+                "held": None if holdings_unknown else held,
+            })
+    forced_ack = False
+    if pending_stop:
+        described = "、".join(
+            f"{item['display_name']}（" + ("持仓未统计" if item["held"] is None else f"持仓 {item['held']:g}") + "）"
+            for item in pending_stop
+        )
+        st.error(
+            f"即将停用：{described}。"
+            "**停用会让该策略的退出/止盈/止损监控一起停止，现有持仓需要人工接管**；"
+            "若目的只是不再买入，请改用「暂停新开仓（只减仓）」。",
+            icon=":material/block:",
+        )
+        forced_ack = st.checkbox(
+            "我已了解：停用后该策略的退出/止盈/止损监控将停止，现有持仓需人工接管",
+            key="strategy_forced_stop_ack",
+        )
+
     submitted = st.button("保存策略启停", type="primary")
 
     if submitted:
         if not confirmed:
             st.warning("未勾选确认框，本次不保存。")
             return
-        # 阻断：有持仓（或持仓未统计）时不允许停用 —— 停用会停掉退出监控。
-        blocked: list[str] = []
-        for row in rows:
-            turning_off = bool(row["enabled"]) and not wanted_enabled[row["strategy_id"]]
-            if not turning_off:
-                continue
-            held = holdings.get(row["strategy_id"], 0.0)
-            if holdings_unknown or held > 0:
-                blocked.append(
-                    f"{row['display_name']}（持仓 {held:g}）" if not holdings_unknown
-                    else f"{row['display_name']}（持仓未统计）"
-                )
-        if blocked:
+        if pending_stop and not forced_ack:
             st.error(
-                "已拒绝保存 —— 下列策略仍有持仓或持仓未统计，停用会连同退出/止盈/止损监控一起停止："
-                + "、".join(blocked)
-                + "。若目的只是不再买入，请勾选「暂停新开仓（只减仓）」。",
+                "已拒绝保存 —— 上面列出的策略仍有持仓（或持仓未统计），停用会连带停掉退出监控。"
+                "请先勾选「我已了解…需人工接管」，或改用「暂停新开仓（只减仓）」。",
                 icon=":material/block:",
             )
             return
+        # 到这里说明：要么没有停用动作，要么已强确认（持仓/未知持仓均同一条出口）。
         changed: list[dict] = []
         for row in rows:
             new_enabled = wanted_enabled[row["strategy_id"]]
@@ -223,12 +241,19 @@ def main() -> None:
         if not changed:
             st.info("与当前状态相同，未做任何修改。")
             return
+        # 事后可追溯（Reviewer 要求）：在持仓/未统计状态下强制停用必须留证。
+        forced = bool(pending_stop) and forced_ack
         store.audit(
             "STRATEGY_CONTROLS_UPDATED",
             {
                 "actor": "streamlit_admin",
                 "tenant_id": tenant_id,
                 "changes": changed,
+                "forced_stop_with_positions": forced,
+                "positions_snapshot": (
+                    {item["strategy_id"]: item["held"] for item in pending_stop} if forced else {}
+                ),
+                "positions_unknown": bool(holdings_unknown),
                 "source": "pages/44_strategy_center.py",
             },
             actor="streamlit_admin:panel",
@@ -236,6 +261,12 @@ def main() -> None:
         st.success(
             f"已保存 {len(changed)} 个策略的启停/暂停状态，调度器下一个周期生效。"
         )
+        if forced:
+            st.warning(
+                "本次是在**有持仓（或持仓未统计）**状态下强制停用的，已记入审计"
+                "（`forced_stop_with_positions=true`）：现有持仓需人工接管，退出/止盈/止损监控已停止。",
+                icon=":material/warning:",
+            )
         st.caption(
             f"写入位置：`strategy_enabled:{tenant_id}:*`、`strategy_entries_paused:{tenant_id}:*`"
             "（`system_settings`），读取方为调度器同一批解析函数。"
