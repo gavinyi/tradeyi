@@ -45,6 +45,35 @@ def strategy_rows(store, tenant_id: str) -> list[dict]:
     return rows
 
 
+def open_positions_by_strategy(store, tenant: dict | None, tenant_id: str) -> tuple[dict[str, float], bool]:
+    """每个策略当前**已持仓数量**合计，用于「停用前」阻断提示。
+
+    返回 `(以策略ID为键的数量合计, 是否统计失败)`。
+    统计失败时第二项为 True —— 页面必须显示「未统计」并继续按最严口径拦停用，
+    绝不用 0 冒充「没有持仓」。
+    """
+    if not isinstance(tenant, dict):
+        return {}, True
+    env = str(tenant.get("env") or "").upper() or None
+    account_id = tenant.get("acc_id")
+    try:
+        rows = store.virtual_positions(env=env, account_id=account_id, tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001 - 统计失败必须显式暴露给用户，不能静默当 0
+        return {}, True
+    totals: dict[str, float] = {}
+    for row in rows or []:
+        try:
+            qty = abs(float(row.get("quantity") or 0))
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        strategy_id = str(row.get("strategy_id") or "")
+        if strategy_id:
+            totals[strategy_id] = totals.get(strategy_id, 0.0) + qty
+    return totals, False
+
+
 def _render_panorama() -> None:
     specs = [s for s in GLOBAL_REGISTRY.all_specs() if s.user_area == "strategy_center"]
     primary = [s for s in specs if s.surface == "primary"]
@@ -91,14 +120,33 @@ def main() -> None:
     st.caption(f"当前租户：**{tenant_id}** · 写入 `strategy_enabled:{tenant_id}:*`")
 
     rows = strategy_rows(store, tenant_id)
+    holdings, holdings_unknown = open_positions_by_strategy(store, tenant, tenant_id)
     st.markdown(
         "\n".join(
             f"- **{row['display_name']}**（`{row['strategy_id']}`）："
             f"{'运行中' if row['enabled'] else '已停止'}"
             f"{' · 已暂停新开仓' if row['entries_paused'] else ''}"
+            f" · 持仓 {holdings.get(row['strategy_id'], 0.0):g}"
             for row in rows
         )
     )
+
+    # 关键区别（Reviewer 2026-11-02）：停用策略会**连同退出管理一起停**，
+    # 有持仓时停用 = 止盈/止损/退出判定全部停工，仓位被晾在那里。
+    st.warning(
+        "**两个开关不是一回事，有持仓时请用下面那个：**\n\n"
+        "- 「**启用自动调度**」关掉 = 该策略**整段不跑**，连退出/止盈/止损监控一起停；"
+        "持仓没清就关，等于把风控停了。\n"
+        "- 「**暂停新开仓（只减仓）**」= 只不建新仓，已有持仓继续由策略执行止盈、止损与退出。",
+        icon=":material/warning:",
+    )
+    if holdings_unknown:
+        st.error(
+            "当前持仓统计失败（**未统计**），不能确认是否还有仓位。"
+            "为避免「持仓未清却把退出监控停掉」，本次已按最严口径处理："
+            "有策略处于运行中时，停用操作将被拒绝。",
+            icon=":material/error:",
+        )
 
     if not render_admin_login():
         st.info("修改策略启停需要管理员登录；未登录时本页只读。")
@@ -109,8 +157,15 @@ def main() -> None:
     for row in rows:
         st.divider()
         st.markdown(f"**{row['display_name']}**（`{row['strategy_id']}`）")
+        held = holdings.get(row["strategy_id"], 0.0)
+        if held > 0:
+            st.error(
+                f"该策略当前仍有持仓 **{held:g}**：此时停用会连带停掉退出/止盈/止损监控。"
+                "只想不再买入请用下方「暂停新开仓（只减仓）」。",
+                icon=":material/error:",
+            )
         wanted_enabled[row["strategy_id"]] = st.checkbox(
-            "启用自动调度",
+            "启用自动调度（关闭=整段停止，含退出监控）",
             value=bool(row["enabled"]),
             key=f"strategy_enabled_{row['strategy_id']}",
         )
@@ -131,6 +186,26 @@ def main() -> None:
     if submitted:
         if not confirmed:
             st.warning("未勾选确认框，本次不保存。")
+            return
+        # 阻断：有持仓（或持仓未统计）时不允许停用 —— 停用会停掉退出监控。
+        blocked: list[str] = []
+        for row in rows:
+            turning_off = bool(row["enabled"]) and not wanted_enabled[row["strategy_id"]]
+            if not turning_off:
+                continue
+            held = holdings.get(row["strategy_id"], 0.0)
+            if holdings_unknown or held > 0:
+                blocked.append(
+                    f"{row['display_name']}（持仓 {held:g}）" if not holdings_unknown
+                    else f"{row['display_name']}（持仓未统计）"
+                )
+        if blocked:
+            st.error(
+                "已拒绝保存 —— 下列策略仍有持仓或持仓未统计，停用会连同退出/止盈/止损监控一起停止："
+                + "、".join(blocked)
+                + "。若目的只是不再买入，请勾选「暂停新开仓（只减仓）」。",
+                icon=":material/block:",
+            )
             return
         changed: list[dict] = []
         for row in rows:

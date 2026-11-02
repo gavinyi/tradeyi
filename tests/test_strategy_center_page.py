@@ -120,6 +120,69 @@ def test_only_one_page_writes_strategy_controls():
     assert offenders == ["44_strategy_center.py"], offenders
 
 
+def test_center_page_warns_stop_also_stops_exit_monitoring():
+    """Reviewer 2026-11-02：停用策略会连同退出/止盈/止损监控一起停，必须讲清。"""
+    source = _source(CENTER)
+
+    assert "退出" in source and "止盈" in source, "必须写明「停用会把退出监控一起停」"
+    assert "暂停新开仓（只减仓）" in source, "必须给出有持仓时的正确开关"
+    assert "st.warning(" in source
+
+
+def test_center_page_blocks_stop_when_positions_exist():
+    """有持仓时停用必须红色阻断，而不是只提示。"""
+    source = _source(CENTER)
+
+    assert "open_positions_by_strategy(" in source, "必须真的去查持仓，不能凭感觉"
+    assert "st.error(" in source
+    assert "已拒绝保存" in source, "有持仓时必须是阻断，而非 warning 放行"
+    assert ":material/block:" in source
+
+
+def test_open_positions_helper_reports_unknown_instead_of_zero():
+    """统计失败必须回「未统计」，不能用 0 冒充没有持仓。"""
+    from types import SimpleNamespace
+
+    class _Broken:
+        def virtual_positions(self, **kwargs):
+            raise RuntimeError("db locked")
+
+    sys_path = ROOT / "src"
+    import sys
+
+    sys.path.insert(0, str(sys_path))
+    module = ast.parse(_source(CENTER), filename=str(CENTER))
+    namespace: dict = {}
+    func_src = _source(CENTER).split("def open_positions_by_strategy")[1].split("def _render_panorama")[0]
+    exec("def open_positions_by_strategy" + func_src, {"float": float, "str": str}, namespace)
+    helper = namespace["open_positions_by_strategy"]
+
+    totals, unknown = helper(_Broken(), {"env": "REAL", "acc_id": "1"}, "t")
+    assert totals == {}
+    assert unknown is True, "统计失败必须是「未统计」，不能返回空且 unknown=False"
+
+    class _Empty:
+        def virtual_positions(self, **kwargs):
+            return []
+
+    totals, unknown = helper(_Empty(), {"env": "SIMULATE", "acc_id": "2"}, "t")
+    assert totals == {}
+    assert unknown is False
+
+    class _Held:
+        def virtual_positions(self, **kwargs):
+            return [
+                {"strategy_id": "core_satellite", "quantity": "3"},
+                {"strategy_id": "core_satellite", "quantity": 2},
+                {"strategy_id": "volatility_long_gamma", "quantity": 0},
+            ]
+
+    totals, unknown = helper(_Held(), {"env": "REAL", "acc_id": "1"}, "t")
+    assert unknown is False
+    assert totals == {"core_satellite": 5.0}, "持仓合计算错会误放行停用"
+    assert SimpleNamespace  # 保持导入被使用
+
+
 def test_center_page_imports_resolve():
     from futu_quant.operational_readiness import _audit_page_imports
 
