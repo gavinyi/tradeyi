@@ -210,3 +210,16 @@ def test_broker_warns_but_allocator_is_the_hard_gate():
     assert "logger.warning" in broker_src
     assert "AccountCurrencyMismatch" in allocator_src
     assert "currency_mismatch" in allocator_src
+
+
+def test_guard_is_scoped_to_brokers_that_report_account_info():
+    """守卫只对能报账户快照的 broker 生效（生产 FutuPaperBroker 一定有）。
+
+    否则任何没有 `account_info()` 的轻量替身都会被判成「实盘币种未知」，
+    把无关用例全打红 —— 这是 2026-11-02 改守卫时踩到的坑。
+    """
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "src" / "futu_quant" / "portfolio_allocator.py").read_text(encoding="utf-8")
+
+    assert 'if hasattr(broker, "account_info"):' in source
+    assert "断线（有方法但抛错）不算" in source or "有方法但抛错" in source

@@ -209,27 +209,33 @@ def strategy_budget_allowed(
         return True, "减仓不占用新增策略预算", {}
     # 币种门禁**必须排在预算早退之前**：否则「未配置三维预算」的账户会绕过它，
     # 而这条守卫的前提正是「任何美元限额都不能建立在非 USD 权益上」（2026-11-02 复盘）。
-    status, actual_currency = account_currency_status(
-        _account_for_currency_check(store, broker)
-    )
-    if status == CURRENCY_MISMATCH:
-        _report_currency_problem(store, broker, status, actual_currency)
-        return False, (
-            f"账户资产快照币种为 {actual_currency}，不是 USD：所有美元限额与百分比仓位"
-            "（含压力损失预算）都会按汇率倍数失真，已拒绝开仓。"
-        ), {"currency_mismatch": True, "currency": actual_currency}
-    if status == CURRENCY_UNKNOWN:
-        if _is_real_account(broker):
-            # 实盘取不到币种 = 无法排除 7.85 倍复发 → 拒开仓 + 强告警（incident 去重）。
+    #
+    # 适用范围：**只对能报账户快照的 broker 生效**。生产 `FutuPaperBroker` 一定有
+    # `account_info()`；测试替身/轻量 broker 没有该方法时，按「本层不适用」跳过 ——
+    # 否则任何没有账户信息的替身都会被判成"实盘币种未知"，把无关用例全打红。
+    # 断线（有方法但抛错）不算"不适用"：会回落缓存快照，仍然过同一道门禁。
+    if hasattr(broker, "account_info"):
+        status, actual_currency = account_currency_status(
+            _account_for_currency_check(store, broker)
+        )
+        if status == CURRENCY_MISMATCH:
             _report_currency_problem(store, broker, status, actual_currency)
             return False, (
-                "实盘账户资产快照无法确认币种是否为 USD：不能排除美元限额被汇率倍数放大，"
-                "已拒绝开仓。请核对 accinfo_query 的 currency=USD 是否被采纳。"
-            ), {"currency_mismatch": True, "currency": "", "currency_unknown": True}
-        logger.warning(
-            "模拟盘账户 %s 资产快照币种无法判定：放行，但美元限额可能失真，请核对 accinfo_query。",
-            getattr(broker, "account_id", "?"),
-        )
+                f"账户资产快照币种为 {actual_currency}，不是 USD：所有美元限额与百分比仓位"
+                "（含压力损失预算）都会按汇率倍数失真，已拒绝开仓。"
+            ), {"currency_mismatch": True, "currency": actual_currency}
+        if status == CURRENCY_UNKNOWN:
+            if _is_real_account(broker):
+                # 实盘取不到币种 = 无法排除 7.85 倍复发 → 拒开仓 + 强告警（incident 去重）。
+                _report_currency_problem(store, broker, status, actual_currency)
+                return False, (
+                    "实盘账户资产快照无法确认币种是否为 USD：不能排除美元限额被汇率倍数放大，"
+                    "已拒绝开仓。请核对 accinfo_query 的 currency=USD 是否被采纳。"
+                ), {"currency_mismatch": True, "currency": "", "currency_unknown": True}
+            logger.warning(
+                "模拟盘账户 %s 资产快照币种无法判定：放行，但美元限额可能失真，请核对 accinfo_query。",
+                getattr(broker, "account_id", "?"),
+            )
     budget = store.strategy_risk_budget(strategy_id)
     if budget is None:
         return True, "未配置三维策略预算，沿用原有资金配额", {}

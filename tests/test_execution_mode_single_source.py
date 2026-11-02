@@ -1,4 +1,4 @@
-"""P1-6 执行模式单源 + 降级收口守卫。
+﻿"""P1-6 执行模式单源 + 降级收口守卫。
 
 守三件事：
 1. 解析阶梯唯一：租户策略键 → 旧无前缀策略键 → 全局 `execution_mode` → 空；
@@ -180,7 +180,7 @@ class _RealBroker:
         }])
 
     def account_info(self):
-        return pd.DataFrame([{"total_assets": 100000, "power": 100000}])
+        return pd.DataFrame([{"currency": "USD", "total_assets": 100000, "power": 100000}])
 
     def snapshots(self, symbols):
         return pd.DataFrame([

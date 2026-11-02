@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from types import SimpleNamespace
 
@@ -27,7 +27,7 @@ class MockBroker:
 
     def account_info(self):
         import pandas as pd
-        return pd.DataFrame([{"total_assets": 100000.0, "power": 50000.0, "unrealized_pl": 0.0}])
+        return pd.DataFrame([{"currency": "USD", "total_assets": 100000.0, "power": 50000.0, "unrealized_pl": 0.0}])
 
     def snapshots(self, symbols):
         import pandas as pd
