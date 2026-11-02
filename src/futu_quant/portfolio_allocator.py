@@ -210,11 +210,22 @@ def strategy_budget_allowed(
     # 币种门禁**必须排在预算早退之前**：否则「未配置三维预算」的账户会绕过它，
     # 而这条守卫的前提正是「任何美元限额都不能建立在非 USD 权益上」（2026-11-02 复盘）。
     #
-    # 适用范围：**只对能报账户快照的 broker 生效**。生产 `FutuPaperBroker` 一定有
-    # `account_info()`；测试替身/轻量 broker 没有该方法时，按「本层不适用」跳过 ——
+    # 适用范围：**只对能报账户快照的 broker 走正常校验**。生产 `FutuPaperBroker`
+    # 一定有 `account_info()`；测试替身/轻量 broker 没有该方法时按「本层不适用」跳过，
     # 否则任何没有账户信息的替身都会被判成"实盘币种未知"，把无关用例全打红。
     # 断线（有方法但抛错）不算"不适用"：会回落缓存快照，仍然过同一道门禁。
-    if hasattr(broker, "account_info"):
+    #
+    # **但实盘例外**（Reviewer 2026-11-02）：实盘 broker 若根本没有 `account_info()`，
+    # 等于币种无从求证 —— 必须按 UNKNOWN 直接拒。否则将来谁包一层代理 broker，
+    # 这条门禁就静默失效，7.85 倍的老毛病原样复发。
+    if not hasattr(broker, "account_info"):
+        if _is_real_account(broker):
+            _report_currency_problem(store, broker, CURRENCY_UNKNOWN, "")
+            return False, (
+                "实盘 broker 不提供账户快照（无 account_info）：无法确认币种是否为 USD，"
+                "不能排除美元限额被汇率倍数放大，已拒绝开仓。"
+            ), {"currency_mismatch": True, "currency": "", "currency_unknown": True}
+    else:
         status, actual_currency = account_currency_status(
             _account_for_currency_check(store, broker)
         )

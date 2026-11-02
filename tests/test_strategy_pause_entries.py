@@ -246,12 +246,21 @@ def test_tenant_isolation_bidirectional(tmp_path, monkeypatch):
     res_paper = exec_paper.submit_limit(STRATEGY_ID, "intent_p1", "US.SPY260116C00500000", "BUY", 1, 5.0)
     assert res_paper.status in ("SUBMITTED", "FILLED")
 
-    # 场景 2（反向）：模拟盘开启暂停，实盘恢复
+    # 场景 2（反向）：模拟盘开启暂停，实盘解除暂停。
+    #
+    # 注意：本文件用的是**极简 FakeBroker**，没有 `account_info()`。按 2026-11-02 的币种
+    # 门禁（`portfolio_allocator.strategy_budget_allowed`），**实盘 broker 不提供账户快照
+    # = 无法确认币种是否为 USD → 必须拒绝开仓**。因此这里断言的是「暂停闸门解除后，
+    # 仍被币种门禁挡住，且理由是显式的那条」——不是静默失败。
+    # 真实 Futu broker 一定带 `account_info()`，不受此限制。
     set_strategy_entries_paused(store, STRATEGY_ID, False, tenant_id=REAL_TENANT)
     set_strategy_entries_paused(store, STRATEGY_ID, True, tenant_id=PAPER_TENANT)
 
     res_real2 = exec_real.submit_limit(STRATEGY_ID, "intent_r2", "US.SPY260116C00500000", "BUY", 1, 5.0)
-    assert res_real2.status in ("SUBMITTED", "FILLED")
+    assert res_real2.status == "REJECTED"
+    assert "不提供账户快照" in res_real2.message, (
+        "实盘替身缺 account_info 时必须被币种门禁显式拒绝，而不是被静默放行"
+    )
 
     res_paper2 = exec_paper.submit_limit(STRATEGY_ID, "intent_p2", "US.SPY260116C00500000", "BUY", 1, 5.0)
     assert res_paper2.status == "REJECTED"
