@@ -96,25 +96,34 @@ def _process_alive(pid: int) -> bool:
         return False
 
 
-def _latest_log_age_minutes() -> float | None:
-    logs = list(DATA.glob("*.log"))
+def _latest_log_age_minutes(data_dir: Path | None = None) -> float | None:
+    logs = list((data_dir or DATA).glob("*.log"))
     if not logs:
         return None
     newest = max(log.stat().st_mtime for log in logs)
     return (time.time() - newest) / 60.0
 
 
-def collect_problems() -> list[str]:
-    problems: list[str] = []
-    if not DATA.is_dir():
-        raise FileNotFoundError(f"数据目录不存在：{DATA}")
+def collect_problems(
+    data_dir: Path | None = None,
+    process_alive=None,
+    log_age_minutes=None,
+) -> list[str]:
+    """收集异常项。三个参数只为可测性注入：默认走真实实现（`data_dir` 默认生产 `data/`）。"""
+    data_dir = Path(data_dir or DATA)
+    is_alive = process_alive or _process_alive
+    log_age = log_age_minutes or _latest_log_age_minutes
 
-    pid_files = sorted(DATA.glob("*.pid"))
+    problems: list[str] = []
+    if not data_dir.is_dir():
+        raise FileNotFoundError(f"数据目录不存在：{data_dir}")
+
+    pid_files = sorted(data_dir.glob("*.pid"))
     if not pid_files:
         problems.append("data 目录里没有任何 pid 文件 —— 服务可能从未启动或已被 stop.bat 清理")
 
     for name in REQUIRED_PIDS:
-        if not (DATA / f"{name}.pid").is_file():
+        if not (data_dir / f"{name}.pid").is_file():
             problems.append(f"缺少关键 pid 文件：{name}.pid")
 
     for pid_file in pid_files:
@@ -122,10 +131,10 @@ def collect_problems() -> list[str]:
         if pid is None:
             problems.append(f"pid 文件内容无法解析：{pid_file.name}")
             continue
-        if not _process_alive(pid):
+        if not is_alive(pid):
             problems.append(f"进程已退出：{pid_file.name}（记录的 PID {pid} 不存在）")
 
-    age = _latest_log_age_minutes()
+    age = log_age(data_dir)
     if age is None:
         problems.append("data 目录下没有任何日志文件，无法判断服务是否在干活")
     elif age > LOG_STALE_MINUTES:
