@@ -1419,6 +1419,31 @@ def volatility_regime(
     }
 
 
+def resolve_sizing_budget(batch_budget: float, loss_limit: float | None) -> float:
+    """反推张数的**分母** = `min(批预算, 压力损失预算 loss_limit)`（Reviewer 红线 1）。
+
+    为什么不能只按批预算：`$1,000` 分母 + `$150` 单张 → 6 张共 `$900`，
+    而压力损失预算只有 `$396`，这一批到 `portfolio_allocator` 会**整批被拒**，
+    等于把失败从选约挪到风控，成交率一点没变。
+
+    `loss_limit` 为 `None` 表示「本层不适用」（模拟盘没有容量预检），按批预算处理；
+    为 `0` 或负数表示「没有可用预算」，直接返回 0（fail-closed，不允许借批预算兜底）。
+    """
+    try:
+        budget = float(batch_budget)
+    except (TypeError, ValueError):
+        return 0.0
+    if loss_limit is None:
+        return budget
+    try:
+        limit = float(loss_limit)
+    except (TypeError, ValueError):
+        return 0.0
+    if limit <= 0:
+        return 0.0
+    return min(budget, limit)
+
+
 def affordable_stage_contracts(
     ask: float, multiplier: float, configured: int, budget: float | None,
 ) -> int:

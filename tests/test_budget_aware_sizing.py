@@ -15,7 +15,9 @@
 
 from __future__ import annotations
 
-from futu_quant.volatility_optimizer import affordable_stage_contracts
+from futu_quant.volatility_optimizer import (
+    affordable_stage_contracts, resolve_sizing_budget,
+)
 
 
 def test_two_contracts_do_not_fit_but_one_does():
@@ -118,3 +120,82 @@ def test_zero_contracts_reported_with_numbers():
     # 必须带数字：预算 $1,000 < 单张成本 $1,650
     assert "$1,000" in reason and "$1,650" in reason
     assert "可装 0 张" in reason
+
+
+# --------------------------------------------------------------------------- #
+# 分母 = min(批预算, loss_limit)（Reviewer 红线 1）
+# --------------------------------------------------------------------------- #
+
+
+def test_denominator_is_the_smaller_of_batch_budget_and_loss_limit():
+    # $1,000 批预算 vs $396 压力损失预算 → 分母必须是 $396
+    assert resolve_sizing_budget(1000.0, 396.0) == 396.0
+    # 模拟盘没有容量预检（None）→ 按批预算
+    assert resolve_sizing_budget(1000.0, None) == 1000.0
+    # 压力预算比批预算宽 → 仍按批预算（不放大）
+    assert resolve_sizing_budget(1000.0, 5000.0) == 1000.0
+    # 预算为 0 / 负数 → 0（fail-closed，不允许借批预算兜底）
+    assert resolve_sizing_budget(1000.0, 0.0) == 0.0
+    assert resolve_sizing_budget(1000.0, -5.0) == 0.0
+
+
+def test_denominator_caps_the_batch_under_the_stress_budget():
+    """Reviewer 的数字例子：$150/张、批预算 $1,000、loss_limit $396。
+
+    旧口径（分母 $1,000）→ 6 张共 $900 > $396 → 到风控层整批被拒；
+    新口径（分母 $396）→ 2 张共 $300 ≤ $396 → 能过。
+    变异：忽略 loss_limit 参数，本用例第一条断言必红（6 ≠ 2）。
+    """
+    denominator = resolve_sizing_budget(1000.0, 396.0)
+    contracts = affordable_stage_contracts(1.50, 100, 10, denominator)
+    assert contracts == 2
+    batch_premium = contracts * 1.50 * 100
+    assert batch_premium <= 396.0
+    # 对照：旧口径会算出 6 张、总价 $900（必然被风控拒）
+    assert affordable_stage_contracts(1.50, 100, 10, 1000.0) == 6
+    assert 6 * 1.50 * 100 > 396.0
+
+
+def test_roll_path_supplies_loss_limit_to_the_denominator(tmp_path):
+    """红线 1 的调用链证据：`loss_limit` 必须真的从策略预算解析出来。
+
+    链路：`strategy_budget_usage`（权益 × max_loss_ratio）
+    → `_apply_real_capacity_precheck` 挂到 `CapacityPrecheck.loss_limit`
+    → `roll_campaign` 用它作为 `resolve_sizing_budget` 的第二参数。
+    若生产链路上传进来是 None，这里会退回批预算，红线等于没生效 —— 所以必须断言非空。
+    """
+    import pandas as pd
+
+    from futu_quant.store import TradingStore
+    from futu_quant.volatility_roll import _apply_real_capacity_precheck
+
+    class AccountBroker:
+        trading_env = "REAL"
+        account_id = "281756481476169109"
+
+        def account_info(self):
+            return pd.DataFrame([{
+                "currency": "USD", "total_assets": 6646.0, "cash": 6646.0,
+                "market_val": 0.0,
+            }])
+
+        def positions(self):
+            return pd.DataFrame()
+
+        def snapshots(self, symbols):
+            return pd.DataFrame()
+
+    store = TradingStore(tmp_path / "sizing.db", bootstrap=True)
+    candidates = pd.DataFrame([{
+        "code": "US.QQQ261120C740000", "option_type": "CALL",
+        "strike_price": 740.0, "strike_time": "2026-11-20",
+        "bid_price": 1.60, "ask_price": 1.65, "bid_vol": 400, "ask_vol": 400,
+        "update_time": "2026-11-03T12:00:00-05:00",
+    }])
+    _kept, result = _apply_real_capacity_precheck(
+        store, AccountBroker(), {"tenant_id": "t"}, candidates, "US.QQQ", 700.0,
+    )
+    assert result.loss_limit is not None, "实盘容量预检必须带回 loss_limit"
+    assert result.loss_limit > 0
+    # 分母被压到 loss_limit，而不是批预算 $1,000
+    assert resolve_sizing_budget(1000.0, result.loss_limit) == result.loss_limit

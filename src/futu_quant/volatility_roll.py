@@ -20,7 +20,8 @@ from .option_expectancy import add_iv_history_percentiles
 from .option_ranking import rank_long_option_candidates
 from .option_signal import automatic_option_direction
 from .volatility_optimizer import (
-    rank_volatility_contracts, tiered_premium_budget, volatility_regime,
+    rank_volatility_contracts, resolve_sizing_budget, tiered_premium_budget,
+    volatility_regime,
     volatility_threshold_profile, volatility_min_expected_return,
 )
 from .volatility_structures import build_volatility_structure_candidates
@@ -265,15 +266,24 @@ def _apply_real_capacity_precheck(store, broker, campaign, candidates, underlyin
 
     tenant_id = str(campaign.get("tenant_id") or tenant_id_of_broker(broker) or "")
     equity = 0.0
+    loss_limit: float | None = None
     currency_blocked = False
     try:
         _usage, equity = strategy_budget_usage(store, broker)
+        # 压力损失预算（权益 × max_loss_ratio）：反推张数的**分母上限**。
+        # 必须和风控闸门同源 —— 用别的数字反推出来的张数，到下单层照样整批被拒。
+        _budget_row = _usage[_usage["strategy_id"] == "volatility_long_gamma"]
+        if not _budget_row.empty:
+            loss_limit = float(_budget_row.iloc[0]["loss_limit"])
     except AccountCurrencyMismatch:
         # 币种门禁已在下单前拦住；这里拿不到美元权益 → 容量线按 0（fail-closed）。
         # **不重复做币种判定**：那是 portfolio_allocator 的单一真值。
         currency_blocked = True
     result = filter_candidates_for_capacity(candidates, equity=equity, spot=spot)
     result.currency_blocked = currency_blocked
+    # 挂到结果上（当前基线 `CapacityPrecheck` 无该字段）：只在本模块内部用，
+    # 不回写数据类定义，避免把已作废分支的面板重新引进来。
+    result.loss_limit = loss_limit
     try:
         record_selection_round(store, tenant_id, result, underlying=underlying)
     except Exception as exc:  # noqa: BLE001
@@ -417,9 +427,9 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     # 【反推张数的分母】Reviewer 2026-11-03 红线：必须取
     # min(campaign 批预算, 压力损失预算 loss_limit)。只按 $1,000 反推，
     # 算出「3 张共 $900」在风控层照样整批被拒 —— 改了等于没改。
-    sizing_budget = float(premium_budget)
-    if loss_limit_cap is not None and loss_limit_cap > 0:
-        sizing_budget = min(sizing_budget, float(loss_limit_cap))
+    # `loss_limit_cap` 来自 `_apply_real_capacity_precheck` → `CapacityPrecheck.loss_limit`
+    # → `strategy_budget_usage` 的 `loss_limit = 权益 × max_loss_ratio`（模拟盘为 None）。
+    sizing_budget = resolve_sizing_budget(float(premium_budget), loss_limit_cap)
     candidates = rank_volatility_contracts(
         candidates, spot, rv,
         ny_today,
