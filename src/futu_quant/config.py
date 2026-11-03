@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING
 from dotenv import dotenv_values, set_key
 
 from .filelock import exclusive_lock
-from .tenant import VOLATILITY_CAMPAIGNS_KEY, campaigns_config_key
+from .tenant import (
+    RADAR_BUDGETS_KEY,
+    VOLATILITY_CAMPAIGNS_KEY,
+    TenantConfigKeyError,
+    campaigns_config_key,
+    radar_budgets_config_key,
+)
 
 if TYPE_CHECKING:  # 仅类型检查用，运行期由调用方/惰性导入提供，避免循环依赖
     from .store import TradingStore
@@ -332,10 +338,118 @@ def load_volatility_symbols(tenant_id: str | None = None) -> tuple[str, ...]:
     return tuple(dict.fromkeys(symbols))
 
 
-def load_volatility_radar_budgets() -> dict:
-    value = _load_runtime_value(
-        "VOLATILITY_RADAR_BUDGETS", {"default": 1000.0, "symbols": {}},
+#: 预算未分区时（存量）兜底用的旧键值 —— **只做读侧迁移兜底**，不是默认值的第二个出处。
+_RADAR_BUDGETS_LEGACY_DEFAULT = {"default": 1000.0, "symbols": {}}
+#: 「租户键还没写、暂用旧键」只提醒一次，避免每轮每个标的刷同一条日志。
+_RADAR_BUDGET_LEGACY_WARNED: set[str] = set()
+
+
+#: 三档作用域（Reviewer 2026-11-03 裁定）——「没有租户」与「租户非法」**不是同一件事**。
+RADAR_BUDGET_SCOPE_SINGLE = "single"
+RADAR_BUDGET_SCOPE_TENANT = "tenant"
+RADAR_BUDGET_SCOPE_INVALID = "invalid"
+
+
+def _radar_budget_scope(tenant_id: str | None) -> tuple[str, str | None]:
+    """预算作用域：``(档位, 租户键 | 非法租户串)``。
+
+    * ``single``：没有租户上下文（历史入口）。只有一份钱，按旧键取值 = 改动前行为；
+    * ``tenant``：已注册租户 → 只认 ``VOLATILITY_RADAR_BUDGETS:{tenant}``；
+    * ``invalid``：给了租户但解析不出来（拼错/未注册）→ **fail-closed**，
+      绝不回落旧键 —— 否则一个拼写错误就会读到别人的预算。
+    """
+    tid = str(tenant_id or "").strip()
+    if not tid:
+        return RADAR_BUDGET_SCOPE_SINGLE, None
+    try:
+        return RADAR_BUDGET_SCOPE_TENANT, radar_budgets_config_key(tid)
+    except TenantConfigKeyError:
+        return RADAR_BUDGET_SCOPE_INVALID, tid
+
+
+def _warn_budget_legacy_fallback_once(
+    tenant_id: str, tenant_key: str, store: "TradingStore | None" = None,
+) -> None:
+    """租户键尚未写入时喊一次 —— 这一档是**迁移态**，两个租户仍共用一份预算。
+
+    Reviewer 2026-11-03 裁定：**不能只留进程内 WARNING**（重启即丢），
+    必须落一条持久事件 `LEGACY_KEY_FALLBACK`，否则用户会以为隔离已经生效。
+    事件按 ``tenant_key`` 每进程只写一条，避免每轮每个标的刷库。
+    """
+    if tenant_key in _RADAR_BUDGET_LEGACY_WARNED:
+        return
+    _RADAR_BUDGET_LEGACY_WARNED.add(tenant_key)
+    logger.warning(
+        "租户 %s 尚未写入雷达预算键 %s，暂按无前缀旧键取值（迁移态）："
+        "写入该租户键后即与其它租户隔离",
+        tenant_id, tenant_key,
     )
+    try:
+        if store is not None:
+            store.operational_event(
+                "volatility_radar", "LEGACY_KEY_FALLBACK", "WARNING", {
+                    "tenant_id": tenant_id,
+                    "expected_key": tenant_key,
+                    "used_key": RADAR_BUDGETS_KEY,
+                    "reason": "租户预算键尚未写入，本租户暂时与其它租户共用旧键预算",
+                },
+            )
+    except Exception as exc:  # noqa: BLE001 - 事件写失败不得阻断取值，但必须留日志
+        logger.warning("写入 LEGACY_KEY_FALLBACK 事件失败（取值照常）：%s", exc)
+
+
+def _load_tenant_budget(tenant_id: str, store: "TradingStore | None" = None):
+    """读租户级预算（存在 `system_settings`，与 `risk_limits:{tenant}` 同层）。
+
+    为什么不用 `runtime_config`：runtime_config 是**全局键**的领地，
+    而租户/账户级钱类配置（`risk_limits:{tenant}`、`real_account_config:{acct}`）
+    在本仓一直存在 `system_settings`，用 `get_setting`/`set_setting` 读写。
+    混用两处就会出现"改了不生效"的第二真值。
+
+    返回 `None` 表示**该租户还没写过预算**（迁移态），由调用方回落旧键。
+    """
+    active_store = _get_active_store(store)
+    if active_store is None:
+        return None
+    mode, target = _radar_budget_scope(tenant_id)
+    if mode != RADAR_BUDGET_SCOPE_TENANT or not target:
+        return None
+    tenant_key = target
+    try:
+        raw = active_store.get_setting(tenant_key, "")
+    except Exception as exc:  # noqa: BLE001
+        _warn_store_read_fallback(f"读取租户预算键 {tenant_key} 异常", exc)
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def load_volatility_radar_budgets(
+    tenant_id: str | None = None, store: "TradingStore | None" = None,
+) -> dict:
+    """读取雷达每批权利金预算：**租户键优先、旧键仅迁移兜底**（三档见 `_radar_budget_scope`）。
+
+    不传租户时只看旧键 —— 该形态只留给页面展示与历史脚本；
+    **下单/建 campaign 的取值必须传租户**（见 :func:`resolve_volatility_radar_budget`）。
+    非法租户在这里直接抛错（fail-closed）：不知道该用谁的钱，就不给一个"看起来能用"的值。
+    """
+    mode, target = _radar_budget_scope(tenant_id)
+    if mode == RADAR_BUDGET_SCOPE_INVALID:
+        raise TenantConfigKeyError(
+            f"拒绝解析雷达预算：租户 {target!r} 不在租户注册表 —— "
+            "宁可报错，也不回落到无前缀旧键（会读到其它租户共用的预算）"
+        )
+    value = None
+    if mode == RADAR_BUDGET_SCOPE_TENANT and target:
+        value = _load_tenant_budget(str(tenant_id or ""), store)
+        if value is None:
+            _warn_budget_legacy_fallback_once(str(tenant_id or ""), target, store)
+    if value is None:
+        value = _load_runtime_value(RADAR_BUDGETS_KEY, _RADAR_BUDGETS_LEGACY_DEFAULT)
     if not isinstance(value, dict):
         value = {}
     try:
@@ -358,7 +472,16 @@ def load_volatility_radar_budgets() -> dict:
 
 def save_volatility_radar_budgets(
     default_budget: float, symbol_budgets: dict[str, float],
+    tenant_id: str | None = None, store: "TradingStore | None" = None,
 ) -> dict:
+    """保存雷达预算：给了租户就写**租户键**，没给才写旧键（兼容旧脚本）。
+
+    写侧必须和读侧同一个键 —— 否则页面改完「保存成功」，雷达仍读租户键，
+    界面上改了、实际不生效，属于最难查的那种静默失效。
+
+    租户键存 `system_settings`（与 `risk_limits:{tenant}` 同层）；
+    无租户的旧键仍是 `runtime_config` 的全局键，行为与本改动前逐字节一致。
+    """
     default = float(default_budget)
     if not 1 <= default <= 1_000_000:
         raise ValueError("自动雷达默认权利金预算必须在 1 到 1,000,000 美元之间")
@@ -369,18 +492,58 @@ def save_volatility_radar_budgets(
             raise ValueError(f"{symbol} 的权利金预算超出有效范围")
         normalized[normalize_us_symbol(symbol)] = amount
     value = {"default": default, "symbols": normalized}
+    mode, target_key = _radar_budget_scope(tenant_id)
+    if mode == RADAR_BUDGET_SCOPE_INVALID:
+        raise TenantConfigKeyError(
+            f"拒绝保存雷达预算：租户 {target_key!r} 不在租户注册表 —— "
+            "禁止把这份预算写进全局旧键（会污染其它租户）"
+        )
+    if mode == RADAR_BUDGET_SCOPE_TENANT and target_key:
+        target = store
+        if target is None:
+            if ENV_FILE != DEFAULT_ENV_FILE:
+                raise RuntimeError(
+                    f"保存租户预算 {target_key} 需要显式传入 store"
+                    "（当前 ENV_FILE 不是默认库，拒绝写到不确定的库）"
+                )
+            from .store import TradingStore
+            target = TradingStore()
+        target.set_setting(target_key, json_dumps(value))
+        return value
     if ENV_FILE == DEFAULT_ENV_FILE:
         from .store import TradingStore
+        # 字面量键：配置中心 AST 守卫要求 runtime_config 写入键可静态解析
+        # （租户键已走 system_settings，见上面的分支；此路径只服务单作用域）。
         TradingStore().set_runtime_config(
             "VOLATILITY_RADAR_BUDGETS", value, "streamlit_or_service",
         )
-    _mirror_env("VOLATILITY_RADAR_BUDGETS", json_dumps(value))
+    _mirror_env(RADAR_BUDGETS_KEY, json_dumps(value))
     return value
 
 
-def resolve_volatility_radar_budget(symbol: str) -> float:
-    budgets = load_volatility_radar_budgets()
+def resolve_volatility_radar_budget(
+    symbol: str, tenant_id: str | None = None, store: "TradingStore | None" = None,
+) -> float:
+    """**下单口径**的雷达预算，三档（Reviewer 2026-11-03 裁定）：
+
+    * **单作用域**（没有租户上下文，例如历史 `scan_volatility_watchlist` 入口）：
+      只有一份钱、不存在跨租户共用，按旧键取值，与本改动前一致；
+    * **已注册租户**：只认 `VOLATILITY_RADAR_BUDGETS:{tenant}`；租户键尚未写入时
+      回落旧键（迁移态）并落**持久事件** `LEGACY_KEY_FALLBACK`；
+    * **未知/未注册租户**：返回 `0`（fail-closed），由调用方记
+      `RADAR_BUDGET_UNRESOLVED` —— 一个拼写错误绝不能读到别人的预算。
+
+    隔离的判据是**多租户雷达扇出必须带租户**（AST 守卫钉住调用点），
+    而不是拿一个会被误用的全局兜底当默认值。
+    """
     normalized = normalize_us_symbol(symbol)
+    mode, target = _radar_budget_scope(tenant_id)
+    if mode == RADAR_BUDGET_SCOPE_INVALID:
+        logger.warning(
+            "雷达预算：租户 %r 不在租户注册表，按 fail-closed 返回 0（不回落旧键）", target,
+        )
+        return 0.0
+    budgets = load_volatility_radar_budgets(str(tenant_id or "").strip() or None, store)
     return float(budgets["symbols"].get(normalized, budgets["default"]))
 
 

@@ -415,8 +415,29 @@ def _maybe_create_tenant_campaign(
             "candidate_retry_at": retry_until.isoformat(),
         })
         return
-    premium_budget = resolve_volatility_radar_budget(symbol)
+    # 预算按租户取（P1）：实盘与模拟各用自己那份，任一侧调值不再污染另一侧。
+    # 传 store 是为了迁移态能落持久事件（LEGACY_KEY_FALLBACK），不只是进程内日志。
+    premium_budget = resolve_volatility_radar_budget(symbol, tenant_id, store)
     row["campaign_premium_budget"] = premium_budget
+    if premium_budget <= 0:
+        # 只有预算配置被写成 0/不可解析才会到这里 —— 建了也只会必然被拒，
+        # 所以不建仓，但必须留痕（否则表现为「雷达突然不出单」）。
+        row.update({
+            "campaign_created": False, "campaign_code": "",
+            "campaign_reason": (
+                f"预算配置不可用（tenant={tenant_id or '未识别'}，"
+                f"预算 ${premium_budget:,.0f}），已跳过建仓"
+            ),
+        })
+        try:
+            store.operational_event(
+                "volatility_radar", "RADAR_BUDGET_UNRESOLVED", "ERROR",
+                {"tenant_id": tenant_id or None, "symbol": symbol,
+                 "premium_budget": premium_budget},
+            )
+        except Exception:  # noqa: BLE001  # silent-ok: 外层已有租户级失败隔离，留痕失败不得中断扫描
+            pass
+        return
     seed = {
         "underlying": symbol, "code": symbol, "event_date": datetime.now(NY).date().isoformat(),
         # 稳定身份（2026-10-30 补）：此前 seed 里**完全没有 campaign_id**，

@@ -56,7 +56,10 @@ def _item() -> SimpleNamespace:
 def _run(monkeypatch, store, tenant: str, rolled_result) -> tuple:
     monkeypatch.setattr(scanner, "AlertManager", _AlertStub)
     monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda tenant_id: [])
-    monkeypatch.setattr(scanner, "resolve_volatility_radar_budget", lambda symbol: 1000.0)
+    monkeypatch.setattr(
+        scanner, "resolve_volatility_radar_budget",
+        lambda symbol, tenant_id=None, store=None: 1000.0,
+    )
     monkeypatch.setattr(scanner, "roll_campaign", lambda broker, seed, store: rolled_result)
     written: list[tuple[str, dict]] = []
     monkeypatch.setattr(

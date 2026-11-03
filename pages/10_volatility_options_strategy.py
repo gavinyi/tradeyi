@@ -347,7 +347,9 @@ with config_tab:
             state="complete" if radar.running else "error",
         )
         current_radar_symbols = load_volatility_symbols()
-        radar_budgets = load_volatility_radar_budgets()
+        # 预算按租户取/存（P1）：页面上改的必须正是雷达读的那个键，
+        # 否则「保存成功但雷达不生效」是最难查的静默失效。
+        radar_budgets = load_volatility_radar_budgets(_page_tenant_id or None)
         schedule_state = load_radar_schedule_state(store)
         estimated_interval = adaptive_interval_seconds(len(current_radar_symbols))
         effective_interval = (
@@ -370,8 +372,10 @@ with config_tab:
 
         with st.expander("自动雷达权利金预算"):
             st.caption(
-                "预算按“标的单独预算 → 默认预算”取值，只限制自动雷达新生成的策略；"
-                "流动性、Delta、模型预期收益和账户风控仍会独立校验。"
+                f"预算按“标的单独预算 → 默认预算”取值，**只作用于当前租户"
+                f"（{_page_tenant_id or '未识别'}）**，实盘与模拟各自独立；"
+                "它只限制自动雷达新生成的策略，流动性、Delta、模型预期收益和"
+                "账户风控仍会独立校验。"
             )
             budget_rows = pd.DataFrame([
                 {
@@ -417,11 +421,15 @@ with config_tab:
                 }
                 saved_budgets = save_volatility_radar_budgets(
                     float(default_radar_budget), symbol_budgets,
+                    tenant_id=_page_tenant_id or None,
                 )
                 store.audit(
-                    "VOLATILITY_RADAR_BUDGETS_UPDATED", saved_budgets, "streamlit",
-                 actor="streamlit_admin:panel")
-                st.success("自动雷达权利金预算已保存，下一轮扫描立即生效。")
+                    "VOLATILITY_RADAR_BUDGETS_UPDATED",
+                    {"tenant_id": _page_tenant_id or None, **saved_budgets},
+                    "streamlit", actor="streamlit_admin:panel")
+                st.success(
+                    f"已保存到租户 {_page_tenant_id or '未识别'} 的预算键，下一轮扫描立即生效。"
+                )
                 st.rerun()
             st.metric(
                 "连续错误",

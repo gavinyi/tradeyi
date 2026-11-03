@@ -232,7 +232,7 @@ def test_each_tenant_writes_only_its_own_campaign_key(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "futu_quant.volatility_scanner.resolve_volatility_radar_budget",
-        lambda symbol: 1000.0,
+        lambda symbol, tenant_id=None, store=None: 1000.0,
     )
 
     for profile in (REAL, PAPER):
@@ -261,7 +261,7 @@ def test_tenant_a_campaigns_do_not_leak_into_tenant_b(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "futu_quant.volatility_scanner.resolve_volatility_radar_budget",
-        lambda symbol: 1000.0,
+        lambda symbol, tenant_id=None, store=None: 1000.0,
     )
 
     store = TradingStore(tmp_path / "iso.db")
@@ -344,7 +344,7 @@ def test_legacy_entry_point_still_runs_market_layer_once(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "futu_quant.volatility_scanner.resolve_volatility_radar_budget",
-        lambda symbol: 1000.0,
+        lambda symbol, tenant_id=None, store=None: 1000.0,
     )
 
     from futu_quant.volatility_scanner import scan_volatility_watchlist

@@ -272,6 +272,8 @@ RISK_LIMITS_KEY = "risk_limits"
 REAL_ACCOUNT_CONFIG_KEY = "real_account_config"
 STRATEGY_ENABLED_KEY = "strategy_enabled"
 STRATEGY_RECONCILIATION_DISABLED_KEY = "strategy_reconciliation_disabled"
+#: 自动雷达每批权利金预算（**钱**，必须按租户取 —— P1 缺口的对象）。
+RADAR_BUDGETS_KEY = "VOLATILITY_RADAR_BUDGETS"
 
 
 def resolve_tenant_config_key(
@@ -494,6 +496,20 @@ def risk_limits_config_key(
 ) -> str:
     """``risk_limits:{tenant_id}`` —— 租户级风险参数键。"""
     return resolve_tenant_config_key(tenant_id, RISK_LIMITS_KEY, registry=registry)
+
+
+def radar_budgets_config_key(
+    tenant_id: str | TenantProfile | None,
+    *,
+    registry: dict[str, TenantProfile] | None = None,
+) -> str:
+    """``VOLATILITY_RADAR_BUDGETS:{tenant_id}`` —— 自动雷达每批权利金预算的分区键。
+
+    为什么必须分区：这是**钱**。未分区时实盘与模拟共用同一个默认 `$1,000`，
+    模拟盘被实盘的小额度限住（赛马/A-B 结论失真），且任一侧调值都会污染另一侧。
+    与本仓既有约定一致：钱类配置按租户/账户取，行情类（乘数、合约规则）才全局。
+    """
+    return resolve_tenant_config_key(tenant_id, RADAR_BUDGETS_KEY, registry=registry)
 
 
 def real_account_config_key(account_id: str | int | None) -> str:
