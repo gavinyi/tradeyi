@@ -235,6 +235,9 @@ class ComboExecutionManager:
                 if combo["status"] == "FAILED" and not self._combo_has_broker_exposure(combo["combo_id"]):
                     continue
                 if combo["status"] == "FAILED":
+                    # 失败组合仍有券商暴露：这与「长短腿不同步」是同一类敞口，
+                    # 恢复回滚前**先喊一声**（回滚可能失败，敞口是当下的）。
+                    self._flag_legging_exposure(combo, legs, "失败组合仍有券商暴露")
                     self.store.update_option_combo(combo["combo_id"], "ROLLBACK_PENDING", "失败组合仍有券商暴露，自动恢复残腿平仓")
                     self.store.option_combo_event(combo["combo_id"], "FAILED_WITH_EXPOSURE_RECOVERED", "ROLLBACK_PENDING", "失败状态仍有残腿，恢复回滚平仓")
                 results.append(self.advance(combo["combo_id"]))
@@ -264,10 +267,132 @@ class ComboExecutionManager:
             self._advance_close(combo, legs)
         return self._required_combo(combo_id)
 
+    def _legging_exposure_payload(self, combo: dict, legs: list[dict]) -> dict:
+        """重算「已成交腿」的**真实敞口**（2026-11-03 Reviewer 口径）。
+
+        为什么用成交价而不是 ask：长腿既已成交，就有 `average_fill_price`；
+        拿 ask 去估会系统性地高估或低估，而这条告警的全部意义就是**给出真实数字**。
+
+        预算线与 6% 压力损失预算**同源**（权益 × `max_loss_ratio`），
+        不在这里写死比例，避免又造一套真值；取不到就置 None，
+        **宁可标未知，也不许编一个数**。
+        """
+        filled = [leg for leg in legs if float(leg.get("filled_quantity") or 0) > 0]
+        unfilled = [
+            leg for leg in legs
+            if float(leg.get("filled_quantity") or 0) <= 0
+        ]
+        exposure = 0.0
+        filled_rows = []
+        filled_at: list[datetime] = []
+        for leg in filled:
+            quantity = abs(float(leg.get("filled_quantity") or 0))
+            price = float(leg.get("average_fill_price") or 0) or float(leg.get("limit_price") or 0)
+            cost = quantity * price * 100.0
+            exposure += cost
+            filled_rows.append({
+                "symbol": leg["symbol"], "side": leg["side"],
+                "filled_quantity": quantity,
+                "fill_price": round(price, 4), "cost_usd": round(cost, 2),
+            })
+            # 已成交腿的成交时刻：取该腿 intent 的更新时间（成交后即更新），
+            # 拿不到就退回组合的 updated_at —— 宁可粗一点，也要给出裸奔时长。
+            stamp = None
+            intent_id = leg.get("intent_id")
+            if intent_id:
+                try:
+                    intent = self.store.intent(int(intent_id))
+                    stamp = intent.get("updated_at") if intent else None
+                except Exception:  # noqa: BLE001
+                    stamp = None
+            for candidate in (stamp, combo.get("updated_at")):
+                if not candidate:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(str(candidate))
+                except (TypeError, ValueError):
+                    continue
+                filled_at.append(parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc))
+                break
+        equity = None
+        ratio = None
+        budget = None
+        try:
+            history = self.store.equity_history(limit=1, env="REAL")
+            if history:
+                equity = float(history[0].get("total_assets") or 0) or None
+            budget_row = self.store.strategy_risk_budget(str(combo.get("strategy_id") or ""))
+            if budget_row is not None:
+                ratio = float(budget_row.get("max_loss_ratio") or 0) or None
+        except Exception:  # noqa: BLE001 - 取不到预算线不得阻断告警
+            # 宁可把预算线标成未知，也不许编一个数糊上去（Reviewer 2026-11-03）。
+            pass
+        if equity and ratio:
+            budget = equity * ratio
+        legging_seconds = None
+        if filled_at:
+            oldest = min(filled_at)
+            legging_seconds = round(
+                max(0.0, (datetime.now(timezone.utc) - oldest).total_seconds()), 1,
+            )
+        return {
+            "combo_id": combo["combo_id"],
+            "strategy_id": combo.get("strategy_id"),
+            "underlying": combo.get("underlying"),
+            "structure": combo.get("structure"),
+            "filled_legs": filled_rows,
+            "unfilled_legs": [
+                {"symbol": leg["symbol"], "side": leg["side"], "status": leg["status"]}
+                for leg in unfilled
+            ],
+            "exposure_usd": round(exposure, 2),
+            "equity_usd": None if equity is None else round(equity, 2),
+            "budget_ratio": ratio,
+            "budget_usd": None if budget is None else round(budget, 2),
+            "over_budget": None if budget is None else exposure > budget,
+            # 裸奔时长（Reviewer 2026-11-03）：装配超时 300 秒意味着长腿可能裸着 5 分钟，
+            # 先把这个数字记下来，作为后续缩短超时的依据。
+            "legging_seconds": legging_seconds,
+        }
+
+    def _flag_legging_exposure(self, combo: dict, legs: list[dict], trigger: str) -> dict | None:
+        """长短腿不同步时**当轮**推 CRITICAL（不等回滚结果）。
+
+        为什么不等回滚完成再报：回滚本身可能失败甚至卡住，而敞口是**实时存在**的。
+        先把状态喊出来，回滚是否成功另行通知（Reviewer 2026-11-03）。
+        只在「有腿成交、且有腿没成交」时触发 —— 全部成交是正常 OPEN，
+        一腿都没成交就没有敞口。
+        """
+        filled = [leg for leg in legs if float(leg.get("filled_quantity") or 0) > 0]
+        if not filled or len(filled) == len(legs):
+            return None
+        payload = self._legging_exposure_payload(combo, legs)
+        payload["trigger"] = trigger
+        combo_id = combo["combo_id"]
+        try:
+            self.store.option_combo_event(
+                combo_id, "COMBO_LEGGING_EXPOSURE", "WARNING",
+                f"组合仅部分腿成交（{trigger}），真实敞口 ${payload['exposure_usd']:,.0f}",
+                payload,
+            )
+        except Exception:  # noqa: BLE001 - 留痕失败不得阻断告警
+            pass
+        self.alerts.send(
+            "CRITICAL", "COMBO_LEGGING_EXPOSURE",
+            f"组合 {combo_id}（{payload.get('underlying')}）长短腿不同步：{trigger}，"
+            f"已成交腿成本 ${payload['exposure_usd']:,.0f}，"
+            f"预算线 ${payload['budget_usd'] if payload['budget_usd'] is not None else '未知'}，"
+            f"未成交腿 {len(payload['unfilled_legs'])} 条",
+            incident_key=f"COMBO_LEGGING_EXPOSURE:{combo_id}",
+        )
+        return payload
+
     def _advance_open(self, combo: dict, legs: list[dict]) -> None:
         combo_id = combo["combo_id"]
         if any(leg["status"] == "FAILED" for leg in legs):
             if combo["auto_rollback"] and any(leg["status"] == "FILLED" for leg in legs):
+                # **先告警再回滚**：敞口当下就存在，回滚结果另报。
+                self._flag_legging_exposure(combo, legs, "腿失败自动回滚")
                 self.store.update_option_combo(combo_id, "ROLLBACK_PENDING", "部分腿失败，自动回滚")
                 self.store.option_combo_event(combo_id, "ROLLBACK_STARTED", "ROLLBACK_PENDING", "部分腿失败，开始反向平仓")
                 self._advance_close(self._required_combo(combo_id), legs)
@@ -281,6 +406,8 @@ class ComboExecutionManager:
         self._reprice_working_combo(combo, legs)
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(combo["updated_at"])).total_seconds()
         if age > int(combo["assembly_timeout_seconds"]):
+            # 超时同样先告警：此刻已有腿在场，敞口是真的。
+            self._flag_legging_exposure(combo, legs, "装配超时")
             self._cancel_working(legs)
             target = "ROLLBACK_PENDING" if any(leg["status"] == "FILLED" for leg in legs) else "FAILED"
             self.store.update_option_combo(combo_id, target, "组合装配超时")
