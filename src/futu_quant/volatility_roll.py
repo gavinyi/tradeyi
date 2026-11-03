@@ -270,8 +270,9 @@ def _apply_real_capacity_precheck(store, broker, campaign, candidates, underlyin
     currency_blocked = False
     try:
         _usage, equity = strategy_budget_usage(store, broker)
-        # 压力损失预算（权益 × max_loss_ratio）：反推张数的**分母上限**。
-        # 必须和风控闸门同源 —— 用别的数字反推出来的张数，到下单层照样整批被拒。
+        # 压力损失预算（权益 × max_loss_ratio，租户级可配）——同时是两个下游的上限来源：
+        # 1) 反推张数的**分母上限**（必须与风控闸门同源，否则算出的张数到下单层照样整批被拒）；
+        # 2) 容量线取 min(权益×6%, loss_limit)，保证预检永不比风控更宽。
         _budget_row = _usage[_usage["strategy_id"] == "volatility_long_gamma"]
         if not _budget_row.empty:
             loss_limit = float(_budget_row.iloc[0]["loss_limit"])
@@ -279,7 +280,9 @@ def _apply_real_capacity_precheck(store, broker, campaign, candidates, underlyin
         # 币种门禁已在下单前拦住；这里拿不到美元权益 → 容量线按 0（fail-closed）。
         # **不重复做币种判定**：那是 portfolio_allocator 的单一真值。
         currency_blocked = True
-    result = filter_candidates_for_capacity(candidates, equity=equity, spot=spot)
+    result = filter_candidates_for_capacity(
+        candidates, equity=equity, spot=spot, loss_limit=loss_limit,
+    )
     result.currency_blocked = currency_blocked
     # 挂到结果上（当前基线 `CapacityPrecheck` 无该字段）：只在本模块内部用，
     # 不回写数据类定义，避免把已作废分支的面板重新引进来。

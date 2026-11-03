@@ -22,6 +22,7 @@ from futu_quant.capacity_precheck import (
     REASON_SPREAD,
     REASON_STALE,
     capacity_equity_line,
+    capacity_line,
     capacity_pause_state,
     filter_candidates,
     is_real_account,
@@ -80,9 +81,9 @@ class _Broker:
 # --------------------------------------------------------------------------- #
 
 
-def test_capacity_line_is_three_percent_of_equity():
-    assert CAPACITY_EQUITY_RATIO == 0.03
-    assert capacity_equity_line(REAL_EQUITY) == pytest.approx(199.38, abs=0.01)
+def test_capacity_line_is_six_percent_of_equity():
+    assert CAPACITY_EQUITY_RATIO == 0.06
+    assert capacity_equity_line(REAL_EQUITY) == pytest.approx(398.76, abs=0.01)
     assert capacity_equity_line(0) == 0.0
     assert capacity_equity_line(None) == 0.0
     assert capacity_equity_line(-100) == 0.0
@@ -96,13 +97,13 @@ def test_minimum_premium_uses_ask_not_mid():
 
 
 def test_premium_over_capacity_rejected_with_reason():
-    # ask 6.55 → $655，超过 $199.38 容量线（正是 2026-11-02 被拒的实盘那张）。
+    # ask 6.55 → $655，超过 $398.76 容量线（正是 2026-11-02 被拒的实盘那张）。
     result = _fc(_frame(_quote(ask_price=6.55, bid_price=6.50)))
     assert result.empty
     assert result.reasons == {REASON_PREMIUM: 1}
     assert result.cheapest_premium == pytest.approx(655.0)
-    assert result.needed_equity == pytest.approx(21833.33, abs=1.0)
-    assert "需要权益约 $21,833" in result.message()
+    assert result.needed_equity == pytest.approx(10916.67, abs=1.0)
+    assert "需要权益约 $10,917" in result.message()
 
 
 def test_spread_over_ten_percent_rejected():
@@ -176,7 +177,7 @@ def test_put_moneyness_measured_in_its_own_direction():
 def test_passing_candidate_kept_and_message_reports_capacity():
     result = _fc(_frame(
         _quote(),
-        _quote(code="US.AMZN261120C260000", strike_price=255.0, ask_price=3.0),
+        _quote(code="US.AMZN261120C260000", strike_price=255.0, ask_price=4.50),
     ))
     assert list(result.eligible["code"]) == ["US.AMZN261120C250000"]
     assert result.reasons[REASON_PREMIUM] == 1
@@ -372,7 +373,12 @@ def test_roll_precheck_uses_allocator_equity_and_filters_real_candidates(tmp_pat
     )
     assert kept.empty
     assert result.equity == pytest.approx(REAL_EQUITY)
+    # 容量线 = min(权益×6%, 压力损失预算)。测试库用的是**默认预算**
+    # （`ensure_default_budgets` 里 volatility 默认 max_loss_ratio=3% → $199.38），
+    # 所以这里生效值是 199.38 —— 正是「预检不得比风控更宽」这条规则的体现；
+    # 生产库该租户预算是 6%，生效值才是 $398.76。
     assert result.line == pytest.approx(199.38, abs=0.01)
+    assert result.loss_limit == pytest.approx(199.38, abs=0.01)
     assert result.reasons == {REASON_PREMIUM: 1}
 
 
@@ -384,3 +390,32 @@ def test_paper_tenant_never_gets_capacity_pause(tmp_path):
     assert volatility_new_entries_paused_for_tenant(store, TENANT) is True
     paper = capacity_pause_state(store, "futu_paper_sandbox")
     assert paper["paused"] is False and paper["owned"] is False
+
+
+# --------------------------------------------------------------------------- #
+# 容量线对齐 6%：不得比压力损失预算更宽（Product/Reviewer 2026-11-03 定案）
+# --------------------------------------------------------------------------- #
+
+
+def test_capacity_line_is_six_percent_but_never_wider_than_loss_budget():
+    assert capacity_line(REAL_EQUITY) == pytest.approx(398.76, abs=0.01)
+    # 租户把 max_loss_ratio 调到比 6% 更紧 → 容量线必须跟着收紧
+    assert capacity_line(REAL_EQUITY, loss_limit=300.0) == pytest.approx(300.0)
+    # 预算比 6% 更宽 → 仍按 6% 收口，容量线不跟着放大
+    assert capacity_line(REAL_EQUITY, loss_limit=1651.0) == pytest.approx(398.76, abs=0.01)
+    # 没有预算 / 预算为 0 → 退回 6%
+    assert capacity_line(REAL_EQUITY, loss_limit=None) == pytest.approx(398.76, abs=0.01)
+    assert capacity_line(REAL_EQUITY, loss_limit=0) == pytest.approx(398.76, abs=0.01)
+
+
+def test_filter_uses_loss_budget_when_tighter_than_six_percent():
+    # ask 3.50 → $350：6% 线（$398.76）下通过；预算只有 $300 时必须拒
+    row = _quote(ask_price=3.50, bid_price=3.45)
+    assert not _fc(_frame(row)).empty
+    tightened = filter_candidates(
+        _frame(row), equity=REAL_EQUITY, spot=SPOT, loss_limit=300.0,
+    )
+    assert tightened.empty
+    assert tightened.reasons == {REASON_PREMIUM: 1}
+    assert tightened.line == pytest.approx(300.0)
+    assert tightened.as_payload()["loss_limit"] == pytest.approx(300.0)

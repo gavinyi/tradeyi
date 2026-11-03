@@ -48,8 +48,18 @@ from .volatility_pause import (
 
 NY = ZoneInfo("America/New_York")
 
-#: 容量线 = 权益 × 3%（Product 定案；不是风控阈值，只是「买得起」线）。
-CAPACITY_EQUITY_RATIO = 0.03
+#: 容量线 = 权益 × 6%（2026-11-03 Product/Reviewer 定案：3% → 6%）。
+#:
+#: 为什么是 6% 而不是别的数：6% 就是**系统自身的压力损失预算**
+#: （`strategy_risk_budgets.max_loss_ratio`，期权权利金全额计入），
+#: 超过它的单本来也会被 `portfolio_allocator.strategy_budget_allowed` 拒绝。
+#: 把预检对齐到 6%，等于「预检不再比风控更严」，**没有新增或放宽任何阈值**；
+#: 3% 只是当初为了保守额外加的系数。
+#:
+#: 但**不得硬依赖这个常量**：`loss_limit` 是租户级可配的，真值在预算里。
+#: 所以 `filter_candidates(..., loss_limit=...)` 会在运行时用 `min(权益×6%, loss_limit)` 收口 ——
+#: 常量只是没有预算可读时的兜底，绝不能让它比风控更宽。
+CAPACITY_EQUITY_RATIO = 0.06
 #: 价差上限（相对 mid）。
 MAX_SPREAD_RATIO = 0.10
 #: 盘口深度下限：至少 5 倍最小下单数量。
@@ -144,6 +154,24 @@ def capacity_equity_line(equity: float) -> float:
     return value * CAPACITY_EQUITY_RATIO
 
 
+def capacity_line(equity: float, loss_limit: float | None = None) -> float:
+    """**实际生效**的容量线 = `min(权益 × 6%, 压力损失预算 loss_limit)`。
+
+    为什么取 min：6% 是常量兜底，而 `loss_limit` 来自租户级
+    `strategy_risk_budgets.max_loss_ratio`（可能被改成别的比例）。
+    常量一旦大于预算，预检就会比风控更宽 —— 于是「预检放行、下单被拒」，
+    正是本需求要消灭的那种失败。取 min 保证**预检永远不会比风控更宽**。
+    """
+    line = capacity_equity_line(equity)
+    try:
+        limit = float(loss_limit or 0)
+    except (TypeError, ValueError):
+        return line
+    if limit <= 0:
+        return line
+    return min(line, limit)
+
+
 def minimum_premium(row: Any, lot: int = DEFAULT_LOT) -> float | None:
     """单张最小权利金 = `ask × 100 × lot`（用 ask，按最坏成交价估）。"""
     ask = _number(row, "ask_price", "ask")
@@ -201,14 +229,17 @@ def _dte_days(row: Any, today: "date | None" = None) -> int | None:
 def evaluate_row(
     row: Any, *, equity: float, lot: int = DEFAULT_LOT,
     now: datetime | None = None, spot: float | None = None,
-    today: "date | None" = None,
+    today: "date | None" = None, line: float | None = None,
 ) -> tuple[bool, str, str, float | None]:
     """单张合约的六条判定，返回 `(通过, 原因码, 原因文字, 最小权利金)`。
 
     判定顺序固定为「先看有没有数据、再看买不买得起、最后看流动性」——
     顺序会影响诊断里给出的原因码，实盘复盘时要能一眼看懂是**哪一条**挡的。
+
+    `line` 传入时按它判（调用方已用 `capacity_line(equity, loss_limit)` 收口过），
+    这样「批量筛」和「单张判」用的是**同一条线**，不会各自算一份。
     """
-    line = capacity_equity_line(equity)
+    line = capacity_line(equity) if line is None else float(line)
     premium = minimum_premium(row, lot)
     bid = _number(row, "bid_price", "bid")
     ask = _number(row, "ask_price", "ask")
@@ -273,6 +304,8 @@ class CapacityPrecheck:
     #: 拿不到美元权益（币种未通过 `portfolio_allocator` 门禁）时为真 ——
     #: 此时容量线按 0 处理，但**原因必须单独说**，不能伪装成「容量不足」。
     currency_blocked: bool = False
+    #: 压力损失预算（租户级 `loss_limit`）；传入时容量线 = min(权益×6%, loss_limit)。
+    loss_limit: float | None = None
 
     @property
     def empty(self) -> bool:
@@ -320,18 +353,24 @@ class CapacityPrecheck:
             else round(float(self.needed_equity), 2),
             "reasons": dict(self.reasons),
             "currency_blocked": bool(self.currency_blocked),
+            "loss_limit": None if self.loss_limit is None else round(float(self.loss_limit), 2),
         }
 
 
 def filter_candidates(
     candidates: pd.DataFrame, *, equity: float, lot: int = DEFAULT_LOT,
     now: datetime | None = None, spot: float | None = None,
-    today: "date | None" = None,
+    today: "date | None" = None, loss_limit: float | None = None,
 ) -> CapacityPrecheck:
-    """按六条判定筛候选；**只读不写**（写状态在 `record_selection_round`）。"""
-    line = capacity_equity_line(equity)
+    """按六条判定筛候选；**只读不写**（写状态在 `record_selection_round`）。
+
+    `loss_limit` 传租户级压力损失预算时，容量线取 `min(权益×6%, loss_limit)` ——
+    保证预检**永远不比风控更宽**（见 `capacity_line`）。
+    """
+    line = capacity_line(equity, loss_limit)
     result = CapacityPrecheck(
         equity=float(equity or 0), line=line, lot=int(lot),
+        loss_limit=None if loss_limit is None else float(loss_limit or 0),
         eligible=pd.DataFrame(columns=list(candidates.columns)) if candidates is not None
         else pd.DataFrame(),
     )
@@ -340,7 +379,7 @@ def filter_candidates(
     kept: list[int] = []
     for index, row in candidates.iterrows():
         ok, reason, _text, premium = evaluate_row(
-            row, equity=equity, lot=lot, now=now, spot=spot, today=today,
+            row, equity=equity, lot=lot, now=now, spot=spot, today=today, line=line,
         )
         if premium is not None:
             if result.cheapest_premium is None or premium < result.cheapest_premium:
