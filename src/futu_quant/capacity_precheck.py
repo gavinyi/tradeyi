@@ -89,8 +89,18 @@ STREAK_KEY = "volatility_capacity_empty_streak:{tenant_id}"
 MARKER_KEY = "volatility_capacity_pause:{tenant_id}"
 #: 置暂停的时间（用于总览展示「何时开始容量不足」）。
 PAUSED_AT_KEY = "volatility_capacity_pause_at:{tenant_id}"
-#: 连续几轮**买不起**才置暂停（Product：3 轮；质量类拒绝不计入，见 counts_as_capacity_empty_round）。
-STREAK_TO_PAUSE = 3
+#: 连续几轮**买不起**才升级为 ERROR 告警（Product/Reviewer 2026-11-04 G 方案）。
+#:
+#: **它只决定「何时升级告警」，不决定「何时停机」**：容量预检不再自动暂停新开仓。
+#: 原因（真实事故）：实盘权益 $6,640、容量线 $398，而 AMD 单张 $1,740 —— 结构上永远买不起。
+#: 自动暂停把它当成异常熔断，结果是「账户小 → 暂停 → 只有开仓才能解除暂停」的死循环，
+#: 两次人工解除后仍然复发。买不起的候选本来就被预检挡在下单链路之外，
+#: 自动暂停只是冗余的第二道限制，代价却是整个策略停摆。
+STREAK_TO_ALERT = 3
+#: 当天是否已经发过「容量不足」ERROR 告警（每天最多一条，避免每轮刷屏）。
+INSUFFICIENT_ALERT_KEY = "volatility_capacity_insufficient_alert_on:{tenant_id}"
+#: 容量耗尽告警/事件类型（原 `VOLATILITY_CAPACITY_PAUSED`；不再暂停，故改名）。
+INSUFFICIENT_EVENT = "VOLATILITY_CAPACITY_EXHAUSTED"
 #: 买不起轮次的时间戳窗口（Reviewer 2026-11-04：频繁买不起要单独告警，**与暂停解耦**）。
 BUYOUT_ROUNDS_KEY = "volatility_capacity_buyout_rounds_24h:{tenant_id}"
 BUYOUT_WINDOW_HOURS = 24
@@ -476,7 +486,8 @@ def _warn_frequent_buyouts(
         AlertManager(store).send(
             "WARNING", BUYOUT_WARN_EVENT,
             f"[{tenant}] 近 {BUYOUT_WINDOW_HOURS} 小时已有 {count} 轮因「买不起」筛空"
-            f"（暂停阈值仍是连续 {STREAK_TO_PAUSE} 轮，质量类拒绝不计入且会清零连续计数）："
+            f"（连续 {STREAK_TO_ALERT} 轮会升级为 ERROR 告警，不会自动暂停；"
+            f"质量类拒绝不计入且会清零连续计数）："
             f"{result.message()}",
             incident_key=f"{BUYOUT_WARN_EVENT}:{tenant}:{moment.date().isoformat()}",
         )
@@ -484,16 +495,28 @@ def _warn_frequent_buyouts(
         logger.warning("买不起频繁告警发送失败（计数照常）：%s", exc)
 
 
+def _insufficient_alerted_today(store, tenant: str, moment: datetime) -> bool:
+    """今天是否已经发过「容量耗尽」ERROR（每天最多一条，避免每轮刷屏）。"""
+    try:
+        last = str(store.get_setting(
+            INSUFFICIENT_ALERT_KEY.format(tenant_id=tenant), "") or "").strip()
+    except Exception as exc:  # noqa: BLE001 - 读失败按「还没发过」处理，宁可多一条也不静默
+        logger.warning("读取容量告警去重键失败（按未发过处理）：%s", exc)
+        return False
+    return last == moment.date().isoformat()
+
+
 def record_selection_round(
     store, tenant_id: str | None, result: CapacityPrecheck,
     *, now: datetime | None = None, underlying: str = "",
 ) -> dict:
-    """把一轮结果落成「连续空轮计数 / 暂停 / 自动解除」，返回落盘后的状态。
+    """把一轮结果落成「连续空轮计数 / 告警 / 遗留暂停的自动解除」。
 
-    连续 ``STREAK_TO_PAUSE`` 轮**容量不足** → 复用既有
-    `volatility_new_entries_paused:{tenant}` 置暂停（**不新建暂停状态键**），
-    并打上归因标记 ``MARKER_KEY``；一旦某轮筛出合格候选 → 只解除**自己置的**暂停
-    （标记为真才动），人工在页面置的暂停永远不被自动解除。
+    **不再自动暂停**（2026-11-04 G 方案）：连续 ``STREAK_TO_ALERT`` 轮**买不起**只升级
+    一条 ERROR 告警（每天最多一条），不写 `volatility_new_entries_paused`、不写 marker。
+
+    自动解除只服务**遗留状态**：若 marker 仍为真（旧版本置的容量暂停），
+    某一轮筛出合格候选时解除它；**人工/故障暂停（marker 为假）永远不被自动解除**。
 
     **只有「买不起」计入空轮**（见 :func:`counts_as_capacity_empty_round`）：
     质量类拒绝只记录原因，既不加一、也不清零（不能拿质量轮次掩盖真实的容量不足）。
@@ -549,31 +572,32 @@ def record_selection_round(
     _warn_frequent_buyouts(store, tenant, buyouts, result, moment)
     already_paused = volatility_new_entries_paused_for_tenant(store, tenant)
     state["paused"] = already_paused
-    if streak < STREAK_TO_PAUSE:
+    if streak < STREAK_TO_ALERT:
         return state
     if already_paused:
-        # 已经暂停（可能是人工置的）：不重复写、不重复告警，等人工或条件满足。
+        # 人工/故障暂停：这里**一个字都不写**，也不重复告警 —— 暂停语义保持原样。
         return state
-    set_volatility_new_entries_paused(store, tenant, True)
-    store.set_setting(MARKER_KEY.format(tenant_id=tenant), "true")
+    # 【G 方案】只告警，不再自动暂停：买不起 = 账户规模与合约单价的量级差，
+    # 不是需要熔断的异常；暂停只会造出「只有开仓才能解除暂停」的死循环。
+    state["action"] = "insufficient"
+    if _insufficient_alerted_today(store, tenant, moment):
+        return state
     store.set_setting(
-        PAUSED_AT_KEY.format(tenant_id=tenant), moment.isoformat(),
+        INSUFFICIENT_ALERT_KEY.format(tenant_id=tenant), moment.date().isoformat(),
     )
     payload = {
         "tenant_id": tenant, "underlying": underlying,
-        "streak": streak, **result.as_payload(),
+        "streak": streak, "auto_paused": False, **result.as_payload(),
     }
-    state["paused"] = True
-    state["action"] = "paused"
     try:
         store.operational_event(
-            "volatility_capacity", "VOLATILITY_CAPACITY_PAUSED", "ERROR", payload,
+            "volatility_capacity", INSUFFICIENT_EVENT, "ERROR", payload,
         )
-    except Exception:  # noqa: BLE001 - 留痕失败不得阻断闸门
+    except Exception:  # noqa: BLE001 - 留痕失败不得阻断选约
         pass
     try:
         store.audit(
-            "VOLATILITY_CAPACITY_PAUSED", payload, "volatility_capacity",
+            INSUFFICIENT_EVENT, payload, "volatility_capacity",
             actor="service:gamma",
         )
     except Exception:  # noqa: BLE001
@@ -582,11 +606,11 @@ def record_selection_round(
         from .alerts import AlertManager
 
         AlertManager(store).send(
-            "ERROR", "VOLATILITY_CAPACITY_PAUSED",
-            f"[{tenant}] 波动率实盘连续 {streak} 轮因「买不起」筛空"
-            f"（质量类拒绝不计入、且会清零连续计数），已暂停新开仓"
-            f"（SELL/退出不受影响）：{result.message()}",
-            incident_key=f"VOLATILITY_CAPACITY_PAUSED:{tenant}",
+            "ERROR", INSUFFICIENT_EVENT,
+            f"[{tenant}] 波动率实盘连续 {streak} 轮因「买不起」筛空，"
+            f"**未暂停新开仓**（账户规模与单张成本量级差，暂停只会让策略长期停摆）："
+            f"{result.message()}",
+            incident_key=f"{INSUFFICIENT_EVENT}:{tenant}:{moment.date().isoformat()}",
         )
     except Exception:  # noqa: BLE001 - 告警失败不得把交易链路打断
         pass
@@ -683,4 +707,9 @@ def capacity_pause_state(store, tenant_id: str | None) -> dict:
         == "true",
         "streak": store.get_setting(STREAK_KEY.format(tenant_id=tenant), "0"),
         "paused_at": store.get_setting(PAUSED_AT_KEY.format(tenant_id=tenant), ""),
+        # 2026-11-04 起容量预检不再自动暂停：`paused=True` 只可能来自人工或故障。
+        # 买不起只体现在 streak 与 `volatility_capacity_insufficient_alert_on` 上。
+        "insufficient_alert_on": store.get_setting(
+            INSUFFICIENT_ALERT_KEY.format(tenant_id=tenant), "",
+        ),
     }

@@ -208,22 +208,29 @@ def _empty_round():
     )
 
 
-def test_three_empty_rounds_pause_new_entries_and_alert(tmp_path):
+def test_three_empty_rounds_alert_but_never_pause(tmp_path):
+    """G 方案（2026-11-04）：连续买不起只升级 ERROR 告警，**不再暂停新开仓**。"""
     store = TradingStore(tmp_path / "capacity.db")
     for expected_streak in (1, 2, 3):
         state = record_selection_round(store, TENANT, _empty_round())
         assert state["streak"] == expected_streak
-    assert volatility_new_entries_paused_for_tenant(store, TENANT) is True
-    assert store.get_setting(MARKER_KEY.format(tenant_id=TENANT)) == "true"
-    assert any("VOLATILITY_CAPACITY_PAUSED" in str(row) for row in store.alerts(limit=50))
-    assert volatility_new_entries_paused_for_tenant(store, "futu_paper_sandbox") is False
+    assert state["action"] == "insufficient"
+    assert volatility_new_entries_paused_for_tenant(store, TENANT) is False
+    assert store.get_setting(MARKER_KEY.format(tenant_id=TENANT), "") == ""
+    assert any(
+        "VOLATILITY_CAPACITY_EXHAUSTED" in str(row) for row in store.alerts(limit=50)
+    ), "不暂停不等于不告警：必须留 ERROR"
 
 
-def test_two_empty_rounds_do_not_pause(tmp_path):
+def test_two_empty_rounds_do_not_alert(tmp_path):
     store = TradingStore(tmp_path / "capacity.db")
     record_selection_round(store, TENANT, _empty_round())
     record_selection_round(store, TENANT, _empty_round())
     assert volatility_new_entries_paused_for_tenant(store, TENANT) is False
+    assert not [
+        row for row in store.alerts(limit=50)
+        if "VOLATILITY_CAPACITY_EXHAUSTED" in str(row)
+    ]
 
 
 def test_manual_pause_is_never_auto_released(tmp_path):
@@ -237,11 +244,11 @@ def test_manual_pause_is_never_auto_released(tmp_path):
     assert volatility_new_entries_paused_for_tenant(store, TENANT) is True
 
 
-def test_capacity_pause_auto_released_when_candidate_fits(tmp_path):
+def test_legacy_precheck_pause_auto_released_when_candidate_fits(tmp_path):
+    """遗留状态清理：旧版本置的容量暂停（marker=true）在出现合格候选时被解除。"""
     store = TradingStore(tmp_path / "capacity.db")
-    for _ in range(3):
-        record_selection_round(store, TENANT, _empty_round())
-    assert volatility_new_entries_paused_for_tenant(store, TENANT) is True
+    set_volatility_new_entries_paused(store, TENANT, True)
+    store.set_setting(MARKER_KEY.format(tenant_id=TENANT), "true")
     passing = _fc(_frame())
     assert not passing.empty
     state = record_selection_round(store, TENANT, passing)
@@ -391,8 +398,10 @@ def test_roll_precheck_uses_allocator_equity_and_filters_real_candidates(tmp_pat
 
 
 def test_paper_tenant_never_gets_capacity_pause(tmp_path):
+    """实盘人工暂停只影响实盘；模拟盘既不会被影响，也不会被容量预检暂停。"""
     store = TradingStore(tmp_path / "capacity.db")
     assert is_real_account(_AccountBroker("SIMULATE")) is False
+    set_volatility_new_entries_paused(store, TENANT, True)
     for _ in range(3):
         record_selection_round(store, TENANT, _empty_round())
     assert volatility_new_entries_paused_for_tenant(store, TENANT) is True

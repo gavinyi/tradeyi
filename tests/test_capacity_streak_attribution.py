@@ -98,15 +98,19 @@ def test_quality_rejections_never_increment_or_pause(tmp_path):
     assert store.get_setting(MARKER_KEY.format(tenant_id=TENANT), "") == ""
 
 
-def test_premium_rounds_still_pause_after_three(tmp_path):
+def test_premium_rounds_alert_after_three_but_never_pause(tmp_path):
+    """G 方案：连续买不起只升级 ERROR 告警，**不写暂停、不写 marker**。"""
     store = TradingStore(tmp_path / "attribution.db")
     for expected in (1, 2, 3):
         state = record_selection_round(store, TENANT, _empty({REASON_PREMIUM: 4}))
         assert state["streak"] == expected
 
-    assert volatility_new_entries_paused_for_tenant(store, TENANT) is True
-    assert store.get_setting(MARKER_KEY.format(tenant_id=TENANT)) == "true"
-    assert any("VOLATILITY_CAPACITY_PAUSED" in str(row) for row in store.alerts(limit=50))
+    assert state["action"] == "insufficient"
+    assert volatility_new_entries_paused_for_tenant(store, TENANT) is False
+    assert store.get_setting(MARKER_KEY.format(tenant_id=TENANT), "") == ""
+    assert any(
+        "VOLATILITY_CAPACITY_EXHAUSTED" in str(row) for row in store.alerts(limit=50)
+    )
 
 
 def test_quality_round_resets_the_capacity_streak(tmp_path):
@@ -142,11 +146,12 @@ def test_quality_round_reports_the_real_pause_state(tmp_path):
     assert state["paused"] is True
 
 
-def test_passing_round_releases_and_resets(tmp_path):
+def test_passing_round_releases_legacy_pause_and_resets(tmp_path):
+    """遗留清理：旧版本置的容量暂停（marker=true）在出现合格候选时解除并清零。"""
     store = TradingStore(tmp_path / "attribution.db")
-    for _ in range(3):
-        record_selection_round(store, TENANT, _empty({REASON_PREMIUM: 1}))
-    assert volatility_new_entries_paused_for_tenant(store, TENANT) is True
+    set_volatility_new_entries_paused(store, TENANT, True)
+    store.set_setting(MARKER_KEY.format(tenant_id=TENANT), "true")
+    record_selection_round(store, TENANT, _empty({REASON_PREMIUM: 1}))
 
     state = record_selection_round(store, TENANT, _passing())
     assert state["action"] == "released"
