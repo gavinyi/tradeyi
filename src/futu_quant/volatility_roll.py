@@ -391,11 +391,13 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     # 实盘容量预检：筛掉「买不起 / 流动性不够」的合约，避免产出注定被风控拒绝的单子。
     # 模拟盘不走这里 —— 需求边界「只影响实盘新开仓」。
     capacity_note = ""
+    loss_limit_cap: float | None = None
     if is_real_account(broker):
         candidates, capacity = _apply_real_capacity_precheck(
             store, broker, campaign, candidates, underlying, spot,
         )
         capacity_note = capacity.message()
+        loss_limit_cap = capacity.loss_limit
         if candidates.empty:
             return _with_diagnostics(campaign, candidates, regime, capacity_note)
     candidates = rank_long_option_candidates(
@@ -412,6 +414,12 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     premium_budget, entry_tier = tiered_premium_budget(
         float(campaign.get("max_premium_per_stage", 1000)), regime, store
     )
+    # 【反推张数的分母】Reviewer 2026-11-03 红线：必须取
+    # min(campaign 批预算, 压力损失预算 loss_limit)。只按 $1,000 反推，
+    # 算出「3 张共 $900」在风控层照样整批被拒 —— 改了等于没改。
+    sizing_budget = float(premium_budget)
+    if loss_limit_cap is not None and loss_limit_cap > 0:
+        sizing_budget = min(sizing_budget, float(loss_limit_cap))
     candidates = rank_volatility_contracts(
         candidates, spot, rv,
         ny_today,
@@ -419,7 +427,7 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         strong_signal=bool(
             regime.get("strong_signal_override") and regime.get("trigger_confirmed")
         ),
-        max_premium_per_stage=premium_budget,
+        max_premium_per_stage=sizing_budget,
         contracts_per_stage=int(campaign.get("contracts_per_stage", 1)),
         store=store,
     )
@@ -629,6 +637,12 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         updated["ml_rank"] = str(selected.get("ml_rank", "NA"))
         if pd.notna(selected.get("ml_adjusted_score")):
             updated["ml_adjusted_score"] = float(selected["ml_adjusted_score"])
+    # 【写回张数】2026-11-03：按预算反推出的张数落回 campaign，
+    # 下单时 `per_stage` 就只买**装得下的那几张**。这不放宽任何准入条件 ——
+    # 质量过滤已经在候选层逐条跑过，这里只改数量。
+    _stage_contracts = selected_contract.get("stage_contracts")
+    if _stage_contracts is not None and int(_stage_contracts) >= 1:
+        updated["contracts_per_stage"] = int(_stage_contracts)
     if float(selected.get("iv_rv_limit", 1.5)) > 1.5:
         # Relaxed entries are deliberately capped at one contract and one stage.
         updated["contracts_per_stage"] = 1

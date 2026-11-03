@@ -1419,6 +1419,40 @@ def volatility_regime(
     }
 
 
+def affordable_stage_contracts(
+    ask: float, multiplier: float, configured: int, budget: float | None,
+) -> int:
+    """按预算反推**每批能装几张**（Product 2026-11-03 §16）。
+
+    旧逻辑是「先按固定张数（默认 2）生成整批，再拿批总价去比预算」——
+    于是 `2 × $11.26 × 100 = $2,252 > $1,000` 直接整批被拒，**一张都不出**。
+    实际上其中 1 张完全买得起。这里改成先算单张成本、再向下取整反推张数。
+
+    三条口径（不可改）：
+    - 单张成本用 **ask**（与容量预检同源，不用 mid）；
+    - 向下取整 `floor(预算 / 单张成本)`，**绝不 ceil**（ceil 会超预算）；
+    - 装不下 1 张返回 0，由调用方**显式拒绝并给出数字**，不静默、不试买 1 张。
+
+    只决定**数量**，不决定质量：IV/DTE/虚值/盘口等过滤照旧逐条生效。
+    """
+    try:
+        per_contract = float(ask) * float(multiplier or 100.0)
+    except (TypeError, ValueError):
+        return 0
+    if per_contract <= 0:
+        return 0
+    wanted = max(1, int(configured or 1))
+    if budget is None:
+        return wanted
+    try:
+        limit = float(budget)
+    except (TypeError, ValueError):
+        return 0
+    if limit <= 0:
+        return 0
+    return max(0, min(wanted, int(limit // per_contract)))
+
+
 def rank_volatility_contracts(
     candidates: pd.DataFrame, spot: float, rv: float, iv_percentile: float | None = None,
     as_of: date | None = None,
@@ -1437,6 +1471,8 @@ def rank_volatility_contracts(
         result["iv_rv"] = pd.Series(dtype=float)
         result["iv_rv_limit"] = pd.Series(dtype=float)
         result["premium_per_stage"] = pd.Series(dtype=float)
+        result["stage_contracts"] = pd.Series(dtype=int)
+        result["per_contract_premium"] = pd.Series(dtype=float)
         result["minimum_model_expected_return"] = pd.Series(dtype=float)
         result["budget_alternative"] = pd.Series(dtype=bool)
         result["adaptive_risk_tier"] = pd.Series(dtype=str)
@@ -1454,6 +1490,8 @@ def rank_volatility_contracts(
     )
     scores, eligible, reasons, dtes, iv_rv_values = [], [], [], [], []
     premiums, expected_return_flags, premium_flags = [], [], []
+    stage_contracts_list: list[int] = []
+    per_contract_premiums: list[float] = []
     budget_alternatives: list[bool] = []
     for _, row in result.iterrows():
         expiry = pd.to_datetime(row.get("strike_time"), errors="coerce")
@@ -1478,11 +1516,14 @@ def rank_volatility_contracts(
         expected_return_ok = expected_return >= min_expected_return
         multiplier = market_number(row.get("option_contract_multiplier"), 100.0)
         ask = market_number(row.get("ask_price"), market_number(row.get("mid_price")))
-        premium = ask * multiplier * max(1, int(contracts_per_stage))
-        premium_ok = (
-            max_premium_per_stage is None
-            or (ask > 0 and premium <= float(max_premium_per_stage))
+        # 【按预算反推张数】2026-11-03 Product §16：先算单张成本，再 floor 反推，
+        # 而不是「固定 2 张 × 单价」整批比预算 —— 后者会让买得起 1 张的候选直接消失。
+        stage_contracts = affordable_stage_contracts(
+            ask, multiplier, contracts_per_stage, max_premium_per_stage,
         )
+        per_contract_premium = ask * multiplier if ask > 0 else 0.0
+        premium = per_contract_premium * stage_contracts
+        premium_ok = bool(stage_contracts >= 1 and ask > 0)
         max_spread = 8.0 if dte == 0 else 6.0 if strong_signal else 5.0
         min_oi = 800 if strong_signal else 1000
         min_volume = 10 if strong_signal else 15
@@ -1572,9 +1613,14 @@ def rank_volatility_contracts(
                 f"模型预期收益 {expected_return:.2%} 低于{risk_tier}门槛 {min_expected_return:.2%}"
             )
         if not premium_ok:
-            reason_parts.append(
-                f"本批权利金 ${premium:,.0f} 超过预算 ${float(max_premium_per_stage):,.0f}"
-            )
+            # 拒绝原因必须带数字（Reviewer 2026-11-03）：静默丢弃等于又造一个考古现场。
+            if max_premium_per_stage is None:
+                reason_parts.append("行情没有可用卖价，无法估算单张成本")
+            else:
+                reason_parts.append(
+                    f"预算 ${float(max_premium_per_stage):,.0f} < 单张成本 "
+                    f"${per_contract_premium:,.0f}，可装 0 张"
+                )
         if budget_alternative:
             reason_parts.append(
                 f"预算替代表达放行：质量分 {score:.1f} 低于精选 {min_score:.0f}，但高于替代门槛 {alternative_min_score:.0f}"
@@ -1587,6 +1633,8 @@ def rank_volatility_contracts(
         dtes.append(dte)
         iv_rv_values.append(iv_rv)
         premiums.append(premium)
+        stage_contracts_list.append(int(stage_contracts))
+        per_contract_premiums.append(float(per_contract_premium))
         expected_return_flags.append(expected_return_ok)
         premium_flags.append(premium_ok)
         budget_alternatives.append(budget_alternative)
@@ -1597,6 +1645,9 @@ def rank_volatility_contracts(
     result["iv_rv"] = iv_rv_values
     result["iv_rv_limit"] = iv_rv_limit
     result["premium_per_stage"] = premiums
+    # 按预算反推出的**实际每批张数**：选约后写回 campaign，让下单只买得起的那几张。
+    result["stage_contracts"] = stage_contracts_list
+    result["per_contract_premium"] = per_contract_premiums
     result["minimum_model_expected_return"] = min_expected_return
     result["expected_return_ok"] = expected_return_flags
     result["premium_budget_ok"] = premium_flags

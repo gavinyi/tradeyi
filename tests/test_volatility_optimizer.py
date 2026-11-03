@@ -172,7 +172,10 @@ def test_relaxed_iv_gate_still_requires_positive_return_and_premium_budget():
     assert not bool(negative.iloc[0].volatility_eligible)
     assert "预期收益" in negative.iloc[0].volatility_filter_reason
     assert not bool(expensive.iloc[0].volatility_eligible)
-    assert "权利金" in expensive.iloc[0].volatility_filter_reason
+    # 2026-11-03 起预算是「按预算反推张数」：$12/张 = $1,200 > $1,000 → 可装 0 张。
+    # 文案随之改为带数字的拒绝原因（仍属于同一道预算闸门）。
+    assert "预算" in expensive.iloc[0].volatility_filter_reason
+    assert "可装 0 张" in expensive.iloc[0].volatility_filter_reason
 
 
 def test_expected_return_gate_is_tiered_for_paper_validation():
