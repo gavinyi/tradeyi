@@ -34,7 +34,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+import json
+import logging
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -87,8 +89,16 @@ STREAK_KEY = "volatility_capacity_empty_streak:{tenant_id}"
 MARKER_KEY = "volatility_capacity_pause:{tenant_id}"
 #: 置暂停的时间（用于总览展示「何时开始容量不足」）。
 PAUSED_AT_KEY = "volatility_capacity_pause_at:{tenant_id}"
-#: 连续几轮筛空才置暂停（Product：3 轮）。
+#: 连续几轮**买不起**才置暂停（Product：3 轮；质量类拒绝不计入，见 counts_as_capacity_empty_round）。
 STREAK_TO_PAUSE = 3
+#: 买不起轮次的时间戳窗口（Reviewer 2026-11-04：频繁买不起要单独告警，**与暂停解耦**）。
+BUYOUT_ROUNDS_KEY = "volatility_capacity_buyout_rounds_24h:{tenant_id}"
+BUYOUT_WINDOW_HOURS = 24
+#: 窗口内买不起达到该轮数 → 发 WARNING（独立于暂停，不动任何阈值）。
+BUYOUT_WARN_THRESHOLD = 5
+BUYOUT_WARN_EVENT = "VOLATILITY_CAPACITY_BUYOUT_FREQUENT"
+
+logger = logging.getLogger(__name__)
 
 #: 拒绝原因（写进诊断/事件；**必须可区分**，否则「字段缺失」会伪装成「容量不足」）。
 REASON_PREMIUM = "PREMIUM_OVER_CAPACITY"
@@ -403,16 +413,90 @@ def _tenant_of(tenant_id: str | None) -> str:
     return tenant
 
 
+def counts_as_capacity_empty_round(result: CapacityPrecheck) -> bool:
+    """这一轮空结果是否算**「容量不足」空轮**（唯一判定点，Reviewer 2026-11-04 口径）。
+
+    只有「买不起」才计入连续空轮：`PREMIUM_OVER_CAPACITY`。
+
+    为什么必须按原因区分（2026-11-02 的真实事故）：那一轮 `reasons` 是
+    `{"PREMIUM_OVER_CAPACITY": 9, "MONEYNESS_TOO_FAR": 1}` —— 只要有一条虚值拒绝，
+    整轮就算空轮，于是「质量门槛挡住的轮次」也被算进了「容量不足」，
+    连续 3 轮就暂停了新开仓，实盘两天没开仓。**买得起 ≠ 该买**，
+    质量类拒绝（虚值/DTE/价差/深度/盘口/报价过期）只记录、不计数、不触发暂停。
+    """
+    if result is None or not result.empty:
+        return False
+    try:
+        bought_out = int(result.reasons.get(REASON_PREMIUM, 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bought_out > 0
+
+
+def _record_buyout_round(store, tenant: str, moment: datetime) -> int:
+    """记一次「买不起」轮次，返回 24h 窗口内的轮数（滑动窗口，超窗自动丢弃）。
+
+    为什么单独计：暂停用的 streak 表达的是**连续**；而「频繁买不起」是另一回事 ——
+    买不起天天发生、但中间夹着质量轮次时 streak 会不断归零、永远不会暂停。
+    Reviewer 要求用独立告警盯它（`BUYOUT_WARN_THRESHOLD`），不动任何阈值。
+    """
+    key = BUYOUT_ROUNDS_KEY.format(tenant_id=tenant)
+    cutoff = moment - timedelta(hours=BUYOUT_WINDOW_HOURS)
+    stamps: list[datetime] = []
+    try:
+        raw = store.get_setting(key, "") or ""
+    except Exception as exc:  # noqa: BLE001 - 读失败按空窗口处理，不阻断闸门
+        logger.warning("读取买不起轮次记录失败（按空窗口处理）：%s", exc)
+        raw = ""
+    if raw.strip():
+        try:
+            for item in json.loads(raw):
+                parsed = datetime.fromisoformat(str(item))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                if parsed >= cutoff:
+                    stamps.append(parsed)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning("买不起轮次记录不可解析，已重置窗口：%s", exc)
+            stamps = []
+    stamps.append(moment)
+    store.set_setting(key, json.dumps([stamp.isoformat() for stamp in stamps]))
+    return len(stamps)
+
+
+def _warn_frequent_buyouts(
+    store, tenant: str, count: int, result: CapacityPrecheck, moment: datetime,
+) -> None:
+    """24h 内买不起轮次达到阈值 → WARNING（独立于暂停，不动任何阈值）。"""
+    if count < BUYOUT_WARN_THRESHOLD:
+        return
+    try:
+        from .alerts import AlertManager
+
+        AlertManager(store).send(
+            "WARNING", BUYOUT_WARN_EVENT,
+            f"[{tenant}] 近 {BUYOUT_WINDOW_HOURS} 小时已有 {count} 轮因「买不起」筛空"
+            f"（暂停阈值仍是连续 {STREAK_TO_PAUSE} 轮，质量类拒绝不计入且会清零连续计数）："
+            f"{result.message()}",
+            incident_key=f"{BUYOUT_WARN_EVENT}:{tenant}:{moment.date().isoformat()}",
+        )
+    except Exception as exc:  # noqa: BLE001 - 告警失败不得把交易链路打断
+        logger.warning("买不起频繁告警发送失败（计数照常）：%s", exc)
+
+
 def record_selection_round(
     store, tenant_id: str | None, result: CapacityPrecheck,
     *, now: datetime | None = None, underlying: str = "",
 ) -> dict:
     """把一轮结果落成「连续空轮计数 / 暂停 / 自动解除」，返回落盘后的状态。
 
-    连续 ``STREAK_TO_PAUSE`` 轮筛空 → 复用既有 `volatility_new_entries_paused:{tenant}`
-    置暂停（**不新建暂停状态键**），并打上归因标记 ``MARKER_KEY``；
-    一旦某轮筛出合格候选 → 只解除**自己置的**暂停（标记为真才动），
-    人工在页面置的暂停永远不被自动解除。
+    连续 ``STREAK_TO_PAUSE`` 轮**容量不足** → 复用既有
+    `volatility_new_entries_paused:{tenant}` 置暂停（**不新建暂停状态键**），
+    并打上归因标记 ``MARKER_KEY``；一旦某轮筛出合格候选 → 只解除**自己置的**暂停
+    （标记为真才动），人工在页面置的暂停永远不被自动解除。
+
+    **只有「买不起」计入空轮**（见 :func:`counts_as_capacity_empty_round`）：
+    质量类拒绝只记录原因，既不加一、也不清零（不能拿质量轮次掩盖真实的容量不足）。
     """
     tenant = _tenant_of(tenant_id)
     moment = now or datetime.now(timezone.utc)
@@ -445,9 +529,24 @@ def record_selection_round(
             STREAK_KEY.format(tenant_id=tenant), "0") or 0))
     except (TypeError, ValueError):
         streak = 0
+    if not counts_as_capacity_empty_round(result):
+        # 质量类拒绝（虚值/DTE/价差/深度/盘口/过期）：只记录，且**连续计数归零** ——
+        # streak 的语义是「连续买不起」，任何一轮不是容量问题就中断连续。
+        # 不然买不起每三天来一次，九天后照样用过期行情锁死新开仓。
+        store.set_setting(STREAK_KEY.format(tenant_id=tenant), "0")
+        state["streak"] = 0
+        # 可能本来就处在暂停中，必须回填真实状态，别让上层拿到「未暂停」的假值。
+        state["paused"] = volatility_new_entries_paused_for_tenant(store, tenant)
+        state["action"] = "quality_only"
+        state["message"] = (
+            f"{result.message()}（质量门槛拦截，不计入容量空轮；连续计数归零）"
+        )
+        return state
     streak += 1
     store.set_setting(STREAK_KEY.format(tenant_id=tenant), str(streak))
     state["streak"] = streak
+    buyouts = _record_buyout_round(store, tenant, moment)
+    _warn_frequent_buyouts(store, tenant, buyouts, result, moment)
     already_paused = volatility_new_entries_paused_for_tenant(store, tenant)
     state["paused"] = already_paused
     if streak < STREAK_TO_PAUSE:
@@ -484,8 +583,9 @@ def record_selection_round(
 
         AlertManager(store).send(
             "ERROR", "VOLATILITY_CAPACITY_PAUSED",
-            f"[{tenant}] 波动率实盘连续 {streak} 轮筛不出可承载的合约，"
-            f"已暂停新开仓（SELL/退出不受影响）：{result.message()}",
+            f"[{tenant}] 波动率实盘连续 {streak} 轮因「买不起」筛空"
+            f"（质量类拒绝不计入、且会清零连续计数），已暂停新开仓"
+            f"（SELL/退出不受影响）：{result.message()}",
             incident_key=f"VOLATILITY_CAPACITY_PAUSED:{tenant}",
         )
     except Exception:  # noqa: BLE001 - 告警失败不得把交易链路打断

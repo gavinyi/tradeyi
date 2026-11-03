@@ -197,7 +197,15 @@ def test_is_real_account_reads_trading_env():
 
 
 def _empty_round():
-    return filter_candidates(pd.DataFrame(), equity=REAL_EQUITY, spot=SPOT)
+    """「容量不足」的空轮：候选**买不起**（`PREMIUM_OVER_CAPACITY`）。
+
+    2026-11-04 归因改动后，只有这一类空轮计入连续计数；完全没有候选、
+    或只被虚值/DTE/价差挡住的轮次属于 `quality_only`，见
+    `tests/test_capacity_streak_attribution.py`。
+    """
+    return filter_candidates(
+        _frame(_quote(ask_price=6.55, bid_price=6.50)), equity=REAL_EQUITY, spot=SPOT,
+    )
 
 
 def test_three_empty_rounds_pause_new_entries_and_alert(tmp_path):
