@@ -33,6 +33,7 @@ from datetime import datetime
 import hashlib
 import json
 import logging
+import uuid
 from typing import Any
 
 from .risk import RiskLimits, ny_trading_day_start_utc
@@ -370,11 +371,48 @@ def _trading_day_key(now: datetime | None = None) -> str:
     return ny_trading_day_start_utc(now).date().isoformat()
 
 
+def _equity_fingerprint_part(store: Any, account_id: str, tenant_id: str) -> str | None:
+    """派生启用时把**当前权益快照**并入指纹；派生未启用时返回 None（行为不变）。
+
+    派生限额 = 权益 × 百分比，所以「权益变了」跟「配置改了」一样必须让缓存失效。
+    否则当天第一次解析后权益再跌，风控层会拿着更高权益算出的限额放行 —— 偏松，
+    正是最危险的方向（Chief 2026-11-04 待办）。
+
+    本函数**不抛异常**：快照缺失/时间缺失时返回哨兵值，保证不与旧缓存相等
+    （即不复用旧值）；真正的拒单仍由 `_apply_limit_profile` 与
+    `real_trading` 的 fail-closed 负责。
+    """
+    try:
+        from .limit_profile_store import load_limit_profile
+
+        resolution = load_limit_profile(store, tenant_id)
+    except Exception:  # noqa: BLE001 - 读不到配置按「未启用派生」处理，保持旧指纹行为
+        return None
+    if resolution.source != "derived:limit_profile":
+        return None
+    env = f"REAL_{account_id}" if account_id else "SIMULATE"
+    try:
+        rows = store.equity_history(limit=1, env=env)
+    except Exception:  # noqa: BLE001
+        return f"degraded:{uuid.uuid4().hex}"
+    if not rows:
+        return f"missing:{uuid.uuid4().hex}"
+    snapshot = rows[0]
+    amount = snapshot.get("total_assets")
+    timestamp = snapshot.get("created_at") or snapshot.get("updated_at")
+    if amount is None or not timestamp:
+        return f"missing:{uuid.uuid4().hex}"
+    return f"{amount}|{timestamp}"
+
+
 def _source_fingerprint(store: Any, account_id: str, tenant_id: str) -> str:
     """账户级 + 租户级配置原文的指纹。
 
     只要界面上改了账户参数，指纹就变 → 缓存立即失效 → **当场重解析**，
     不依赖重启，也不依赖 ``updated_at`` 轮询。
+
+    派生层启用时**额外拼入当前权益快照**（金额 + 快照时间）：权益一变指纹就变，
+    同一轮内多次调用仍复用缓存，但不会跨轮拿着旧权益算出的限额继续放行。
     """
     parts: list[str] = []
     if account_id:
@@ -383,6 +421,9 @@ def _source_fingerprint(store: Any, account_id: str, tenant_id: str) -> str:
         parts.append(_as_text(store.get_setting(risk_limits_tenant_key(tenant_id), "")))
         # 无前缀旧键也进指纹 —— 否则改了旧键缓存不失效，兜底会读到旧值。
         parts.append(_as_text(store.get_setting(legacy_risk_limits_key(), "")))
+        equity_part = _equity_fingerprint_part(store, account_id, tenant_id)
+        if equity_part is not None:
+            parts.append(f"equity:{equity_part}")
     digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
     return digest[:16]
 
