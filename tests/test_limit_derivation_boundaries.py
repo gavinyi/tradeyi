@@ -223,3 +223,48 @@ def test_legacy_fallback_writes_queryable_audit_event(monkeypatch, tmp_path):
     assert limits.max_order_notional == pytest.approx(1_000.0)  # 走旧键
     events = [x["event_type"] for x in store.audit_events()]
     assert "LIMIT_PROFILE_LEGACY_FALLBACK" in events
+
+
+# ---------------------------------------------------------------------------
+# 4. store 不支持 runtime_config 读（第三轮全量真回归）与批预算零值告警
+# ---------------------------------------------------------------------------
+
+
+def test_store_without_runtime_reader_falls_back_to_legacy_and_records():
+    """`store` 替身没有 `get_runtime_config` 时必须按未启用派生走旧键，且留痕。"""
+    from futu_quant.limit_profile_store import load_limit_profile
+
+    events: list[dict] = []
+
+    class LimitedStore:
+        def operational_event(self, component, event_type, status, payload=None):
+            events.append({"event_type": event_type, "status": status, "payload": payload or {}})
+
+    resolution = load_limit_profile(LimitedStore(), PAPER_TENANT)
+
+    assert resolution.source == "legacy:read_only"
+    assert resolution.profile == LimitProfile()
+    assert events and events[0]["event_type"] == "LIMIT_PROFILE_STORE_UNSUPPORTED"
+    assert events[0]["status"] == "WARNING"
+
+
+def test_batch_budget_zero_emits_error_event(monkeypatch):
+    """派生启用但无权益 → 批预算 0 必须发 ERROR 事件（不能只靠日志）。"""
+    import futu_quant.volatility_roll as volatility_roll
+
+    events: list[dict] = []
+
+    class Store:
+        def operational_event(self, component, event_type, status, payload=None):
+            events.append({
+                "component": component, "event_type": event_type,
+                "status": status, "payload": payload or {},
+            })
+
+    volatility_roll.report_batch_budget_unresolved(Store(), PAPER_TENANT, "US.META", 29_478.0)
+
+    assert events, "无权益导致批预算 0 时必须落 ERROR 事件"
+    assert events[0]["event_type"] == "VOLATILITY_BATCH_BUDGET_UNRESOLVED"
+    assert events[0]["status"] == "ERROR"
+    assert events[0]["payload"]["legacy_budget"] == pytest.approx(29_478.0)
+

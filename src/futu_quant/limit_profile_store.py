@@ -1,6 +1,7 @@
 """限额配置中心发布通道；禁止页面或业务模块直写配置表。"""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from .limit_profile import LimitChain, LimitProfile, classify_changes, resolve_limit_chain, validate_profile
 
 PROFILE_KEY_PREFIX = "limit_profile:"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -26,9 +29,34 @@ def profile_key(tenant_id: str) -> str:
     return f"{PROFILE_KEY_PREFIX}{tenant_id}"
 
 
+def _note_unsupported_store(store, tenant_id: str) -> None:
+    """store 不具备 runtime_config 读能力时的可查询留痕（绝不静默）。"""
+    payload = {
+        "tenant_id": tenant_id,
+        "store": type(store).__name__,
+        "reason": "store 未实现 get_runtime_config",
+    }
+    try:
+        store.operational_event(
+            "limit_profile", "LIMIT_PROFILE_STORE_UNSUPPORTED", "WARNING", payload
+        )
+    except Exception:  # noqa: BLE001 - 留痕失败不得阻断选标的
+        pass
+    logger.warning("LIMIT_PROFILE_STORE_UNSUPPORTED %s", payload)
+
+
 def load_limit_profile(store, tenant_id: str) -> ProfileResolution:
-    """从配置中心运行时权威表读取；绝不从旧 system_settings 生效回落。"""
-    runtime = store.get_runtime_config(profile_key(tenant_id))
+    """从配置中心运行时权威表读取；绝不从旧 system_settings 生效回落。
+
+    `store` 不支持 `runtime_config` 读（测试替身 / 受限实现）时按**未启用派生**
+    处理并走旧键：生产 `TradingStore` 一定有该方法，所以线上行为不变，但选标的
+    链路不会因为一个读不到配置的替身被打断（全量回归 2026-11-04 真回归）。
+    """
+    reader = getattr(store, "get_runtime_config", None)
+    if not callable(reader):
+        _note_unsupported_store(store, tenant_id)
+        return ProfileResolution(tenant_id, LimitProfile(), "legacy:read_only")
+    runtime = reader(profile_key(tenant_id))
     value = runtime[0] if runtime else None
     if value:
         if not isinstance(value, dict):

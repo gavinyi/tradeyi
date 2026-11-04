@@ -1,8 +1,9 @@
 """派生限额的变异守卫：六条变异必须**实跑变红**。
 
-Reviewer 2026-11-04 阻断 3：计划里的变异证据缺失。本文件逐条把实现改成危险版本，
-再跑同一套守卫断言，断言必须失败（`pytest.raises(AssertionError)`）——
-证明守卫真的能抓到回退，而不是「看起来写了测试」。
+Reviewer 2026-11-04 阻断 3（第二版）：第一版 mut3-6 是自证式 —— 自己造
+`SimpleNamespace(allowed=True)` 去断言，跟真守卫无关，把真守卫整段删掉照样绿。
+本版改为：**monkeypatch 真实现（把守卫改成危险版本）→ 调用既有真用例 →
+`pytest.raises(AssertionError)`**。判据是「删掉真守卫，用例必须红」。
 
 六条变异对应七层派生里最容易被悄悄改回去的六处：
 1. 未启用时页面拿派生预览值冒充生效值；
@@ -12,18 +13,24 @@ Reviewer 2026-11-04 阻断 3：计划里的变异证据缺失。本文件逐条�
 5. 派生未解析时 SELL 也被拒（锁死退出通道）；
 6. 容量线不过 clamp（可被无限放大）。
 """
+import importlib.util
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import futu_quant.limit_display as limit_display
+import futu_quant.limit_profile as limit_profile
 import futu_quant.limit_profile_store as profile_store
+import futu_quant.real_trading as real_trading
 from futu_quant.limit_profile import LimitProfile, resolve_limit_chain
 from futu_quant.limit_profile_store import publish_limit_profile
 from futu_quant.store import TradingStore
 
 TENANT = "futu_paper_sandbox"
 EQUITY = 982_356.163
+REAL_EQUITY = 6_622.6445
 
 
 def _legacy():
@@ -32,14 +39,27 @@ def _legacy():
     )
 
 
+def _load_case_module(name: str):
+    """加载既有真用例文件，直接调用其中用例（不复制断言）。"""
+    path = Path(__file__).with_name(f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"mutcase_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# ---------------------------------------------------------------------------
+# 变异 1 / 2：页面同源与变松基线（第一版即为真变异，保留）
+# ---------------------------------------------------------------------------
+
+
 def _guard_legacy_shows_old_key(store):
     display = limit_display.resolve_display_limits(store, TENANT, EQUITY, _legacy())
-    # 守卫：未启用派生层时显示的必须是旧键 $2,500
     assert display.effective_per_order == 2_500.0
 
 
 def test_mutation_1_preview_value_masquerading_as_effective_fails_guard(tmp_path, monkeypatch):
-    """变异 1：未启用时返回派生预览值 → 守卫必须变红。"""
+    """变异 1：未启用时返回派生预览值 → 既有守卫必须变红。"""
     store = TradingStore(tmp_path / "mut1.db")
 
     def mutated(store, tenant_id, equity, legacy_limits=None):
@@ -56,7 +76,6 @@ def test_mutation_1_preview_value_masquerading_as_effective_fails_guard(tmp_path
 
 
 def _guard_first_enable_is_rejected(store):
-    """守卫：首启用 20 倍变松缺确认必须拒绝。"""
     try:
         publish_limit_profile(
             store, TENANT, LimitProfile(), "test:mut", "首启用",
@@ -80,39 +99,83 @@ def test_mutation_2_preview_chain_as_baseline_fails_guard(tmp_path, monkeypatch)
         _guard_first_enable_is_rejected(store)
 
 
-def test_mutation_3_dropping_min_lets_order_exceed_capacity_fails_guard():
-    """变异 3：去掉 min → 实盘可下金额会超过容量线。"""
-    chain = resolve_limit_chain(
-        None, "futu_real_master", 6_622.6445,
-        LimitProfile(per_order_ratio=0.20, capacity_ratio=0.06),
-    )
-    mutated_actual = chain.per_order  # 变异：不做 min
+# ---------------------------------------------------------------------------
+# 变异 3：去掉 min(派生单笔, 容量线)
+# ---------------------------------------------------------------------------
+
+
+def test_mutation_3_dropping_min_fails_real_capacity_case(tmp_path, monkeypatch):
+    """变异 3：`effective_per_order` 不做 min → 跑既有同源用例必须红。"""
+    cases = _load_case_module("test_limit_page_same_source")
+
+    def mutated_effective_per_order(per_order, capacity_line):
+        return per_order  # 变异：丢掉容量线约束
+
+    monkeypatch.setattr(limit_display, "effective_per_order", mutated_effective_per_order)
+    monkeypatch.setattr(cases, "effective_per_order", mutated_effective_per_order)
     with pytest.raises(AssertionError):
-        assert mutated_actual <= chain.capacity_line
+        cases.test_derived_state_with_capacity_ratio_is_clamped_by_capacity_line(tmp_path)
 
 
-def test_mutation_4_fail_open_buy_fails_guard():
-    """变异 4：派生未解析时 BUY 放行（fail-open）→ 守卫必须变红。"""
-    mutated_decision = SimpleNamespace(allowed=True, reason="放行", details={})
+# ---------------------------------------------------------------------------
+# 变异 4 / 5：实盘门禁方向分流
+# ---------------------------------------------------------------------------
+
+
+def _mutated_check_real_trade(monkeypatch, *, allow_buy: bool, allow_sell: bool):
+    """把真门禁换成「守卫被删掉」的版本，其余调用原实现。"""
+    original = real_trading.check_real_trade
+
+    def mutated(store, settings, strategy_id, symbol, side, quantity, price, metadata=None):
+        if str(side).upper() == "BUY" and allow_buy:
+            return SimpleNamespace(allowed=True, reason="", details={})
+        if str(side).upper() == "SELL" and not allow_sell:
+            return SimpleNamespace(
+                allowed=False, reason="LIMIT_PROFILE_UNRESOLVED",
+                details={"reason_code": "LIMIT_PROFILE_UNRESOLVED"},
+            )
+        return original(store, settings, strategy_id, symbol, side, quantity, price, metadata or {})
+
+    monkeypatch.setattr(real_trading, "check_real_trade", mutated)
+    return mutated
+
+
+def test_mutation_4_fail_open_buy_fails_real_gate_case(tmp_path, monkeypatch):
+    """变异 4：派生未解析时 BUY 放行 → 跑既有 BUY 拒绝用例必须红。"""
+    cases = _load_case_module("test_limit_profile_diagnostic")
+    _mutated_check_real_trade(monkeypatch, allow_buy=True, allow_sell=True)
     with pytest.raises(AssertionError):
-        assert mutated_decision.allowed is False, "BUY 在派生未解析时必须被拒绝"
+        cases.test_check_real_trade_rejects_unresolved_profile_with_reason_code(monkeypatch, tmp_path)
 
 
-def test_mutation_5_blocking_sell_fails_guard():
-    """变异 5：派生未解析时 SELL 也拒 → 退出通道被锁死。"""
-    mutated_sell_decision = SimpleNamespace(allowed=False, reason="LIMIT_PROFILE_UNRESOLVED", details={})
+def test_mutation_5_blocking_sell_fails_real_gate_case(tmp_path, monkeypatch):
+    """变异 5：派生未解析时 SELL 也拒 → 跑既有 SELL 放行用例必须红。"""
+    cases = _load_case_module("test_limit_profile_diagnostic")
+    _mutated_check_real_trade(monkeypatch, allow_buy=False, allow_sell=False)
     with pytest.raises(AssertionError):
-        assert mutated_sell_decision.allowed is True, "SELL 必须保留退出通道"
+        cases.test_check_real_trade_allows_sell_when_profile_unresolved(monkeypatch, tmp_path)
 
 
-def test_mutation_6_unclamped_capacity_fails_guard():
-    """变异 6：容量线不过 clamp → 可被设成超过权益。"""
-    equity = 10_000.0
-    mutated_capacity = equity * 5.0  # 变异：capacity_ratio=5.0 未夹到 100%
+# ---------------------------------------------------------------------------
+# 变异 6：容量线不过 clamp
+# ---------------------------------------------------------------------------
+
+
+def test_mutation_6_unclamped_capacity_fails_real_clamp_case(monkeypatch):
+    """变异 6：容量线不过 clamp → 跑既有 clamp 用例必须红。"""
+    cases = _load_case_module("test_limit_derivation_wiring")
+    original = limit_profile.resolve_limit_chain
+
+    def mutated(store, tenant_id, equity, profile=None):
+        chain = original(store, tenant_id, equity, profile)
+        cfg = profile or LimitProfile()
+        if cfg.capacity_ratio is None:
+            return chain
+        unclamped = float(equity) * float(cfg.capacity_ratio)  # 变异：不夹到 100%
+        clamps = {k: v for k, v in (chain.clamped or {}).items() if k != "capacity_line"}
+        return replace(chain, capacity_line=unclamped, clamped=clamps)
+
+    monkeypatch.setattr(limit_profile, "resolve_limit_chain", mutated)
+    monkeypatch.setattr(cases, "resolve_limit_chain", mutated)
     with pytest.raises(AssertionError):
-        assert mutated_capacity <= equity
-
-    # 真实实现：clamp 到 100% 权益
-    chain = resolve_limit_chain(None, "futu_real_master", equity, LimitProfile(capacity_ratio=5.0))
-    assert chain.capacity_line == pytest.approx(equity)
-    assert chain.clamped["capacity_line"].startswith("hard_cap")
+        cases.test_capacity_ratio_is_clamped_and_classified()

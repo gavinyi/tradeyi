@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -166,6 +167,31 @@ def _with_diagnostics(campaign: dict, candidates: pd.DataFrame, regime: dict, me
     result = dict(campaign)
     result["_roll_diagnostics"] = _roll_diagnostics(candidates, regime, message)
     return result, message
+
+
+def report_batch_budget_unresolved(
+    store, tenant_id: str, underlying: str, legacy_budget: float
+) -> None:
+    """派生启用但拿不到权益 → 批预算 0 时发 **ERROR 可查询事件**。
+
+    98 万模拟盘静默零成交的根因就是「只记来源、没人看见」。`operational_event`
+    只落库、不触发飞书推送，不会刷屏；写失败也不得阻断选标的。
+    """
+    logging.getLogger(__name__).error(
+        "VOLATILITY_BATCH_BUDGET_UNRESOLVED tenant=%s underlying=%s", tenant_id, underlying
+    )
+    try:
+        store.operational_event(
+            "volatility_roll", "VOLATILITY_BATCH_BUDGET_UNRESOLVED", "ERROR",
+            {
+                "tenant_id": tenant_id,
+                "underlying": underlying,
+                "reason": "派生限额已启用但拿不到权益，批预算按 0 处理（fail-closed）",
+                "legacy_budget": float(legacy_budget),
+            },
+        )
+    except Exception:  # noqa: BLE001 - 事件写失败不得阻断选标的，但 ERROR 日志已落
+        pass
 
 
 def should_replace_campaign(
@@ -448,6 +474,11 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
     base_premium_budget, budget_source = resolve_batch_budget(
         store, _budget_tenant, float(campaign.get("max_premium_per_stage", 1000)), _budget_equity
     )
+    if budget_source == "derived:missing_equity":
+        report_batch_budget_unresolved(
+            store, _budget_tenant, underlying,
+            float(campaign.get("max_premium_per_stage", 1000)),
+        )
     premium_budget, entry_tier = tiered_premium_budget(
         base_premium_budget, regime, store
     )
