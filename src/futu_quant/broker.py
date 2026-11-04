@@ -46,6 +46,41 @@ class BrokerError(RuntimeError):
     pass
 
 
+#: 期权链缓存格式版本。**列集合一变就升版**：老 key 不再命中，避免「缺报价的旧缓存」
+#: 被当成有效报价继续用（缓存能省时间，不能省正确性）。
+CHAIN_CACHE_VERSION = "v2"
+
+#: 合并进期权链的报价与风险列（Futu 快照字段）。
+#: `get_option_chain` 只返回合约元数据，这些列必须靠一轮 `get_market_snapshot` 补齐。
+CHAIN_QUOTE_COLUMNS: tuple[str, ...] = (
+    "bid_price", "ask_price", "bid_size", "ask_size", "volume",
+    "option_open_interest", "option_implied_volatility", "option_delta",
+    "option_gamma", "option_theta", "option_vega", "update_time",
+)
+
+#: 单批快照代码数上限（与 `snapshots_tolerant` 的 200 一致）。
+CHAIN_SNAPSHOT_BATCH = 200
+
+
+def _ensure_chain_quote_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """保证返回帧含报价列与 `quote_missing` 标记。
+
+    老格式缓存（只有 code/strike 等元数据）**缺列时按「无报价」处理，绝不报错**；
+    缺失标记一律为 True，让下游质量门槛把它当作"没有盘口"挡掉，而不是当成有效报价。
+    """
+    if frame is None:
+        return pd.DataFrame()
+    result = frame.copy()
+    for column in CHAIN_QUOTE_COLUMNS:
+        if column not in result.columns:
+            result[column] = pd.NA
+    if "quote_missing" not in result.columns:
+        result["quote_missing"] = True
+    else:
+        result["quote_missing"] = result["quote_missing"].fillna(True).astype(bool)
+    return result
+
+
 _OPEND_HEALTH_LOCK = threading.Lock()
 _OPEND_FAILURES = 0
 _OPEND_BACKOFF_UNTIL = 0.0
@@ -601,10 +636,10 @@ class FutuPaperBroker:
         if not underlying.startswith("US."):
             raise BrokerError("Options underlying must be a US.* symbol")
         normalized_expiration = str(expiration)[:10]
-        cache_key = f"chain:{underlying}:{normalized_expiration}"
+        cache_key = f"chain:{CHAIN_CACHE_VERSION}:{underlying}:{normalized_expiration}"
         cached = get_frame(cache_key, 60)
         if cached is not None:
-            return cached
+            return _ensure_chain_quote_columns(cached)
         acquire_option_chain_slot()
         try:
             with self.quote_context() as ctx:
@@ -614,13 +649,90 @@ class FutuPaperBroker:
                     ),
                     "option chain",
                 )
+                # `get_option_chain` 只返回合约元数据（code/strike/lot_size 等），**不含报价**。
+                # 不补这一轮快照，缓存里就永远没有 bid/ask，验收时只能干看合约代码。
+                frame = self._attach_chain_quotes(
+                    ctx, frame, underlying=underlying, expiration=normalized_expiration,
+                )
             save_frame(cache_key, frame)
             return frame
         except BrokerError:
             stale = get_frame(cache_key, 0, allow_stale=True, max_stale_seconds=15 * 60)
             if stale is not None:
-                return stale
+                return _ensure_chain_quote_columns(stale)
             raise
+
+    def _attach_chain_quotes(
+        self, ctx, frame: pd.DataFrame, *, underlying: str, expiration: str,
+    ) -> pd.DataFrame:
+        """把快照报价合并进合约链；失败只降级、不阻断（缺报价的合约交给质量门槛筛）。"""
+        merged = _ensure_chain_quote_columns(frame)
+        if merged.empty or "code" not in merged.columns:
+            return merged
+        codes = [str(code) for code in merged["code"].tolist() if str(code)]
+        if not codes:
+            return merged
+        frames: list[pd.DataFrame] = []
+        for start in range(0, len(codes), CHAIN_SNAPSHOT_BATCH):
+            batch = codes[start : start + CHAIN_SNAPSHOT_BATCH]
+            # 限速与 `snapshots_tolerant` 同一个桶：不得绕开配额直接狂调。
+            acquire_api_slot("snapshots", 55)
+            try:
+                ret, data = ctx.get_market_snapshot(batch)[:2]
+            except Exception as exc:  # noqa: BLE001 - 单批失败不阻断选约
+                logger.warning("期权链快照批次失败 %s: %s", underlying, exc)
+                continue
+            if ret == RET_OK and isinstance(data, pd.DataFrame) and not data.empty:
+                frames.append(data)
+        if not frames:
+            self._note_chain_quote_degraded(
+                underlying, expiration, missing=len(codes), reason="快照全部失败",
+            )
+            return merged
+        quotes = pd.concat(frames, ignore_index=True)
+        if "code" not in quotes.columns:
+            self._note_chain_quote_degraded(
+                underlying, expiration, missing=len(codes), reason="快照缺 code 列",
+            )
+            return merged
+        columns = [name for name in CHAIN_QUOTE_COLUMNS if name in quotes.columns]
+        if not columns:
+            self._note_chain_quote_degraded(
+                underlying, expiration, missing=len(codes), reason="快照无报价列",
+            )
+            return merged
+        quotes = quotes[["code", *columns]].drop_duplicates(subset=["code"])
+        merged = merged.drop(columns=columns, errors="ignore")
+        merged = merged.merge(quotes, on="code", how="left")
+        merged["quote_missing"] = merged[columns].isna().all(axis=1)
+        missing = int(merged["quote_missing"].sum())
+        if missing:
+            self._note_chain_quote_degraded(
+                underlying, expiration, missing=missing,
+                reason=f"{missing}/{len(merged)} 个合约无报价",
+            )
+        return merged
+
+    def _note_chain_quote_degraded(
+        self, underlying: str, expiration: str, *, missing: int, reason: str,
+    ) -> None:
+        """降级必须可查询（禁止静默）：有 store 落事件，没有至少留 WARNING 日志。"""
+        payload = {
+            "underlying": underlying,
+            "expiration": expiration,
+            "missing_contracts": int(missing),
+            "reason": reason,
+        }
+        logger.warning("OPTION_CHAIN_QUOTE_MISSING %s", payload)
+        store = getattr(self, "operational_store", None)
+        if store is None:
+            return
+        try:
+            store.operational_event(
+                "broker", "OPTION_CHAIN_QUOTE_MISSING", "WARNING", payload,
+            )
+        except Exception:  # noqa: BLE001 - 留痕失败不得阻断选约
+            logger.exception("记录 OPTION_CHAIN_QUOTE_MISSING 失败")
 
     @_read_with_reconnect("quote")
     def earnings_calendar(self, begin_date: str, end_date: str) -> pd.DataFrame:
