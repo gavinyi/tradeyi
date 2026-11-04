@@ -170,3 +170,82 @@ def test_service_and_live_paths_keep_refresh_true():
             if refresh is None or ast.unparse(refresh.value) != "True":
                 bare.append(f"{relative}:{node.lineno}")
     assert not bare, f"这些 Settings.load( 没带 refresh=True：{bare}"
+
+
+# ---------------------------------------------------------------- B 类页面的写入链路
+# B 类页面（会写配置）依赖「保存完立刻读到新值」。它们最终都落到下面这些 writer，
+# 所以按 writer 逐个钉，比按页面数钉更准：页面新增也只是复用同一批写入口。
+
+@pytest.fixture
+def env_only(tmp_path, monkeypatch):
+    """只换 ENV_FILE（不是默认 .env）：writer 走镜像路径，不碰任何生产库。"""
+    env_file = tmp_path / ".env"
+    env_file.write_text("FUTU_TRADING_ENV=SIMULATE\nFUTU_MARKET=US\n", encoding="utf-8")
+    monkeypatch.setattr(config, "ENV_FILE", env_file)
+    config.reset_settings_cache()
+    yield env_file
+    config.reset_settings_cache()
+
+
+def test_every_settings_writer_is_visible_immediately(env_only):
+    cases = [
+        ("save_trading_preferences", lambda: config.save_trading_preferences(("US.AAPL", "US.MSFT"), 3),
+         "watchlist", ("US.AAPL", "US.MSFT")),
+        ("save_gamma_symbols", lambda: config.save_gamma_symbols(("US.TSLA",)),
+         "gamma_symbols", ("US.TSLA",)),
+        ("save_core_satellite_symbols", lambda: config.save_core_satellite_symbols(("US.SPY",)),
+         "core_satellite_symbols", ("US.SPY",)),
+        ("save_core_satellite_profile", lambda: config.save_core_satellite_profile("aggressive"),
+         "core_satellite_profile", "aggressive"),
+        ("save_volatility_symbols", lambda: config.save_volatility_symbols(("US.NVDA",)),
+         "volatility_symbols", ("US.NVDA",)),
+        ("save_real_trading_settings", lambda: config.save_real_trading_settings(
+            "SIMULATE", False, "", [], 640, 1280, True),
+         "real_max_order_notional", 640.0),
+    ]
+    Settings.load_cached()  # 先预热，确保后面每条都是「命中缓存之后再写」
+    for name, write, attribute, expected in cases:
+        write()
+        assert getattr(Settings.load_cached(), attribute) == expected, f"{name} 写完没立刻生效"
+
+
+def test_option_contract_writer_is_visible_immediately(env_only):
+    Settings.load_cached()
+    config.save_option_contracts([{"code": "US.AAPL260116C200000"}])
+    assert config.load_option_contracts() == [{"code": "US.AAPL260116C200000"}]
+
+
+# ------------------------------------------------------------ 删键（不是改值）不留残留
+
+def test_deleted_key_does_not_linger_after_full_removal(isolated):
+    """DB 与 .env 镜像都删掉同一个键 → 必须回到代码默认值，不能沿用旧值。"""
+    env_file, store = isolated
+    config.save_runtime_settings({KEY: "321"}, store=store)
+    assert Settings.load_cached(store=store).real_max_order_notional == 321
+
+    store.mutate_runtime_config(
+        "ENV_SETTINGS", {}, lambda current: {k: v for k, v in current.items() if k != KEY}, "test",
+    )
+    env_file.write_text("FUTU_TRADING_ENV=SIMULATE\nFUTU_MARKET=US\n", encoding="utf-8")
+
+    assert Settings.load_cached(store=store, ttl_probe=0.0).real_max_order_notional == 500.0
+
+
+def test_db_only_deletion_never_returns_fresher_than_uncached_path(isolated):
+    """只删库里的键（.env 镜像还在）：缓存读不得比直通/refresh 更旧，两者必须一致。
+
+    注：这种情况两条路径都还看得到 .env 镜像里的旧值 —— 这是 .env 作为兼容镜像的
+    既有语义（与本次缓存无关），所以这里钉的是「缓存不引入分歧」，不是「立刻变默认」。
+    """
+    env_file, store = isolated
+    config.save_runtime_settings({KEY: "321"}, store=store)
+    assert Settings.load_cached(store=store).real_max_order_notional == 321
+
+    store.mutate_runtime_config(
+        "ENV_SETTINGS", {}, lambda current: {k: v for k, v in current.items() if k != KEY}, "test",
+    )
+
+    cached_value = Settings.load_cached(store=store, ttl_probe=0.0).real_max_order_notional
+    uncached_value = Settings.load(refresh=True, store=store).real_max_order_notional
+    assert cached_value == uncached_value
+    assert env_file.read_text(encoding="utf-8").find(str(int(cached_value))) >= 0

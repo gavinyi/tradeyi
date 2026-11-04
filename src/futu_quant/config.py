@@ -67,6 +67,8 @@ _SETTINGS_CACHE: dict[str, object] = {
     "settings": None,
     "probe_at": 0.0,
     "version": None,
+    # 上一次强制写进 os.environ 的 ENV_SETTINGS 键：用于识别「配置被删除」后清残留。
+    "applied_keys": frozenset(),
 }
 _SETTINGS_CACHE_LOCK = threading.Lock()
 _SETTINGS_CACHE_EPOCH = 0
@@ -90,7 +92,13 @@ def reset_settings_cache() -> None:
     global _SETTINGS_CACHE_EPOCH
     with _SETTINGS_CACHE_LOCK:
         _SETTINGS_CACHE.update(
-            {"signature": None, "settings": None, "probe_at": 0.0, "version": None}
+            {
+                "signature": None,
+                "settings": None,
+                "probe_at": 0.0,
+                "version": None,
+                "applied_keys": frozenset(),
+            }
         )
         _SETTINGS_CACHE_EPOCH += 1
 
@@ -146,9 +154,17 @@ def _apply_runtime_config_override(store: "TradingStore | None" = None) -> None:
     except Exception as exc:
         _warn_store_read_fallback("强制回写 ENV_SETTINGS 失败", exc)
         return
-    if not saved or not isinstance(saved[0], dict):
-        return
-    for key, value in saved[0].items():
+    if saved is None or not isinstance(saved[0], dict):
+        saved_values: dict = {}
+    else:
+        saved_values = saved[0]
+    current = {str(key) for key in saved_values}
+    # 「删键」而不是「改值」：上次强制写进去的键若已不在库里，必须把 os.environ
+    # 里的残留撤掉，否则页面会继续用已删除的旧配置（删了配置但还在用的新缺陷）。
+    for stale_key in set(cast(frozenset, _SETTINGS_CACHE["applied_keys"])) - current:
+        os.environ.pop(stale_key, None)
+    _SETTINGS_CACHE["applied_keys"] = frozenset(current)
+    for key, value in saved_values.items():
         _set_env(str(key), str(value))
 
 
