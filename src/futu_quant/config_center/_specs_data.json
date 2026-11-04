@@ -10498,8 +10498,8 @@
       "SETTINGS_CACHE"
     ],
     "category": "① 运行环境与连接",
-    "title": "SETTINGS_CACHE",
-    "description": "Settings.load_cached() 的逃生开关：置 off 时直通 Settings.load()（回退到改动前行为，跨进程写入不可见）",
+    "title": "SETTINGS_CACHE 缓存回退开关（进程级）",
+    "description": "进程级紧急回退开关，不是运行时业务配置：置 off 时 Settings 缓存整体直通 Settings.load()，回到引入缓存前的行为（此时跨进程写入的配置不再可见）。只用于线上缓存异常时紧急止血，不写入 SQLite、不进 UI，只能由启动环境提供——一旦进库，一份脏配置就能把缓存关掉。",
     "value_type": "string",
     "default": "",
     "scope": "global",
@@ -10508,13 +10508,14 @@
     "editable": false,
     "requires_admin": true,
     "requires_confirmation": false,
-    "activation": "next_cycle",
+    "activation": "immediate",
     "consumers": [
-      "config.Settings"
+      "config.Settings.load_cached"
     ],
     "tags": [
       "运行环境与连接",
-      "需不需要重启"
+      "进程级开关",
+      "紧急回退"
     ],
     "runtime_key": "SETTINGS_CACHE",
     "user_area": "account_env",

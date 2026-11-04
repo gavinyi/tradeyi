@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import ast
-import json
 import pathlib
 import tempfile
 import pytest
@@ -30,13 +29,48 @@ from futu_quant.config_center.registry import GLOBAL_REGISTRY, ConfigRegistry, _
 from futu_quant.config_center.spec import ConfigSpec
 
 
+BASELINE_PATH = pathlib.Path(__file__).resolve().parent / "fixtures" / "config_spec_keys.txt"
+
+
+def _baseline_keys() -> list[str]:
+    """配置项清单基线（`tests/fixtures/config_spec_keys.txt`，排序后一行一个 key）。
+
+    为什么用快照基线而不是硬编码总数：写死 `== 383` 只是把地雷往后挪 —— 任何人正当
+    新增一个配置项都会红，红了就改魔数，改到最后没人记得这个数字代表什么。改用清单
+    快照后，增/删配置项都会红，但失败信息直接给出 missing / unexpected 的 diff，更新
+    基线本身就是一个可 review 的 diff。
+    防「偷偷加配置项不写元数据」的责任在 `test_codebase_env_access_is_fully_registered_guard`
+    （AST 全量扫描 env 访问是否登记，2026-11-04 它正好抓到 SETTINGS_CACHE 未登记），
+    这里的数量硬编码只承担「阻止任何正当新增」，是纯假阳性源。
+    """
+    assert BASELINE_PATH.exists(), f"配置项基线清单缺失：{BASELINE_PATH}"
+    keys = [
+        line.strip()
+        for line in BASELINE_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert keys, f"配置项基线清单是空的：{BASELINE_PATH}"
+    return keys
+
+
 def test_user_area_metadata_strictly_four_enums_and_no_empty():
-    """AC1/AC4: 383项配置全部具备合规 user_area 与 surface，严禁空值或未分配。"""
+    """AC1/AC4: 配置项清单与基线一致，且全部具备合规 user_area / surface / storage。"""
     specs = GLOBAL_REGISTRY.all_specs()
-    assert len(specs) == 383
+    baseline = _baseline_keys()
+    current = [spec.key for spec in specs]
+
+    missing = sorted(set(baseline) - set(current))
+    unexpected = sorted(set(current) - set(baseline))
+    assert not missing and not unexpected, (
+        f"配置项清单与 {BASELINE_PATH.name} 基线不一致"
+        "（要加/删配置项请同步更新基线，那次 diff 就是变更说明）：\n"
+        f"  missing   : {missing}\n"
+        f"  unexpected: {unexpected}"
+    )
 
     valid_areas = {"strategy_center", "risk_limits", "account_env", "ops_notify"}
     valid_surfaces = {"primary", "advanced"}
+    valid_storages = {"runtime_config", "system_settings", "env", "derived"}
     area_counts = {}
     primary_counts = {a: 0 for a in valid_areas}
 
@@ -45,20 +79,47 @@ def test_user_area_metadata_strictly_four_enums_and_no_empty():
         surface = spec.surface
         assert area in valid_areas, f"配置项 {spec.key} 的 user_area 非法: {area!r}"
         assert surface in valid_surfaces, f"配置项 {spec.key} 的 surface 非法: {surface!r}"
+        assert spec.storage in valid_storages, f"配置项 {spec.key} 的 storage 非法: {spec.storage!r}"
         area_counts[area] = area_counts.get(area, 0) + 1
         if surface == "primary":
             primary_counts[area] += 1
+
+    # 每个 key 唯一：重复 key 会被注册表静默合并，必须自己钉死
+    assert len(current) == len(set(current)), (
+        "存在重复配置项 key："
+        + ", ".join(sorted({key for key in current if current.count(key) > 1}))
+    )
+    assert len(current) == len(baseline)
 
     # 确保 4 个业务区均承载了对应技术分类的配置
     assert area_counts["strategy_center"] > 0
     assert area_counts["risk_limits"] == 30, f"risk_limits 应恰好包含 30 项，实际 {area_counts['risk_limits']}"
     assert area_counts["account_env"] > 0
     assert area_counts["ops_notify"] > 0
-    assert sum(area_counts.values()) == 383
+    assert sum(area_counts.values()) == len(current)
 
     # AC3 核心约束：每个 area 的 primary 项严格 <= 30 项！
     for a, count in primary_counts.items():
         assert count <= 30, f"{a} 的 primary 项数量 {count} 超出 30 限制！"
+
+
+def test_process_switch_spec_is_readable_not_a_dead_entry(monkeypatch):
+    """登记 ≠ 可读：新增的进程级开关必须能解析到，且运行时真的读这个键。
+
+    「登记了但没人读/读不出来」的死条目和漏登记一样有害：它会骗过 AST 登记守卫，
+    却对真实行为零影响。这里用运行时读取函数反向验证登记是活的。
+    """
+    from futu_quant import config
+
+    spec = GLOBAL_REGISTRY.get("runtime.settings_cache")
+    assert spec is not None, "runtime.settings_cache 未登记"
+    assert spec.storage == "env", "进程级紧急回退开关不许落库（否则脏配置能关掉缓存）"
+    assert GLOBAL_REGISTRY.resolve_canonical_key("SETTINGS_CACHE") == "runtime.settings_cache"
+
+    monkeypatch.setenv("SETTINGS_CACHE", "off")
+    assert config.settings_cache_disabled() is True
+    monkeypatch.setenv("SETTINGS_CACHE", "")
+    assert config.settings_cache_disabled() is False
 
 
 def test_user_area_and_surface_fail_fast_on_construction():
