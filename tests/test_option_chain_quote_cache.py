@@ -224,3 +224,73 @@ def test_mutation_bypassing_rate_limit_fails_guard(monkeypatch):
 
     with pytest.raises(AssertionError):
         assert calls, "跳过限速抓快照：必须被抓出来"
+
+
+# ---------------------------------------------------------------------------
+# 6. stale 回退（Reviewer 签字前置）：v1 无报价数据不得被当成有效报价
+# ---------------------------------------------------------------------------
+
+
+def _run_option_chain_direct(b, underlying="US.SOFI", expiration="2026-12-18"):
+    """绕开 `_read_with_reconnect`（它会重连），直接跑原始实现。"""
+    return FutuPaperBroker.option_chain.__wrapped__(b, underlying, expiration)
+
+
+def test_stale_legacy_cache_is_never_treated_as_live_quote(monkeypatch):
+    """只命中 stale 且是老格式（无报价列）时，必须走「无盘口」分支。
+
+    v1 缓存（只有 code/strike/lot_size）在缓存 key 升到 v2 后本不该再被读取；
+    即使由于任何原因命中了，也**不得**把缺失的 bid/ask 当成有效报价送进选约。
+    """
+    seen = []
+
+    def fake_get_frame(cache_key, ttl_seconds, allow_stale=False, max_stale_seconds=None):
+        seen.append((cache_key, allow_stale))
+        if allow_stale:
+            return _chain().copy()  # stale 回退拿到的是 v1 形状（无报价）
+        return None  # 新鲜缓存未命中
+
+    monkeypatch.setattr(broker_module, "get_frame", fake_get_frame)
+    monkeypatch.setattr(broker_module, "acquire_option_chain_slot", lambda *a, **k: 0.0)
+
+    b = _broker()
+
+    def boom():
+        raise broker_module.BrokerError("行情不可用")
+
+    monkeypatch.setattr(b, "quote_context", boom)
+
+    frame = _run_option_chain_direct(b)
+
+    assert frame["quote_missing"].all(), "无报价的 stale 数据必须整帧标成无盘口"
+    assert frame["bid_price"].isna().all(), "不得凭空补出 bid"
+    assert frame["ask_price"].isna().all(), "不得凭空补出 ask"
+    # 缓存 key 一律带版本：v1 key 不再被读取
+    assert seen and all(CHAIN_CACHE_VERSION in key for key, _ in seen)
+    assert seen[-1][1] is True, "第二次读必须走 stale 回退分支（证明测的是那条路径）"
+
+
+def test_mutation_stale_returning_old_prices_fails_guard(monkeypatch):
+    """变异：stale 把 v1 的旧价格当成有效报价 → 守卫必须红。"""
+    stale_with_prices = pd.DataFrame([
+        {**_quote("US.SOFI261218P6000", 9.99, 10.05), "strike_price": 6.0, "lot_size": 100},
+        {**_quote("US.SOFI261218P6500", 9.99, 10.05), "strike_price": 6.5, "lot_size": 100},
+    ])
+
+    def fake_get_frame(cache_key, ttl_seconds, allow_stale=False, max_stale_seconds=None):
+        return stale_with_prices.copy() if allow_stale else None
+
+    monkeypatch.setattr(broker_module, "get_frame", fake_get_frame)
+    monkeypatch.setattr(broker_module, "acquire_option_chain_slot", lambda *a, **k: 0.0)
+
+    b = _broker()
+
+    def boom():
+        raise broker_module.BrokerError("行情不可用")
+
+    monkeypatch.setattr(b, "quote_context", boom)
+
+    frame = _run_option_chain_direct(b)
+
+    with pytest.raises(AssertionError):
+        assert frame["quote_missing"].all(), "旧价格被当成有效报价：stale 回退没做无盘口标记"

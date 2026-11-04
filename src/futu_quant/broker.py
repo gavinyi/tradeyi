@@ -65,17 +65,24 @@ CHAIN_SNAPSHOT_BATCH = 200
 def _ensure_chain_quote_columns(frame: pd.DataFrame) -> pd.DataFrame:
     """保证返回帧含报价列与 `quote_missing` 标记。
 
-    老格式缓存（只有 code/strike 等元数据）**缺列时按「无报价」处理，绝不报错**；
-    缺失标记一律为 True，让下游质量门槛把它当作"没有盘口"挡掉，而不是当成有效报价。
+    老格式缓存（只有 code/strike 等元数据）**缺列时按「无报价」处理，绝不报错**：
+    没有报价列 → 整帧标成无盘口，让下游质量门槛当"没有数据"挡掉。
+
+    反过来，**本来就带报价的帧**（例如 15 分钟内的 stale 回退）**不得被一刀切成无盘口**：
+    标记按"该行报价列是否全缺失"逐行判定，避免把真实的旧报价误判成无数据。
     """
     if frame is None:
         return pd.DataFrame()
     result = frame.copy()
+    present = [column for column in CHAIN_QUOTE_COLUMNS if column in result.columns]
     for column in CHAIN_QUOTE_COLUMNS:
         if column not in result.columns:
             result[column] = pd.NA
     if "quote_missing" not in result.columns:
-        result["quote_missing"] = True
+        if present:
+            result["quote_missing"] = result[present].isna().all(axis=1)
+        else:
+            result["quote_missing"] = True
     else:
         result["quote_missing"] = result["quote_missing"].fillna(True).astype(bool)
     return result
