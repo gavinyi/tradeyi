@@ -524,6 +524,56 @@ def real_account_config_key(account_id: str | int | None) -> str:
     return resolve_tenant_config_key(acc, REAL_ACCOUNT_CONFIG_KEY, extra_ids=(acc,))
 
 
+def _profile_for_equity_env(
+    tenant_id: str | None, account_id: str | int | None
+) -> TenantProfile | None:
+    """优先按 tenant_id 解析租户，退一步按 account_id 反解；解析不到返回 None。"""
+    if tenant_id:
+        try:
+            return resolve_tenant(str(tenant_id))
+        except ValueError:
+            pass
+    if account_id:
+        try:
+            return resolve_tenant(account_id=account_id)
+        except ValueError:
+            return None
+    return None
+
+
+def equity_snapshot_env(
+    tenant_id: str | None = None, account_id: str | int | None = None
+) -> str:
+    """``equity_snapshots.env`` 的**唯一派生入口** —— 风控路径禁止再手拼字符串。
+
+    规则：由**租户的 trading_env** 决定，不由 account_id 反推。
+    因为模拟账户同样有 account_id（如 20170229），`f"REAL_{account_id}"` 会拼出
+    `REAL_20170229`，而模拟盘快照写的是 `SIMULATE` → 查 0 行 → 派生日亏线静默回退
+    到 .env 的 $10,000 → `RISK_LIMITS_CONFIG_INCOMPLETE` fail-closed 直接拒单
+    （2026-11-04 生产缺陷，模拟盘开着跑但发不出单）。
+
+    实盘租户 → ``REAL_<account_id>``；模拟/沙盒租户 → ``SIMULATE``。
+    给了 account_id 却解析不出租户时**抛错**而不是猜：猜成 SIMULATE 会让实盘读模拟
+    快照（限额算错），猜成 REAL_ 就是本次事故。
+    """
+    profile = _profile_for_equity_env(tenant_id, account_id)
+    if profile is None:
+        if account_id:
+            raise TenantConfigKeyError(
+                f"无法判定账户 {account_id} 的交易环境（租户未注册）："
+                "不允许猜 SIMULATE / REAL_<account> 作为净值快照的 env"
+            )
+        return "SIMULATE"
+    if str(profile.trading_env).strip().upper() == "REAL":
+        acc = str(profile.account_id or account_id or "").strip()
+        if not acc:
+            raise TenantConfigKeyError(
+                f"实盘租户 {profile.tenant_id} 缺少 account_id，无法派生净值快照 env"
+            )
+        return f"REAL_{acc}"
+    return "SIMULATE"
+
+
 # --------------------------------------------------------------------------
 # 回落留痕：由工具保证，不靠调用方纪律
 # --------------------------------------------------------------------------

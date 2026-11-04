@@ -431,8 +431,11 @@ def _derived_fingerprint_parts(store: Any, account_id: str, tenant_id: str) -> l
             + json.dumps(raw_profile, sort_keys=True, ensure_ascii=False, default=str)
         )
 
-    env = _equity_env(tenant_id, account_id)
     try:
+        from .tenant import equity_snapshot_env
+
+        # 净值快照 env 走共享入口（模拟账户也有 account_id，反推会拼出 REAL_<paper acc>）
+        env = equity_snapshot_env(tenant_id, account_id)
         equity_rows = store.equity_history(limit=1, env=env)
     except Exception:  # noqa: BLE001
         parts.append(f"equity:degraded:{uuid.uuid4().hex}")
@@ -501,7 +504,15 @@ def _apply_limit_profile(store: Any, tenant_id: str, limits: RiskLimits, account
         raise RiskLimitsConfigError(f"派生限额配置无法解析：{exc}") from exc
     if profile_resolution.source != "derived:limit_profile":
         return limits
-    env = _equity_env(tenant_id, account_id)
+    from .tenant import TenantConfigKeyError, equity_snapshot_env
+
+    try:
+        # 净值快照 env 只从共享入口派生：按租户 trading_env 决定，不按 account_id 反推。
+        # 模拟账户即使有 account_id，也必须读取 SIMULATE；解析失败严格拒单。
+        env = equity_snapshot_env(tenant_id, account_id)
+    except TenantConfigKeyError as exc:
+        # 环境判定不了就 fail-closed，并给调用方稳定的拒单信号，不许静默猜一个 env。
+        raise RiskLimitsConfigError(f"派生限额无法判定净值快照环境：{exc}") from exc
     rows = store.equity_history(limit=1, env=env)
     if not rows:
         raise RiskLimitsConfigError("派生限额需要有效权益，当前无权益快照")
