@@ -246,50 +246,60 @@ def _page_source() -> str:
     return PAGE.read_text(encoding="utf-8")
 
 
-def test_page_writes_tenant_layer_not_env_settings():
+def test_page_only_writes_derived_profile_not_legacy_dollar_keys():
+    """金额只读后：页面唯一写路径是派生层发布，绝不回写旧金额键或 env 兜底层。"""
     source = _page_source()
 
-    assert "save_tenant_risk_limits(" in source
+    assert "publish_limit_profile(" in source, "派生层发布必须走配置中心通道"
+    assert "save_tenant_risk_limits(" not in source, (
+        "金额已改为只读；再写旧 risk_limits 金额键就会出现第二套真值"
+    )
     assert "save_runtime_settings(" not in source, (
         "又写回 ENV_SETTINGS（env 兜底层）—— 租户层存在时保存等于没改"
     )
+    assert 'f"limit_profile:' not in source, "配置键禁止在页面手拼，必须走 profile_key"
 
 
-def test_page_blocks_save_when_account_layer_owns_values():
+def test_page_shows_legacy_effective_values_when_derived_disabled():
+    """派生未启用时页面必须显示旧键真实生效值，不能拿预览值冒充实际值。"""
     source = _page_source()
 
-    assert "source_is_writable_here(" in source
-    assert "disabled=not writable" in source, "不可写的层必须禁用保存按钮"
+    assert "resolve_display_limits(" in source
+    assert "派生层未启用" in source
+    assert "当前生效（旧键）" in source
 
 
 def test_page_requires_admin_and_second_confirmation():
     source = _page_source()
 
     assert "render_admin_login()" in source
-    assert "st.checkbox(" in source
-    assert "RISK_LIMITS_UPDATED" in source, "改钱相关参数必须留审计"
+    assert "st.checkbox(" in source, "改限额必须二次确认"
+    assert "变更理由" in source, "变更理由必填"
+    assert "审批指纹" in source, "变松必须留审批指纹"
 
 
-def test_audit_records_the_full_written_payload():
-    """Reviewer 2026-11-01：审计必须能回答「当时把 10 项固化成了什么」。
+def test_audit_records_effective_before_and_after_chains():
+    """审计必须能回答「当时实际放行多少」：由发布通道落 effective_before/after 快照。
 
-    只记 `changes`（5 项）时，事后查不出「另外 5 项被固化成了什么值」。
+    页面不再自己拼 payload（那是第二套审计口径）；这里锁页面确实只透传审批指纹与理由，
+    真正的 before/after 链快照由 `limit_profile_store.publish_limit_profile` 保证。
     """
     source = _page_source()
 
-    assert '"written_payload": dict(payload)' in source, (
-        "审计里必须有实际写入的完整 payload，否则无法事后还原"
+    assert "approval_fingerprint=approval" in source
+    assert "legacy_limits=legacy" in source, (
+        "首启用基线必须是旧键实际生效值，传预览链会绕过二次确认"
     )
-    assert '"after": changes' in source, "改动集仍要保留，便于人读"
+    assert '"written_payload": dict(payload)' not in source, "页面不得自建审计 payload"
 
 
-def test_page_shows_presave_preview_of_all_written_fields():
-    """保存前必须列出将写入的 10 项，并标出哪些是本次修改。"""
+def test_page_shows_capacity_line_and_effective_per_order():
+    """45 页必须与首页同口径显示容量线与 min 后的实际单笔。"""
     source = _page_source()
 
-    assert "preview_payload" in source
-    assert "本次修改" in source and "沿用当前值" in source
-    assert "固化" in source, "必须讲清「会把其余项一起钉住」这个后果"
+    assert "容量线" in source
+    assert "min(派生单笔, 容量线)" in source
+    assert "st.metric(" in source, "实际生效金额必须以指标卡展示"
 
 
 def test_page_does_not_write_real_gate_limits():

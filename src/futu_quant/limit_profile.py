@@ -94,13 +94,19 @@ def resolve_limit_chain(
         cfg.hard_cap_daily_loss, "daily_loss"
     )
     capacity = None
+    capacity_clamp = None
     if cfg.capacity_ratio is not None:
-        capacity = amount * _finite_nonnegative(cfg.capacity_ratio, "capacity.ratio")
+        capacity_ratio = _finite_nonnegative(cfg.capacity_ratio, "capacity.ratio")
+        if capacity_ratio > 1.0:
+            capacity_ratio = 1.0
+            capacity_clamp = "hard_cap:1"
+        capacity = amount * capacity_ratio
     clamps = {
         key: value for key, value in {
             "per_order": per_order_clamp,
             "daily_entries": entries_clamp,
             "daily_loss": loss_clamp,
+            "capacity_line": capacity_clamp,
         }.items() if value
     }
     return LimitChain(
@@ -110,7 +116,12 @@ def resolve_limit_chain(
 
 
 def validate_profile(profile: LimitProfile, equity: float) -> tuple[bool, str]:
-    """校验待发布百分比；非法值一律拒绝，不静默夹到边界。"""
+    """校验待发布百分比；非法值一律拒绝，不静默夹到边界。
+
+    注意：**超过硬顶不是错误** —— 硬顶就是用来截断的（模拟盘 6% = $58,941.37
+    实际生效 $50,000），拒绝它会让「按百分比设置、由硬顶兜底」的口径失效。
+    低于地板则说明设得过小（等于没放开），直接拒绝而不是偷偷抬到地板。
+    """
     try:
         amount = _finite_nonnegative(equity, "equity")
         if amount <= 0:
@@ -120,11 +131,15 @@ def validate_profile(profile: LimitProfile, equity: float) -> tuple[bool, str]:
             base = field.replace("_ratio", "")
             floor = _finite_nonnegative(getattr(profile, "floor_" + base), field)
             cap = _finite_nonnegative(getattr(profile, "hard_cap_" + base), field)
+            if cap < floor:
+                return False, f"{base} 的硬顶不能小于地板"
             value = amount * ratio
             if value < floor:
                 return False, f"{field} 派生值 ${value:,.2f} 低于地板 ${floor:,.2f}"
-            if value > cap:
-                return False, f"{field} 派生值 ${value:,.2f} 超过硬顶 ${cap:,.2f}"
+        if profile.capacity_ratio is not None:
+            ratio = _finite_nonnegative(profile.capacity_ratio, "capacity_ratio")
+            if ratio > 1.0:
+                return False, "capacity_ratio 不能超过 100%"
         return True, ""
     except (TypeError, ValueError) as exc:
         return False, str(exc)
@@ -133,8 +148,15 @@ def validate_profile(profile: LimitProfile, equity: float) -> tuple[bool, str]:
 def classify_changes(old: LimitChain, new: LimitChain) -> dict[str, str]:
     """按实际生效金额分类；变松必须触发额外确认。"""
     result: dict[str, str] = {}
-    for name in ("per_order", "batch", "daily_entries", "daily_loss"):
+    for name in ("per_order", "batch", "daily_entries", "daily_loss", "capacity_line"):
         before, after = getattr(old, name), getattr(new, name)
+        if before is None or after is None:
+            # 容量线可空：新增约束=变紧，去掉约束=变松，都为空=不变。
+            result[name] = (
+                "unchanged" if before is None and after is None
+                else "tighten" if before is None else "loosen"
+            )
+            continue
         result[name] = "loosen" if after > before else "tighten" if after < before else "unchanged"
     return result
 

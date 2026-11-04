@@ -29,8 +29,9 @@ from futu_quant.ui import (
     open_trading_store,
 )
 from futu_quant.real_trading import resolve_real_account_limits
-from futu_quant.limit_profile import resolve_limit_chain
 from futu_quant.limit_profile_store import load_limit_profile
+from futu_quant.limit_display import resolve_display_limits
+from futu_quant.risk_limits import RiskLimitsConfigError, resolve_risk_limits_detail
 
 st.set_page_config(page_title="今日总览 - 统一配置中心", page_icon="🧭", layout="wide")
 
@@ -57,10 +58,28 @@ def render_limit_status_bar(store, settings):
     if not tenant_id or equity <= 0:
         st.warning("限额状态：权益缺失或非正，派生限额未就绪（fail-closed）")
         return
-    chain = resolve_limit_chain(store, tenant_id, equity, load_limit_profile(store, tenant_id).profile)
-    actual = min(chain.per_order, chain.capacity_line) if chain.capacity_line is not None else chain.per_order
-    layer = "容量线" if chain.capacity_line is not None and chain.capacity_line <= chain.per_order else "派生层"
-    st.info(f"限额状态 · 权益 ${equity:,.2f} · 单笔 ${actual:,.2f} · 单日 ${chain.daily_entries:,.2f} · 日亏 ${chain.daily_loss:,.2f} · 实际生效层：{layer}（容量线 ${chain.capacity_line:,.2f}）")
+    resolution = load_limit_profile(store, tenant_id)
+    if resolution.source == "derived:limit_profile":
+        display = resolve_display_limits(store, tenant_id, equity)
+        capacity = f"容量线 ${display.capacity_line:,.2f}" if display.capacity_line is not None else "容量线 未设置"
+        st.info(
+            f"限额状态 · 权益 ${equity:,.2f} · 单笔 ${display.effective_per_order:,.2f}"
+            f" · 单日 ${display.daily_entries:,.2f} · 日亏 ${display.daily_loss:,.2f}"
+            f" · 实际生效层：{display.layer}（{capacity}）"
+        )
+        return
+    # 派生未启用：状态条必须显示**旧键实际生效金额**，不能显示派生预览值。
+    try:
+        legacy = resolve_risk_limits_detail(store, get_tenant_broker(settings)).limits
+    except RiskLimitsConfigError as exc:
+        st.warning(f"限额状态：派生层未启用，且旧键金额解析失败（{exc}）—— 不显示 0 冒充正常")
+        return
+    display = resolve_display_limits(store, tenant_id, equity, legacy)
+    st.info(
+        f"限额状态 · 权益 ${equity:,.2f} · 派生层未启用（当前生效：旧键）"
+        f" · 单笔 ${display.effective_per_order:,.2f} · 单日 ${display.daily_entries:,.2f}"
+        f" · 日亏 ${display.daily_loss:,.2f} · 实际生效层：{display.layer}"
+    )
 
 render_limit_status_bar(store, settings)
 

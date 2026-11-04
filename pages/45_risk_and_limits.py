@@ -23,10 +23,7 @@ from futu_quant.config_center import GLOBAL_REGISTRY
 from futu_quant.real_trading import resolve_real_account_limits
 from futu_quant.risk_limit_editing import (
     EDITABLE_ITEMS,
-    build_changes,
-    build_tenant_risk_payload,
     effective_values,
-    save_tenant_risk_limits,
     source_is_writable_here,
 )
 from futu_quant.risk_limits import (
@@ -34,8 +31,9 @@ from futu_quant.risk_limits import (
     resolve_risk_limits_detail,
     risk_limits_tenant_key,
 )
-from futu_quant.limit_profile import LimitProfile, resolve_limit_chain
+from futu_quant.limit_profile import LimitChain, LimitProfile
 from futu_quant.limit_profile_store import load_limit_profile, publish_limit_profile
+from futu_quant.limit_display import resolve_display_limits
 from futu_quant.ui import (
     get_current_tenant,
     get_tenant_broker,
@@ -109,6 +107,22 @@ def _latest_equity(store, tenant: dict) -> float | None:
     return value if value > 0 else None
 
 
+def _legacy_limit_chain(store, settings, tenant_id: str, equity: float) -> LimitChain:
+    """构造未启用派生层时的真实旧键链，仅用于页面只读对照。"""
+    resolution = resolve_risk_limits_detail(store, get_tenant_broker(settings))
+    limits = resolution.limits
+    return LimitChain(
+        tenant_id=tenant_id,
+        equity=equity,
+        per_order=limits.max_order_notional,
+        batch=limits.max_order_notional,
+        daily_entries=limits.max_daily_notional,
+        daily_loss=limits.max_daily_loss,
+        capacity_line=None,
+        source=resolution.source,
+    )
+
+
 def _render_limit_profile_card(store, settings, tenant: dict) -> None:
     tenant_id = str(tenant.get("tenant_id") or tenant.get("id") or st.session_state.get("current_tenant_id") or "")
     equity = _latest_equity(store, tenant)
@@ -119,36 +133,68 @@ def _render_limit_profile_card(store, settings, tenant: dict) -> None:
         return
     resolution = load_limit_profile(store, tenant_id)
     profile = resolution.profile
+    legacy = _legacy_limit_chain(store, settings, tenant_id, equity)
+    # 页面金额与运行时同源：都走 resolve_display_limits，绝不在页面里再算一遍。
+    display = resolve_display_limits(store, tenant_id, equity, legacy)
     ratios = {
         "单笔开仓": ("per_order_ratio", "per_order"),
         "日累计开仓": ("daily_entries_ratio", "daily_entries"),
         "日亏损急停线": ("daily_loss_ratio", "daily_loss"),
     }
-    chain = resolve_limit_chain(store, tenant_id, equity, profile)
     with st.container(border=True):
-        st.caption(f"权益基数：${equity:,.2f} · 当前来源：{resolution.source} · 最近修改：{resolution.actor or '未记录'} {resolution.updated_at or ''} {resolution.reason or ''}")
+        if display.derived_enabled:
+            st.caption(
+                f"派生层已启用 · 权益基数：${equity:,.2f} · 来源：{display.source} · "
+                f"最近修改：{resolution.actor or '未记录'} {resolution.updated_at or ''} {resolution.reason or ''}"
+            )
+        else:
+            st.warning(
+                f"派生层未启用（当前来源：{display.source}）。"
+                f"现在真正生效的是旧键金额：单笔 ${display.per_order:,.2f} · 单日 ${display.daily_entries:,.2f} · "
+                f"日亏 ${display.daily_loss:,.2f}。下方百分比为待发布草案，保存发布后才生效。"
+            )
         values = {}
         columns = st.columns(len(ratios))
         for column, (label, (field, output)) in zip(columns, ratios.items()):
             with column:
-                values[field] = st.number_input(f"{label}（权益 %）", min_value=0.0, max_value=100.0, value=float(getattr(profile, field) * 100), step=0.1, key=f"derived_{tenant_id}_{field}") / 100
-                amount = getattr(chain, output)
-                st.metric(f"实际生效：{label}", f"${amount:,.2f}", f"{amount / equity:.2%} · 生效层：{('硬顶/地板' if output in chain.clamped else '派生层')}")
+                values[field] = st.number_input(
+                    f"{label}（权益 %）", min_value=0.0, max_value=100.0,
+                    value=float(getattr(profile, field) * 100), step=0.1,
+                    key=f"derived_{tenant_id}_{field}",
+                ) / 100
+                amount = getattr(display, output)
+                st.metric(
+                    f"{'实际生效' if display.derived_enabled else '当前生效（旧键）'}：{label}",
+                    f"${amount:,.2f}",
+                    f"{amount / equity:.2%} · 生效层：{display.layer}",
+                )
+        if display.derived_enabled:
+            capacity = display.capacity_line
+            st.caption(
+                f"容量线：{('${:,.2f}'.format(capacity)) if capacity is not None else '未设置'}"
+                f" · 单笔实际可下（min(派生单笔, 容量线)）：${display.effective_per_order:,.2f}"
+            )
+        else:
+            st.caption("容量线：派生层启用后按 capacity_ratio 独立计算；当前旧键口径无容量线。")
         reason = st.text_input("变更理由（变松必填）", key=f"derived_reason_{tenant_id}")
         changed = any(abs(values[k] - getattr(profile, k)) > 1e-12 for k in values)
-        loosening = any(values[k] > getattr(profile, k) for k in values)
         confirm = st.checkbox("确认本次变更影响实际交易限额", key=f"derived_confirm_{tenant_id}")
         approval = st.text_input("审批指纹（仅变松必填）", key=f"derived_approval_{tenant_id}")
         if st.button("保存派生限额", type="primary", key=f"save_derived_{tenant_id}"):
             if not changed:
                 st.info("没有检测到变更。")
-            elif loosening and (not confirm or not approval.strip() or not reason.strip()):
-                st.error("变松必须二次确认、审批指纹和必填理由。")
-            elif not loosening and not confirm:
-                st.error("请确认本次变更。")
+            elif not reason.strip() or not confirm:
+                st.error("保存派生限额必须二次确认并填写变更理由。")
             else:
                 try:
-                    result = publish_limit_profile(store, tenant_id, LimitProfile(**{**profile.__dict__, **values}), "streamlit_admin:panel", reason, approval_fingerprint=approval, old_chain=chain, equity=equity, confirm=confirm)
+                    result = publish_limit_profile(
+                        store, tenant_id, LimitProfile(**{**profile.__dict__, **values}),
+                        "streamlit_admin:panel", reason,
+                        approval_fingerprint=approval,
+                        # 首启用基线必须是旧键实际生效金额，不能是预览链。
+                        legacy_limits=legacy,
+                        equity=equity, confirm=confirm,
+                    )
                     st.success("已发布：下一轮重读，≤2 分钟生效，无需 stop/start。")
                     st.json(result["chain"])
                 except (ValueError, PermissionError, RuntimeError) as exc:

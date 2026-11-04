@@ -1,9 +1,9 @@
 """限额配置中心发布通道；禁止页面或业务模块直写配置表。"""
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from .limit_profile import LimitChain, LimitProfile, classify_changes, resolve_limit_chain, validate_profile
 
@@ -45,7 +45,63 @@ def _profile_fields(value: dict) -> dict:
     return {key: value.get(key) for key in LimitProfile.__dataclass_fields__}
 
 
-def publish_limit_profile(store, tenant_id: str, profile: LimitProfile, actor: str, reason: str, *, approval_fingerprint: str = "", old_chain: LimitChain | None = None, equity: float | None = None, confirm: bool = False) -> dict:
+def _legacy_chain_from_limits(
+    tenant_id: str, equity: float, legacy_limits: Any
+) -> LimitChain | None:
+    """用**旧键实际生效金额**构造变松基线。
+
+    页面传入的派生链是「新公式预览值」，不是当前实际生效值；拿它当基线会把
+    `legacy → derived` 的首次启用（模拟盘 `$2,500 → $50,000`，20 倍变松）判成
+    tighter/unchanged，从而绕过二次确认与审批指纹。
+    """
+    if legacy_limits is None:
+        return None
+    try:
+        per_order = float(getattr(legacy_limits, "max_order_notional"))
+        daily_entries = float(getattr(legacy_limits, "max_daily_notional"))
+        daily_loss = float(getattr(legacy_limits, "max_daily_loss"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    source = str(getattr(legacy_limits, "source", "") or "legacy:read_only")
+    return LimitChain(
+        tenant_id=tenant_id,
+        equity=float(equity),
+        per_order=per_order,
+        batch=per_order,
+        daily_entries=daily_entries,
+        daily_loss=daily_loss,
+        capacity_line=None,
+        source=source,
+    )
+
+
+def resolve_baseline_chain(
+    store, tenant_id: str, equity: float, legacy_limits: Any = None
+) -> LimitChain:
+    """变松判定基线：已启用取服务端旧 profile 派生值，首启用取旧键实际生效金额。"""
+    existing = load_limit_profile(store, tenant_id)
+    if existing.source == "derived:limit_profile":
+        return resolve_limit_chain(store, tenant_id, equity, existing.profile)
+    baseline = _legacy_chain_from_limits(tenant_id, equity, legacy_limits)
+    if baseline is None:
+        raise ValueError(
+            "首启用派生层必须提供旧键实际生效金额作为基线，否则无法判定变松，拒绝发布"
+        )
+    return baseline
+
+
+def publish_limit_profile(
+    store,
+    tenant_id: str,
+    profile: LimitProfile,
+    actor: str,
+    reason: str,
+    *,
+    approval_fingerprint: str = "",
+    legacy_limits: Any = None,
+    equity: float | None = None,
+    confirm: bool = False,
+) -> dict:
     if not reason.strip():
         raise ValueError("变更理由必填")
     if equity is None:
@@ -53,20 +109,26 @@ def publish_limit_profile(store, tenant_id: str, profile: LimitProfile, actor: s
     ok, error = validate_profile(profile, equity)
     if not ok:
         raise ValueError(error)
+    # 基线一律由服务端解析，**不接受调用方传入的预览链**。
+    old_chain = resolve_baseline_chain(store, tenant_id, equity, legacy_limits)
     new_chain = resolve_limit_chain(None, tenant_id, equity, profile)
-    if old_chain is not None:
-        changes = classify_changes(old_chain, new_chain)
-        loosened = any(v == "loosen" for v in changes.values())
-        if loosened and (not approval_fingerprint or not confirm):
-            raise PermissionError("变松必须二次确认并提供审批指纹")
+    changes = classify_changes(old_chain, new_chain)
+    loosened = any(v == "loosen" for v in changes.values())
+    if loosened and (not approval_fingerprint or not confirm):
+        raise PermissionError("变松必须二次确认并提供审批指纹")
     key = profile_key(tenant_id)
     now = datetime.now(timezone.utc).isoformat()
     value = {**profile.__dict__, "updated_at": now, "actor": actor, "reason": reason, "approval_fingerprint": approval_fingerprint}
     release_id = store.create_config_release(key, value, actor, reason)
     store.publish_config_release_with_audit(
         release_id, actor, "LIMIT_PROFILE_PUBLISHED",
-        {"tenant_id": tenant_id, "before": old_chain.as_dict() if old_chain else None,
-         "after": new_chain.as_dict(), "reason": reason,
+        {"tenant_id": tenant_id,
+         # `before`/`after` 会被发布通道覆盖成 runtime_config 原文（store.py:2624-2625），
+         # 因此另存生效金额快照，保证事后可从审计复现「当时实际放行多少」。
+         "effective_before": old_chain.as_dict(),
+         "effective_after": new_chain.as_dict(),
+         "changes": changes,
+         "reason": reason,
          "approval_fingerprint": approval_fingerprint},
     )
     # 发布后必须从 runtime_config 回读并逐字段比对；不一致立即走统一回滚通道。
@@ -83,4 +145,11 @@ def publish_limit_profile(store, tenant_id: str, profile: LimitProfile, actor: s
         except Exception as rollback_error:
             raise RuntimeError(f"限额发布回读不一致，且自动回滚失败: {rollback_error}") from rollback_error
         raise RuntimeError("限额发布回读不一致，已自动回滚")
-    return {"release_id": release_id, "key": key, "chain": new_chain.as_dict(), "updated_at": now}
+    return {
+        "release_id": release_id,
+        "key": key,
+        "chain": new_chain.as_dict(),
+        "before_chain": old_chain.as_dict(),
+        "changes": changes,
+        "updated_at": now,
+    }

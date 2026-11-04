@@ -169,14 +169,23 @@ def resolve_real_account_limits(
     # 派生层只替换金额来源；门禁顺序、确认码、白名单和 submit_limit 均不动。
     limit_profile_unresolved = False
     limit_profile_reason = ""
+    # 租户解析/配置读取失败不等于派生层已启用：迁移期必须继续使用旧键。
+    # 只有明确读到 derived:limit_profile 后，权益或派生计算异常才 fail-closed。
+    from .tenant import resolve_tenant
+    from .limit_profile import resolve_limit_chain
+    from .limit_profile_store import load_limit_profile
     try:
-        from .tenant import resolve_tenant
-        from .limit_profile import resolve_limit_chain
-        from .limit_profile_store import load_limit_profile
         tenant_profile = resolve_tenant(account_id=str(account_id), env="REAL")
         tenant_id = tenant_profile.tenant_id if tenant_profile else ""
         profile_resolution = load_limit_profile(store, tenant_id) if tenant_id else None
-        if profile_resolution and profile_resolution.source == "derived:limit_profile":
+    except Exception as exc:
+        tenant_id = ""
+        profile_resolution = None
+        logging.getLogger(__name__).warning(
+            "LIMIT_PROFILE_LEGACY_FALLBACK account=%s reason=%s", account_id, exc
+        )
+    if profile_resolution and profile_resolution.source == "derived:limit_profile":
+        try:
             rows = store.equity_history(limit=1, env=f"REAL_{account_id}")
             if not rows:
                 raise ValueError("equity 快照缺失")
@@ -193,13 +202,13 @@ def resolve_real_account_limits(
             chain = resolve_limit_chain(store, tenant_id, equity, profile_resolution.profile)
             max_order = min(chain.per_order, chain.capacity_line) if chain.capacity_line is not None else chain.per_order
             max_daily = chain.daily_entries
-    except Exception as exc:
-        # 派生层已启用但权益/配置解析失败时，绝不回落旧金额（红区 fail-closed）。
-        limit_profile_unresolved = True
-        limit_profile_reason = f"{type(exc).__name__}: {exc}"
-        logging.getLogger(__name__).error(
-            "LIMIT_PROFILE_UNRESOLVED account=%s reason=%s", account_id, limit_profile_reason
-        )
+        except Exception as exc:
+            # 派生层已启用但权益/配置解析失败时，绝不回落旧金额（红区 fail-closed）。
+            limit_profile_unresolved = True
+            limit_profile_reason = f"{type(exc).__name__}: {exc}"
+            logging.getLogger(__name__).error(
+                "LIMIT_PROFILE_UNRESOLVED account=%s reason=%s", account_id, limit_profile_reason
+            )
 
     confirm_raw = cfg.get("require_manual_confirm")
     require_confirm = (
@@ -515,13 +524,18 @@ def check_real_trade(
         return RealTradeDecision(False, reason, {"account_id": target_account,
                                                   "reason_code": "LIMIT_PROFILE_UNRESOLVED"})
     if limits.limit_profile_unresolved and _is_sell:
-        store.audit(
-            "LIMIT_PROFILE_UNRESOLVED_SELL_ALLOWED",
-            {"account_id": target_account, "strategy_id": strategy_id,
-             "symbol": symbol, "side": side, "reason": limits.limit_profile_reason},
-            strategy_id,
-            actor="service:real_gate",
-        )
+        try:
+            store.audit(
+                "LIMIT_PROFILE_UNRESOLVED_SELL_ALLOWED",
+                {"account_id": target_account, "strategy_id": strategy_id,
+                 "symbol": symbol, "side": side, "reason": limits.limit_profile_reason},
+                strategy_id,
+                actor="service:real_gate",
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "记录 LIMIT_PROFILE_UNRESOLVED_SELL_ALLOWED 失败，保持 SELL 放行"
+            )
         logging.getLogger(__name__).warning(
             "LIMIT_PROFILE_UNRESOLVED_SELL_ALLOWED account=%s reason=%s",
             target_account, limits.limit_profile_reason,

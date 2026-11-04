@@ -1,6 +1,6 @@
 """P0-UI-1 专属守卫测试 (已补齐导航与严格无默认枚举检验)：
 1. 校验 ConfigSpec.user_area 与 surface 字段：
-   - 382 项配置 100% 具备合规 user_area 与 surface；
+   - 383 项配置 100% 具备合规 user_area 与 surface；
    - user_area 取值严格限定在 4 个枚举内：strategy_center, risk_limits, account_env, ops_notify（必填无默认）；
    - surface 取值严格限定在 2 个枚举内：primary, advanced（必填无默认）；
    - 强约束：每个 area 的 primary 数量严格 <= 30 项！
@@ -31,9 +31,9 @@ from futu_quant.config_center.spec import ConfigSpec
 
 
 def test_user_area_metadata_strictly_four_enums_and_no_empty():
-    """AC1/AC4: 382项配置全部具备合规 user_area 与 surface，严禁空值或未分配。"""
+    """AC1/AC4: 383项配置全部具备合规 user_area 与 surface，严禁空值或未分配。"""
     specs = GLOBAL_REGISTRY.all_specs()
-    assert len(specs) == 382
+    assert len(specs) == 383
 
     valid_areas = {"strategy_center", "risk_limits", "account_env", "ops_notify"}
     valid_surfaces = {"primary", "advanced"}
@@ -51,10 +51,10 @@ def test_user_area_metadata_strictly_four_enums_and_no_empty():
 
     # 确保 4 个业务区均承载了对应技术分类的配置
     assert area_counts["strategy_center"] > 0
-    assert area_counts["risk_limits"] == 29, f"risk_limits 应恰好包含 29 项，实际 {area_counts['risk_limits']}"
+    assert area_counts["risk_limits"] == 30, f"risk_limits 应恰好包含 30 项，实际 {area_counts['risk_limits']}"
     assert area_counts["account_env"] > 0
     assert area_counts["ops_notify"] > 0
-    assert sum(area_counts.values()) == 382
+    assert sum(area_counts.values()) == 383
 
     # AC3 核心约束：每个 area 的 primary 项严格 <= 30 项！
     for a, count in primary_counts.items():
