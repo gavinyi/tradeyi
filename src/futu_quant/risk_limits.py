@@ -371,38 +371,63 @@ def _trading_day_key(now: datetime | None = None) -> str:
     return ny_trading_day_start_utc(now).date().isoformat()
 
 
-def _equity_fingerprint_part(store: Any, account_id: str, tenant_id: str) -> str | None:
-    """派生启用时把**当前权益快照**并入指纹；派生未启用时返回 None（行为不变）。
+def _derived_fingerprint_parts(store: Any, account_id: str, tenant_id: str) -> list[str] | None:
+    """派生启用时要并入指纹的两段：**profile 原文** + **当前权益快照**。
 
-    派生限额 = 权益 × 百分比，所以「权益变了」跟「配置改了」一样必须让缓存失效。
-    否则当天第一次解析后权益再跌，风控层会拿着更高权益算出的限额放行 —— 偏松，
-    正是最危险的方向（Chief 2026-11-04 待办）。
+    派生金额 = 权益 × profile 里的百分比，所以这两者任一变化都必须让缓存失效：
 
-    本函数**不抛异常**：快照缺失/时间缺失时返回哨兵值，保证不与旧缓存相等
-    （即不复用旧值）；真正的拒单仍由 `_apply_limit_profile` 与
-    `real_trading` 的 fail-closed 负责。
+    - **profile 原文**：页面把 6% 改成 8% 时，若指纹只看权益，改了就不生效——
+      现在只是恰好靠权益快照时间在变，一旦快照停更（收盘后、权益写入失败），
+      就会出现「改了但不生效且无提示」，与「发布后 ≤2 分钟生效」的承诺不符。
+    - **权益快照**：权益跌了还拿旧（更高）权益算出的限额放行，是最危险的方向。
+
+    未启用派生时返回 ``None``（指纹行为与改动前逐字节一致）。
+    配置损坏时返回 **error 哨兵**（必然与旧缓存不等）：绝不允许退化成
+    「当作未启用」而恰好命中旧缓存继续放行，真正拒单由 `_apply_limit_profile` 负责。
     """
     try:
-        from .limit_profile_store import load_limit_profile
+        from .limit_profile_store import load_limit_profile, profile_key
 
         resolution = load_limit_profile(store, tenant_id)
-    except Exception:  # noqa: BLE001 - 读不到配置按「未启用派生」处理，保持旧指纹行为
-        return None
+    except Exception:  # noqa: BLE001 - 坏配置必须让缓存失效，不能退化成旧口径命中
+        return [f"error:{uuid.uuid4().hex}"]
     if resolution.source != "derived:limit_profile":
         return None
+
+    parts: list[str] = []
+    reader = getattr(store, "get_runtime_config", None)
+    raw_profile: Any = None
+    if callable(reader):
+        try:
+            rows = reader(profile_key(tenant_id))
+            raw_profile = rows[0] if rows else None
+        except Exception:  # noqa: BLE001
+            raw_profile = None
+    if raw_profile is None:
+        parts.append(f"profile:unreadable:{uuid.uuid4().hex}")
+    else:
+        parts.append(
+            "profile:"
+            + json.dumps(raw_profile, sort_keys=True, ensure_ascii=False, default=str)
+        )
+
     env = f"REAL_{account_id}" if account_id else "SIMULATE"
     try:
-        rows = store.equity_history(limit=1, env=env)
+        equity_rows = store.equity_history(limit=1, env=env)
     except Exception:  # noqa: BLE001
-        return f"degraded:{uuid.uuid4().hex}"
-    if not rows:
-        return f"missing:{uuid.uuid4().hex}"
-    snapshot = rows[0]
+        parts.append(f"equity:degraded:{uuid.uuid4().hex}")
+        return parts
+    if not equity_rows:
+        parts.append(f"equity:missing:{uuid.uuid4().hex}")
+        return parts
+    snapshot = equity_rows[0]
     amount = snapshot.get("total_assets")
     timestamp = snapshot.get("created_at") or snapshot.get("updated_at")
     if amount is None or not timestamp:
-        return f"missing:{uuid.uuid4().hex}"
-    return f"{amount}|{timestamp}"
+        parts.append(f"equity:missing:{uuid.uuid4().hex}")
+        return parts
+    parts.append(f"equity:{amount}|{timestamp}")
+    return parts
 
 
 def _source_fingerprint(store: Any, account_id: str, tenant_id: str) -> str:
@@ -411,8 +436,9 @@ def _source_fingerprint(store: Any, account_id: str, tenant_id: str) -> str:
     只要界面上改了账户参数，指纹就变 → 缓存立即失效 → **当场重解析**，
     不依赖重启，也不依赖 ``updated_at`` 轮询。
 
-    派生层启用时**额外拼入当前权益快照**（金额 + 快照时间）：权益一变指纹就变，
-    同一轮内多次调用仍复用缓存，但不会跨轮拿着旧权益算出的限额继续放行。
+    派生层启用时**额外拼入 profile 原文与当前权益快照**（见
+    `_derived_fingerprint_parts`）：百分比或权益一变指纹就变，同一轮内多次调用
+    仍复用缓存，但不会跨轮拿着旧权益或旧百分比继续放行。
     """
     parts: list[str] = []
     if account_id:
@@ -421,9 +447,9 @@ def _source_fingerprint(store: Any, account_id: str, tenant_id: str) -> str:
         parts.append(_as_text(store.get_setting(risk_limits_tenant_key(tenant_id), "")))
         # 无前缀旧键也进指纹 —— 否则改了旧键缓存不失效，兜底会读到旧值。
         parts.append(_as_text(store.get_setting(legacy_risk_limits_key(), "")))
-        equity_part = _equity_fingerprint_part(store, account_id, tenant_id)
-        if equity_part is not None:
-            parts.append(f"equity:{equity_part}")
+        derived_parts = _derived_fingerprint_parts(store, account_id, tenant_id)
+        if derived_parts:
+            parts.extend(derived_parts)
     digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
     return digest[:16]
 
@@ -447,7 +473,12 @@ def _apply_limit_profile(store: Any, tenant_id: str, limits: RiskLimits, account
     from .limit_profile import resolve_limit_chain
     from .limit_profile_store import load_limit_profile
 
-    profile_resolution = load_limit_profile(store, tenant_id)
+    try:
+        profile_resolution = load_limit_profile(store, tenant_id)
+    except Exception as exc:  # noqa: BLE001 - 坏配置必须落到统一 fail-closed 出口
+        # 指纹层只用 error 哨兵让缓存失效；真正拒单统一走 RiskLimitsConfigError，
+        # 否则未捕获的 ValueError 会从风控解析里冒出去，调用方拿不到稳定拒单信号。
+        raise RiskLimitsConfigError(f"派生限额配置无法解析：{exc}") from exc
     if profile_resolution.source != "derived:limit_profile":
         return limits
     env = f"REAL_{account_id}" if account_id else "SIMULATE"

@@ -116,7 +116,7 @@ def test_mutation_equity_not_in_fingerprint_fails_guard(tmp_path, monkeypatch):
     scope = _scope()
     # 变异必须在**第一次解析之前**生效：否则补丁本身改变了指纹，
     # 缓存会被动失效，反而掩盖“跨轮复用旧权益”这个真问题。
-    monkeypatch.setattr(risk_limits, "_equity_fingerprint_part", lambda *a, **k: None)
+    monkeypatch.setattr(risk_limits, "_derived_fingerprint_parts", lambda *a, **k: None)
 
     first = resolve_risk_limits(store, scope)
     assert first.max_order_notional == pytest.approx(400.26, abs=0.02)
@@ -127,4 +127,73 @@ def test_mutation_equity_not_in_fingerprint_fails_guard(tmp_path, monkeypatch):
         stale = resolve_risk_limits(store, scope)
         assert stale.max_order_notional == pytest.approx(180.0, abs=0.02), (
             "权益已降 55%，限额却仍是旧值 —— 指纹没带权益"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Reviewer 2026-11-04 第二轮：profile 原文必须进指纹；坏配置必须拒
+# ---------------------------------------------------------------------------
+
+
+def test_changing_profile_ratio_takes_effect_immediately(tmp_path, monkeypatch):
+    """把 6% 改成 8% 必须立即重算，即使权益快照没变（快照停更时也不能靠它）。"""
+    store = _ready_store(tmp_path)
+    scope = _scope()
+    before = resolve_risk_limits(store, scope)
+    assert before.max_order_notional == pytest.approx(400.26, abs=0.02)
+
+    # 冻结权益：快照不变，唯一变化是 profile 里的百分比
+    frozen = store.equity_history(limit=1, env="SIMULATE")
+    monkeypatch.setattr(store, "equity_history", lambda **_: frozen)
+
+    publish_limit_profile(
+        store, TENANT, LimitProfile(per_order_ratio=0.08), "streamlit_admin:test", "调到 8%",
+        equity=START_EQUITY, approval_fingerprint="fp-8", confirm=True,
+    )
+    after = resolve_risk_limits(store, scope)
+
+    assert after.max_order_notional == pytest.approx(533.68, abs=0.05)
+    assert after.max_order_notional != pytest.approx(400.26, abs=0.02)
+
+
+def test_corrupt_profile_invalidates_cache_and_fails_closed(tmp_path):
+    """profile 值损坏：指纹不能退化成旧口径命中旧缓存，必须抛 RiskLimitsConfigError。"""
+    store = _ready_store(tmp_path)
+    scope = _scope()
+    resolve_risk_limits(store, scope)
+
+    # 直接把 profile 写成非对象（load_limit_profile 会抛 ValueError）
+    from futu_quant.limit_profile_store import profile_key
+
+    store.set_runtime_config(profile_key(TENANT), 12345)
+    with pytest.raises(risk_limits.RiskLimitsConfigError, match="派生限额配置无法解析"):
+        resolve_risk_limits(store, scope)
+
+
+def test_mutation_profile_not_in_fingerprint_fails_guard(tmp_path, monkeypatch):
+    """变异：指纹只带权益、不带 profile 原文 → 快照停更时改百分比不生效，用例必须红。"""
+    store = _ready_store(tmp_path)
+    scope = _scope()
+
+    original = risk_limits._derived_fingerprint_parts
+
+    def only_equity(store_, account_id, tenant_id):
+        parts = original(store_, account_id, tenant_id)
+        if parts is None:
+            return None
+        return [p for p in parts if p.startswith("equity:")]
+
+    monkeypatch.setattr(risk_limits, "_derived_fingerprint_parts", only_equity)
+
+    assert resolve_risk_limits(store, scope).max_order_notional == pytest.approx(400.26, abs=0.02)
+    frozen = store.equity_history(limit=1, env="SIMULATE")
+    monkeypatch.setattr(store, "equity_history", lambda **_: frozen)
+    publish_limit_profile(
+        store, TENANT, LimitProfile(per_order_ratio=0.08), "streamlit_admin:test", "调到 8%",
+        equity=START_EQUITY, approval_fingerprint="fp-8b", confirm=True,
+    )
+    with pytest.raises(AssertionError):
+        stale = resolve_risk_limits(store, scope)
+        assert stale.max_order_notional == pytest.approx(533.68, abs=0.05), (
+            "改了百分比却没生效 —— 指纹里没有 profile 原文"
         )
