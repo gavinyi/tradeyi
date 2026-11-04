@@ -35,7 +35,7 @@ from futu_quant.risk_limits import RiskLimitsConfigError, resolve_risk_limits_de
 
 st.set_page_config(page_title="今日总览 - 统一配置中心", page_icon="🧭", layout="wide")
 
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 
 st.title("🧭 今日总览 (交易与风险状态)")

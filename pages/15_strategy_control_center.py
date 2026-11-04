@@ -28,7 +28,7 @@ from futu_quant.ui import chinese_columns, get_current_tenant, render_admin_logi
 
 
 st.set_page_config(page_title="策略与资金控制", page_icon="🎛️", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 admin = render_admin_login()

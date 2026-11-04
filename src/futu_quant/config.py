@@ -6,8 +6,9 @@ import logging
 import os
 from pathlib import Path
 import re
+import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from dotenv import dotenv_values, set_key
 
@@ -56,6 +57,101 @@ def json_dumps(value) -> str:
 _ENV_MAX_SAFE_VALUE = 30000
 
 
+# --------------------------------------------------------------- Settings 缓存
+# 失效口径（Reviewer 设计稿 2026-11-04）：版本戳 + mtime 双条件，不靠纯 TTL。
+# 签名 = (.env 路径, mtime_ns, size, ENV_SETTINGS.version, 本进程写入计数)。
+# 前三项与写入计数都是 10µs 级、每次调用都算；SQLite 的 ENV_SETTINGS.version
+# 单键读约 2.4ms，用 ttl_probe 节流探测作为正确性兜底（最坏可见延迟 ≤2 秒）。
+_SETTINGS_CACHE: dict[str, object] = {
+    "signature": None,
+    "settings": None,
+    "probe_at": 0.0,
+    "version": None,
+}
+_SETTINGS_CACHE_LOCK = threading.Lock()
+_SETTINGS_CACHE_EPOCH = 0
+_SETTINGS_CACHE_OFF_VALUES = {"off", "0", "false", "no"}
+
+
+def settings_cache_disabled() -> bool:
+    """`SETTINGS_CACHE=off` 一键直通 `load()`；用 os.getenv 直读，避免自举死锁。"""
+    return os.getenv("SETTINGS_CACHE", "").strip().lower() in _SETTINGS_CACHE_OFF_VALUES
+
+
+def _bump_settings_epoch() -> None:
+    """本进程写过配置就作废缓存（即使 .env 镜像写失败被吞也必须作废）。"""
+    global _SETTINGS_CACHE_EPOCH
+    with _SETTINGS_CACHE_LOCK:
+        _SETTINGS_CACHE_EPOCH += 1
+
+
+def reset_settings_cache() -> None:
+    """清空缓存并作废版本戳（测试隔离与「保存后立刻读」共用）。"""
+    global _SETTINGS_CACHE_EPOCH
+    with _SETTINGS_CACHE_LOCK:
+        _SETTINGS_CACHE.update(
+            {"signature": None, "settings": None, "probe_at": 0.0, "version": None}
+        )
+        _SETTINGS_CACHE_EPOCH += 1
+
+
+def _env_file_signature() -> tuple[str, int, int]:
+    """.env 的路径 + mtime_ns + size：外部编辑器改 .env 时下一次 stat 即失效。"""
+    try:
+        status = ENV_FILE.stat()
+    except OSError:
+        return (str(ENV_FILE), -1, -1)
+    return (str(ENV_FILE), int(status.st_mtime_ns), int(status.st_size))
+
+
+def _runtime_settings_version(now: float, ttl_probe: float, store: "TradingStore | None" = None):
+    """ENV_SETTINGS 的 runtime_config.version，按 ttl_probe 节流探测。"""
+    if now - float(cast(float, _SETTINGS_CACHE["probe_at"])) < ttl_probe:
+        return _SETTINGS_CACHE["version"]
+    _SETTINGS_CACHE["probe_at"] = now
+    active_store = _get_active_store(store)
+    if active_store is None:
+        return _SETTINGS_CACHE["version"]
+    try:
+        saved = active_store.get_runtime_config("ENV_SETTINGS")
+    except Exception as exc:
+        _warn_store_read_fallback("读取 ENV_SETTINGS 版本失败", exc)
+        return _SETTINGS_CACHE["version"]
+    version = int(saved[1]) if saved else 0
+    _SETTINGS_CACHE["version"] = version
+    return version
+
+
+def _settings_signature(now: float, ttl_probe: float, store: "TradingStore | None" = None) -> tuple:
+    return (
+        _env_file_signature(),
+        _SETTINGS_CACHE_EPOCH,
+        _runtime_settings_version(now, ttl_probe, store),
+    )
+
+
+def _apply_runtime_config_override(store: "TradingStore | None" = None) -> None:
+    """把 SQLite 的 ENV_SETTINGS 权威值**强制**写回 os.environ。
+
+    为什么需要这一步：`refresh_runtime_environment(override=False)` 只写「env 里
+    还没有的键」。跨进程改了配置（另一个进程 / Service 写库）时旧值仍在 os.environ
+    里，光靠 `load()` 会构造出旧 `Settings` —— 也就是 Reviewer 点名的「双源漂移」。
+    这里只覆盖数据库里**显式存在**的键，不动 .env 与操作系统注入的其它变量。
+    """
+    active_store = _get_active_store(store)
+    if active_store is None:
+        return
+    try:
+        saved = active_store.get_runtime_config("ENV_SETTINGS")
+    except Exception as exc:
+        _warn_store_read_fallback("强制回写 ENV_SETTINGS 失败", exc)
+        return
+    if not saved or not isinstance(saved[0], dict):
+        return
+    for key, value in saved[0].items():
+        _set_env(str(key), str(value))
+
+
 def _set_env(key: str, value: str) -> None:
     """Set *key* in os.environ, skipping values that cannot fit on Windows."""
     if len(value) > _ENV_MAX_SAFE_VALUE:
@@ -79,6 +175,9 @@ def _apply_dotenv(override: bool = False) -> None:
 
 def _mirror_env(key: str, value: str) -> None:
     """Keep .env as a compatibility mirror; SQLite is the runtime authority."""
+    # 进程内只要发生过一次配置写入，就立刻让 Settings 缓存失效 —— 即便下面
+    # 的 .env 镜像写失败被吞（SQLite 已生效），也不能让页面继续读旧值。
+    _bump_settings_epoch()
     ENV_FILE.touch(exist_ok=True)
     lock_path = ENV_FILE.with_suffix(".env.lock")
     try:
@@ -1072,3 +1171,36 @@ class Settings:
 
     def quantity_for(self, symbol: str) -> int:
         return self.order_quantities.get(symbol, self.order_quantity)
+
+    @classmethod
+    def load_cached(cls, *, ttl_probe: float = 2.0, store: "TradingStore | None" = None) -> "Settings":
+        """带失效的 `load()`：UI 展示型页面用它，service / 下单 / 风控继续用 `load(refresh=True)`。
+
+        为什么不是纯 TTL 或 `@st.cache_data`：正确性必须由权威源（.env stat +
+        SQLite `ENV_SETTINGS.version` + 本进程写入计数）决定，TTL 只做 DB 探测节流；
+        `Settings` 含 dict 不可 hash，且 `@st.cache_data` 看不见 DB 版本。
+
+        最坏可见延迟：同进程保存后立即生效（写入即 bump epoch）；别的进程写
+        SQLite ≤ `ttl_probe`（默认 2 秒）；外部改 .env 下一次调用即生效。
+        """
+        if settings_cache_disabled():
+            return cls.load(store=store)
+
+        signature = _settings_signature(time.monotonic(), ttl_probe, store)
+        cached = cast("Settings | None", _SETTINGS_CACHE["settings"])
+        if cached is not None and _SETTINGS_CACHE["signature"] == signature:
+            return cached
+
+        # 未命中时串行填充：`_apply_dotenv` / `refresh_runtime_environment` 写的是
+        # 进程级 os.environ，多 session 并发 rerun 会交错出半新半旧的环境。
+        with _SETTINGS_CACHE_LOCK:
+            signature = _settings_signature(time.monotonic(), ttl_probe, store)
+            cached = cast("Settings | None", _SETTINGS_CACHE["settings"])
+            if cached is not None and _SETTINGS_CACHE["signature"] == signature:
+                return cached
+            # 权威值先强制覆盖 os.environ，再构造：否则跨进程写入看不见（见上）。
+            _apply_runtime_config_override(store)
+            settings = cls.load(store=store)
+            _SETTINGS_CACHE["settings"] = settings
+            _SETTINGS_CACHE["signature"] = signature
+            return settings

@@ -33,7 +33,7 @@ from scripts.run_crypto_swap_strategy import run_once, swap_symbols_from_env
 
 
 st.set_page_config(page_title="永续合约策略", page_icon="📈", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("永续合约策略")
 st.caption("欧易 Demo USDT 永续。当前只保留 Managed Futures + 山寨币空头恢复主线配置。")
 

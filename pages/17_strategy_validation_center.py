@@ -19,7 +19,7 @@ from futu_quant.validation_loop import (
 
 
 st.set_page_config(page_title="策略验证中心", page_icon="✅", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 broker = FutuPaperBroker(settings)

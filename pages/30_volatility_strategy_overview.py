@@ -20,7 +20,7 @@ from futu_quant.volatility_orphans import orphan_rows_for_display
 
 
 st.set_page_config(page_title="波动率策略总览", page_icon=":material/waves:", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 
@@ -33,8 +33,11 @@ def _broker_singleton() -> FutuPaperBroker:
     `load_broker_snapshot` 每次 60 秒缓存过期时又 `FutuPaperBroker(Settings.load())`
     ——两条 OpenD 连接 + 两次配置解析。本页对 broker 只做 positions/orders 只读
     展示，不经过任何下单路径，共用一个实例是安全的。
+
+    配置解析走 `Settings.load_cached()`：模块顶部已经渲染过一次侧边栏，
+    这里再来一次 `load()` 会白付 0.13–0.18s（缓存命中是 10µs 级）。
     """
-    return FutuPaperBroker(Settings.load())
+    return FutuPaperBroker(Settings.load_cached())
 
 
 broker = _broker_singleton()

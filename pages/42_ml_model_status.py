@@ -32,7 +32,7 @@ from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import get_current_tenant, render_admin_login, render_sidebar
 
 st.set_page_config(page_title="ML 模型与回测验证中心", page_icon="🧠", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 admin = render_admin_login()

@@ -15,7 +15,7 @@ from futu_quant.ui import STRATEGY_LABELS, render_sidebar, translate_common_valu
 
 
 st.set_page_config(page_title="交易诊断中心", page_icon="🔎", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("交易诊断中心")
 st.caption("从信号、候选、交易前检查、统一风控、订单到成交，一处查看最终停在哪一关。")
 

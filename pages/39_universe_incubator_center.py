@@ -16,7 +16,7 @@ from futu_quant.universe.lifecycle_manager import LifecycleManager
 from futu_quant.universe.recall_scanner import RecallScanner
 
 st.set_page_config(page_title="标的孵化与赛马中心", page_icon="🚀", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 admin = render_admin_login()
 

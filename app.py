@@ -127,7 +127,7 @@ if current_page not in (dashboard_page, account_page):
     st.stop()
 
 try:
-    settings = Settings.load()
+    settings = Settings.load_cached()
     broker = get_tenant_broker(settings)
     store = TradingStore()
 except Exception as exc:

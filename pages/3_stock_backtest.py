@@ -17,11 +17,11 @@ from futu_quant.ui import open_trading_store as TradingStore
 
 
 st.set_page_config(page_title="策略回测", page_icon="🧪", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("股票 / ETF 策略回测")
 st.caption("信号在当日收盘生成，订单在下一交易日开盘成交，避免使用未来数据。")
 
-settings = Settings.load()
+settings = Settings.load_cached()
 broker = FutuPaperBroker(settings)
 store = TradingStore()
 admin = render_admin_login()

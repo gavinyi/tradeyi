@@ -212,7 +212,7 @@ def _source_label(source: str, tenant_id: str) -> str:
 
 
 def main() -> None:
-    settings = Settings.load()
+    settings = Settings.load_cached()
     render_sidebar(settings)
 
     st.title("🛡️ 风险与限额")

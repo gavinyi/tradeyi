@@ -23,10 +23,10 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="系统监控", page_icon="🛡️", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("系统监控与策略归因")
 store = TradingStore()
-settings = Settings.load()
+settings = Settings.load_cached()
 broker = FutuPaperBroker(settings)
 
 

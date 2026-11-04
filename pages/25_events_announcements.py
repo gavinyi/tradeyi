@@ -13,7 +13,7 @@ from futu_quant.ui import china_time_columns, render_sidebar
 
 
 st.set_page_config(page_title="事件与公告", page_icon="🗓️", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 

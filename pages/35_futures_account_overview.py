@@ -41,7 +41,7 @@ def load_swap_tickers(symbols: tuple[str, ...]):
 
 
 st.set_page_config(page_title="合约账户总览", page_icon="📊", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("欧易永续合约账户")
 st.caption("欧易 Demo USDT 永续账户。平台资产、平台持仓与 Shadow 虚拟持仓分开核算。")
 

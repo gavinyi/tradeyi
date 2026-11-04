@@ -14,7 +14,7 @@ from futu_quant.config_center import GLOBAL_REGISTRY
 
 st.set_page_config(page_title="账户与交易环境 - 统一配置", page_icon="🏦", layout="wide")
 
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 
 st.title("🏦 账户与交易环境")

@@ -40,11 +40,11 @@ from scripts.run_gamma_strategy import run_once as run_gamma_debug_once  # noqa:
 
 
 st.set_page_config(page_title="财报 Gamma 策略", page_icon="⚡", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("财报 Gamma 事件策略")
 st.warning("高风险模拟策略：只使用最大亏损可计算的结构；机会评分不合格时自动放弃交易。")
 
-settings = Settings.load()
+settings = Settings.load_cached()
 broker = FutuPaperBroker(settings)
 executor = ExecutionManager(broker)
 store = TradingStore()

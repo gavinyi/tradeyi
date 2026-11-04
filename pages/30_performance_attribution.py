@@ -9,7 +9,7 @@ from futu_quant.ui import render_sidebar
 from futu_quant.config import Settings
 
 st.set_page_config(page_title="收益与交易成本", page_icon="📊", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 st.title("收益与交易成本分析")
 st.caption("按成熟绩效系统的口径拆分：成交金额、手续费、价差成本、价格冲击和行情覆盖率。")

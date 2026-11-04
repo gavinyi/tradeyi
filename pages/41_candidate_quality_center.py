@@ -26,7 +26,7 @@ from futu_quant.ui import china_time_columns, get_current_tenant, render_sidebar
 
 
 st.set_page_config(page_title="候选质量中心", page_icon="🎯", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("候选质量中心")
 st.caption(
     "回答「**为什么这轮没有候选**」：被硬排除多少、被软降权多少、各自什么原因。"
@@ -34,8 +34,7 @@ st.caption(
 )
 
 store = TradingStore()
-settings = Settings.load()
-
+settings = Settings.load_cached()
 try:
     tenant = get_current_tenant(settings)
     tenant_id = str(tenant.get("tenant_id") or "")

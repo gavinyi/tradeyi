@@ -14,7 +14,7 @@ from futu_quant.ui import chinese_columns, render_admin_login, render_sidebar
 
 
 st.set_page_config(page_title="期权数据回测", page_icon="📊", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 broker = FutuPaperBroker(settings)

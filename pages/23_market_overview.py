@@ -20,7 +20,7 @@ from futu_quant.volatility_optimizer import volatility_regime
 
 
 st.set_page_config(page_title="市场与自选行情", page_icon="📊", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 
 st.title("市场与自选行情")

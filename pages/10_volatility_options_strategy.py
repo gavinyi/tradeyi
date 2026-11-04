@@ -55,7 +55,7 @@ from scripts.run_gamma_strategy import load_state  # noqa: E402
 
 
 st.set_page_config(page_title="波动率期权策略", page_icon="🌊", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 broker = FutuPaperBroker(settings)

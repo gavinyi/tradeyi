@@ -27,7 +27,7 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="上线审批", page_icon="✅", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 current_tenant = get_current_tenant(settings)
 st.title("策略上线审批与验收")

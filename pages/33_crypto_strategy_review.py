@@ -12,7 +12,7 @@ from futu_quant.ui import render_sidebar
 
 
 st.set_page_config(page_title="币策略复盘与执行质量", page_icon="📋", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("币策略复盘与执行质量")
 st.caption("汇总自动雷达、策略判断、Shadow/欧易模拟执行、当前持仓和阻断原因。")
 

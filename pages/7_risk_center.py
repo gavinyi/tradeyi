@@ -15,7 +15,7 @@ from futu_quant.risk_calibration import generate_recommendations, recommendation
 
 
 st.set_page_config(page_title="风控中心", page_icon="🚨", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("风控中心")
 st.caption("集中管理模拟盘急停、账户风险限额和订单保护参数。")
 

@@ -10,7 +10,7 @@ from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import render_sidebar
 
 st.set_page_config(page_title="合约量化总览", page_icon=":material/radar:", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("合约量化总览")
 st.caption("欧易 Demo USDT 永续总览。策略服务、Shadow 持仓、雷达托管和执行入口集中查看。")
 settings = OkxSettings.from_env()

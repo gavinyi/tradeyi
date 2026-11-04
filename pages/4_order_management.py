@@ -16,7 +16,7 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="订单管理", page_icon="🧾", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 current_tenant = get_current_tenant(settings)
 broker = get_tenant_broker(settings)

@@ -22,7 +22,7 @@ from futu_quant.ui import china_time_columns, chinese_columns, render_admin_logi
 
 
 st.set_page_config(page_title="期权组合执行", page_icon="🧩", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 broker = FutuPaperBroker(settings)

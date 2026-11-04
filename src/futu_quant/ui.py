@@ -442,7 +442,7 @@ def get_tenant_broker(settings=None):
     from .broker import FutuPaperBroker
     from .config import Settings
     tenant = get_current_tenant(settings)
-    s = settings or Settings.load()
+    s = settings or Settings.load_cached()
     return FutuPaperBroker(
         s,
         trading_env_override=tenant["env"],

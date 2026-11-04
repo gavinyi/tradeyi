@@ -13,7 +13,7 @@ from futu_quant.ui import render_sidebar
 
 
 st.set_page_config(page_title="合约策略复盘", page_icon="📋", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("永续合约策略复盘")
 st.caption("按北京时间复盘开多、开空、平仓、阻断和 Shadow 执行。")
 

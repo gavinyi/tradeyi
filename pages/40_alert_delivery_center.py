@@ -29,7 +29,7 @@ from futu_quant.ui import china_time_columns, render_admin_login, render_sidebar
 
 
 st.set_page_config(page_title="告警投递中心", page_icon="📣", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("告警投递中心")
 st.caption(
     "回答一个问题：**告警有没有真的送出去**。"

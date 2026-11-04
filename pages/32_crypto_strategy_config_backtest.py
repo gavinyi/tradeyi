@@ -44,7 +44,7 @@ from futu_quant.ui import render_sidebar
 
 
 st.set_page_config(page_title="币策略配置与回测", page_icon="📈", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("币策略配置与回测")
 st.caption("现货波动率扩张策略。默认 Shadow，只使用已完成的 1 小时 K 线。")
 

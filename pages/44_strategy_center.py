@@ -95,7 +95,7 @@ def _render_panorama() -> None:
 
 
 def main() -> None:
-    settings = Settings.load()
+    settings = Settings.load_cached()
     render_sidebar(settings)
 
     st.title("📈 策略中心")

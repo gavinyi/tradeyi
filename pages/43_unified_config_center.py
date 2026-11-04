@@ -22,7 +22,7 @@ from futu_quant.config_center import (
 from futu_quant.ui import open_trading_store as TradingStore, render_admin_login, render_sidebar
 
 st.set_page_config(page_title="统一配置中心", page_icon="🧭", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 
 st.title("🧭 统一配置中心 (只读目录 & 元数据审计)")

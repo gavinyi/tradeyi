@@ -92,7 +92,7 @@ def _render_never_mute() -> None:
 
 
 def main() -> None:
-    settings = Settings.load()
+    settings = Settings.load_cached()
     render_sidebar(settings)
 
     st.title("🔔 通知与运维")

@@ -13,7 +13,7 @@ from futu_quant.ui import china_time_columns, chinese_columns, render_sidebar, g
 
 
 st.set_page_config(page_title="策略复盘与执行质量", page_icon="📋", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 current_tenant = get_current_tenant(settings)
 is_real = current_tenant["is_real"]

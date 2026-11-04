@@ -17,7 +17,7 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="运行日志", page_icon="📋", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("策略运行日志与验收演练")
 store = TradingStore()
 admin = render_admin_login()

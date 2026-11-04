@@ -21,7 +21,7 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="策略活动中心", page_icon="🧭", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 st.title("策略活动中心")
 st.caption("统一查看策略生命周期、通知、数据状态、验收门槛和配置历史。")

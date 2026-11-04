@@ -37,7 +37,7 @@ def load_shadow_tickers(symbols: tuple[str, ...]) -> dict[str, dict]:
 
 
 st.set_page_config(page_title="欧易账户总览", page_icon="🪙", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("欧易账户总览")
 st.caption("欧易 Demo Trading 账户信息。平台账户与策略 Shadow 虚拟持仓分开核算。")
 

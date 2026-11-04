@@ -12,7 +12,7 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="研究与证据中心", page_icon="🧪", layout="wide")
-settings = Settings.load()
+settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()
 admin = render_admin_login()

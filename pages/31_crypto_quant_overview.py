@@ -10,7 +10,7 @@ from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import render_sidebar
 
 st.set_page_config(page_title="币量化总览", page_icon=":material/currency_bitcoin:", layout="wide")
-render_sidebar(Settings.load())
+render_sidebar(Settings.load_cached())
 st.title("币量化总览")
 st.caption("欧易 Demo 币现货策略总览。账户、Shadow、雷达和策略配置集中到一个入口。")
 settings = OkxSettings.from_env()
