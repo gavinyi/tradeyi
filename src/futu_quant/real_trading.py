@@ -181,9 +181,21 @@ def resolve_real_account_limits(
     except Exception as exc:
         tenant_id = ""
         profile_resolution = None
+        limit_profile_reason = f"{type(exc).__name__}: {exc}"
         logging.getLogger(__name__).warning(
-            "LIMIT_PROFILE_LEGACY_FALLBACK account=%s reason=%s", account_id, exc
+            "LIMIT_PROFILE_LEGACY_FALLBACK account=%s reason=%s", account_id, limit_profile_reason
         )
+        # 只写日志等于不可查询（Reviewer 2026-11-04 次要 2）：回落必须留审计痕迹。
+        try:
+            store.audit(
+                "LIMIT_PROFILE_LEGACY_FALLBACK",
+                {"account_id": str(account_id), "reason": limit_profile_reason},
+                "real_trading",
+                actor="service:real_gate",
+            )
+        except Exception:  # noqa: BLE001 - 审计失败不得改变“继续用旧键”的结论
+            pass
+
     if profile_resolution and profile_resolution.source == "derived:limit_profile":
         try:
             rows = store.equity_history(limit=1, env=f"REAL_{account_id}")

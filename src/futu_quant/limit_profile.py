@@ -115,6 +115,33 @@ def resolve_limit_chain(
     )
 
 
+def resolve_batch_budget(
+    store, tenant_id: str, legacy_budget: float, equity: float | None
+) -> tuple[float, str]:
+    """批预算层（第 5 层）：派生启用后取派生链 `batch`，旧键金额只读不生效。
+
+    Reviewer 2026-11-04 阻断 1：`volatility_roll.py` 原先只读
+    `campaign.max_premium_per_stage`（`VOLATILITY_RADAR_BUDGETS:{tenant}`），
+    98 万模拟盘零成交正是从这一层开始的 —— 七层只接了六层。
+    拿不到权益时返回 0（等价一张不买，fail-closed），**绝不回落到旧键金额**。
+    """
+    if not tenant_id:
+        return float(legacy_budget), "legacy:no_tenant"
+    from .limit_profile_store import load_limit_profile
+
+    resolution = load_limit_profile(store, tenant_id)
+    if resolution.source != "derived:limit_profile":
+        return float(legacy_budget), resolution.source
+    try:
+        amount = _finite_nonnegative(equity if equity is not None else 0.0, "equity")
+    except (TypeError, ValueError):
+        return 0.0, "derived:missing_equity"
+    if amount <= 0:
+        return 0.0, "derived:missing_equity"
+    chain = resolve_limit_chain(store, tenant_id, amount, resolution.profile)
+    return float(chain.batch), resolution.source
+
+
 def validate_profile(profile: LimitProfile, equity: float) -> tuple[bool, str]:
     """校验待发布百分比；非法值一律拒绝，不静默夹到边界。
 

@@ -424,8 +424,32 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         as_of=ny_today,
     )
     candidates = add_iv_history_percentiles(candidates, option_history)
+    # 【批预算层必须接派生】Reviewer 2026-11-04 阻断 1：这一层原先只读
+    # `campaign.max_premium_per_stage`（`VOLATILITY_RADAR_BUDGETS:{tenant}`），
+    # 七层里漏掉的正是它 —— 98 万模拟盘零成交的起点。
+    # 派生启用后批预算取派生链 `batch`，旧键金额只读；拿不到权益时派生批预算为 0
+    # （一张不买，fail-closed），绝不回落旧键金额。
+    from .limit_profile import resolve_batch_budget
+
+    _budget_tenant = str(campaign.get("tenant_id") or tenant_id_of_broker(broker) or "")
+    _budget_equity: float | None = None
+    if is_real_account(broker):
+        try:
+            _budget_equity = float(capacity.equity)
+        except (NameError, AttributeError, TypeError):
+            _budget_equity = None
+    else:
+        try:
+            from .portfolio_allocator import strategy_budget_usage
+
+            _budget_usage, _budget_equity = strategy_budget_usage(store, broker)
+        except Exception:  # noqa: BLE001 - 拿不到权益 → 派生批预算为 0，不放宽
+            _budget_equity = None
+    base_premium_budget, budget_source = resolve_batch_budget(
+        store, _budget_tenant, float(campaign.get("max_premium_per_stage", 1000)), _budget_equity
+    )
     premium_budget, entry_tier = tiered_premium_budget(
-        float(campaign.get("max_premium_per_stage", 1000)), regime, store
+        base_premium_budget, regime, store
     )
     # 【反推张数的分母】Reviewer 2026-11-03 红线：必须取
     # min(campaign 批预算, 压力损失预算 loss_limit)。只按 $1,000 反推，
@@ -637,7 +661,8 @@ def roll_campaign(broker, campaign: dict, store) -> tuple[dict, str]:
         "volatility_filter_reason": str(selected.get("volatility_filter_reason", "")),
         "last_expression_review": ny_today.isoformat(),
         "entry_tier": entry_tier,
-        "base_premium_budget": float(campaign.get("max_premium_per_stage", 1000)),
+        "base_premium_budget": base_premium_budget,
+        "premium_budget_source": budget_source,
         "effective_premium_budget": premium_budget,
     })
     if selected_code != str(campaign.get("code") or ""):

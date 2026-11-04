@@ -120,17 +120,26 @@ def publish_limit_profile(
     now = datetime.now(timezone.utc).isoformat()
     value = {**profile.__dict__, "updated_at": now, "actor": actor, "reason": reason, "approval_fingerprint": approval_fingerprint}
     release_id = store.create_config_release(key, value, actor, reason)
-    store.publish_config_release_with_audit(
-        release_id, actor, "LIMIT_PROFILE_PUBLISHED",
-        {"tenant_id": tenant_id,
-         # `before`/`after` 会被发布通道覆盖成 runtime_config 原文（store.py:2624-2625），
-         # 因此另存生效金额快照，保证事后可从审计复现「当时实际放行多少」。
-         "effective_before": old_chain.as_dict(),
-         "effective_after": new_chain.as_dict(),
-         "changes": changes,
-         "reason": reason,
-         "approval_fingerprint": approval_fingerprint},
-    )
+    try:
+        store.publish_config_release_with_audit(
+            release_id, actor, "LIMIT_PROFILE_PUBLISHED",
+            {"tenant_id": tenant_id,
+             # `before`/`after` 会被发布通道覆盖成 runtime_config 原文（store.py:2624-2625），
+             # 因此另存生效金额快照，保证事后可从审计复现「当时实际放行多少」。
+             "effective_before": old_chain.as_dict(),
+             "effective_after": new_chain.as_dict(),
+             "changes": changes,
+             "reason": reason,
+             "approval_fingerprint": approval_fingerprint},
+        )
+    except Exception:
+        # 发布事务失败：草稿必须就地作废，否则留下孤儿 DRAFT（Reviewer 2026-11-04 次要 1）。
+        try:
+            store.reject_config_release(release_id, actor, reason=f"发布失败自动作废：{reason}")
+        except Exception:  # noqa: BLE001 - 作废失败不得掩盖原始发布异常
+            pass
+        raise
+
     # 发布后必须从 runtime_config 回读并逐字段比对；不一致立即走统一回滚通道。
     persisted = store.get_runtime_config(key)
     expected = _profile_fields(value)
