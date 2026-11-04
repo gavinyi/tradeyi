@@ -141,10 +141,17 @@ def test_settings_cache_off_bypasses_cache(isolated, monkeypatch):
 
 
 def test_backstop_marker_is_read_from_environment_not_settings():
-    """回滚开关必须用 os.getenv 直读，不能反过来依赖 Settings（否则自举死锁）。"""
-    source = inspect.getsource(config.settings_cache_disabled)
-    assert "os.getenv" in source
-    assert "Settings" not in source
+    """回滚开关必须用 os.getenv 直读，不能反过来依赖 Settings（否则自举死锁）。
+
+    只看函数体（AST），不看 docstring —— 注释里提到 Settings 不等于依赖 Settings。
+    """
+    tree = ast.parse(inspect.getsource(config.settings_cache_disabled))
+    body = tree.body[0].body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]  # 跳过 docstring
+    code = "\n".join(ast.dump(node) for node in body)
+    assert "getenv" in code, "回滚开关没有用 os.getenv 直读环境变量"
+    assert "'Settings'" not in code, "回滚开关不许依赖 Settings（会自举死锁）"
 
 
 def test_load_itself_was_not_cached():

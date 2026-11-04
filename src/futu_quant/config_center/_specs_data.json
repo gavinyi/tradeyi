@@ -10493,6 +10493,34 @@
     "surface": "advanced"
   },
   {
+    "key": "runtime.settings_cache",
+    "aliases": [
+      "SETTINGS_CACHE"
+    ],
+    "category": "① 运行环境与连接",
+    "title": "SETTINGS_CACHE",
+    "description": "Settings.load_cached() 的逃生开关：置 off 时直通 Settings.load()（回退到改动前行为，跨进程写入不可见）",
+    "value_type": "string",
+    "default": "",
+    "scope": "global",
+    "storage": "env",
+    "risk_level": "MEDIUM",
+    "editable": false,
+    "requires_admin": true,
+    "requires_confirmation": false,
+    "activation": "next_cycle",
+    "consumers": [
+      "config.Settings"
+    ],
+    "tags": [
+      "运行环境与连接",
+      "需不需要重启"
+    ],
+    "runtime_key": "SETTINGS_CACHE",
+    "user_area": "account_env",
+    "surface": "advanced"
+  },
+  {
     "key": "runtime.env_settings",
     "aliases": [
       "ENV_SETTINGS"
