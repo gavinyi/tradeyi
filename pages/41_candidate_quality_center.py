@@ -26,6 +26,8 @@ from futu_quant.ui import china_time_columns, get_current_tenant, render_sidebar
 
 
 st.set_page_config(page_title="候选质量中心", page_icon="🎯", layout="wide")
+# 为什么这页可以吃缓存：纯只读诊断页（为什么这轮没候选），不写配置、不下单，
+# settings 只决定显示哪个租户的候选流水（2026-11-04）。
 render_sidebar(Settings.load_cached())
 st.title("候选质量中心")
 st.caption(

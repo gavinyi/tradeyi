@@ -18,6 +18,8 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="期权盈亏台账", page_icon="💹", layout="wide")
+# 为什么这页可以吃缓存：只读台账展示（盈亏/成交回看），不写配置、不下单、
+# 不参与风控与额度判定；settings 只用于选「显示哪个租户的台账」（2026-11-04）。
 settings = Settings.load_cached()
 render_sidebar(settings)
 current_tenant = get_current_tenant(settings)

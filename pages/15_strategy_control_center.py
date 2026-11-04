@@ -28,7 +28,9 @@ from futu_quant.ui import chinese_columns, get_current_tenant, render_admin_logi
 
 
 st.set_page_config(page_title="策略与资金控制", page_icon="🎛️", layout="wide")
-settings = Settings.load_cached()
+# 本页能启停策略、改资金/暂停状态（set_strategy_enabled / set_strategy_entries_paused），
+# 直接改变运行状态；settings 又参与租户判定。这类页面不吃缓存（2026-11-04 Chief 判据）。
+settings = Settings.load()
 render_sidebar(settings)
 store = TradingStore()
 admin = render_admin_login()

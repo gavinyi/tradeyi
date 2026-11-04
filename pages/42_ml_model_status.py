@@ -32,6 +32,8 @@ from futu_quant.ui import open_trading_store as TradingStore
 from futu_quant.ui import get_current_tenant, render_admin_login, render_sidebar
 
 st.set_page_config(page_title="ML 模型与回测验证中心", page_icon="🧠", layout="wide")
+# 为什么这页可以吃缓存：模型状态/回测结果只读展示，不写配置、不下单；
+# settings 只用于显示租户口径（2026-11-04）。
 settings = Settings.load_cached()
 render_sidebar(settings)
 store = TradingStore()

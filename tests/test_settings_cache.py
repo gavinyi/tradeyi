@@ -325,14 +325,29 @@ def test_process_injected_variables_are_never_overridden_by_db(isolated, monkeyp
     assert config.settings_cache_disabled() is False, "SETTINGS_CACHE 不许被数据库值打开/关闭"
 
 
-# 这些页面不吃缓存：写配置 / 下单 / 审批 / 风控限额 / 实盘控制。
+# 这些页面不吃缓存（Chief 2026-11-04 判据：能下单或能写配置的页面，一律不吃缓存）。
 # 有人「顺手优化」回去就会用错账户或用错额度，所以用静态守卫钉死。
 CACHING_FORBIDDEN_PAGES = (
+    # 实盘/下单控制
+    "pages/27_live_trading_control.py",
     "pages/4_order_management.py",
     "pages/9_launch_approval.py",
     "pages/16_options_combo_execution.py",
-    "pages/27_live_trading_control.py",
+    "pages/5_earnings_gamma_strategy.py",
+    # 会写配置 / 改运行状态
+    "pages/1_trading_config.py",
+    "pages/2_options_config.py",
+    "pages/15_strategy_control_center.py",
+    "pages/44_strategy_center.py",
     "pages/45_risk_and_limits.py",
+)
+
+# 纯展示页保留缓存（每页源码里都写了「为什么这页可以缓存」）。
+CACHING_ALLOWED_PAGES = (
+    "pages/00_today_overview.py",
+    "pages/28_options_pnl_ledger.py",
+    "pages/41_candidate_quality_center.py",
+    "pages/42_ml_model_status.py",
 )
 
 
@@ -354,3 +369,11 @@ def test_order_and_account_pages_do_not_use_the_cache():
     for relative in CACHING_FORBIDDEN_PAGES:
         hits = _calls_settings_load_cached(root / relative)
         assert not hits, f"{relative} 第 {hits} 行吃了 Settings 缓存，下单/账户路径不许缓存"
+
+
+def test_display_only_pages_keep_the_cache():
+    """对称守卫：白名单里的展示页必须真的吃缓存，否则这条优化会悄悄退回。"""
+    root = Path(__file__).resolve().parents[1]
+    for relative in CACHING_ALLOWED_PAGES:
+        hits = _calls_settings_load_cached(root / relative)
+        assert hits, f"{relative} 是纯展示页，应当走 Settings.load_cached()"

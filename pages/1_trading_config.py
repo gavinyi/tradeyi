@@ -24,7 +24,10 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="交易配置", page_icon="⚙️", layout="wide")
-settings = Settings.load_cached()
+# 本页会写 settings（save_trading_preferences / save_core_satellite_* / save_gamma_*），
+# 且用 settings 选账户租户。「写完立刻读回自己刚保存的值」是这里的基本要求，
+# 不吃缓存（2026-11-04 Chief 判据：能写配置的页面一律不吃缓存）。
+settings = Settings.load()
 render_sidebar(settings)
 current_tenant = get_current_tenant(settings)
 broker = get_tenant_broker(settings)

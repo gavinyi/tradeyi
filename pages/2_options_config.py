@@ -11,7 +11,9 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="期权配置", page_icon="🧩", layout="wide")
-settings = Settings.load_cached()
+# 本页写期权配置（save_option_contracts 等）并选账户租户，保存后要立刻读回自己写的值，
+# 不吃缓存（2026-11-04 Chief 判据：能写配置的页面一律不吃缓存）。
+settings = Settings.load()
 render_sidebar(settings)
 current_tenant = get_current_tenant(settings)
 broker = get_tenant_broker(settings)

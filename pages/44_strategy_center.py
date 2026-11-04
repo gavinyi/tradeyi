@@ -95,7 +95,9 @@ def _render_panorama() -> None:
 
 
 def main() -> None:
-    settings = Settings.load_cached()
+    # 本页改策略参数并启停策略（set_strategy_enabled / set_strategy_entries_paused），
+    # 属于「能写配置」的页面，不吃缓存（2026-11-04 Chief 判据）。
+    settings = Settings.load()
     render_sidebar(settings)
 
     st.title("📈 策略中心")

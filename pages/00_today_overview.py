@@ -35,6 +35,8 @@ from futu_quant.risk_limits import RiskLimitsConfigError, resolve_risk_limits_de
 
 st.set_page_config(page_title="今日总览 - 统一配置中心", page_icon="🧭", layout="wide")
 
+# 为什么这页可以吃缓存：纯展示看板，只读 settings 做「显示哪个租户的状态」，
+# 不写配置、不下单、不参与风控/额度判定；配置改动最坏 2 秒内可见（2026-11-04）。
 settings = Settings.load_cached()
 render_sidebar(settings)
 
