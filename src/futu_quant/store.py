@@ -3340,6 +3340,19 @@ class TradingStore:
                 "SELECT * FROM decision_logs ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()]
 
+    def decisions_for_strategy(self, strategy_id: str, limit: int = 500) -> list[dict]:
+        """只取某个策略最近的决策日志（SQL 侧过滤，按 id 倒序）。
+
+        为什么单独一个方法：总览页原先用 `decisions(limit=500)` 拉全局最近 500 行
+        （每行 payload ≈1.1 KB），再在 Python 里按 strategy_id 过滤 —— 同一批 payload
+        要被搬两趟，且页面上限只有 100~200 行。这里让 SQLite 直接按策略过滤 + 限行。
+        """
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM decision_logs WHERE strategy_id=? ORDER BY id DESC LIMIT ?",
+                (str(strategy_id), int(limit)),
+            ).fetchall()]
+
     def audit_events(self, limit: int = 1000) -> list[dict]:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(
