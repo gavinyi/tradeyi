@@ -39,26 +39,6 @@ from typing import Any
 from .risk import RiskLimits, ny_trading_day_start_utc
 
 
-def _equity_env(tenant_id: str, account_id: str) -> str:
-    """权益快照的 env 维度：由**租户交易环境**决定，不能按「有没有账户号」猜。
-
-    事故（2026-11-04）：模拟盘账户同样带 account_id（如 20170229），旧写法拼成
-    REAL_<account_id> 去查快照，而模拟盘权益全写在 SIMULATE 下；查不到就让派生
-    限额 fail-closed，导致模拟盘每一单都被拒（14:45-23:50 共 4 单）。
-    """
-    tenant = None
-    try:
-        from .tenant import resolve_tenant
-
-        if tenant_id:
-            tenant = resolve_tenant(tenant_id, strict=False)
-    except Exception:  # noqa: BLE001 - 解析失败按 REAL 兜底，不因此放宽
-        tenant = None
-    if tenant is not None and getattr(tenant, "trading_env", "") == "SIMULATE":
-        return "SIMULATE"
-    return f"REAL_{account_id}" if account_id else "SIMULATE"
-
-
 logger = logging.getLogger(__name__)
 
 
