@@ -167,3 +167,12 @@ exponential backoff on failure, and heartbeat/status writes. **Single-instance e
 - 新建开发工作树的固定姿势：`git worktree add E:\Thisyi\trade-dev\wt-<slug> -b fix/<slug> master`。
 - 以上三步用 `scripts/dev_worktree.py` 串起来：`new <slug>` 建树 → `verify --ref <branch>` 在测试区跑全量并写绿戳 → `merge <branch>` 校验绿戳后 ff 合入并推送；`release` 等于 verify+merge。**没有对应 commit 的绿戳时 `merge` 直接拒绝**，`--force` 仅用于 hotfix 并在提交说明里写清原因。
 - 详见 `docs/test_environment_runtime.md`（测试区启停与验收清单）。
+
+## 验证纪律（2026-11-04 起，每条都是真踩过的坑）
+
+- **跑绿的那棵树必须就是要合的那棵树。** 跨分支验证用独立 detached worktree（`git worktree add <path> <sha> --detach`），不复用可被别人切换的目录（`trade-test` 会被多个会话先后占用）。同一 worktree 同一时刻只跑一个验证。绿戳必须记 sha + 工作树路径；`dev_worktree.py verify` 应在跑前跑后各核一次 HEAD，不一致拒写绿戳。
+- **pytest 的 import 路径和脚本的 import 路径不一样。** pytest 的 `pythonpath=src` 相对 rootdir 解析，跑的是正确树；而 `python scripts/xxx.py` 用别人的 venv 时，`import futu_quant` 会解析到**那个 venv 所属树的 src**。用别人的 venv 跑自己树的脚本，必须显式钉 `PYTHONPATH=<本树>/src`，否则会报一堆假错（典型症状：`Settings has no load_cache`）。
+- **守卫要钉行为，不要钉形状。** 源码字面串守卫（`assert "os.getenv" in source`）和写死数量的守卫（`assert len(specs) == 383`）在等价重构或正当新增时会假红，红了就被人改掉，改到最后没人记得它原本防什么。改钉可观测行为、AST 结构，或快照基线（`tests/fixtures/*.txt`，变更本身就是一次可 review 的 diff）。
+- **守卫读不到输入时不能返回空结果。** `ast.parse("")` 得到空 dict，失败信息变成 `assert 'on_change' in {}`——看起来像"代码缺参数"，真因是"文件没被读到"。前置断言文件存在且非空，并校验 `inspect.getsource` 拿到的确实是目标函数本体。
+- **改判定口径时失败方向必须保持 fail-closed。** 把裸比较改成比率（`loss > limit` → `loss / limit > 1.0`）在 `limit == 0` 时会从"拦"变成"放"。任何调整判定口径的改动都要专门测 `limit = 0`、字段缺失、读库异常这几条路径。
+- **配置登记 ≠ 配置可读。** 新增配置项必须同时证明「登记能被解析到」和「改动会真的改变行为」，否则就是一条骗过 AST 登记守卫的死条目（历史事故：`capacity_ratio: 0.26` 写进库、无人读取）。
