@@ -113,7 +113,13 @@ def _env_file_signature() -> tuple[str, int, int]:
 
 
 def _runtime_settings_version(now: float, ttl_probe: float, store: "TradingStore | None" = None):
-    """ENV_SETTINGS 的 runtime_config.version，按 ttl_probe 节流探测。"""
+    """ENV_SETTINGS 的 runtime_config.version，按 ttl_probe 节流探测。
+
+    读库失败时**返回一个新建的哨兵对象**，而不是沿用上一次的 version：
+    沿用的后果是签名不变、缓存命中、陈旧可能无限期（B1，Reviewer 2026-11-04）。
+    每次都是新对象，所以比较永远不等 → 强制 miss → 重新解析。缓存只能省时间，
+    不能省正确性；库读不到的代价是「每次都全量解析」，而不是「一直用旧值」。
+    """
     if now - float(cast(float, _SETTINGS_CACHE["probe_at"])) < ttl_probe:
         return _SETTINGS_CACHE["version"]
     _SETTINGS_CACHE["probe_at"] = now
@@ -124,18 +130,74 @@ def _runtime_settings_version(now: float, ttl_probe: float, store: "TradingStore
         saved = active_store.get_runtime_config("ENV_SETTINGS")
     except Exception as exc:
         _warn_store_read_fallback("读取 ENV_SETTINGS 版本失败", exc)
-        return _SETTINGS_CACHE["version"]
+        # 每次失败都给一个全新对象：它与任何历史签名都不相等，下一次探测必然 miss。
+        unreadable = object()
+        _SETTINGS_CACHE["version"] = unreadable
+        return unreadable
     version = int(saved[1]) if saved else 0
     _SETTINGS_CACHE["version"] = version
     return version
 
 
+def _store_identity(store: "TradingStore | None" = None) -> str:
+    """签名里的库维度：不同库各自的 ENV_SETTINGS.version 会撞号，必须分开缓存。"""
+    if store is not None:
+        return str(getattr(store, "path", "") or "")
+    if ENV_FILE != DEFAULT_ENV_FILE:
+        return ""
+    try:
+        from .store import DEFAULT_DB
+    except Exception:  # pragma: no cover - 仅在 store 不可导入时发生
+        return ""
+    return str(DEFAULT_DB)
+
+
 def _settings_signature(now: float, ttl_probe: float, store: "TradingStore | None" = None) -> tuple:
     return (
         _env_file_signature(),
+        _store_identity(store),
         _SETTINGS_CACHE_EPOCH,
         _runtime_settings_version(now, ttl_probe, store),
     )
+
+
+# 不允许被数据库值覆盖的过程变量：这些由 service_control.start() 等注入，
+# 属于「谁在哪运行」的事实，不是用户配置（B3）。注意 ENABLE_PAPER_ORDERS 虽然
+# 也是 Settings 字段，但它由进程注入决定，DB 覆盖它会让「以为关了模拟下单」失效。
+_RUNTIME_OVERRIDE_DENY = frozenset({
+    "TRADEYI_ENV",
+    "TRADEYI_PROD_DB_PATH",
+    "ENABLE_PAPER_ORDERS",
+    "SETTINGS_CACHE",
+})
+
+
+def _apply_dotenv_override() -> None:
+    """缓存 miss 时把 .env 的新值**强行**应用（外部编辑器改 .env 要能被看见）。
+
+    `_apply_dotenv(override=False)` 只写「env 里还没有的键」，所以已被旧值占住的键
+    永远刷不到新值 —— miss 之后仍读到旧值等于白失效。过程变量（deny-list）不碰：
+    那是 service_control.start() 注入的运行事实，不是用户配置。
+    """
+    for key, value in dotenv_values(ENV_FILE).items():
+        if value is None or key in _RUNTIME_OVERRIDE_DENY:
+            continue
+        _set_env(str(key), str(value))
+
+
+def _restore_process_injected(snapshot: dict[str, str]) -> None:
+    """把 deny-list 里的过程变量恢复成调用前的样子。
+
+    `load()` 内部的 `refresh_runtime_environment(override=False)` 不认识 deny-list：
+    只要库里存在同名键、而 env 里还没有它，就会被写进 os.environ。缓存 miss 期间
+    必须把这些「谁在哪运行」的事实还原，否则 DB 里一份脏配置就能把
+    TRADEYI_ENV / ENABLE_PAPER_ORDERS / SETTINGS_CACHE 改掉。
+    """
+    for key in _RUNTIME_OVERRIDE_DENY:
+        if key in snapshot:
+            _set_env(key, snapshot[key])
+        else:
+            os.environ.pop(key, None)
 
 
 def _apply_runtime_config_override(store: "TradingStore | None" = None) -> None:
@@ -144,7 +206,8 @@ def _apply_runtime_config_override(store: "TradingStore | None" = None) -> None:
     为什么需要这一步：`refresh_runtime_environment(override=False)` 只写「env 里
     还没有的键」。跨进程改了配置（另一个进程 / Service 写库）时旧值仍在 os.environ
     里，光靠 `load()` 会构造出旧 `Settings` —— 也就是 Reviewer 点名的「双源漂移」。
-    这里只覆盖数据库里**显式存在**的键，不动 .env 与操作系统注入的其它变量。
+    这里只覆盖数据库里**显式存在**的键，不动 .env 与操作系统注入的其它变量；
+    `_RUNTIME_OVERRIDE_DENY` 里的过程变量一律跳过。
     """
     active_store = _get_active_store(store)
     if active_store is None:
@@ -158,14 +221,17 @@ def _apply_runtime_config_override(store: "TradingStore | None" = None) -> None:
         saved_values: dict = {}
     else:
         saved_values = saved[0]
-    current = {str(key) for key in saved_values}
+    current = {str(key) for key in saved_values} - _RUNTIME_OVERRIDE_DENY
     # 「删键」而不是「改值」：上次强制写进去的键若已不在库里，必须把 os.environ
-    # 里的残留撤掉，否则页面会继续用已删除的旧配置（删了配置但还在用的新缺陷）。
+    # 里的残留撤掉，否则页面会继续用已删除的旧配置。
+    # TODO(2026-11-04 Reviewer): 当前全仓没有删除 ENV_SETTINGS 键的代码路径
+    # （save_runtime_settings 是 merge、approval 只读、无 DELETE），所以这条是
+    # 防御性守卫；真有删除入口时，还要同步清理 .env 镜像那一行，否则镜像会把它带回来。
     for stale_key in set(cast(frozenset, _SETTINGS_CACHE["applied_keys"])) - current:
         os.environ.pop(stale_key, None)
     _SETTINGS_CACHE["applied_keys"] = frozenset(current)
-    for key, value in saved_values.items():
-        _set_env(str(key), str(value))
+    for key in current:
+        _set_env(key, str(saved_values[key]))
 
 
 def _set_env(key: str, value: str) -> None:
@@ -1214,9 +1280,17 @@ class Settings:
             cached = cast("Settings | None", _SETTINGS_CACHE["settings"])
             if cached is not None and _SETTINGS_CACHE["signature"] == signature:
                 return cached
-            # 权威值先强制覆盖 os.environ，再构造：否则跨进程写入看不见（见上）。
+            # 权威值先强制覆盖 os.environ，再构造：否则跨进程写入 / 外部改 .env
+            # 虽然让签名失效了，仍会读到旧值（B1：失效了却没刷新）。
+            _apply_dotenv_override()
             _apply_runtime_config_override(store)
-            settings = cls.load(store=store)
+            injected = {
+                key: os.environ[key] for key in _RUNTIME_OVERRIDE_DENY if key in os.environ
+            }
+            try:
+                settings = cls.load(store=store)
+            finally:
+                _restore_process_injected(injected)
             _SETTINGS_CACHE["settings"] = settings
             _SETTINGS_CACHE["signature"] = signature
             return settings

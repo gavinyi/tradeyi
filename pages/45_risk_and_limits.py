@@ -212,7 +212,9 @@ def _source_label(source: str, tenant_id: str) -> str:
 
 
 def main() -> None:
-    settings = Settings.load_cached()
+    # 本页写的是风控/限额（租户层），settings 参与账户与限额判定，缓存错一次就是
+    # 用错账户的额度 —— 保持裸 load()（2026-11-04 Reviewer B2）。
+    settings = Settings.load()
     render_sidebar(settings)
 
     st.title("🛡️ 风险与限额")

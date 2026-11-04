@@ -27,7 +27,9 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="上线审批", page_icon="✅", layout="wide")
-settings = Settings.load_cached()
+# 审批结论会决定「哪些策略能带真金上线」，settings 参与账户/租户判定，
+# 这里保持裸 load()，不吃缓存（2026-11-04 Reviewer B2）。
+settings = Settings.load()
 render_sidebar(settings)
 current_tenant = get_current_tenant(settings)
 st.title("策略上线审批与验收")

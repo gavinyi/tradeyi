@@ -249,3 +249,108 @@ def test_db_only_deletion_never_returns_fresher_than_uncached_path(isolated):
     uncached_value = Settings.load(refresh=True, store=store).real_max_order_notional
     assert cached_value == uncached_value
     assert env_file.read_text(encoding="utf-8").find(str(int(cached_value))) >= 0
+
+
+# ------------------------------------------------------- B1：读库失败必须 miss 并重解析
+
+def test_unreadable_db_forces_miss_instead_of_reusing_last_version(isolated, monkeypatch):
+    """读库抛异常时不许沿用上一次的 version —— 否则签名不变、陈旧可能无限期。"""
+    env_file, store = isolated
+    assert Settings.load_cached(store=store).real_max_order_notional == 100
+
+    def unreadable(key):
+        raise RuntimeError("模拟配置库不可读")
+
+    monkeypatch.setattr(store, "get_runtime_config", unreadable)
+    monkeypatch.delenv(KEY, raising=False)
+    env_file.write_text(
+        f"FUTU_TRADING_ENV=SIMULATE\nFUTU_MARKET=US\n{KEY}=222\n", encoding="utf-8"
+    )
+
+    # 缓存里还是 100；读库失败必须强制重新解析，读到 .env 的新值 222
+    assert Settings.load_cached(store=store, ttl_probe=0.0).real_max_order_notional == 222
+
+    # 而且「库一直读不到」期间不许把答案固化：再改 .env 仍然要生效
+    env_file.write_text(
+        f"FUTU_TRADING_ENV=SIMULATE\nFUTU_MARKET=US\n{KEY}=333\n", encoding="utf-8"
+    )
+    assert Settings.load_cached(store=store, ttl_probe=0.0).real_max_order_notional == 333
+
+
+def test_signature_separates_different_stores(tmp_path, monkeypatch):
+    """两个不同库同 version 不许互相命中（B4 的 store 维度）。"""
+    env_file = tmp_path / ".env"
+    env_file.write_text("FUTU_TRADING_ENV=SIMULATE\nFUTU_MARKET=US\n", encoding="utf-8")
+    monkeypatch.setattr(config, "ENV_FILE", env_file)
+    monkeypatch.setattr(config, "DEFAULT_ENV_FILE", env_file)
+    monkeypatch.setenv(KEY, "100")
+    config.reset_settings_cache()
+
+    store_a = TradingStore(tmp_path / "a.db")
+    store_b = TradingStore(tmp_path / "b.db")
+    store_a.mutate_runtime_config("ENV_SETTINGS", {}, lambda current: {**current, KEY: "111"}, "test")
+    store_b.mutate_runtime_config("ENV_SETTINGS", {}, lambda current: {**current, KEY: "999"}, "test")
+
+    assert Settings.load_cached(store=store_a, ttl_probe=0.0).real_max_order_notional == 111
+    assert Settings.load_cached(store=store_b, ttl_probe=0.0).real_max_order_notional == 999
+    config.reset_settings_cache()
+
+
+def test_process_injected_variables_are_never_overridden_by_db(isolated, monkeypatch):
+    """B3：TRADEYI_ENV / TRADEYI_PROD_DB_PATH / ENABLE_PAPER_ORDERS / SETTINGS_CACHE
+    是 service_control.start() 注入的过程事实，DB 里的同名键不许盖掉它们。"""
+    _env_file, store = isolated
+    injected = {
+        "TRADEYI_ENV": "test",
+        "TRADEYI_PROD_DB_PATH": r"E:\Thisyi\trade\data\trading.db",
+        "ENABLE_PAPER_ORDERS": "false",
+    }
+    for key, value in injected.items():  # 模拟 service_control.start() 的注入
+        monkeypatch.setenv(key, value)
+    poisoned = {
+        "TRADEYI_ENV": "prod",
+        "TRADEYI_PROD_DB_PATH": r"X:\poison.db",
+        "ENABLE_PAPER_ORDERS": "true",
+        "SETTINGS_CACHE": "off",
+    }
+    store.mutate_runtime_config(
+        "ENV_SETTINGS", {}, lambda current: {**current, **poisoned}, "test",
+    )
+    config.reset_settings_cache()
+
+    Settings.load_cached(store=store, ttl_probe=0.0)
+
+    for key, value in injected.items():
+        assert os.environ.get(key) == value, f"{key} 被数据库值覆盖了"
+    assert config.settings_cache_disabled() is False, "SETTINGS_CACHE 不许被数据库值打开/关闭"
+
+
+# 这些页面不吃缓存：写配置 / 下单 / 审批 / 风控限额 / 实盘控制。
+# 有人「顺手优化」回去就会用错账户或用错额度，所以用静态守卫钉死。
+CACHING_FORBIDDEN_PAGES = (
+    "pages/4_order_management.py",
+    "pages/9_launch_approval.py",
+    "pages/16_options_combo_execution.py",
+    "pages/27_live_trading_control.py",
+    "pages/45_risk_and_limits.py",
+)
+
+
+def _calls_settings_load_cached(path: Path) -> list[int]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    lines = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "load_cached":
+            if ast.unparse(func.value) == "Settings":
+                lines.append(node.lineno)
+    return lines
+
+
+def test_order_and_account_pages_do_not_use_the_cache():
+    root = Path(__file__).resolve().parents[1]
+    for relative in CACHING_FORBIDDEN_PAGES:
+        hits = _calls_settings_load_cached(root / relative)
+        assert not hits, f"{relative} 第 {hits} 行吃了 Settings 缓存，下单/账户路径不许缓存"

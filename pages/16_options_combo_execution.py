@@ -22,7 +22,10 @@ from futu_quant.ui import china_time_columns, chinese_columns, render_admin_logi
 
 
 st.set_page_config(page_title="期权组合执行", page_icon="🧩", layout="wide")
-settings = Settings.load_cached()
+# 本页在页面内真实提交组合单（ComboExecutionManager），settings 会流进下单/风控路径。
+# 不走 Settings.load_cached()：缓存最多陈旧 2 秒，但在下单侧「2 秒前的行情/额度」
+# 不能接受。改动前就是裸 load()，这里保持原样（2026-11-04 Reviewer B2）。
+settings = Settings.load()
 render_sidebar(settings)
 store = TradingStore()
 broker = FutuPaperBroker(settings)

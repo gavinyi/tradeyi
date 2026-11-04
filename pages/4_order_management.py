@@ -16,7 +16,9 @@ from futu_quant.ui import (
 
 
 st.set_page_config(page_title="订单管理", page_icon="🧾", layout="wide")
-settings = Settings.load_cached()
+# 本页用 settings 决定账户/租户（get_current_tenant / get_tenant_broker）并操作订单，
+# 缓存错一次就是操作错账户 —— 保持裸 load()（2026-11-04 Reviewer B2）。
+settings = Settings.load()
 render_sidebar(settings)
 current_tenant = get_current_tenant(settings)
 broker = get_tenant_broker(settings)
