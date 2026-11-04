@@ -209,12 +209,11 @@ def test_equity_snapshot_task_does_not_load_env_limit_directly():
 
     inside = _env_loads(helper)
     total = _env_loads(tree)
-    assert inside == 1, (
-        f"helper 内 RiskLimits.load() 出现 {inside} 次，应恰好 1 次（退回路径）"
+    assert inside == 0, (
+        f"helper 内不允许 RiskLimits.load()：失败时不得静默回落 .env，实际 {inside} 次"
     )
-    assert total == inside, (
-        f"RiskLimits.load() 全文件出现 {total} 次、helper 内 {inside} 次 —— "
-        "helper 之外还有人在直接读 .env 取日亏线：取线逻辑又分叉成了两份"
+    assert total == 0, (
+        f"RiskLimits.load() 全文件出现 {total} 次 —— 日亏线不能从 .env 猜测或静默回落"
     )
 
     # 急停判定必须使用 helper 返回的 limit，而不是另算一个
@@ -229,11 +228,7 @@ def test_equity_snapshot_task_does_not_load_env_limit_directly():
 # --------------------------------------------------------------------------- #
 
 def test_partial_config_falls_back_to_env_with_visible_trace(tmp_path):
-    """租户配置残缺（只写了 max_daily_loss）→ 退回 .env 值，且留下可查痕迹。
-
-    退回意味着阈值可能被放宽（$400 → $10,000），这属于"风控自己降级"，
-    所以必须同时有：运行事件（可查）+ ERROR 告警（可推送）+ 来源标记（可审计）。
-    """
+    """租户配置残缺且无成功历史时不得使用 .env，必须返回不可用并告警。"""
     store = TradingStore(tmp_path / "helper_fallback.db")
     _seed(store, REAL_TENANT, REAL_DAILY_LOSS)      # 只有一项 → ConfigError
     alerts = _AlertsRecorder()
@@ -242,24 +237,24 @@ def test_partial_config_falls_back_to_env_with_visible_trace(tmp_path):
         store, _Broker(REAL_ACCOUNT, "REAL"), alerts, account_id=REAL_ACCOUNT,
     )
 
-    assert source == "env_fallback", (
-        f"配置残缺却标成来源 {source} —— 退回路径没有留痕，审计里看不出线被放宽了"
-    )
-    assert limit == RiskLimits.load().max_daily_loss, "退回时未使用 .env 值"
+    assert source == "unavailable", f"无历史成功值却返回 {source}，不得使用 .env 值"
+    assert limit is None and limit != ENV_DAILY_LOSS
 
     events = [
         row for row in store.operational_events(50)
         if row["event_type"] == "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK"
     ]
     assert events, "退回 .env 却没有运行事件 —— 阈值变宽这件事事后无从查起"
-    assert events[0]["status"] == "DEGRADED", (
-        f"退回路径的状态是 {events[0]['status']}，应为 DEGRADED"
+    assert events[0]["status"] == "ERROR", (
+        f"无可用历史时状态是 {events[0]['status']}，应为 ERROR"
     )
     payload = json.loads(events[0]["payload_json"])
     assert payload.get("account_id") == REAL_ACCOUNT, f"事件未带账户：{payload}"
-    assert payload.get("fallback_limit") == limit, f"事件未带退回阈值：{payload}"
+    assert payload.get("candidate_limit") is None, f"无历史时不应有候选阈值：{payload}"
+    assert payload.get("age_seconds") is None, f"无历史时年龄应为空：{payload}"
+    assert payload.get("source") == "unavailable", f"来源未标不可用：{payload}"
 
-    assert alerts.calls, "退回 .env 却没有发告警 —— 用户不会知道日亏线被放宽了"
+    assert alerts.calls, "日亏线不可用却没有发 ERROR 告警"
     severity, event_type, message = alerts.calls[0]
     assert event_type == "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK"
     assert severity == "ERROR", f"退回路径只发了 {severity} —— 风控降级应为 ERROR"

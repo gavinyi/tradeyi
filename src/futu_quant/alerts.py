@@ -25,6 +25,8 @@ FEISHU_GROUP_ALERT_WHITELIST = {
     # 退回 env 10,000 就是 25 倍宽松），这属于"风控自己降级"，必须让人看见；
     # 不进白名单就会变成「库里有、用户看不到」——本文件反复踩过的同一种形态。
     "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK",
+    "LIMIT_PROFILE_LEGACY_FALLBACK",
+    "LIMIT_PROFILE_LEGACY_FALLBACK_RECOVERED",
     "REAL_TRADE_REJECTED",                        # 实盘下单被门禁拒绝（含超额/隔离铁律）
     "ORDER_ENV_MISMATCH",                         # 订单执行环境与券商环境不一致，已禁止改单撤单
     # 硬止损限额非法（<=0）。不修则 `usd_limit > 0` 恒假 → 止损在两层同时失效
@@ -87,6 +89,7 @@ ALERT_NEVER_MUTE = {
     # 实盘账户级配置损坏（坏键 fail-closed，2026-11-01 用户拍板）：这条一旦被静音，
     # 「开仓门禁坏了」就变成无人知晓的静默拦截 —— 必须进代码常量，不可配置。
     "REAL_ACCOUNT_CONFIG_CORRUPT",
+    "LIMIT_PROFILE_LEGACY_FALLBACK",
     # 组合「长短腿不同步」（2026-11-03）：长腿已成交、短腿没成交时，真实敞口是
     # **已成交腿的全额成本**，不是价差的净支出。这条一旦被静音，
     # 「$650 敞口挂着」就变成无人知晓 —— 与 10-23 静默拦截同类，必须进代码常量。

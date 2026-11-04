@@ -753,32 +753,62 @@ def mark_run(store: TradingStore, key: str, now: datetime) -> None:
     store.set_setting(_sched_write_key(key), now.isoformat())
 
 
-def resolve_daily_loss_limit(store: TradingStore, broker, alerts, account_id: str = "") -> tuple[float, str]:
-    """解析**本账户生效**的日亏急停线，返回 ``(阈值, 来源)``。
+def resolve_daily_loss_limit(
+    store: TradingStore, broker, alerts, account_id: str = ""
+) -> tuple[float | None, str]:
+    """解析本账户日亏线，失败时只允许使用 24 小时内的成功值。
 
-    为什么必须走 ``resolve_risk_limits`` 而不是 ``RiskLimits.load()``：
-    ``RiskLimits.load()`` **只读 .env**。页面 27 上配的日亏线（账户级 ``risk`` 段 /
-    租户级 ``risk_limits:{tenant}``）在这条巡检里**完全不生效** —— 实盘租户配的是
-    $400，env 是 $10,000，于是「亏到 400 就该停」实际要亏到 10,000 才停，25 倍宽松。
-    这条巡检是账户急停**唯一**的触发点，所以它的取线口径必须与下单风控同源。
-
-    ``来源 == "env_fallback"`` 表示配置残缺、已退回 .env 值：返回的线**可能比配置的宽**，
-    调用方据此可以在审计里标出来。绝不静默退回 —— 那是「风控自己降级」。
+    ``RiskLimits.load()`` 仅是兼容期的候选值，绝不能在解析失败时直接生效：
+    否则租户配置损坏会静默放宽急停线。成功值写入租户/账户隔离的运行时键，
+    解析失败时最多复用 24 小时；没有可用值则返回 ``(None, "unavailable")``，
+    调用方本轮不触发新仓急停判定，SELL/退出路径不受影响。
     """
+    key = f"daily_loss_limit:last_success:{account_id or 'default'}"
+    now = datetime.now(timezone.utc)
     try:
-        return resolve_risk_limits(store, broker).max_daily_loss, "resolved"
-    except RiskLimitsConfigError as exc:
-        limit = RiskLimits.load().max_daily_loss
+        limit = float(resolve_risk_limits(store, broker).max_daily_loss)
+        if limit < 0:
+            raise ValueError(f"日亏线非法：{limit}")
+        store.set_setting(key, json.dumps({"limit": limit, "saved_at": now.isoformat()}))
+        # 若上一轮曾降级，恢复事件必须可见且可审计。
+        AlertManager(store).recover(
+            "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK",
+            f"账户 {account_id or '系统'} 日亏线已恢复，当前值 ${limit:,.2f}",
+            incident_key=f"DAILY_LOSS_LIMIT_RESOLVE_FALLBACK:{account_id or 'default'}",
+        )
+        return limit, "resolved"
+    except Exception as exc:  # noqa: BLE001 - 失败必须进入安全降级路径
+        candidate_limit: float | None = None
+        age_seconds: float | None = None
+        raw = store.get_setting(key, "")
+        try:
+            saved = json.loads(raw) if raw else {}
+            candidate_limit = float(saved["limit"])
+            saved_at = datetime.fromisoformat(str(saved["saved_at"]).replace("Z", "+00:00"))
+            if saved_at.tzinfo is None:
+                saved_at = saved_at.replace(tzinfo=timezone.utc)
+            age_seconds = max(0.0, (now - saved_at).total_seconds())
+            if age_seconds > 24 * 3600 or candidate_limit < 0:
+                candidate_limit = None
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            candidate_limit = None
+            age_seconds = None
+        source = "recent_success" if candidate_limit is not None else "unavailable"
+        payload = {
+            "error": str(exc), "account_id": account_id,
+            "candidate_limit": candidate_limit, "age_seconds": age_seconds,
+            "source": source,
+        }
         store.operational_event(
-            "trading_service", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK", "DEGRADED",
-            {"error": str(exc), "account_id": account_id, "fallback_limit": limit},
+            "trading_service", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK", "ERROR", payload,
         )
         alerts.send(
             "ERROR", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK",
-            f"账户 {account_id or '系统'} 日亏线解析失败，已退回 .env 值 "
-            f"${limit:,.2f}：{exc}",
+            f"账户 {account_id or '系统'} 日亏线解析失败："
+            f"candidate_limit={candidate_limit!r}, age_seconds={age_seconds!r}, source={source}；{exc}",
+            incident_key=f"DAILY_LOSS_LIMIT_RESOLVE_FALLBACK:{account_id or 'default'}",
         )
-        return limit, "env_fallback"
+        return candidate_limit, source
 
 
 def core_rebalance_window(store: TradingStore, session, now: datetime) -> tuple[bool, str]:
@@ -1342,7 +1372,21 @@ def service_cycle(settings: Settings, store: TradingStore, tenant: Any | None = 
                 limit, limit_source = resolve_daily_loss_limit(
                     store, broker, alerts, account_id=broker_acc_id,
                 )
-                if session.regular_open(now) and loss >= limit and not store.kill_switch(account_id=broker_acc_id):
+                # 无可用日亏线时 fail-closed：置账户急停以禁止 BUY；
+                # kill-switch 只约束开仓，SELL/退出链路仍由下单门禁放行。
+                if limit is None:
+                    if not store.kill_switch(account_id=broker_acc_id):
+                        store.set_kill_switch(True, account_id=broker_acc_id)
+                        store.audit(
+                            "DAILY_LOSS_LIMIT_UNAVAILABLE",
+                            {"account_id": broker_acc_id, "limit_source": limit_source},
+                            actor="scheduler:main",
+                        )
+                elif (
+                    session.regular_open(now)
+                    and loss >= limit
+                    and not store.kill_switch(account_id=broker_acc_id)
+                ):
                     store.set_kill_switch(True, account_id=broker_acc_id)
                     store.audit("DAILY_LOSS_KILL_SWITCH", {
                         "loss": loss, "position_loss": position_loss,

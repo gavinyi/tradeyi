@@ -106,7 +106,7 @@ def notify_corrupt_account_config(store: TradingStore, account_id: Any, reason: 
 
 
 def resolve_real_account_limits(
-    store: TradingStore, settings: Settings, account_id: int | str,
+    store: TradingStore, settings: Settings, account_id: int | str, *, notify_fallback: bool = True,
 ) -> RealAccountLimits:
     """解析某实盘账户的生效限额：账户级优先、全局兜底；**坏键 fail-closed**。
 
@@ -182,19 +182,34 @@ def resolve_real_account_limits(
         tenant_id = ""
         profile_resolution = None
         limit_profile_reason = f"{type(exc).__name__}: {exc}"
-        logging.getLogger(__name__).warning(
+        logging.getLogger(__name__).error(
             "LIMIT_PROFILE_LEGACY_FALLBACK account=%s reason=%s", account_id, limit_profile_reason
         )
-        # 只写日志等于不可查询（Reviewer 2026-11-04 次要 2）：回落必须留审计痕迹。
+        # 回落仍兼容旧限额，但必须 ERROR 告警、不可静音，并携带完整解析上下文。
         try:
-            store.audit(
-                "LIMIT_PROFILE_LEGACY_FALLBACK",
-                {"account_id": str(account_id), "reason": limit_profile_reason},
-                "real_trading",
-                actor="service:real_gate",
-            )
-        except Exception:  # noqa: BLE001 - 审计失败不得改变“继续用旧键”的结论
-            pass
+            tenant_id = ""
+            env = str(getattr(settings, "trading_env", "") or "").upper()
+            try:
+                tenant_id = resolve_tenant(account_id=str(account_id), env=env).tenant_id
+            except Exception:
+                pass
+            profile_version = ""
+            if tenant_id:
+                profile_version = str(store.get_setting(f"limit_profile:{tenant_id}:version", "") or "")
+            payload = {
+                "account_id": str(account_id), "tenant_id": tenant_id, "env": env,
+                "reason": limit_profile_reason, "limit_profile_version": profile_version,
+            }
+            store.audit("LIMIT_PROFILE_LEGACY_FALLBACK", payload, "real_trading", actor="service:real_gate")
+            from .alerts import AlertManager
+            if not corrupt_reason:
+                AlertManager(store).send(
+                    "ERROR", "LIMIT_PROFILE_LEGACY_FALLBACK",
+                    f"账户 {account_id} 限额配置回落旧键：{limit_profile_reason}",
+                    incident_key=f"LIMIT_PROFILE_LEGACY_FALLBACK:{account_id}",
+                )
+        except Exception:  # noqa: BLE001 - 告警/审计失败不得改变兼容回落结论
+            logging.getLogger(__name__).exception("记录 LIMIT_PROFILE_LEGACY_FALLBACK 失败")
 
     if profile_resolution and profile_resolution.source == "derived:limit_profile":
         try:
