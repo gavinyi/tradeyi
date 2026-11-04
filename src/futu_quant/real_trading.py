@@ -13,7 +13,7 @@ from .risk import RiskLimits, ny_trading_day_start_utc
 from .risk_limits import RiskLimitsConfigError, resolve_risk_limits
 from .store import USED_NOTIONAL_STATUSES, TradingStore
 from .strategy_toggle import resolve_strategy_enabled
-from .tenant import resolve_tenant_active
+from .tenant import equity_snapshot_env, resolve_tenant_active
 
 
 SESSION_KEY = "real_trading_session"
@@ -213,7 +213,9 @@ def resolve_real_account_limits(
 
     if profile_resolution and profile_resolution.source == "derived:limit_profile":
         try:
-            rows = store.equity_history(limit=1, env=f"REAL_{account_id}")
+            # 统一使用租户环境入口，禁止按 account_id 猜测快照键，防止 paper/real 串读。
+            env = equity_snapshot_env(tenant_id, account_id)
+            rows = store.equity_history(limit=1, env=env)
             if not rows:
                 raise ValueError("equity 快照缺失")
             snapshot = rows[0]
