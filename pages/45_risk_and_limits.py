@@ -34,6 +34,8 @@ from futu_quant.risk_limits import (
     resolve_risk_limits_detail,
     risk_limits_tenant_key,
 )
+from futu_quant.limit_profile import LimitProfile, resolve_limit_chain
+from futu_quant.limit_profile_store import load_limit_profile, publish_limit_profile
 from futu_quant.ui import (
     get_current_tenant,
     get_tenant_broker,
@@ -94,6 +96,65 @@ def _render_real_gate_readonly(store, settings) -> None:
     st.caption("这几项属交易安全门禁（②类），只读展示；修改入口在「账户与交易环境」页。")
 
 
+def _latest_equity(store, tenant: dict) -> float | None:
+    env = "REAL_" + str(tenant.get("acc_id")) if tenant.get("is_real") and tenant.get("acc_id") else "SIMULATE"
+    rows = store.equity_history(limit=1, env=env)
+    if not rows:
+        return None
+    value = rows[0].get("total_assets")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _render_limit_profile_card(store, settings, tenant: dict) -> None:
+    tenant_id = str(tenant.get("tenant_id") or tenant.get("id") or st.session_state.get("current_tenant_id") or "")
+    equity = _latest_equity(store, tenant)
+    st.subheader("💰 限额配置（派生层 · 按租户）")
+    st.caption("输入仅接受占权益百分比；金额为已应用地板/硬顶后的实际生效值。旧美元编辑区已废弃，仅展示历史值。")
+    if not tenant_id or equity is None:
+        st.error(f"权益缺失或非正（当前：{equity!r}），拒绝生成/保存限额；不会回落硬编码金额。")
+        return
+    resolution = load_limit_profile(store, tenant_id)
+    profile = resolution.profile
+    ratios = {
+        "单笔开仓": ("per_order_ratio", "per_order"),
+        "日累计开仓": ("daily_entries_ratio", "daily_entries"),
+        "日亏损急停线": ("daily_loss_ratio", "daily_loss"),
+    }
+    chain = resolve_limit_chain(store, tenant_id, equity, profile)
+    with st.container(border=True):
+        st.caption(f"权益基数：${equity:,.2f} · 当前来源：{resolution.source} · 最近修改：{resolution.actor or '未记录'} {resolution.updated_at or ''} {resolution.reason or ''}")
+        values = {}
+        columns = st.columns(len(ratios))
+        for column, (label, (field, output)) in zip(columns, ratios.items()):
+            with column:
+                values[field] = st.number_input(f"{label}（权益 %）", min_value=0.0, max_value=100.0, value=float(getattr(profile, field) * 100), step=0.1, key=f"derived_{tenant_id}_{field}") / 100
+                amount = getattr(chain, output)
+                st.metric(f"实际生效：{label}", f"${amount:,.2f}", f"{amount / equity:.2%} · 生效层：{('硬顶/地板' if output in chain.clamped else '派生层')}")
+        reason = st.text_input("变更理由（变松必填）", key=f"derived_reason_{tenant_id}")
+        changed = any(abs(values[k] - getattr(profile, k)) > 1e-12 for k in values)
+        loosening = any(values[k] > getattr(profile, k) for k in values)
+        confirm = st.checkbox("确认本次变更影响实际交易限额", key=f"derived_confirm_{tenant_id}")
+        approval = st.text_input("审批指纹（仅变松必填）", key=f"derived_approval_{tenant_id}")
+        if st.button("保存派生限额", type="primary", key=f"save_derived_{tenant_id}"):
+            if not changed:
+                st.info("没有检测到变更。")
+            elif loosening and (not confirm or not approval.strip() or not reason.strip()):
+                st.error("变松必须二次确认、审批指纹和必填理由。")
+            elif not loosening and not confirm:
+                st.error("请确认本次变更。")
+            else:
+                try:
+                    result = publish_limit_profile(store, tenant_id, LimitProfile(**{**profile.__dict__, **values}), "streamlit_admin:panel", reason, approval_fingerprint=approval, old_chain=chain, equity=equity, confirm=confirm)
+                    st.success("已发布：下一轮重读，≤2 分钟生效，无需 stop/start。")
+                    st.json(result["chain"])
+                except (ValueError, PermissionError, RuntimeError) as exc:
+                    st.error(str(exc))
+
+
 def _source_label(source: str, tenant_id: str) -> str:
     if source.startswith("real_account_config:"):
         return "账户级配置（risk 段）"
@@ -126,8 +187,11 @@ def main() -> None:
         current = {}
         limits_error = str(exc)
 
+    _render_limit_profile_card(store, settings, get_current_tenant(settings))
     _render_panorama()
 
+    st.subheader("📜 旧金额配置（只读 · 已废弃）")
+    st.info("已废弃：改由派生层（权益 × 百分比）决定，此处仅展示历史值。请在顶部限额配置卡修改。")
     st.subheader("✏️ 可编辑（5 项 · 需二次确认）")
 
     writable = False
@@ -166,99 +230,12 @@ def main() -> None:
 
     submitted_values: dict[str, float] = {}
     for item in EDITABLE_ITEMS:
-        st.caption(item.impact)
-        submitted_values[item.key] = st.number_input(
-            f"{item.label}（美元）",
-            min_value=float(item.minimum),
-            max_value=float(item.maximum),
-            value=float(current.get(item.key, item.minimum)),
-            step=float(item.step),
-            key=f"risk_edit_{item.key}",
-        )
+        value = current.get(item.key)
+        submitted_values[item.key] = float(value) if value is not None else float(item.minimum)
+        st.metric(f"{item.label}（历史值，只读）", "未统计" if value is None else f"${float(value):,.2f}")
+        st.caption(f"{item.impact} · 已废弃：改由派生层（权益 × 百分比）决定，此处仅展示历史值")
 
-    # 保存前把**实际将写入的完整 10 项**摆出来（Reviewer 要求）：
-    # 保存会把当前生效的 10 项一起固化进租户层，原本来自 env 兜底的项从此"钉住"，
-    # 用户不知道就会踩 —— 必须能看到「哪些是本次改动、哪些是沿用当前值」。
-    preview_changes: dict[str, str] = {}
-    preview_payload: dict[str, float] | None = None
-    preview_error = ""
-    if resolution is not None:
-        try:
-            preview_changes = build_changes(submitted_values, current)
-            preview_payload = build_tenant_risk_payload(resolution.limits, preview_changes)
-        except ValueError as exc:
-            preview_error = str(exc)
-
-    st.markdown("**保存后将写入租户层的完整 risk 段（10 项）**")
-    if preview_error:
-        st.warning(f"暂无法生成写入预览：{preview_error}")
-    elif preview_payload is not None:
-        rows = []
-        for field_name, value in preview_payload.items():
-            mark = "★ 本次修改" if field_name in preview_changes else "沿用当前值"
-            rows.append(f"- {'★' if field_name in preview_changes else '·'} "
-                        f"`{field_name}` = {value} —— {mark}")
-        st.markdown("\n".join(rows))
-        st.caption(
-            "★ 项是本次改动；其余为**沿用当前生效值**。写入后这 10 项都固定在租户层："
-            "原本由环境变量兜底的项从此以库为准，改 `.env` 不再生效。"
-            "（这是有意为之：风控对「部分配置」是 fail-closed 拒绝，只写 5 项会让风控不可用。）"
-        )
-
-    confirmed = st.checkbox(
-        "我确认修改的是真实生效的风控/资金参数（影响下单额度与急停线），"
-        "并已将上面列出的 10 项一起固化进租户层",
-    )
-    submitted = st.button("保存这 5 项", type="primary", disabled=not writable)
-
-    if submitted and resolution is not None:
-        if not writable:
-            st.error("当前生效层不可在本页修改（见上方提示），未保存。")
-        elif not confirmed:
-            st.warning("未勾选确认框，本次不保存。")
-        else:
-            try:
-                changes = build_changes(submitted_values, current)
-            except ValueError as exc:
-                st.error(str(exc))
-            else:
-                if not changes:
-                    st.info("输入与当前生效值相同，未做任何修改。")
-                else:
-                    try:
-                        payload = build_tenant_risk_payload(resolution.limits, changes)
-                    except ValueError as exc:
-                        st.error(str(exc))
-                    else:
-                        before = {key: current.get(key) for key in changes}
-                        written_key = save_tenant_risk_limits(
-                            store, resolution.tenant_id, payload,
-                        )
-                        store.audit(
-                            "RISK_LIMITS_UPDATED",
-                            {
-                                "actor": "streamlit_admin",
-                                "layer": written_key,
-                                "tenant_id": resolution.tenant_id,
-                                "before": before,
-                                # 改动集：便于人读「这次改了什么」
-                                "after": changes,
-                                # 实际写进库的完整 10 项：事后要能回答「当时固化成了什么」
-                                "written_payload": dict(payload),
-                                "source": "pages/45_risk_and_limits.py",
-                            },
-                            actor="streamlit_admin:panel",
-                        )
-                        st.success(
-                            f"已写入 {written_key}："
-                            + " · ".join(f"{key} → {value}" for key, value in changes.items())
-                            + "（Worker 下一轮自动重读，≤2 分钟生效）"
-                        )
-                        st.caption(
-                            "本次写入的是**完整** risk 段（未改动字段沿用当前生效值），"
-                            "因此不会因为「部分配置」被风控 fail-closed 拦下。"
-                        )
-
+    st.info("旧金额编辑区已只读，金额生效路径已切换到顶部派生卡；页面不会再写入旧 risk_limits 金额键。")
     _render_real_gate_readonly(store, settings)
 
 

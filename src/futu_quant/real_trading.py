@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -48,6 +49,9 @@ class RealAccountLimits:
     # 异常会把「配置坏了」和「代码有 bug」混成一类，两类处置完全不同。
     config_corrupt: bool = False
     corrupt_reason: str = ""
+    # 派生限额解析失败时必须独立标记，禁止回落旧金额（红区 fail-closed）。
+    limit_profile_unresolved: bool = False
+    limit_profile_reason: str = ""
 
 
 def _setting_or_env(settings: Any, attr: str, env_key: str, default: Any) -> Any:
@@ -162,6 +166,40 @@ def resolve_real_account_limits(
     max_daily = _number(
         "max_daily_notional", "real_max_daily_notional", "REAL_MAX_DAILY_NOTIONAL", 0.0
     )
+    # 派生层只替换金额来源；门禁顺序、确认码、白名单和 submit_limit 均不动。
+    limit_profile_unresolved = False
+    limit_profile_reason = ""
+    try:
+        from .tenant import resolve_tenant
+        from .limit_profile import resolve_limit_chain
+        from .limit_profile_store import load_limit_profile
+        tenant_profile = resolve_tenant(account_id=str(account_id), env="REAL")
+        tenant_id = tenant_profile.tenant_id if tenant_profile else ""
+        profile_resolution = load_limit_profile(store, tenant_id) if tenant_id else None
+        if profile_resolution and profile_resolution.source == "derived:limit_profile":
+            rows = store.equity_history(limit=1, env=f"REAL_{account_id}")
+            if not rows:
+                raise ValueError("equity 快照缺失")
+            snapshot = rows[0]
+            raw_timestamp = snapshot.get("created_at") or snapshot.get("updated_at")
+            if not raw_timestamp:
+                raise ValueError("equity 快照时间缺失")
+            snapshot_at = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+            if snapshot_at.tzinfo is None:
+                snapshot_at = snapshot_at.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - snapshot_at).total_seconds() > 600:
+                raise ValueError("equity 快照已过期（超过 10 分钟）")
+            equity = float(snapshot.get("total_assets") or 0)
+            chain = resolve_limit_chain(store, tenant_id, equity, profile_resolution.profile)
+            max_order = min(chain.per_order, chain.capacity_line) if chain.capacity_line is not None else chain.per_order
+            max_daily = chain.daily_entries
+    except Exception as exc:
+        # 派生层已启用但权益/配置解析失败时，绝不回落旧金额（红区 fail-closed）。
+        limit_profile_unresolved = True
+        limit_profile_reason = f"{type(exc).__name__}: {exc}"
+        logging.getLogger(__name__).error(
+            "LIMIT_PROFILE_UNRESOLVED account=%s reason=%s", account_id, limit_profile_reason
+        )
 
     confirm_raw = cfg.get("require_manual_confirm")
     require_confirm = (
@@ -183,6 +221,8 @@ def resolve_real_account_limits(
         config_present=bool(raw),
         config_corrupt=corrupt,
         corrupt_reason=corrupt_reason,
+        limit_profile_unresolved=limit_profile_unresolved,
+        limit_profile_reason=limit_profile_reason,
     )
 
 
@@ -454,6 +494,38 @@ def check_real_trade(
     # 2. 读取各账户在 runtime_config 中的独立配置（账户级优先、全局兜底）
     limits = resolve_real_account_limits(store, settings, target_account)
     _is_sell = str(side or "").upper() == "SELL"
+    if limits.limit_profile_unresolved and not _is_sell:
+        reason = f"LIMIT_PROFILE_UNRESOLVED: {limits.limit_profile_reason}"
+        try:
+            store.audit(
+                "LIMIT_PROFILE_UNRESOLVED",
+                {"account_id": target_account, "strategy_id": strategy_id,
+                 "symbol": symbol, "side": side, "reason": limits.limit_profile_reason},
+                strategy_id,
+                actor="service:real_gate",
+            )
+            from .alerts import AlertManager
+            AlertManager(store).send(
+                "ERROR", "LIMIT_PROFILE_UNRESOLVED",
+                f"实盘限额派生失败，已拒绝订单：账户 {target_account}，原因：{limits.limit_profile_reason}",
+                incident_key=f"LIMIT_PROFILE_UNRESOLVED:{target_account}",
+            )
+        except Exception:  # 告警/审计失败不得改变 fail-closed 结果
+            logging.getLogger(__name__).exception("记录 LIMIT_PROFILE_UNRESOLVED 失败")
+        return RealTradeDecision(False, reason, {"account_id": target_account,
+                                                  "reason_code": "LIMIT_PROFILE_UNRESOLVED"})
+    if limits.limit_profile_unresolved and _is_sell:
+        store.audit(
+            "LIMIT_PROFILE_UNRESOLVED_SELL_ALLOWED",
+            {"account_id": target_account, "strategy_id": strategy_id,
+             "symbol": symbol, "side": side, "reason": limits.limit_profile_reason},
+            strategy_id,
+            actor="service:real_gate",
+        )
+        logging.getLogger(__name__).warning(
+            "LIMIT_PROFILE_UNRESOLVED_SELL_ALLOWED account=%s reason=%s",
+            target_account, limits.limit_profile_reason,
+        )
     if limits.config_corrupt:
         # 坏键（Reviewer 第 2 条）：拦截点就在既有判定链里，由 submit_limit 天然调用，
         # 不另建判断点。只拦开仓方向；SELL 继续走持仓 / 减仓额度 / 对账等既有校验。

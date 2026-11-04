@@ -1,5 +1,38 @@
 [
   {
+    "key": "limit.profile",
+    "aliases": [
+      "limit_profile:{tenant}"
+    ],
+    "category": "④ 风控边界",
+    "title": "租户限额派生配置",
+    "description": "资金限额由权益乘百分比派生；金额仅只读展示，禁止直接写绝对值。",
+    "value_type": "json",
+    "default": null,
+    "scope": "tenant",
+    "storage": "derived",
+    "risk_level": "HIGH",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": true,
+    "activation": "next_cycle",
+    "consumers": [
+      "futu_quant.limit_profile",
+      "futu_quant.risk_limits",
+      "futu_quant.real_trading",
+      "futu_quant.volatility_roll"
+    ],
+    "tags": [
+      "risk",
+      "funding",
+      "tenant_scoped"
+    ],
+    "runtime_key": "limit_profile:{tenant}",
+    "user_area": "risk_limits",
+    "surface": "primary",
+    "validator": "limit_profile"
+  },
+  {
     "key": "admin.lockout.seconds",
     "aliases": [
       "ADMIN_LOCKOUT_SECONDS"

@@ -399,6 +399,32 @@ class RiskLimitsResolution:
     env_fallback: bool
 
 
+def _apply_limit_profile(store: Any, tenant_id: str, limits: RiskLimits, account_id: str) -> RiskLimits:
+    """将派生配置应用到风控实际读侧；旧金额键不参与生效。"""
+    if not tenant_id:
+        return limits
+    from .limit_profile import resolve_limit_chain
+    from .limit_profile_store import load_limit_profile
+
+    profile_resolution = load_limit_profile(store, tenant_id)
+    if profile_resolution.source != "derived:limit_profile":
+        return limits
+    env = f"REAL_{account_id}" if account_id else "SIMULATE"
+    rows = store.equity_history(limit=1, env=env)
+    if not rows:
+        raise RiskLimitsConfigError("派生限额需要有效权益，当前无权益快照")
+    try:
+        equity = float(rows[0].get("total_assets") or 0)
+    except (TypeError, ValueError) as exc:
+        raise RiskLimitsConfigError("派生限额权益无法解析") from exc
+    chain = resolve_limit_chain(store, tenant_id, equity, profile_resolution.profile)
+    values = dict(limits.__dict__)
+    values["max_order_notional"] = min(chain.per_order, chain.capacity_line) if chain.capacity_line is not None else chain.per_order
+    values["max_daily_notional"] = chain.daily_entries
+    values["max_daily_loss"] = chain.daily_loss
+    return RiskLimits(**values)
+
+
 def _resolve_uncached(store: Any, account_id: str, tenant_id: str) -> RiskLimitsResolution:
     # ① 账户级：real_account_config:{account_id} 的 risk 段（键走共享入口）
     if account_id:
@@ -408,6 +434,7 @@ def _resolve_uncached(store: Any, account_id: str, tenant_id: str) -> RiskLimits
         if isinstance(account_risk, dict):
             limits = _risk_section_to_limits(account_risk, account_key)
             if limits is not None:
+                limits = _apply_limit_profile(store, tenant_id, limits, account_id)
                 return RiskLimitsResolution(
                     limits=limits,
                     source=account_key,
@@ -423,6 +450,7 @@ def _resolve_uncached(store: Any, account_id: str, tenant_id: str) -> RiskLimits
         tenant_risk = _parse_json_object(store.get_setting(tenant_key, ""))
         limits = _risk_section_to_limits(tenant_risk, tenant_key)
         if limits is not None:
+            limits = _apply_limit_profile(store, tenant_id, limits, account_id)
             return RiskLimitsResolution(
                 limits=limits,
                 source=tenant_key,
@@ -437,6 +465,7 @@ def _resolve_uncached(store: Any, account_id: str, tenant_id: str) -> RiskLimits
         legacy_limits = _risk_section_to_limits(legacy_risk, legacy_key)
         if legacy_limits is not None:
             _record_legacy_key_fallback(store, account_id, tenant_id, legacy_key)
+            legacy_limits = _apply_limit_profile(store, tenant_id, legacy_limits, account_id)
             return RiskLimitsResolution(
                 limits=legacy_limits,
                 source=legacy_key,

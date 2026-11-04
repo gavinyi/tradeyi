@@ -29,6 +29,8 @@ from futu_quant.ui import (
     open_trading_store,
 )
 from futu_quant.real_trading import resolve_real_account_limits
+from futu_quant.limit_profile import resolve_limit_chain
+from futu_quant.limit_profile_store import load_limit_profile
 
 st.set_page_config(page_title="今日总览 - 统一配置中心", page_icon="🧭", layout="wide")
 
@@ -45,6 +47,22 @@ st.caption(
 
 store = open_trading_store()
 broker = get_tenant_broker(settings)
+
+def render_limit_status_bar(store, settings):
+    tenant = get_current_tenant(settings)
+    tenant_id = str(tenant.get("tenant_id") or tenant.get("id") or st.session_state.get("current_tenant_id") or "")
+    env = "REAL_" + str(tenant.get("acc_id")) if tenant.get("is_real") and tenant.get("acc_id") else "SIMULATE"
+    rows = store.equity_history(limit=1, env=env)
+    equity = float(rows[0].get("total_assets") or 0) if rows else 0.0
+    if not tenant_id or equity <= 0:
+        st.warning("限额状态：权益缺失或非正，派生限额未就绪（fail-closed）")
+        return
+    chain = resolve_limit_chain(store, tenant_id, equity, load_limit_profile(store, tenant_id).profile)
+    actual = min(chain.per_order, chain.capacity_line) if chain.capacity_line is not None else chain.per_order
+    layer = "容量线" if chain.capacity_line is not None and chain.capacity_line <= chain.per_order else "派生层"
+    st.info(f"限额状态 · 权益 ${equity:,.2f} · 单笔 ${actual:,.2f} · 单日 ${chain.daily_entries:,.2f} · 日亏 ${chain.daily_loss:,.2f} · 实际生效层：{layer}（容量线 ${chain.capacity_line:,.2f}）")
+
+render_limit_status_bar(store, settings)
 
 def resolve_trading_env_status(
     tenant: dict | None,
