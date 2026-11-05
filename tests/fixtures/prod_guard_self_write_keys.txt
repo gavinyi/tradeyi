@@ -1,0 +1,29 @@
+# 生产守卫「生产自写」**精确键**白名单（唯一数据源）
+#
+# 读取方：`tests/conftest.py::load_self_write_allowlist`（每个键必须逐字匹配，**禁止前缀通配**）。
+# 为什么禁止通配：`VOLATILITY_CAMPAIGNS*` 会把「新租户的键」顺带放过，等于回到
+# 「测试写穿生产也分不出来」——白名单的作用是**可 review 的精确 diff**，不是降噪开关。
+#
+# 白名单只是**准入资格**：一个键要真正豁免，还必须同时满足
+#   ① 变化时间落在 pytest 会话窗口内；
+#   ② `config_versions` 该键有 `actor` 前缀 ∉ {pytest, test, streamlit_or_service, ""} 的记录；
+#   ③ 变化是值/version 变化（键的新增与删除一律硬失败）。
+# 查不到审计行 → 硬失败（宁可噪声，不可静默）。
+#
+# 维护约定：加/删一行都必须是一次可 review 的 diff。库里已不存在的陈旧键会让会话直接判红
+# （`allowlist_stale_keys`），逼着这张表跟着生产现实走。
+#
+# 已知缺口（2026-11-05 记录，待 actor 命名落地后收敛）：
+#   实测生产 `VOLATILITY_CAMPAIGNS:<tenant>` 的写入 actor 是通用值 `streamlit_or_service`
+#   （`config_versions` 里 917 行），而该 actor 按上面 ② 属「不放行」。
+#   因此 campaign 族当前**仍会红**：白名单只保住了准入资格，真正的豁免要等
+#   活着的 Worker/雷达改用专用 actor（`service:volatility_radar` 之类）。
+#
+# 键名逐条列出（含租户后缀）：
+VOLATILITY_CAMPAIGNS
+VOLATILITY_CAMPAIGNS:futu_paper_sandbox
+VOLATILITY_CAMPAIGNS:futu_real_master
+VOLATILITY_CAMPAIGNS:moomoo_real
+GAMMA_CAMPAIGNS
+limit_profile:futu_paper_sandbox
+limit_profile:futu_real_master
