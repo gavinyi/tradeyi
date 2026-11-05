@@ -6,18 +6,20 @@
 #
 # 白名单只是**准入资格**：一个键要真正豁免，还必须同时满足
 #   ① 变化时间落在 pytest 会话窗口内；
-#   ② `config_versions` 该键有 `actor` 前缀 ∉ {pytest, test, streamlit_or_service, ""} 的记录；
+#   ② `config_versions` 该键有 `actor` 前缀 ∉ {pytest, test, ""} 的记录；
 #   ③ 变化是值/version 变化（键的新增与删除一律硬失败）。
 # 查不到审计行 → 硬失败（宁可噪声，不可静默）。
 #
 # 维护约定：加/删一行都必须是一次可 review 的 diff。库里已不存在的陈旧键会让会话直接判红
 # （`allowlist_stale_keys`），逼着这张表跟着生产现实走。
 #
-# 已知缺口（2026-11-05 记录，待 actor 命名落地后收敛）：
-#   实测生产 `VOLATILITY_CAMPAIGNS:<tenant>` 的写入 actor 是通用值 `streamlit_or_service`
-#   （`config_versions` 里 917 行），而该 actor 按上面 ② 属「不放行」。
-#   因此 campaign 族当前**仍会红**：白名单只保住了准入资格，真正的豁免要等
-#   活着的 Worker/雷达改用专用 actor（`service:volatility_radar` 之类）。
+# actor 口径（Reviewer 2026-11-05 推荐 a 案，已签字）：
+#   生产库只读实证 `config_versions` 里 **1029 行** actor=`streamlit_or_service`，
+#   活着的 Worker/雷达每 2–3 分钟写 `VOLATILITY_CAMPAIGNS:<tenant>` 用的正是它；
+#   把它列入可疑集会让「合法 Worker 自写」把带生产库指纹的全量打红（纯噪声）。
+#   因此它算**生产外部写入**：豁免，但必须逐条打印 reason + audit_at 留痕。
+#   真正不放行的只有 `pytest*` / `test*` / 空 actor（测试进程写入 / 无法归因）。
+#   注：早前记的「917 行」是同一口径的旧采样，已按 Reviewer 复核值校正为 1029。
 #
 # 键名逐条列出（含租户后缀）：
 VOLATILITY_CAMPAIGNS

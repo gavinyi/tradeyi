@@ -222,14 +222,17 @@ PROD_GUARD_ALLOWLIST_FIXTURE = (
 _ALLOWLIST_CACHE: tuple[str, ...] | None = None
 
 #: —— actor 命名约定（写死；要放宽先过 Reviewer，并同步改这里的注释与断言消息）——
-#: `config_versions.actor` 的取值只有三类：
-#:   ① `pytest*` / `test*`          → **测试进程**写入 → 一律硬红（写穿生产的元凶）；
-#:   ② `streamlit_or_service` / 空  → UI 或服务自动写入、或无法归因 → 不放行；
-#:   ③ 其余（`chief:*` / `ops:*` …）→ 人工/外部写入 → 豁免，但**逐条打 `[PROD-GUARD]` 日志**。
-#: 只有 ③ 能拿到豁免；任何形如 ① 的写入都必须失败，否则这次放宽会把真写穿放过去。
-#: 已知缺口：活着的 Worker/雷达目前也写 `streamlit_or_service`（见 fixture 文件里的记录），
-#: 所以 campaign 族在白名单里也拿不到豁免 —— 需要写入方改用专用 actor 才能收敛。
-SUSPICIOUS_ACTOR_PREFIXES: tuple[str, ...] = ("pytest", "test", "streamlit_or_service")
+#: `config_versions.actor` 的取值只有两类：
+#:   ① `pytest*` / `test*` / 空 → **测试进程**写入（或无法归因）→ 一律硬红；
+#:   ② 其余（`streamlit_or_service` / `chief:*` / `ops:*` / `service:*` …）
+#:      → **生产外部写入** → 豁免，但**逐条打 `[PROD-GUARD]` 日志**
+#:      （键 / 新旧 version / actor / reason / audit_at / 前后 sha）。
+#: 为什么 `streamlit_or_service` 必须算外部（Reviewer 2026-11-05 a 案）：
+#: 生产库只读实证 **1029 行**这个 actor，活着的 Worker/雷达每 2–3 分钟写
+#: `VOLATILITY_CAMPAIGNS:<tenant>` 用的就是它；若把它列入可疑集，任何合法
+#: Worker 自写都会让带生产库指纹的全量**必红**，守卫就变成纯噪声。
+#: 真正的写穿形态是测试进程经 store 写入（`pytest*` / `test*`），这条不放松。
+SUSPICIOUS_ACTOR_PREFIXES: tuple[str, ...] = ("pytest", "test")
 
 #: 会话开始时刻（ISO）。用于判断某个键的改动是否**留下了 store API 审计记录**。
 _SESSION_STARTED_AT: str | None = None
@@ -349,8 +352,8 @@ def _change_exemption(key: str, since_iso: str | None) -> tuple[bool, str, dict[
 
     1. 键在精确键白名单里（`tests/fixtures/prod_guard_self_write_keys.txt`）；
     2. `config_versions` 里该键在**会话窗口内**有审计行；
-    3. 该审计行的 `actor` 前缀 ∉ `SUSPICIOUS_ACTOR_PREFIXES`（`pytest*` / `test*` /
-       `streamlit_or_service` / 空都不放行）。
+    3. 该审计行的 `actor` 前缀 ∉ `SUSPICIOUS_ACTOR_PREFIXES`（`pytest*` / `test*` / 空
+       不放行；`streamlit_or_service` 是生产外部写入，按 Reviewer a 案豁免）。
 
     查不到审计行 → 硬失败（宁可噪声，不可静默）。
     """
@@ -378,7 +381,8 @@ def _log_exemptions(
         f"  数据源：{db_path_under_guard()}",
         f"  会话起点：{_SESSION_STARTED_AT or '（未记录）'}",
         f"  指纹：{before_sha[:16]} -> {after_sha[:16]}",
-        "  actor 约定：只有 pytest*/test* 算测试写入；streamlit_or_service 与空 actor 不放行。",
+        "  actor 约定：pytest*/test*/空 actor = 测试写入（硬红）；"
+        "streamlit_or_service = 生产外部写入（豁免并留痕）。",
     ]
     for key, old_version, new_version, basis, audit in rows:
         lines.append(
@@ -495,8 +499,8 @@ def prod_config_violation(
                 f"  差异：\n{_compact_runtime_diff(before, after)}\n"
                 f"  变化键：{', '.join(changed[:8]) or '（无）'}\n"
                 f"  未豁免明细：\n{failure_detail}\n"
-                "  —— actor 约定：只有 pytest*/test* 算测试进程写入（一律硬红）；"
-                "streamlit_or_service 与空 actor 不放行；"
+                "  —— actor 约定：只有 pytest*/test*/空 actor 算测试进程写入（一律硬红）；"
+                "streamlit_or_service 属生产外部写入，按 Reviewer a 案豁免但必须留痕；"
                 "白名单外键查不到审计行、以及任何键的新增/删除，同样硬失败。"
             )
         return None

@@ -332,23 +332,18 @@ def _wire_guard(monkeypatch, db, since="2026-11-02T14:00:00+00:00"):
     return conftest
 
 
-def test_campaign_change_with_generic_actor_is_hard_fail(tmp_path, monkeypatch):
-    """2026-11-05 收紧：白名单键 + `streamlit_or_service` 通用 actor 也**不豁免**。
+def test_campaign_change_with_service_actor_is_production_self_write(tmp_path, monkeypatch):
+    """Reviewer a 案：白名单键 + `streamlit_or_service`（生产 Worker 真实 actor）→ 绿。
 
-    实测生产 `config_versions` 里 917 行的 actor 是这个通用值（Worker/雷达写
-    `VOLATILITY_CAMPAIGNS:<tenant>` 也用它）。Reviewer 定稿把它放进可疑集，
-    宁可噪声也不静默放行；要收敛噪声须由写入方改用专用 actor（`service:*`）。
+    生产实证 1029 行这个 actor，它必须被当成**外部写入**豁免，否则合法 Worker
+    每 2–3 分钟一次 campaign 自写会让带生产库指纹的全量必红。
     """
     conftest = _wire_guard(monkeypatch, _guarded_db(tmp_path, with_audit=True))
 
     before = _snapshot([("VOLATILITY_CAMPAIGNS:futu_real_master", 32, "[]")])
     after = _snapshot([("VOLATILITY_CAMPAIGNS:futu_real_master", 34, '[{"code": "US.QQQ"}]')])
 
-    violation = conftest.prod_config_violation(before, after)
-
-    assert violation is not None
-    assert "VOLATILITY_CAMPAIGNS:futu_real_master" in violation
-    assert "streamlit_or_service" in violation
+    assert conftest.prod_config_violation(before, after) is None
 
 
 def test_campaign_change_without_audit_row_still_hard_fails(tmp_path, monkeypatch):
@@ -419,12 +414,13 @@ def test_self_write_whitelist_excludes_config_like_keys():
 # 都把带生产库指纹的全量打红（实测 23:55:37 `limit_profile:futu_paper_sandbox`，
 # `config_versions.actor=chief:hotfix_republish`，是发 hotfix 时写的）。
 #
-# 定稿口径：精确键白名单（tests/fixtures/，禁前缀通配）+ 窗口内外部 actor 审计归因；
-# 查不到审计行 → 硬失败；键的新增/删除 → 硬失败；豁免逐条打日志并在 sessionfinish 汇总。
-# actor 约定写死在 `conftest.SUSPICIOUS_ACTOR_PREFIXES`：
-#   ① pytest*/test*          → 测试写入 → 一律硬红；
-#   ② streamlit_or_service / 空 → 自动写入/无法归因 → 不放行；
-#   ③ 其余（chief:* / ops:*）   → 外部人工写入 → 豁免，但逐条打 `[PROD-GUARD]` 日志。
+# 定稿口径（Reviewer 2026-11-05 推荐 a 案，已签字）：精确键白名单（tests/fixtures/，
+# 禁前缀通配）+ 窗口内外部 actor 审计归因；查不到审计行 → 硬失败；键的新增/删除 → 硬失败；
+# 豁免逐条打日志并在 sessionfinish 汇总。
+# actor 约定写死在 `conftest.SUSPICIOUS_ACTOR_PREFIXES` = ("pytest", "test")：
+#   ① pytest*/test*/空 actor → 测试写入或无法归因 → 一律硬红；
+#   ② streamlit_or_service（生产实证 1029 行）/ chief:* / ops:* → 外部写入 → 豁免，
+#      逐条打印 `[PROD-GUARD]` 日志（reason + audit_at 必留）。
 # ---------------------------------------------------------------------------
 
 
@@ -517,7 +513,7 @@ def test_pytest_actor_write_is_hard_fail(tmp_path, monkeypatch):
     assert "pytest" in violation
     # actor 命名约定必须写进断言消息，否则下次放宽会没人记得边界
     assert "pytest*/test*" in violation
-    assert "streamlit_or_service" in violation
+    assert "空 actor" in violation
 
 
 def test_deleted_key_still_hard_fails(tmp_path, monkeypatch):
@@ -694,3 +690,100 @@ def test_direct_sqlite_write_to_prod_copy_is_detected(tmp_path, monkeypatch):
     assert violation is not None, "裸 sqlite3 写穿生产副本必须红"
     assert "limit_profile:futu_paper_sandbox" in violation
     assert "查不到" in violation
+
+
+# ---------------------------------------------------------------------------
+# 真 store / 真 AlertManager 端到端双向守卫（Reviewer 2026-11-05 a 案追加）
+#
+# 上面那些用例用合成 sqlite 表 + `_snapshot` 元组，验的是**判据逻辑**；
+# 这里必须走生产真实写入链：`TradingStore.set_runtime_config()` 会同时写
+# `runtime_config` 与 `config_versions`（`record_config_version` 落 actor/reason/
+# created_at），`AlertManager.send()` 会落一条真实告警行。
+# 双向：同一个白名单键，只换 actor，`streamlit_or_service` 绿 / `pytest*` 红。
+# ---------------------------------------------------------------------------
+
+_E2E_KEY = "limit_profile:futu_paper_sandbox"
+
+
+def _e2e_store_and_baseline(tmp_path, monkeypatch):
+    """真 store 造一份「生产库副本」，返回 (conftest, store, before 指纹)。"""
+    import conftest
+    from datetime import datetime, timezone
+
+    from futu_quant.store import TradingStore
+
+    db = tmp_path / "e2e_prod_copy.db"
+    store = TradingStore(db)
+    store.set_runtime_config(_E2E_KEY, {"risk_ratio": 0.3}, actor="chief:baseline_seed")
+    monkeypatch.setattr(conftest, "_PROD_GUARD_DB_PATH", db)
+    monkeypatch.setattr(
+        conftest, "_SESSION_STARTED_AT", datetime.now(timezone.utc).isoformat()
+    )
+    conftest._SESSION_EXEMPTIONS = []
+    return conftest, store, conftest.prod_config_fingerprint()
+
+
+def test_e2e_service_actor_write_is_exempted_with_real_store_and_alert(
+    tmp_path, monkeypatch, capsys
+):
+    """真链绿：`streamlit_or_service` 写同键 → 绿 + 逐条日志（reason/audit_at）+ 真告警留痕。"""
+    from futu_quant.alerts import AlertManager
+
+    conftest, store, before = _e2e_store_and_baseline(tmp_path, monkeypatch)
+
+    # 真实生产 Worker 的写入链：store API 落审计行（actor=streamlit_or_service）
+    store.set_runtime_config(
+        _E2E_KEY, {"risk_ratio": 0.35}, actor="streamlit_or_service",
+    )
+    store.record_config_version(
+        _E2E_KEY, {"risk_ratio": 0.35}, actor="streamlit_or_service",
+        reason="radar 每轮回写限额档",
+    )
+    # 真 AlertManager：证明这条链里告警子系统确实可用（不是打桩的空壳）
+    AlertManager(store).send(
+        "INFO", "PROD_GUARD_E2E_PROBE", "生产守卫端到端探针（应豁免）",
+    )
+    assert any(
+        row["event_type"] == "PROD_GUARD_E2E_PROBE" for row in store.alerts(limit=20)
+    ), "真 AlertManager 未落告警行 —— 端到端链断了"
+
+    after = conftest.prod_config_fingerprint()
+    assert after is not None and after != before
+
+    assert conftest.prod_config_violation(before, after) is None
+    err = capsys.readouterr().err
+    assert "[PROD-GUARD]" in err
+    assert _E2E_KEY in err
+    assert "streamlit_or_service" in err
+    assert "radar 每轮回写限额档" in err, "豁免日志缺 reason"
+    assert "audit_at=" in err and "audit_at=-" not in err, "豁免日志缺 audit_at"
+
+
+def test_e2e_pytest_actor_write_is_hard_fail_with_real_store_and_alert(
+    tmp_path, monkeypatch
+):
+    """真链红：同一个键换成 `pytest_*` actor → 红，且真告警链仍在。"""
+    from futu_quant.alerts import AlertManager
+
+    conftest, store, before = _e2e_store_and_baseline(tmp_path, monkeypatch)
+
+    store.set_runtime_config(_E2E_KEY, {"risk_ratio": 0.9}, actor="pytest_worker")
+    store.record_config_version(
+        _E2E_KEY, {"risk_ratio": 0.9}, actor="pytest_worker", reason="测试写穿",
+    )
+    AlertManager(store).send(
+        "ERROR", "PROD_GUARD_E2E_PROBE", "生产守卫端到端探针（应硬红）",
+    )
+    assert any(
+        row["event_type"] == "PROD_GUARD_E2E_PROBE" for row in store.alerts(limit=20)
+    ), "真 AlertManager 未落告警行 —— 端到端链断了"
+
+    after = conftest.prod_config_fingerprint()
+    assert after is not None and after != before
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None, "pytest actor 经真 store 写入必须硬红"
+    assert _E2E_KEY in violation
+    assert "pytest" in violation
+    assert "pytest*/test*" in violation, "actor 约定必须写进断言消息"
