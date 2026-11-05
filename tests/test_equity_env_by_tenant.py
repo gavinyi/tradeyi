@@ -11,21 +11,25 @@ import json
 
 import pytest
 
-from futu_quant.limit_profile import LimitProfile
 from futu_quant.limit_profile_store import profile_key
-from futu_quant.risk_limits import _equity_env, _apply_limit_profile
-from futu_quant.risk import RiskLimits
+from futu_quant.risk_limits import RiskLimits, RiskLimitsConfigError, _apply_limit_profile
+from futu_quant.tenant import TenantConfigKeyError, equity_snapshot_env
 
 
 PAPER_ACCOUNT = "20170229"
 REAL_ACCOUNT = "281756481476169109"
 
 
-def test_equity_env_uses_tenant_trading_env_not_account_presence():
-    assert _equity_env("futu_paper_sandbox", PAPER_ACCOUNT) == "SIMULATE"
-    assert _equity_env("futu_real_master", REAL_ACCOUNT) == f"REAL_{REAL_ACCOUNT}"
-    # 没有租户时保持旧行为（按账户号拼 REAL_）
-    assert _equity_env("", REAL_ACCOUNT) == f"REAL_{REAL_ACCOUNT}"
+def test_equity_env_uses_shared_tenant_entrypoint():
+    """环境必须由租户 trading_env 派生，不能按 account_id 猜测。"""
+    assert equity_snapshot_env("futu_paper_sandbox", PAPER_ACCOUNT) == "SIMULATE"
+    assert equity_snapshot_env("futu_real_master", REAL_ACCOUNT) == f"REAL_{REAL_ACCOUNT}"
+
+
+def test_equity_env_unknown_tenant_with_account_fails_closed():
+    """有账户但租户无法解析时必须拒绝，不得猜测环境。"""
+    with pytest.raises(TenantConfigKeyError):
+        equity_snapshot_env("unknown-tenant", "99999999")
 
 
 class _Store:
