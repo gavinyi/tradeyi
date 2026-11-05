@@ -30,7 +30,7 @@ PAPER_ACCOUNT = "20170229"
 REAL_TENANT = "futu_real_master"
 REAL_ACCOUNT = "281756481476169109"
 
-PAPER_EQUITY = 6_671.0  # 6% → 400.26
+PAPER_EQUITY = 6_671.0  # 20% → 1334.20（2026-11-05 用户拍板三参 0.20）
 REAL_EQUITY = 1_000_000.0
 
 ENV_DEFAULT_DAILY_LOSS = 10_000.0  # .env 固定值（静默回退时的值）
@@ -98,7 +98,7 @@ def test_paper_tenant_with_account_id_reads_simulate_equity(tmp_path):
     # （不抛 RiskLimitsConfigError ⇒ 下游不会产生 RISK_LIMITS_CONFIG_INCOMPLETE 拒单）
     limits = resolve_risk_limits(store, _scope(PAPER_TENANT, PAPER_ACCOUNT))
 
-    assert limits.max_order_notional == pytest.approx(400.26, abs=0.02)
+    assert limits.max_order_notional == pytest.approx(1334.20, abs=0.02)
     assert limits.max_order_notional != pytest.approx(ENV_DEFAULT_DAILY_LOSS)
 
 
@@ -108,7 +108,7 @@ def test_paper_tenant_without_account_id_still_reads_simulate(tmp_path):
 
     limits = resolve_risk_limits(store, _scope(PAPER_TENANT, ""))
 
-    assert limits.max_order_notional == pytest.approx(400.26, abs=0.02)
+    assert limits.max_order_notional == pytest.approx(1334.20, abs=0.02)
 
 
 # ------------------------------------------------------------ 实盘：不受影响
