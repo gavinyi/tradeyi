@@ -83,7 +83,13 @@ def test_real_limit_profile_stale_equity_is_unresolved(monkeypatch, tmp_path):
     monkeypatch.setattr(profile_store, "load_limit_profile", lambda *_: SimpleNamespace(
         source="derived:limit_profile", profile=LimitProfile()))
     stale_at = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
-    monkeypatch.setattr(store, "equity_history", lambda **_: [{"total_assets": 6637.64, "created_at": stale_at}])
+    def equity_history(*, limit=1, env=None):
+        # 现行派生路径显式传入 limit 与 tenant 派生的 env；保留参数以钉住调用契约。
+        assert limit == 1
+        assert env == "REAL_281756481476169109"
+        return [{"total_assets": 6637.64, "created_at": stale_at}]
+
+    monkeypatch.setattr(store, "equity_history", equity_history)
     limits = real_trading.resolve_real_account_limits(store, SimpleNamespace(
         real_max_order_notional=1000.0, real_max_daily_notional=2500.0,
         real_allowed_strategies=("core_satellite",), real_require_manual_confirm=False),
