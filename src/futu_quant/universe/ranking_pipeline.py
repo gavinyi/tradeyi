@@ -64,12 +64,16 @@ class RankingPipeline:
             logger.warning("标的 %s 调用模型打分异常，使用平滑默认值: %s", symbol, e)
             base_score = 0.50
 
-        # 至少三笔真实虚拟结算后，以赛马实绩为主（60%），模型先验为辅（40%）。
-        # 这使长期固定 0.5 的缺模型场景也能凭可审计胜负/PnL 形成差异化评分。
+        # 有任何真实虚拟结算（>=1 笔）就按赛马实绩重算：胜率为主（70%），
+        # PnL 分为辅（30%），模型先验只占 30% 权重。旧门槛 `total >= 3` 让
+        # 1-2 笔结算的标的永远卡在「模型先验 0.50」——而 v3 模型是期权合约
+        # 特征模型，对孵化池的股票 symbol 必然 MissingFeatureError → NA →
+        # base_score 恒 0.5，全表死平（生产实测 8/8 行恒 0.50）。
+        # R3（2026-11-05）：门槛降到 >=1，1-2 笔结算也立即分化评分。
         wins = int(incubator.get("simulated_wins", 0))
         losses = int(incubator.get("simulated_losses", 0))
         total = wins + losses
-        if total >= 3:
+        if total >= 1:
             win_rate = wins / total
             max_dd = float(incubator.get("simulated_max_dd", 0.0))
             pnl = float(incubator.get("simulated_pnl_usd", 0.0))
