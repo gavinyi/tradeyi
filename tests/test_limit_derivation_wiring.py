@@ -46,8 +46,11 @@ def test_invalid_ratios_are_rejected_before_publish():
 
 def test_change_classification_uses_effective_values():
     old = resolve_limit_chain(None, "futu_paper_sandbox", 10000, LimitProfile())
+    # 默认 per_order_ratio 已是 0.20；收紧到 0.10 必须 classify 为 tighten。
     new = resolve_limit_chain(None, "futu_paper_sandbox", 10000, LimitProfile(per_order_ratio=0.10))
-    assert classify_changes(old, new)["per_order"] == "loosen"
+    assert classify_changes(old, new)["per_order"] == "tighten"
+    wider = resolve_limit_chain(None, "futu_paper_sandbox", 10000, LimitProfile(per_order_ratio=0.30))
+    assert classify_changes(old, wider)["per_order"] == "loosen"
 
 
 def test_first_enable_is_classified_as_loosen_against_old_key_amount(tmp_path):
@@ -101,14 +104,14 @@ def test_publish_round_trip_reads_runtime_config_and_audits(tmp_path):
     assert loaded.source == "derived:limit_profile"
     assert loaded.profile == LimitProfile()
     versions = store.config_versions(profile_key(TENANT))
-    assert versions and json.loads(versions[0]["value_json"])["per_order_ratio"] == 0.06
+    assert versions and json.loads(versions[0]["value_json"])["per_order_ratio"] == 0.20
     audit = [x for x in store.audit_events() if x["event_type"] == "LIMIT_PROFILE_PUBLISHED"]
     assert audit
     payload = json.loads(audit[0]["payload_json"])
     assert payload["actor"] == "streamlit_admin:test" and payload["reason"] == "初始化派生限额"
     # 审计必须能复现「当时实际放行多少」，不能被 runtime_config 原文覆盖掉
     assert payload["effective_before"]["per_order"] == 2_500.0
-    assert payload["effective_after"]["per_order"] == 600.0  # 权益 10,000 × 6%
+    assert payload["effective_after"]["per_order"] == 2_000.0  # 权益 10,000 × 20%
     assert payload["changes"]["per_order"] == "tighten"
 
 
@@ -136,25 +139,42 @@ def test_publish_failure_rolls_back_without_half_written_profile(tmp_path, monke
 
 
 def test_capacity_ratio_is_independent_of_per_order_ratio():
-    low = LimitProfile(per_order_ratio=0.06, daily_entries_ratio=0.20, capacity_ratio=0.06)
-    high = LimitProfile(per_order_ratio=0.20, daily_entries_ratio=0.20, capacity_ratio=0.06)
+    # 容量线只受 capacity_ratio 与日亏预算钳制，与 per_order_ratio 无关。
+    # ratio=0.20 < 默认 20%？相等 → capacity_line = 权益×20%，再被日亏（0.20）钳到同值。
+    low = LimitProfile(per_order_ratio=0.06, daily_loss_ratio=0.20, capacity_ratio=0.20)
+    high = LimitProfile(per_order_ratio=0.20, daily_loss_ratio=0.20, capacity_ratio=0.20)
     low_chain = resolve_limit_chain(None, "futu_real_master", 6637.64, low)
     high_chain = resolve_limit_chain(None, "futu_real_master", 6637.64, high)
     assert low_chain.capacity_line == pytest.approx(high_chain.capacity_line)
-    assert high_chain.capacity_line == pytest.approx(398.2584)
-    assert high_chain.per_order > high_chain.capacity_line
-    allowed, rejected_by, effective = __import__("futu_quant.limit_profile", fromlist=["effective_limit"]).effective_limit(high_chain, 398.3)
-    assert not allowed and rejected_by in {"daily_entries", "capacity_line"} and effective <= high_chain.capacity_line
+    assert high_chain.capacity_line == pytest.approx(1327.528)
+    assert high_chain.capacity_line == pytest.approx(high_chain.daily_loss)
+    # per_order 与容量线此时同值（0.20=0.20）；换 per_order_ratio 也不影响 capacity_line。
+    tighter_per_order = resolve_limit_chain(
+        None, "futu_real_master", 6637.64,
+        LimitProfile(per_order_ratio=0.10, daily_loss_ratio=0.20, capacity_ratio=0.20),
+    )
+    assert tighter_per_order.per_order < tighter_per_order.capacity_line
+    assert tighter_per_order.capacity_line == pytest.approx(high_chain.capacity_line)
 
 
 def test_capacity_ratio_is_clamped_and_classified():
     """容量线也必须过 clamp 并进变松分类，否则调大容量线可绕过确认。"""
-    wide = LimitProfile(capacity_ratio=5.0)
+    # 日亏预算放宽到 30%，避免 daily_loss 钳制盖住 capacity_ratio 语义。
+    wide = LimitProfile(daily_loss_ratio=0.30, capacity_ratio=5.0)
     chain = resolve_limit_chain(None, "futu_real_master", 10_000, wide)
-    assert chain.capacity_line == pytest.approx(10_000.0)
+    # ratio 5.0 → 钳到 1.0 → 10,000；与默认 20%（2,000）取 min → 2,000。
+    assert chain.capacity_line == pytest.approx(2_000.0)
     assert chain.clamped["capacity_line"].startswith("hard_cap")
 
-    base = resolve_limit_chain(None, "futu_real_master", 10_000, LimitProfile(capacity_ratio=0.06))
-    grown = resolve_limit_chain(None, "futu_real_master", 10_000, LimitProfile(capacity_ratio=0.10))
+    base = resolve_limit_chain(
+        None, "futu_real_master", 10_000,
+        LimitProfile(daily_loss_ratio=0.30, capacity_ratio=0.06),
+    )
+    grown = resolve_limit_chain(
+        None, "futu_real_master", 10_000,
+        LimitProfile(daily_loss_ratio=0.30, capacity_ratio=0.10),
+    )
+    assert base.capacity_line == pytest.approx(600.0)
+    assert grown.capacity_line == pytest.approx(1_000.0)
     assert classify_changes(base, grown)["capacity_line"] == "loosen"
     assert classify_changes(grown, base)["capacity_line"] == "tighten"

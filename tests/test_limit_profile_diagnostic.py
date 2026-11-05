@@ -20,6 +20,7 @@ def test_stage1_derives_without_store_or_runtime_side_effects():
         "per_order": "hard_cap:50000",
         "daily_entries": "hard_cap:100000",
         "daily_loss": "hard_cap:50000",
+        "capacity_line": "loss_limit:min",
     }
 
 
@@ -27,17 +28,21 @@ def test_real_profile_keeps_capacity_separate():
     chain = resolve_limit_chain(
         None, "futu_real_master", 6637.64, LimitProfile(capacity_ratio=0.06)
     )
-    assert round(chain.per_order, 2) == 398.26
+    # 2026-11-05 用户拍板：per_order_ratio/daily_loss_ratio 与容量线一起 20%；
+    # profile 显式传 capacity_ratio=0.06 时容量线仍被钳回 6% —— 钳制方向 fail-closed。
+    assert round(chain.per_order, 2) == 1327.53
     assert round(chain.capacity_line, 2) == 398.26
+    # $615 会被 daily_entries（0.06 → $398）钳住 —— profile 显式传 0.06 仍生效。
     allowed, rejected_by, limit = effective_limit(chain, 615)
     assert not allowed
-    assert rejected_by == "per_order"
+    assert rejected_by == "daily_entries"
     assert round(limit, 2) == 398.26
 
 
 def test_floor_is_explicit_and_missing_equity_fails_closed():
     chain = resolve_limit_chain(None, "futu_real_master", 1000)
-    assert chain.per_order == 100.0
+    # per_order_ratio 0.20 → $200 > floor $100，floor 不再触发。
+    assert chain.per_order == 200.0
     assert chain.daily_entries == 200.0
     assert chain.daily_loss == 200.0
     try:

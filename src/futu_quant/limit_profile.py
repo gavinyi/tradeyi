@@ -8,9 +8,9 @@ from typing import Mapping
 
 @dataclass(frozen=True)
 class LimitProfile:
-    per_order_ratio: float = 0.06
+    per_order_ratio: float = 0.20  # 2026-11-05 用户拍板：与容量线 20% 同步放宽，杜绝「预检放行、下单被拒」
     daily_entries_ratio: float = 0.06
-    daily_loss_ratio: float = 0.06
+    daily_loss_ratio: float = 0.20  # 2026-11-05 用户拍板：日亏预算同步 20%
     floor_per_order: float = 100.0
     floor_daily_entries: float = 200.0
     floor_daily_loss: float = 200.0
@@ -93,14 +93,26 @@ def resolve_limit_chain(
         amount, cfg.daily_loss_ratio, cfg.floor_daily_loss,
         cfg.hard_cap_daily_loss, "daily_loss"
     )
+    # 容量线唯一口径（2026-11-05 用户拍板 20%）：派生层与预检同源同值，
+    # 默认 = 权益 × CAPACITY_EQUITY_RATIO，再受 profile.capacity_ratio 与
+    # 派生日亏预算（loss_limit 语义）双重钳制 —— 预检不得比下单门禁更宽。
     capacity = None
     capacity_clamp = None
+    from .capacity_precheck import CAPACITY_EQUITY_RATIO
+
+    capacity = amount * CAPACITY_EQUITY_RATIO
     if cfg.capacity_ratio is not None:
         capacity_ratio = _finite_nonnegative(cfg.capacity_ratio, "capacity.ratio")
         if capacity_ratio > 1.0:
             capacity_ratio = 1.0
             capacity_clamp = "hard_cap:1"
-        capacity = amount * capacity_ratio
+        ratio_cap = amount * capacity_ratio
+        if ratio_cap < capacity:
+            capacity = ratio_cap
+            capacity_clamp = capacity_clamp or f"capacity_ratio:{capacity_ratio:g}"
+    if daily_loss < capacity:
+        capacity = daily_loss
+        capacity_clamp = capacity_clamp or "loss_limit:min"
     clamps = {
         key: value for key, value in {
             "per_order": per_order_clamp,

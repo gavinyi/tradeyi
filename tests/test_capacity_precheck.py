@@ -81,9 +81,9 @@ class _Broker:
 # --------------------------------------------------------------------------- #
 
 
-def test_capacity_line_is_six_percent_of_equity():
-    assert CAPACITY_EQUITY_RATIO == 0.06
-    assert capacity_equity_line(REAL_EQUITY) == pytest.approx(398.76, abs=0.01)
+def test_capacity_line_is_twenty_percent_of_equity():
+    assert CAPACITY_EQUITY_RATIO == 0.20
+    assert capacity_equity_line(REAL_EQUITY) == pytest.approx(1329.20, abs=0.01)
     assert capacity_equity_line(0) == 0.0
     assert capacity_equity_line(None) == 0.0
     assert capacity_equity_line(-100) == 0.0
@@ -97,30 +97,26 @@ def test_minimum_premium_uses_ask_not_mid():
 
 
 def test_premium_over_capacity_rejected_with_reason():
-    # ask 6.55 → $655，超过 $398.76 容量线（正是 2026-11-02 被拒的实盘那张）。
+    # ask 6.55 → $655：在 20% 线（$1,329）下通过，这正是放宽后的预期行为。
     result = _fc(_frame(_quote(ask_price=6.55, bid_price=6.50)))
-    assert result.empty
-    assert result.reasons == {REASON_PREMIUM: 1}
+    assert not result.empty
     assert result.cheapest_premium == pytest.approx(655.0)
-    assert result.needed_equity == pytest.approx(10916.67, abs=1.0)
-    assert "需要权益约 $10,917" in result.message()
 
 
-def test_mixed_capacity_and_quality_uses_capacity_candidate_only():
+def test_mixed_round_reports_only_capacity_candidate():
     cheap_quality = _quote(
         code="US.AMZN261120C260000", strike_price=260.0,
         ask_price=0.54, bid_price=0.30,
     )
-    over_capacity = _quote(
-        code="US.AMZN261120C250000", ask_price=6.55, bid_price=6.50,
+    over_budget = _quote(
+        code="US.AMZN261120C250000", ask_price=15.00, bid_price=14.50,
     )
-    result = _fc(_frame(cheap_quality, over_capacity))
+    result = _fc(_frame(cheap_quality, over_budget))
     assert result.empty
     assert result.reasons[REASON_PREMIUM] == 1
-    assert result.cheapest_premium == pytest.approx(655.0)
-    assert result.needed_equity == pytest.approx(10916.67, abs=1.0)
+    assert result.cheapest_premium == pytest.approx(1500.0)
     assert "$54" not in result.message()
-    assert "$655" in result.message()
+    assert "$1500" in result.message()
 
 
 def test_pure_quality_rejection_message_names_top_reason_without_capacity_claim():
@@ -206,7 +202,7 @@ def test_put_moneyness_measured_in_its_own_direction():
 def test_passing_candidate_kept_and_message_reports_capacity():
     result = _fc(_frame(
         _quote(),
-        _quote(code="US.AMZN261120C260000", strike_price=255.0, ask_price=4.50),
+        _quote(code="US.AMZN261120C260000", strike_price=255.0, ask_price=15.00),
     ))
     assert list(result.eligible["code"]) == ["US.AMZN261120C250000"]
     assert result.reasons[REASON_PREMIUM] == 1
@@ -231,9 +227,10 @@ def _empty_round():
     2026-11-04 归因改动后，只有这一类空轮计入连续计数；完全没有候选、
     或只被虚值/DTE/价差挡住的轮次属于 `quality_only`，见
     `tests/test_capacity_streak_attribution.py`。
+    20% 线下 $655 能通过，改用 $1,500（$15.00 ask）确保仍在容量线外。
     """
     return filter_candidates(
-        _frame(_quote(ask_price=6.55, bid_price=6.50)), equity=REAL_EQUITY, spot=SPOT,
+        _frame(_quote(ask_price=15.00, bid_price=14.50)), equity=REAL_EQUITY, spot=SPOT,
     )
 
 
@@ -410,17 +407,16 @@ def test_roll_precheck_uses_allocator_equity_and_filters_real_candidates(tmp_pat
 
     store = TradingStore(tmp_path / "capacity.db")
     campaign = {"tenant_id": TENANT, "underlying": "US.AMZN"}
-    candidates = _frame(_quote(ask_price=6.55, bid_price=6.50))
+    candidates = _frame(_quote(ask_price=15.00, bid_price=14.50))
 
     kept, result = _apply_real_capacity_precheck(
         store, _AccountBroker(), campaign, candidates, "US.AMZN", SPOT,
     )
     assert kept.empty
     assert result.equity == pytest.approx(REAL_EQUITY)
-    # 容量线 = min(权益×6%, 压力损失预算)。测试库用的是**默认预算**
+    # 容量线 = min(权益×20%, 压力损失预算)。测试库用的是**默认预算**
     # （`ensure_default_budgets` 里 volatility 默认 max_loss_ratio=3% → $199.38），
-    # 所以这里生效值是 199.38 —— 正是「预检不得比风控更宽」这条规则的体现；
-    # 生产库该租户预算是 6%，生效值才是 $398.76。
+    # 所以这里生效值是 199.38 —— 正是「预检不得比风控更宽」这条规则的体现。
     assert result.line == pytest.approx(199.38, abs=0.01)
     assert result.loss_limit == pytest.approx(199.38, abs=0.01)
     assert result.reasons == {REASON_PREMIUM: 1}
@@ -439,24 +435,24 @@ def test_paper_tenant_never_gets_capacity_pause(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# 容量线对齐 6%：不得比压力损失预算更宽（Product/Reviewer 2026-11-03 定案）
+# 容量线对齐 20%：不得比压力损失预算更宽（用户 2026-11-05 拍板）
 # --------------------------------------------------------------------------- #
 
 
-def test_capacity_line_is_six_percent_but_never_wider_than_loss_budget():
-    assert capacity_line(REAL_EQUITY) == pytest.approx(398.76, abs=0.01)
-    # 租户把 max_loss_ratio 调到比 6% 更紧 → 容量线必须跟着收紧
+def test_capacity_line_is_twenty_percent_but_never_wider_than_loss_budget():
+    assert capacity_line(REAL_EQUITY) == pytest.approx(1329.20, abs=0.01)
+    # 租户把 max_loss_ratio 调到比 20% 更紧 → 容量线必须跟着收紧
     assert capacity_line(REAL_EQUITY, loss_limit=300.0) == pytest.approx(300.0)
-    # 预算比 6% 更宽 → 仍按 6% 收口，容量线不跟着放大
-    assert capacity_line(REAL_EQUITY, loss_limit=1651.0) == pytest.approx(398.76, abs=0.01)
-    # 没有预算 / 预算为 0 → 退回 6%
-    assert capacity_line(REAL_EQUITY, loss_limit=None) == pytest.approx(398.76, abs=0.01)
-    assert capacity_line(REAL_EQUITY, loss_limit=0) == pytest.approx(398.76, abs=0.01)
+    # 预算比 20% 更宽 → 仍按 20% 收口，容量线不跟着放大
+    assert capacity_line(REAL_EQUITY, loss_limit=1651.0) == pytest.approx(1329.20, abs=0.01)
+    # 没有预算 / 预算为 0 → 退回 20%
+    assert capacity_line(REAL_EQUITY, loss_limit=None) == pytest.approx(1329.20, abs=0.01)
+    assert capacity_line(REAL_EQUITY, loss_limit=0) == pytest.approx(1329.20, abs=0.01)
 
 
-def test_filter_uses_loss_budget_when_tighter_than_six_percent():
-    # ask 3.50 → $350：6% 线（$398.76）下通过；预算只有 $300 时必须拒
-    row = _quote(ask_price=3.50, bid_price=3.45)
+def test_filter_uses_loss_budget_when_tighter_than_twenty_percent():
+    # ask 7.50 → $750：20% 线（$1,329）下通过；预算只有 $300 时必须拒
+    row = _quote(ask_price=7.50, bid_price=7.45)
     assert not _fc(_frame(row)).empty
     tightened = filter_candidates(
         _frame(row), equity=REAL_EQUITY, spot=SPOT, loss_limit=300.0,

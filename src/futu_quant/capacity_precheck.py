@@ -50,18 +50,16 @@ from .volatility_pause import (
 
 NY = ZoneInfo("America/New_York")
 
-#: 容量线 = 权益 × 6%（2026-11-03 Product/Reviewer 定案：3% → 6%）。
+#: 容量线 = 权益 × 20%（2026-11-05 用户拍板：0.06 → 0.20；历史演进 3% → 6% → 20%）。
 #:
-#: 为什么是 6% 而不是别的数：6% 就是**系统自身的压力损失预算**
-#: （`strategy_risk_budgets.max_loss_ratio`，期权权利金全额计入），
-#: 超过它的单本来也会被 `portfolio_allocator.strategy_budget_allowed` 拒绝。
-#: 把预检对齐到 6%，等于「预检不再比风控更严」，**没有新增或放宽任何阈值**；
-#: 3% 只是当初为了保守额外加的系数。
+#: 为什么放宽到 20%：用户 15:24 确认「20」，目标是让预检与派生层下单门禁
+#: （`limit_profile.resolve_limit_chain` 的 `capacity_line`）**同源同值**，
+#: 杜绝「预检放行、下单被拒」的口径错位（2026-11-04 事故）。
 #:
 #: 但**不得硬依赖这个常量**：`loss_limit` 是租户级可配的，真值在预算里。
-#: 所以 `filter_candidates(..., loss_limit=...)` 会在运行时用 `min(权益×6%, loss_limit)` 收口 ——
+#: 所以 `filter_candidates(..., loss_limit=...)` 会在运行时用 `min(权益×20%, loss_limit)` 收口 ——
 #: 常量只是没有预算可读时的兜底，绝不能让它比风控更宽。
-CAPACITY_EQUITY_RATIO = 0.06
+CAPACITY_EQUITY_RATIO = 0.20
 #: 价差上限（相对 mid）。
 MAX_SPREAD_RATIO = 0.10
 #: 盘口深度下限：至少 5 倍最小下单数量。
@@ -185,7 +183,7 @@ def capacity_equity_line(equity: float) -> float:
 
 
 def capacity_line(equity: float, loss_limit: float | None = None) -> float:
-    """**实际生效**的容量线 = `min(权益 × 6%, 压力损失预算 loss_limit)`。
+    """**实际生效**的容量线 = `min(权益 × 20%, 压力损失预算 loss_limit)`。
 
     为什么取 min：6% 是常量兜底，而 `loss_limit` 来自租户级
     `strategy_risk_budgets.max_loss_ratio`（可能被改成别的比例）。
