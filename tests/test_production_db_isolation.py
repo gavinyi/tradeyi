@@ -23,6 +23,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
@@ -326,11 +328,16 @@ def _wire_guard(monkeypatch, db, since="2026-11-02T14:00:00+00:00"):
 
     monkeypatch.setattr(conftest, "_PROD_GUARD_DB_PATH", db)
     monkeypatch.setattr(conftest, "_SESSION_STARTED_AT", since)
+    monkeypatch.setattr(conftest, "_SESSION_EXEMPTIONS", [])
     return conftest
 
 
-def test_campaign_change_with_audit_row_is_production_self_write(tmp_path, monkeypatch):
-    """有 store API 审计行的 campaign 变动 = 生产服务自写，不判失败。"""
+def test_campaign_change_with_service_actor_is_production_self_write(tmp_path, monkeypatch):
+    """Reviewer a 案：白名单键 + `streamlit_or_service`（生产 Worker 真实 actor）→ 绿。
+
+    生产实证 1029 行这个 actor，它必须被当成**外部写入**豁免，否则合法 Worker
+    每 2–3 分钟一次 campaign 自写会让带生产库指纹的全量必红。
+    """
     conftest = _wire_guard(monkeypatch, _guarded_db(tmp_path, with_audit=True))
 
     before = _snapshot([("VOLATILITY_CAMPAIGNS:futu_real_master", 32, "[]")])
@@ -350,6 +357,7 @@ def test_campaign_change_without_audit_row_still_hard_fails(tmp_path, monkeypatc
 
     assert violation is not None
     assert "VOLATILITY_CAMPAIGNS" in violation
+    assert "查不到" in violation, "无审计行必须以『查不到归因』硬失败（宁可噪声，不可静默）"
 
 
 def test_config_key_change_still_hard_fails(tmp_path, monkeypatch):
@@ -382,7 +390,7 @@ def test_mixed_change_is_not_excused(tmp_path, monkeypatch):
 
 
 def test_self_write_whitelist_excludes_config_like_keys():
-    """白名单只放运行时业务状态；配置键一律不许进。"""
+    """白名单是**精确键**：配置键不许进，同前缀的新租户键也不许进（禁止通配）。"""
     import conftest
 
     assert conftest._is_production_self_write("VOLATILITY_CAMPAIGNS:futu_real_master")
@@ -392,5 +400,390 @@ def test_self_write_whitelist_excludes_config_like_keys():
         "real_account_config:281756481476169109",
         "strategy_enabled:futu_real_master:core_satellite",
         "alert_mute_list",
+        "VOLATILITY_CAMPAIGNS:futu_new_tenant",
+        "limit_profile:unknown_tenant",
     ):
         assert not conftest._is_production_self_write(key), f"{key} 不该进白名单"
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-05：Reviewer 签字版（绑了六条），比 11-04 的 a 案更严
+#
+# 背景：旧判据 = 「所有变化键都在前缀白名单里 **且** 有 store 审计行」。
+# `limit_profile:*` 属配置类键，被设计成一律硬红 —— 结果是**任何一次合法的限额发布**
+# 都把带生产库指纹的全量打红（实测 23:55:37 `limit_profile:futu_paper_sandbox`，
+# `config_versions.actor=chief:hotfix_republish`，是发 hotfix 时写的）。
+#
+# 定稿口径（Reviewer 2026-11-05 推荐 a 案，已签字）：精确键白名单（tests/fixtures/，
+# 禁前缀通配）+ 窗口内外部 actor 审计归因；查不到审计行 → 硬失败；键的新增/删除 → 硬失败；
+# 豁免逐条打日志并在 sessionfinish 汇总。
+# actor 约定写死在 `conftest.SUSPICIOUS_ACTOR_PREFIXES` = ("pytest", "test")：
+#   ① pytest*/test*/空 actor → 测试写入或无法归因 → 一律硬红；
+#   ② streamlit_or_service（生产实证 1029 行）/ chief:* / ops:* → 外部写入 → 豁免，
+#      逐条打印 `[PROD-GUARD]` 日志（reason + audit_at 必留）。
+# ---------------------------------------------------------------------------
+
+
+def _guarded_db_rows(tmp_path, *, runtime=(), audit=()):
+    """合成守卫库：`runtime_config`（含 updated_at）+ `config_versions` 审计行。"""
+    import sqlite3
+
+    db = tmp_path / "guarded_rows.db"
+    connection = sqlite3.connect(str(db))
+    try:
+        connection.execute(
+            "CREATE TABLE runtime_config ("
+            "config_key TEXT PRIMARY KEY, value_json TEXT, version INTEGER, updated_at TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE config_versions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, config_key TEXT, value_json TEXT,"
+            " actor TEXT, reason TEXT, created_at TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO runtime_config (config_key, value_json, version, updated_at)"
+            " VALUES (?, ?, ?, ?)",
+            runtime,
+        )
+        connection.executemany(
+            "INSERT INTO config_versions (config_key, value_json, actor, reason, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            audit,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return db
+
+
+def test_external_actor_write_is_exempted_and_logged(tmp_path, monkeypatch, capsys):
+    """⑥ 绿：外部 actor 改 `limit_profile:*` → 绿，逐条打全量审计日志。"""
+    db = _guarded_db_rows(
+        tmp_path,
+        runtime=[
+            ("limit_profile:futu_paper_sandbox", '{"risk_ratio": 0.3}', 4,
+             "2026-11-04T15:55:37+00:00"),
+        ],
+        audit=[
+            ("limit_profile:futu_paper_sandbox", '{"risk_ratio": 0.3}', "chief:hotfix_republish",
+             "hotfix 重发限额档", "2026-11-04T15:55:37+00:00"),
+        ],
+    )
+    conftest = _wire_guard(monkeypatch, db)
+
+    before = _snapshot([("limit_profile:futu_paper_sandbox", 3, "{}")])
+    after = _snapshot([("limit_profile:futu_paper_sandbox", 4, '{"risk_ratio": 0.3}')])
+
+    assert conftest.prod_config_violation(before, after) is None
+
+    err = capsys.readouterr().err
+    assert "[PROD-GUARD]" in err, f"豁免必须打日志，实际输出：{err!r}"
+    assert "limit_profile:futu_paper_sandbox" in err
+    assert "version 3->4" in err
+    assert "2026-11-04T15:55:37+00:00" in err, "缺 updated_at，豁免不可审计"
+    assert "chief:hotfix_republish" in err, "缺 actor，豁免不可归因"
+    assert "hotfix 重发限额档" in err, "缺 reason 摘要"
+    assert f"sha={before[0][:16]}->{after[0][:16]}" in err, "缺前后 sha"
+    # sessionfinish 汇总（谁在什么时候动的）
+    conftest.log_session_exemption_summary()
+    assert "会话豁免汇总" in capsys.readouterr().err
+
+
+def test_pytest_actor_write_is_hard_fail(tmp_path, monkeypatch):
+    """⑥ 红：actor=`pytest_worker_x` 改**同一个** `limit_profile:*` 键 → 硬红。
+
+    与上一用例构成双向自证：键完全相同，只换 actor，绿/红必须翻转。
+    """
+    db = _guarded_db_rows(
+        tmp_path,
+        audit=[
+            ("limit_profile:futu_paper_sandbox", "{}", "pytest_worker_x", "",
+             "2026-11-04T15:55:37+00:00"),
+        ],
+    )
+    conftest = _wire_guard(monkeypatch, db)
+
+    before = _snapshot([("limit_profile:futu_paper_sandbox", 3, "{}")])
+    after = _snapshot([("limit_profile:futu_paper_sandbox", 4, '{"risk_ratio": 0.9}')])
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None, "pytest 进程写生产配置必须硬红"
+    assert "limit_profile:futu_paper_sandbox" in violation
+    assert "pytest" in violation
+    # actor 命名约定必须写进断言消息，否则下次放宽会没人记得边界
+    assert "pytest*/test*" in violation
+    assert "空 actor" in violation
+
+
+def test_deleted_key_still_hard_fails(tmp_path, monkeypatch):
+    """键被**删除** → 硬红（即使删除动作留下了外部 actor 审计行）。"""
+    db = _guarded_db_rows(
+        tmp_path,
+        audit=[
+            ("alert_mute_list", "[]", "chief:manual_release", "手动清理", "2026-11-04T15:55:37+00:00"),
+        ],
+    )
+    conftest = _wire_guard(monkeypatch, db)
+
+    before = _snapshot([
+        ("limit_profile:futu_paper_sandbox", 1, "{}"),
+        ("alert_mute_list", 1, "[]"),
+    ])
+    after = _snapshot([("limit_profile:futu_paper_sandbox", 1, "{}")])
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None
+    assert "删除键" in violation
+    assert "alert_mute_list" in violation
+
+
+def test_added_key_still_hard_fails(tmp_path, monkeypatch):
+    """键被**新增** → 硬红（新增无法归因为"改写"，一律不放行）。"""
+    db = _guarded_db_rows(
+        tmp_path,
+        audit=[("brand_new_key", "1", "chief:manual_release", "", "2026-11-04T15:55:37+00:00")],
+    )
+    conftest = _wire_guard(monkeypatch, db)
+
+    before = _snapshot([("limit_profile:futu_paper_sandbox", 1, "{}")])
+    after = _snapshot([
+        ("limit_profile:futu_paper_sandbox", 1, "{}"),
+        ("brand_new_key", 1, "1"),
+    ])
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None
+    assert "新增键" in violation
+    assert "brand_new_key" in violation
+
+
+def test_value_change_without_audit_row_still_hard_fails(tmp_path, monkeypatch):
+    """③ 白名单键、但窗口内查不到审计行 → 硬红（宁可噪声，不可静默）。"""
+    conftest = _wire_guard(monkeypatch, _guarded_db_rows(tmp_path))
+
+    before = _snapshot([("limit_profile:futu_real_master", 3, "{}")])
+    after = _snapshot([("limit_profile:futu_real_master", 4, '{"max_daily_loss": 1}')])
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None
+    assert "limit_profile:futu_real_master" in violation
+    assert "查不到" in violation
+
+
+def test_audit_row_outside_session_window_is_not_exempt(tmp_path, monkeypatch):
+    """③ 审计行必须落在**会话窗口内**：窗口外的旧 actor 记录不能拿来归因。"""
+    db = _guarded_db_rows(
+        tmp_path,
+        audit=[
+            ("limit_profile:futu_paper_sandbox", "{}", "chief:manual_release", "",
+             "2026-11-01T00:00:00+00:00"),  # 早于 _wire_guard 的 since
+        ],
+    )
+    conftest = _wire_guard(monkeypatch, db)
+
+    before = _snapshot([("limit_profile:futu_paper_sandbox", 3, "{}")])
+    after = _snapshot([("limit_profile:futu_paper_sandbox", 4, "{}")])
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None
+    assert "查不到" in violation
+
+
+def test_allowlist_is_exact_keys_from_fixture(monkeypatch, tmp_path):
+    """① 白名单落在 `tests/fixtures/`，且是**精确键**：加/删条目必须是可 review 的 diff。"""
+    import conftest
+
+    keys = conftest.load_self_write_allowlist()
+    fixture = conftest.PROD_GUARD_ALLOWLIST_FIXTURE
+    assert fixture.is_file() and fixture.name == "prod_guard_self_write_keys.txt"
+    assert "tests" in fixture.parts and "fixtures" in fixture.parts
+    assert keys, "白名单读不到输入不能当全绿"
+    assert len(keys) == len(set(keys)), "精确键白名单不许重复"
+    assert all("*" not in key and not key.endswith(":") for key in keys), "禁止前缀通配"
+    assert "limit_profile:futu_paper_sandbox" in keys
+    assert "VOLATILITY_CAMPAIGNS:futu_real_master" in keys
+    assert "limit_profile:unknown_tenant" not in keys, "新租户键不许被通配顺带放过"
+    # fixture 文件被删/写空 → 守卫必须自己炸，不能静默放行
+    real_fixture = conftest.PROD_GUARD_ALLOWLIST_FIXTURE
+    monkeypatch.setattr(conftest, "PROD_GUARD_ALLOWLIST_FIXTURE", tmp_path / "none.txt")
+    conftest._reset_allowlist_cache()
+    with pytest.raises(AssertionError, match="缺失"):
+        conftest.load_self_write_allowlist()
+    monkeypatch.setattr(conftest, "PROD_GUARD_ALLOWLIST_FIXTURE", real_fixture)
+    conftest._reset_allowlist_cache()
+
+
+def test_stale_allowlist_key_is_hard_fail():
+    """⑤ 白名单里出现库里不存在的陈旧键 → 红（逼着表跟生产现实走）。"""
+    import conftest
+
+    after = _snapshot([("limit_profile:futu_paper_sandbox", 1, "{}")])
+    stale = conftest.allowlist_stale_keys(after)
+    assert stale, "库里只剩一个白名单键，其余都该被判陈旧"
+    assert "VOLATILITY_CAMPAIGNS:futu_real_master" in stale
+    assert "limit_profile:futu_paper_sandbox" not in stale
+
+
+def test_deleting_attribution_logic_turns_red(tmp_path, monkeypatch):
+    """⑤ 守卫自身要有守卫：把归因查询摘掉（返回 None）→ 白名单键也必须红。
+
+    变异方向：若有人删掉 `_change_exemption` 里的 `_latest_write_audit` 调用、
+    改成「白名单键一律放行」，本用例的 assert 立刻转红。
+    """
+    db = _guarded_db_rows(
+        tmp_path,
+        audit=[
+            ("limit_profile:futu_paper_sandbox", "{}", "chief:manual_release", "",
+             "2026-11-04T15:55:37+00:00"),
+        ],
+    )
+    conftest = _wire_guard(monkeypatch, db)
+    monkeypatch.setattr(conftest, "_latest_write_audit", lambda key, since: None)
+
+    before = _snapshot([("limit_profile:futu_paper_sandbox", 3, "{}")])
+    after = _snapshot([("limit_profile:futu_paper_sandbox", 4, "{}")])
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None, "归因逻辑被摘掉后不能静默放行"
+    assert "查不到" in violation
+
+
+def test_direct_sqlite_write_to_prod_copy_is_detected(tmp_path, monkeypatch):
+    """⑤ 直连 `sqlite3` 模拟测试写穿生产副本（无 store 审计行）→ 红。"""
+    import shutil
+    import sqlite3
+
+    import conftest
+
+    source = _guarded_db_rows(
+        tmp_path,
+        runtime=[("limit_profile:futu_paper_sandbox", "{}", 3, "2026-11-04T00:00:00+00:00")],
+    )
+    before = _snapshot([("limit_profile:futu_paper_sandbox", 3, "{}")])
+
+    prod_copy = tmp_path / "production_copy.db"
+    shutil.copyfile(source, prod_copy)
+    monkeypatch.setattr(conftest, "_PROD_GUARD_DB_PATH", prod_copy)
+    monkeypatch.setattr(conftest, "_SESSION_STARTED_AT", "2026-11-04T10:00:00+00:00")
+
+    # 绕过 TradingStore：裸 sqlite3 直写库，不落任何 config_versions 审计行
+    connection = sqlite3.connect(str(prod_copy))
+    try:
+        connection.execute(
+            "UPDATE runtime_config SET value_json=?, version=? WHERE config_key=?",
+            ('{"hacked": true}', 4, "limit_profile:futu_paper_sandbox"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    after = conftest.prod_config_fingerprint()
+    assert after is not None
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None, "裸 sqlite3 写穿生产副本必须红"
+    assert "limit_profile:futu_paper_sandbox" in violation
+    assert "查不到" in violation
+
+
+# ---------------------------------------------------------------------------
+# 真 store / 真 AlertManager 端到端双向守卫（Reviewer 2026-11-05 a 案追加）
+#
+# 上面那些用例用合成 sqlite 表 + `_snapshot` 元组，验的是**判据逻辑**；
+# 这里必须走生产真实写入链：`TradingStore.set_runtime_config()` 会同时写
+# `runtime_config` 与 `config_versions`（`record_config_version` 落 actor/reason/
+# created_at），`AlertManager.send()` 会落一条真实告警行。
+# 双向：同一个白名单键，只换 actor，`streamlit_or_service` 绿 / `pytest*` 红。
+# ---------------------------------------------------------------------------
+
+_E2E_KEY = "limit_profile:futu_paper_sandbox"
+
+
+def _e2e_store_and_baseline(tmp_path, monkeypatch):
+    """真 store 造一份「生产库副本」，返回 (conftest, store, before 指纹)。"""
+    import conftest
+    from datetime import datetime, timezone
+
+    from futu_quant.store import TradingStore
+
+    db = tmp_path / "e2e_prod_copy.db"
+    store = TradingStore(db)
+    store.set_runtime_config(_E2E_KEY, {"risk_ratio": 0.3}, actor="chief:baseline_seed")
+    monkeypatch.setattr(conftest, "_PROD_GUARD_DB_PATH", db)
+    monkeypatch.setattr(
+        conftest, "_SESSION_STARTED_AT", datetime.now(timezone.utc).isoformat()
+    )
+    conftest._SESSION_EXEMPTIONS = []
+    return conftest, store, conftest.prod_config_fingerprint()
+
+
+def test_e2e_service_actor_write_is_exempted_with_real_store_and_alert(
+    tmp_path, monkeypatch, capsys
+):
+    """真链绿：`streamlit_or_service` 写同键 → 绿 + 逐条日志（reason/audit_at）+ 真告警留痕。"""
+    from futu_quant.alerts import AlertManager
+
+    conftest, store, before = _e2e_store_and_baseline(tmp_path, monkeypatch)
+
+    # 真实生产 Worker 的写入链：store API 落审计行（actor=streamlit_or_service）
+    store.set_runtime_config(
+        _E2E_KEY, {"risk_ratio": 0.35}, actor="streamlit_or_service",
+    )
+    store.record_config_version(
+        _E2E_KEY, {"risk_ratio": 0.35}, actor="streamlit_or_service",
+        reason="radar 每轮回写限额档",
+    )
+    # 真 AlertManager：证明这条链里告警子系统确实可用（不是打桩的空壳）
+    AlertManager(store).send(
+        "INFO", "PROD_GUARD_E2E_PROBE", "生产守卫端到端探针（应豁免）",
+    )
+    assert any(
+        row["event_type"] == "PROD_GUARD_E2E_PROBE" for row in store.alerts(limit=20)
+    ), "真 AlertManager 未落告警行 —— 端到端链断了"
+
+    after = conftest.prod_config_fingerprint()
+    assert after is not None and after != before
+
+    assert conftest.prod_config_violation(before, after) is None
+    err = capsys.readouterr().err
+    assert "[PROD-GUARD]" in err
+    assert _E2E_KEY in err
+    assert "streamlit_or_service" in err
+    assert "radar 每轮回写限额档" in err, "豁免日志缺 reason"
+    assert "audit_at=" in err and "audit_at=-" not in err, "豁免日志缺 audit_at"
+
+
+def test_e2e_pytest_actor_write_is_hard_fail_with_real_store_and_alert(
+    tmp_path, monkeypatch
+):
+    """真链红：同一个键换成 `pytest_*` actor → 红，且真告警链仍在。"""
+    from futu_quant.alerts import AlertManager
+
+    conftest, store, before = _e2e_store_and_baseline(tmp_path, monkeypatch)
+
+    store.set_runtime_config(_E2E_KEY, {"risk_ratio": 0.9}, actor="pytest_worker")
+    store.record_config_version(
+        _E2E_KEY, {"risk_ratio": 0.9}, actor="pytest_worker", reason="测试写穿",
+    )
+    AlertManager(store).send(
+        "ERROR", "PROD_GUARD_E2E_PROBE", "生产守卫端到端探针（应硬红）",
+    )
+    assert any(
+        row["event_type"] == "PROD_GUARD_E2E_PROBE" for row in store.alerts(limit=20)
+    ), "真 AlertManager 未落告警行 —— 端到端链断了"
+
+    after = conftest.prod_config_fingerprint()
+    assert after is not None and after != before
+
+    violation = conftest.prod_config_violation(before, after)
+
+    assert violation is not None, "pytest actor 经真 store 写入必须硬红"
+    assert _E2E_KEY in violation
+    assert "pytest" in violation
+    assert "pytest*/test*" in violation, "actor 约定必须写进断言消息"

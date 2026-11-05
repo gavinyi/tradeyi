@@ -1,4 +1,4 @@
-﻿"""G4 回撤熔断纯判定内核守卫（`src/futu_quant/risk_breaker.py`）。
+"""G4 回撤熔断纯判定内核守卫（`src/futu_quant/risk_breaker.py`）。
 
 对齐设计基线 `c227416` 的 V1–V22 中纯逻辑部分：
 - 双基准各自只涨不跌，回撤恒 >= 0（Reviewer C1 / V2）；
@@ -11,6 +11,8 @@
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 
@@ -375,21 +377,106 @@ def test_breaker_scope_only_real_and_simulate_explicitly_refused():
         rb.resolve_equity_env(SimpleNamespace(real_account_id=None), "REAL")
 
 
+#: 硬编码实盘 env 的字面量形态：`REAL_<6 位以上数字>`。
+REAL_ENV_LITERAL_PATTERN = re.compile(r"REAL_\d{6,}")
+
+
+def find_hardcoded_real_env_literals(source: str) -> list[int]:
+    """返回 `source` 中**代码**里出现 `REAL_<数字>` 字面量的行号（1-based）。
+
+    只看代码，不看注释：`# 事故示例 REAL_20170229` 这类说明是**文档**，不是缺陷。
+    历史口径是拿正则扫原始文本，于是 Coder 在注释/docstring 里写事故示例就被判红，
+    结果守卫被删注释绕过（守卫钉形状 → 被改成不钉）。
+    这里改用 `tokenize`：跳过 `COMMENT` token，以及落在 **docstring** 里的 `STRING` token；
+    其余 STRING/f-string 片段照扫 —— 代码里真写死账户号必须转红。
+    """
+    import ast
+    import io
+    import tokenize
+
+    docstring_lines: set[int] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None) or []
+        if not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            start = first.value.lineno
+            end = getattr(first.value, "end_lineno", None) or start
+            docstring_lines.update(range(start, end + 1))
+
+    offenders: list[int] = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            continue
+        if token.type == tokenize.STRING and token.start[0] in docstring_lines:
+            continue
+        for offset, text in enumerate(token.string.splitlines() or [""]):
+            if REAL_ENV_LITERAL_PATTERN.search(text):
+                offenders.append(token.start[0] + offset)
+    return offenders
+
+
+def test_real_env_literal_detector_flags_code_and_ignores_prose():
+    """双向自测：代码里真写死 → 红；只写在注释/docstring 的示例 → 绿。
+
+    这条自测是 ① 的变异证据：把 `find_hardcoded_real_env_literals` 退回
+    「扫原始文本」，第一段断言仍绿、第二段立刻转红（注释被误判）；
+    反之若把它改成「整份文件只要有 REAL_ 就跳过」，第一段转红。
+    """
+    prose_only = '''"""事故复盘：曾经手抄成 `REAL_20170229`（docstring 里的示例）。"""
+
+
+def _doc() -> None:
+    """再提一次：REAL_20170229 是错位示例，禁止硬编码。"""
+    # 注释里提到 REAL_20170229 同样只是文档
+    return None
+'''
+    assert find_hardcoded_real_env_literals(prose_only) == [], "注释/docstring 里的示例被误判为硬编码"
+
+    code_hits = [
+        'ENV = "REAL_20170229"\n',
+        'ENV = f"REAL_20170229"\n',
+        'def f():\n    return "REAL_20170229".lower()\n',
+    ]
+    assert find_hardcoded_real_env_literals(code_hits[0]) == [1]
+    assert find_hardcoded_real_env_literals(code_hits[1]) == [1]
+    assert find_hardcoded_real_env_literals(code_hits[2]) == [2]
+
+    # 文档在前、代码在后：同文件里一旦真写进代码，行号必须指向代码行
+    mixed = prose_only + 'ENV = f"REAL_20170229"\n'
+    assert find_hardcoded_real_env_literals(mixed) == [prose_only.count("\n") + 1]
+
+
 def test_no_hardcoded_real_account_env_literal_in_src():
-    """守卫：`src/` 里不得出现 `REAL_<数字>` 字面量（手抄错位就是今天假绿的入口）。"""
-    import re
+    """守卫：`src/` 的**代码**里不得出现 `REAL_<数字>` 字面量（手抄错位就是假绿的入口）。"""
     from pathlib import Path
 
     import futu_quant
 
     src_root = Path(futu_quant.__file__).resolve().parent
-    pattern = re.compile(r"REAL_\d{6,}")
-    offenders = []
-    for path in src_root.glob("*.py"):
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if pattern.search(line):
-                offenders.append(f"{path.name}:{lineno}")
-    assert not offenders, f"源码出现硬编码实盘 env 字面量：{offenders}"
+    assert src_root.is_dir(), f"守卫读不到源码目录：{src_root}"
+    paths = sorted(src_root.glob("*.py"))
+    # 读不到输入时不能返回空结果（空 offenders 会伪装成"全绿"）
+    assert len(paths) > 20, f"只扫到 {len(paths)} 个源文件，守卫输入异常：{src_root}"
+
+    offenders: list[str] = []
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        assert source.strip(), f"{path.name} 读成空文件，守卫输入异常"
+        offenders.extend(
+            f"{path.name}:{lineno}" for lineno in find_hardcoded_real_env_literals(source)
+        )
+    assert not offenders, (
+        f"源码代码里出现硬编码实盘 env 字面量（注释/docstring 不算）：{offenders}"
+        " —— 实盘 env 必须由 REAL_ACCOUNT_ID 派生（risk_breaker.real_equity_env）"
+    )
 
 
 def test_partial_reset_is_still_blocked_mutation():

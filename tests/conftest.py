@@ -26,7 +26,7 @@ try:
 except Exception:
     pass
 
-import uuid as _conftest_uuid
+import uuid as _conftest_uuid  # noqa: E402  # 必须在 tempfile 根重定向之后
 _session_tmp_dir = _qa_dir / f"_pytest_tmp_{os.getpid()}_{_conftest_uuid.uuid4().hex[:8]}"
 try:
     _session_tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -208,58 +208,210 @@ def _changed_keys(
     return [key for key in sorted(set(old) | set(new)) if old.get(key) != new.get(key)]
 
 
-#: 生产服务**自己**会高频改写的键（前缀）。活着 Worker/雷达一直在写它们，
-#: 与「测试是否写穿生产」无关 —— 2026-11-02 实测：开盘后雷达按分钟级把
-#: `VOLATILITY_CAMPAIGNS:<tenant>` 从 32 涨到 34，整表指纹因此必然变化。
+#: 「生产自写」**精确键**白名单的唯一数据源：`tests/fixtures/prod_guard_self_write_keys.txt`。
 #:
-#: 只放这类「运行时业务状态」；**配置类键一律不在白名单**：
-#: `risk_limits:*`、`real_account_config:*`、`strategy_enabled:*` 这些
-#: 被测试写穿才是事故，仍然一律硬红。
-PRODUCTION_SELF_WRITE_PREFIXES: tuple[str, ...] = (
-    "VOLATILITY_CAMPAIGNS",
-    "GAMMA_CAMPAIGNS",
+#: 三条硬约束（2026-11-05 Reviewer 定稿）：
+#:   ① **精确键，含租户后缀**，禁止前缀通配 —— `VOLATILITY_CAMPAIGNS*` 会把新租户的键
+#:      顺带放过，等于又回到「测试写穿与生产自写不可区分」；
+#:   ② 白名单只是**准入资格**，豁免还必须有窗口内的外部 actor 审计归因（见 `_change_exemption`）；
+#:   ③ 加/删条目必须是可 review 的 diff；库里不存在的陈旧键 → 会话判红（`allowlist_stale_keys`）。
+PROD_GUARD_ALLOWLIST_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "prod_guard_self_write_keys.txt"
 )
+
+_ALLOWLIST_CACHE: tuple[str, ...] | None = None
+
+#: —— actor 命名约定（写死；要放宽先过 Reviewer，并同步改这里的注释与断言消息）——
+#: `config_versions.actor` 的取值只有两类：
+#:   ① `pytest*` / `test*` / 空 → **测试进程**写入（或无法归因）→ 一律硬红；
+#:   ② 其余（`streamlit_or_service` / `chief:*` / `ops:*` / `service:*` …）
+#:      → **生产外部写入** → 豁免，但**逐条打 `[PROD-GUARD]` 日志**
+#:      （键 / 新旧 version / actor / reason / audit_at / 前后 sha）。
+#: 为什么 `streamlit_or_service` 必须算外部（Reviewer 2026-11-05 a 案）：
+#: 生产库只读实证 **1029 行**这个 actor，活着的 Worker/雷达每 2–3 分钟写
+#: `VOLATILITY_CAMPAIGNS:<tenant>` 用的就是它；若把它列入可疑集，任何合法
+#: Worker 自写都会让带生产库指纹的全量**必红**，守卫就变成纯噪声。
+#: 真正的写穿形态是测试进程经 store 写入（`pytest*` / `test*`），这条不放松。
+SUSPICIOUS_ACTOR_PREFIXES: tuple[str, ...] = ("pytest", "test")
 
 #: 会话开始时刻（ISO）。用于判断某个键的改动是否**留下了 store API 审计记录**。
 _SESSION_STARTED_AT: str | None = None
 
+#: 本次会话逐条豁免记录（sessionfinish 汇总用）。
+_SESSION_EXEMPTIONS: list[tuple[str, object, object, str, dict[str, str] | None]] = []
+
+
+def load_self_write_allowlist() -> tuple[str, ...]:
+    """读精确键白名单。文件缺失/为空 → 直接抛错（守卫读不到输入不能当"全绿"）。"""
+    global _ALLOWLIST_CACHE
+    if _ALLOWLIST_CACHE is not None:
+        return _ALLOWLIST_CACHE
+    path = PROD_GUARD_ALLOWLIST_FIXTURE
+    assert path.is_file(), f"生产自写白名单文件缺失：{path}"
+    keys: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        assert "*" not in line, f"白名单禁止通配（必须是精确键）：{line!r}"
+        keys.append(line)
+    assert keys, f"生产自写白名单为空：{path}"
+    assert len(set(keys)) == len(keys), f"白名单有重复键：{path}"
+    _ALLOWLIST_CACHE = tuple(keys)
+    return _ALLOWLIST_CACHE
+
+
+def _reset_allowlist_cache() -> None:
+    """测试用：fixture 被改写后需要重读。"""
+    global _ALLOWLIST_CACHE
+    _ALLOWLIST_CACHE = None
+
 
 def _is_production_self_write(key: str) -> bool:
-    return any(
-        key == prefix or key.startswith(f"{prefix}:") for prefix in PRODUCTION_SELF_WRITE_PREFIXES
-    )
+    """精确键匹配（含租户后缀）。**不做前缀通配**。"""
+    return key in load_self_write_allowlist()
 
 
-def _has_audited_write_since(key: str, since_iso: str) -> bool:
-    """该键在 `since_iso` 之后是否有**通过 store API** 的写入记录（`config_versions`）。
+def allowlist_stale_keys(
+    after: tuple[str, tuple[tuple[str, int, str], ...]] | None,
+) -> list[str]:
+    """白名单里**库里已不存在**的陈旧键（返回非空即判红，逼着表跟生产现实走）。"""
+    if after is None:
+        return []
+    existing = {key for key, _version, _value in after[1]}
+    return [key for key in load_self_write_allowlist() if key not in existing]
 
-    判据意义：`TradingStore` 每次带版本写都会落一行 `config_versions`（含 actor）。
-    测试进程的 store 已在 autouse fixture 里被重定向到临时库、**根本打不到生产库**，
-    所以「生产库里有审计行的改动」只能是生产服务自己干的。
-    反过来，**没有审计行的改动 = 有人绕过 store 直接写库**（sqlite3 直写），
-    那正是 10-23 事故的形态，必须继续硬红。
-    """
+
+def is_suspicious_actor(actor: str | None) -> bool:
+    """actor 是否属于「测试 / 自动 / 无法归因」——这些一律不豁免。"""
+    text = (actor or "").strip().lower()
+    if not text:
+        return True
+    return any(text.startswith(prefix) for prefix in SUSPICIOUS_ACTOR_PREFIXES)
+
+
+def _readonly_prod_connection():
+    """只读打开生产库（守卫永远不写生产）。"""
     import sqlite3
 
+    return sqlite3.connect(f"file:{_PROD_GUARD_DB_PATH.as_posix()}?mode=ro", uri=True)
+
+
+def _latest_write_audit(key: str, since_iso: str | None) -> dict[str, str] | None:
+    """该键在会话窗口内**最新一条** store API 审计行（actor / reason / created_at）。
+
+    `TradingStore` 每次带版本写都会落一行 `config_versions`，`created_at` 与
+    `_SESSION_STARTED_AT` 同为 `datetime.now(timezone.utc).isoformat()`，可直接字符串比较。
+    读不到（库/表不可读、无窗口内记录）返回 `None` —— 由调用方走兜底，不在此处放行。
+    """
+    if not since_iso:
+        return None
     try:
-        connection = sqlite3.connect(f"file:{_PROD_GUARD_DB_PATH.as_posix()}?mode=ro", uri=True)
+        connection = _readonly_prod_connection()
         try:
             row = connection.execute(
-                "SELECT 1 FROM config_versions WHERE config_key=? AND created_at>=? LIMIT 1",
+                "SELECT actor, reason, created_at FROM config_versions"
+                " WHERE config_key=? AND created_at>=?"
+                " ORDER BY created_at DESC, id DESC LIMIT 1",
                 (key, since_iso),
             ).fetchone()
         finally:
             connection.close()
-    except Exception:  # noqa: BLE001 - 读不到就当没有审计记录（严格方向）
-        return False
-    return row is not None
+    except Exception:  # noqa: BLE001 - 读不到就当没有可用归因（严格方向）
+        return None
+    if row is None:
+        return None
+    return {
+        "actor": str(row[0] or ""),
+        "reason": str(row[1] or ""),
+        "created_at": str(row[2] or ""),
+    }
 
 
-def _is_attributed_production_write(changed: list[str]) -> bool:
-    """所有变化键都能在生产 `config_versions` 里找到会话期内的审计行。"""
-    if not changed or not _SESSION_STARTED_AT:
-        return False
-    return all(_has_audited_write_since(key, _SESSION_STARTED_AT) for key in changed)
+def _runtime_config_updated_at(key: str) -> str:
+    """被豁免键的 `runtime_config.updated_at`（只用于审计日志，读不到不阻塞判定）。"""
+    try:
+        connection = _readonly_prod_connection()
+        try:
+            row = connection.execute(
+                "SELECT updated_at FROM runtime_config WHERE config_key=?", (key,)
+            ).fetchone()
+        finally:
+            connection.close()
+    except Exception:  # noqa: BLE001
+        return "（不可读）"
+    if not row or not row[0]:
+        return "（未知）"
+    return str(row[0])
+
+
+def _change_exemption(key: str, since_iso: str | None) -> tuple[bool, str, dict[str, str] | None]:
+    """判定一次**值变化**能否豁免，返回 `(是否豁免, 依据, 审计行)`。
+
+    三条必须**同时**成立（Reviewer 2026-11-05 定稿，缺一条即硬失败）：
+
+    1. 键在精确键白名单里（`tests/fixtures/prod_guard_self_write_keys.txt`）；
+    2. `config_versions` 里该键在**会话窗口内**有审计行；
+    3. 该审计行的 `actor` 前缀 ∉ `SUSPICIOUS_ACTOR_PREFIXES`（`pytest*` / `test*` / 空
+       不放行；`streamlit_or_service` 是生产外部写入，按 Reviewer a 案豁免）。
+
+    查不到审计行 → 硬失败（宁可噪声，不可静默）。
+    """
+    if not _is_production_self_write(key):
+        return False, "不在精确键白名单（tests/fixtures/prod_guard_self_write_keys.txt）", None
+    audit = _latest_write_audit(key, since_iso)
+    if audit is None:
+        return False, "白名单键在会话窗口内查不到 config_versions 审计行", None
+    if is_suspicious_actor(audit["actor"]):
+        return False, f"审计 actor={audit['actor']!r} 属测试/自动写入，不放行", audit
+    return True, "精确键白名单 + 窗口内外部 actor 审计归因", audit
+
+
+def _log_exemptions(
+    rows: list[tuple[str, object, object, str, dict[str, str] | None]],
+    before_sha: str,
+    after_sha: str,
+) -> None:
+    """逐条打印豁免（键、旧/新 version、actor、reason、前后 sha）——豁免必须可审计。"""
+    if not rows:
+        return
+    _SESSION_EXEMPTIONS.extend(rows)
+    lines = [
+        "\n[PROD-GUARD] 生产库变化已豁免（非测试写入，不判失败）：",
+        f"  数据源：{db_path_under_guard()}",
+        f"  会话起点：{_SESSION_STARTED_AT or '（未记录）'}",
+        f"  指纹：{before_sha[:16]} -> {after_sha[:16]}",
+        "  actor 约定：pytest*/test*/空 actor = 测试写入（硬红）；"
+        "streamlit_or_service = 生产外部写入（豁免并留痕）。",
+    ]
+    for key, old_version, new_version, basis, audit in rows:
+        lines.append(
+            f"  - key={key} version {old_version}->{new_version}"
+            f" updated_at={_runtime_config_updated_at(key)}"
+            f" actor={audit['actor'] if audit else '（无审计行）'}"
+            f" reason={(audit['reason'] or '-') if audit else '-'}"
+            f" audit_at={(audit['created_at'] or '-') if audit else '-'}"
+            f" sha={before_sha[:16]}->{after_sha[:16]}"
+            f" 依据={basis}"
+        )
+    print("\n".join(lines), file=sys.stderr, flush=True)
+
+
+def log_session_exemption_summary() -> None:
+    """sessionfinish 汇总：本次会话一共豁免了哪些键（谁在什么时候动的）。"""
+    if not _SESSION_EXEMPTIONS:
+        return
+    keys = ", ".join(sorted({key for key, *_ in _SESSION_EXEMPTIONS}))
+    detail = "; ".join(
+        f"{key} {old}->{new} actor={(audit or {}).get('actor', '（无审计行）')}"
+        for key, old, new, _basis, audit in _SESSION_EXEMPTIONS
+    )
+    print(
+        f"\n[PROD-GUARD] 会话豁免汇总：{len(_SESSION_EXEMPTIONS)} 条变化来自非测试写入"
+        f"\n  键：{keys}\n  明细：{detail}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _compact_runtime_diff(
@@ -297,7 +449,14 @@ def prod_config_violation(
     before: tuple[str, tuple[tuple[str, int, str], ...]] | None,
     after: tuple[str, tuple[tuple[str, int, str], ...]] | None,
 ) -> str | None:
-    """整表变化、override 或指纹不可读均为硬违规。"""
+    """整表变化、override 或指纹不可读均为硬违规。
+
+    变化键的判定（2026-11-05 Reviewer 定稿：精确键白名单 + 窗口内外部 actor 审计归因）：
+    - **新增键 / 删除键**：一律硬失败（不论审计归属）；
+    - **值变化**：逐键按 `_change_exemption` 判定；**只要有一个键不豁免，整次仍硬失败**
+      （白名单不能当挡箭牌，混在被豁免键里的写穿照样红）；
+    - 全部豁免时逐条打 `[PROD-GUARD]` 日志（键 / 新旧 version / actor / reason / 前后 sha）。
+    """
     if os.environ.get("TRADEYI_PROD_DB_OVERRIDE"):
         return "生产守卫禁止 TRADEYI_PROD_DB_OVERRIDE：环境变量会使守卫可被静默绕过。"
 
@@ -307,19 +466,31 @@ def prod_config_violation(
             return f"生产 runtime_config 指纹不可读（数据源：{db_path_under_guard()}）—— fail-closed。"
         if before != after:
             changed = _changed_keys(before, after)
-            # 归因：运行时业务状态键（campaign 生命周期）+ 会话期内有 store API 审计行
-            # ⇒ 生产服务自写，不是测试写穿（2026-11-02 开盘后雷达按分钟级写 campaign）。
-            production_only = bool(changed) and all(
-                _is_production_self_write(k) for k in changed
-            ) and _is_attributed_production_write(changed)
-            if production_only:
-                print(
-                    "\n[PROD-GUARD] 会话期间生产库变化来自**生产服务自写**（非测试写穿），不判失败："
-                    f"\n  数据源：{db_path_under_guard()}"
-                    f"\n  差异：\n{_compact_runtime_diff(before, after)}",
-                    file=sys.stderr, flush=True,
+            if not changed:
+                return (
+                    "生产 runtime_config 在 pytest 会话期间被改动（指纹变化但无法生成行级差异）"
+                    f"（数据源：{db_path_under_guard()}）—— fail-closed。"
                 )
+            old_rows = {key: (version, value) for key, version, value in before[1]}
+            new_rows = {key: (version, value) for key, version, value in after[1]}
+            exemptions: list[tuple[str, object, object, str, dict[str, str] | None]] = []
+            failures: list[str] = []
+            for key in changed:
+                old_row = old_rows.get(key)
+                new_row = new_rows.get(key)
+                if old_row is None or new_row is None:
+                    kind = "新增键" if old_row is None else "删除键"
+                    failures.append(f"{key}：{kind}（新增/删除一律不豁免）")
+                    continue
+                exempt, basis, audit = _change_exemption(key, _SESSION_STARTED_AT)
+                if exempt:
+                    exemptions.append((key, old_row[0], new_row[0], basis, audit))
+                else:
+                    failures.append(f"{key}：{basis}")
+            if not failures:
+                _log_exemptions(exemptions, before[0], after[0])
                 return None
+            failure_detail = "\n".join(f"  - {item}" for item in failures[:8])
             return (
                 "生产 runtime_config 在 pytest 会话期间被改动！\n"
                 f"  数据源：{db_path_under_guard()}\n"
@@ -327,7 +498,10 @@ def prod_config_violation(
                 f"  会话后：sha={after[0][:16]}\n"
                 f"  差异：\n{_compact_runtime_diff(before, after)}\n"
                 f"  变化键：{', '.join(changed[:8]) or '（无）'}\n"
-                "  —— 除已知「生产自写」的运行时键外，一律硬失败。"
+                f"  未豁免明细：\n{failure_detail}\n"
+                "  —— actor 约定：只有 pytest*/test*/空 actor 算测试进程写入（一律硬红）；"
+                "streamlit_or_service 属生产外部写入，按 Reviewer a 案豁免但必须留痕；"
+                "白名单外键查不到审计行、以及任何键的新增/删除，同样硬失败。"
             )
         return None
 
@@ -388,9 +562,18 @@ def pytest_sessionfinish(session, exitstatus):
     因此能抓住任何路径，包括绕过 `TradingStore` 的裸 sqlite3 写。
     """
     global _SESSION_PROD_BASELINE
-    violation = prod_config_violation(_SESSION_PROD_BASELINE, prod_config_fingerprint())
+    after = prod_config_fingerprint()
+    violation = prod_config_violation(_SESSION_PROD_BASELINE, after)
     baseline = _SESSION_PROD_BASELINE
     _SESSION_PROD_BASELINE = None
+    # 白名单自身守卫：库里已不存在的陈旧键必须红（逼着 fixture 跟生产现实走）。
+    stale = allowlist_stale_keys(after) if baseline is not None else []
+    if stale:
+        violation = (violation or "") + (
+            f"\n[PROD-GUARD] 白名单存在陈旧键（库里已不存在）：{stale}"
+            f"\n  白名单文件：{PROD_GUARD_ALLOWLIST_FIXTURE}"
+        )
+    log_session_exemption_summary()
     if violation:
         print(f"\n[PROD-GUARD] {violation}", file=sys.stderr, flush=True)
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
