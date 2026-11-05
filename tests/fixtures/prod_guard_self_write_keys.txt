@@ -13,6 +13,11 @@
 # 维护约定：加/删一行都必须是一次可 review 的 diff。库里已不存在的陈旧键会让会话直接判红
 # （`allowlist_stale_keys`），逼着这张表跟着生产现实走。
 #
+# ⚠️ 新增生产自写键必须同步更新本 fixture（2026-11-05 纪律，热修批定案）：
+# 每次全量都被「生产合法写入触发守卫红」烧掉一轮 11 分钟（已发生 3 次：
+# VOLATILITY_CAMPAIGNS:paper、VOLATILITY_CAMPAIGNS、ENV_SETTINGS）。
+# 发布前置 checklist 必含「对照生产 config_versions 近期 actor 键清单核对本表」。
+#
 # actor 口径（Reviewer 2026-11-05 推荐 a 案，已签字）：
 #   生产库只读实证 `config_versions` 里 **1029 行** actor=`streamlit_or_service`，
 #   活着的 Worker/雷达每 2–3 分钟写 `VOLATILITY_CAMPAIGNS:<tenant>` 用的正是它；
@@ -20,6 +25,15 @@
 #   因此它算**生产外部写入**：豁免，但必须逐条打印 reason + audit_at 留痕。
 #   真正不放行的只有 `pytest*` / `test*` / 空 actor（测试进程写入 / 无法归因）。
 #   注：早前记的「917 行」是同一口径的旧采样，已按 Reviewer 复核值校正为 1029。
+#
+# ENV_SETTINGS 三个事实（Reviewer 2026-11-05 裁定）：
+#   ① 它由 Worker/服务按启动配置**周期性自写**（实测 v126→128 发生在 pytest
+#      会话窗口内，actor=streamlit_or_service）——生产合法行为，不是测试写穿；
+#   ② 豁免口径与 VOLATILITY_CAMPAIGNS:* 一致：只豁免**值/version 变化**，
+#      键的新增/删除仍硬失败（若哪天该键被删，allowlist_stale_keys 判红是故意的）；
+#   ③ **本 fixture 依赖 actor 留痕存活**：豁免成立靠 config_versions 的归因查询，
+#      白名单本身不校验「键是否真由生产写入」——若 worker 改成不落审计直写，
+#      此键会从「豁免」变「查不到审计行 → 硬失败」（宁可噪声不可静默，是设计行为）。
 #
 # 键名逐条列出（含租户后缀）：
 VOLATILITY_CAMPAIGNS
@@ -29,3 +43,4 @@ VOLATILITY_CAMPAIGNS:moomoo_real
 GAMMA_CAMPAIGNS
 limit_profile:futu_paper_sandbox
 limit_profile:futu_real_master
+ENV_SETTINGS

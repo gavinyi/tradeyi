@@ -608,6 +608,9 @@ def test_allowlist_is_exact_keys_from_fixture(monkeypatch, tmp_path):
     assert "limit_profile:futu_paper_sandbox" in keys
     assert "VOLATILITY_CAMPAIGNS:futu_real_master" in keys
     assert "limit_profile:unknown_tenant" not in keys, "新租户键不许被通配顺带放过"
+    # 热修 2026-11-05：ENV_SETTINGS 是 Worker 运行时权威镜像键（v126→128 实证），
+    # 属生产合法自写；漏配它会把整轮全量烧红一次（已发生，见 fixture 头注释）。
+    assert "ENV_SETTINGS" in keys, "ENV_SETTINGS 必须在白名单（生产 Worker 合法自写键）"
     # fixture 文件被删/写空 → 守卫必须自己炸，不能静默放行
     real_fixture = conftest.PROD_GUARD_ALLOWLIST_FIXTURE
     monkeypatch.setattr(conftest, "PROD_GUARD_ALLOWLIST_FIXTURE", tmp_path / "none.txt")
