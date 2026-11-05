@@ -393,6 +393,81 @@ def fee_ledger_summary_line(
     return line
 
 
+#: 风控 env 回落事件（`risk_limits._record_env_fallback` 写 audit + 计数器，**没有告警**）。
+RISK_LIMITS_ENV_FALLBACK_EVENT = "RISK_LIMITS_ENV_FALLBACK"
+#: 巡检窗口（小时）。
+RISK_LIMITS_ENV_FALLBACK_WINDOW_HOURS = 24
+
+
+def risk_limits_env_fallback_rows(
+    store, hours: int = RISK_LIMITS_ENV_FALLBACK_WINDOW_HOURS,
+) -> list[dict]:
+    """近 N 小时「风控 env 回落」事件，按 (租户, 账户) 聚合。
+
+    **读库异常必须向上抛**：调用方要把它判成红。把"查不到"当成"0 次"正是
+    本项要消灭的静默（Reviewer 2026-11-05：该计数只有 audit + 计数器、0 告警，
+    等于不可观测）。
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=int(hours))).isoformat()
+    sql = (
+        "SELECT COALESCE(json_extract(payload_json,'$.tenant_id'), '<未知租户>') AS tenant_id, "
+        "COALESCE(json_extract(payload_json,'$.account_id'), '<无账户>') AS account_id, "
+        "COUNT(*) AS count, MAX(created_at) AS last_seen "
+        "FROM audit_events WHERE event_type=? AND created_at >= ? "
+        "GROUP BY tenant_id, account_id ORDER BY COUNT(*) DESC"
+    )
+    with store.connection() as connection:
+        return [
+            dict(row) for row in connection.execute(
+                sql, (RISK_LIMITS_ENV_FALLBACK_EVENT, cutoff)
+            ).fetchall()
+        ]
+
+
+def check_risk_limits_env_fallback(
+    store, hours: int = RISK_LIMITS_ENV_FALLBACK_WINDOW_HOURS,
+) -> list[str]:
+    """`RISK_LIMITS_ENV_FALLBACK` > 0 → 巡检判红（按租户列出次数与最近时间）。"""
+    try:
+        rows = risk_limits_env_fallback_rows(store, hours)
+    except Exception as exc:  # noqa: BLE001 - 读不到必须判红，不能判绿
+        return [
+            f"🚨 **风控 env 回落巡检读取失败**（本轮不能判绿）："
+            f"{type(exc).__name__}: {exc}"
+        ]
+    if not rows:
+        return []
+    parts = [
+        f"{row['tenant_id']} / {row['account_id']} ×{row['count']}"
+        f"（最近 {str(row['last_seen'])[:19]}）"
+        for row in rows
+    ]
+    return [
+        f"🔴 **风控 env 回落（限额静默降级）**：近 {int(hours)} 小时 " + "；".join(parts)
+        + " —— 账户级与租户级风控配置均缺失，回落成环境变量默认额度（迁移前状态），"
+        "实盘可能正在用旧额度跑，请补租户风控配置"
+    ]
+
+
+def risk_limits_env_fallback_line(
+    store, hours: int = RISK_LIMITS_ENV_FALLBACK_WINDOW_HOURS,
+) -> str:
+    """报告里的**固定行**：绿也要出现「0 次」，否则"没这行"和"0 次"分不开。"""
+    try:
+        rows = risk_limits_env_fallback_rows(store, hours)
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"• **风控 env 回落**：读取失败（{type(exc).__name__}），本轮不能判绿"
+        )
+    if not rows:
+        return f"• **风控 env 回落**：近 {int(hours)} 小时 **0 次**"
+    total = sum(int(row["count"]) for row in rows)
+    detail = "，".join(
+        f"{row['tenant_id']}/{row['account_id']}×{row['count']}" for row in rows[:4]
+    )
+    return f"• **风控 env 回落**：近 {int(hours)} 小时 **{total} 次**（{detail}）"
+
+
 def inspect_and_alert():
     now_utc = datetime.now(timezone.utc)
     now_china = now_utc.astimezone(CHINA_TZ)
@@ -599,6 +674,11 @@ def inspect_and_alert():
         except Exception:
             pass
 
+    # 4.6 风控 env 回落（RISK_LIMITS_ENV_FALLBACK）
+    # 这个计数原本只有 audit + 计数器、**零告警**：回落成环境变量默认额度（迁移前状态）
+    # 时实盘照样在下单，没人知道。>0 即判红，读不到也判红（不许"查不到=绿"）。
+    issues.extend(check_risk_limits_env_fallback(store))
+
     # 5. 检查本地日志中的 FATAL / Traceback 致命报错 (最近30分钟)
     log_path = Path(__file__).resolve().parents[1] / "data" / "service.log"
     if log_path.exists():
@@ -698,6 +778,9 @@ def inspect_and_alert():
 
     # 费用账本三态可见性（P1-14）：历史占位不回填，但必须让它可见（信息项，不告警）
     msg_body += "\n" + fee_ledger_summary_line(store) + "\n"
+
+    # 风控 env 回落固定行（P0-2b）：绿也要出现「0 次」，否则"没这行"和"0 次"分不开
+    msg_body += risk_limits_env_fallback_line(store) + "\n"
 
     full_msg = msg_header + msg_body
     print(f"[{time_str}] 系统巡检完成，推送消息到飞书...")

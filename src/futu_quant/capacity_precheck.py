@@ -107,6 +107,16 @@ BUYOUT_WINDOW_HOURS = 24
 #: 窗口内买不起达到该轮数 → 发 WARNING（独立于暂停，不动任何阈值）。
 BUYOUT_WARN_THRESHOLD = 5
 BUYOUT_WARN_EVENT = "VOLATILITY_CAPACITY_BUYOUT_FREQUENT"
+#: 买不起 WARNING 的**小时聚合**键（Ops P1-8，2026-11-05 用户指派）：
+#: 同因同租户**每小时最多一条**；同小时内的后续轮次只累加计数、不重复推送。
+#:
+#: 为什么不是「通配静音」：静音会把「结构性买不起」彻底藏起来。这里聚合后那一条
+#: 仍然带**24h 轮次数**与**最近一轮时间**，逐轮明细照旧留在 `BUYOUT_ROUNDS_KEY`
+#: 的时间戳窗口里（可查、可追、可还原到分钟）。
+#: 背景：2026-11-04 该告警在 `futu_real_master` 上刷到 61 轮、约每分钟一条。
+BUYOUT_WARN_HOUR_KEY = "volatility_capacity_buyout_warn_hour:{tenant_id}"
+#: 小时桶按**北京时间**切分（运维与用户看的是中国时间，UTC 切分会跨到「昨天的后半天」）。
+BUYOUT_WARN_TZ = timezone(timedelta(hours=8))
 
 logger = logging.getLogger(__name__)
 
@@ -474,25 +484,63 @@ def _record_buyout_round(store, tenant: str, moment: datetime) -> int:
     return len(stamps)
 
 
+def _buyout_warn_bucket(moment: datetime) -> tuple[str, str]:
+    """(小时桶, 北京时间显示串)。桶按**北京时间**切，与用户看到的时段对齐。"""
+    ts = moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+    local = ts.astimezone(BUYOUT_WARN_TZ)
+    return local.strftime("%Y-%m-%dT%H"), local.strftime("%m-%d %H:%M")
+
+
 def _warn_frequent_buyouts(
     store, tenant: str, count: int, result: CapacityPrecheck, moment: datetime,
-) -> None:
-    """24h 内买不起轮次达到阈值 → WARNING（独立于暂停，不动任何阈值）。"""
+) -> bool:
+    """24h 内买不起轮次达到阈值 → WARNING，**同因同租户每小时最多一条**。
+
+    返回本次是否真的推送（守卫与验收用它断言聚合生效）。
+
+    为什么聚合（Ops P1-8，2026-11-05）：该告警在 `futu_real_master` 上 5 小时刷了
+    119 条（≈24 条/小时），把真正的信号埋了。聚合不是静音 ——
+    推送的那一条仍带 **24h 轮次数** 与 **最近一轮时间**，逐轮时间戳照旧留在
+    `BUYOUT_ROUNDS_KEY` 窗口里，可还原到分钟。
+
+    读小时桶失败时按「本小时还没发过」处理（**宁可多一条，也不静默**）。
+    """
     if count < BUYOUT_WARN_THRESHOLD:
-        return
+        return False
+    bucket, label = _buyout_warn_bucket(moment)
+    key = BUYOUT_WARN_HOUR_KEY.format(tenant_id=tenant)
+    sent_bucket = ""
+    try:
+        raw = str(store.get_setting(key, "") or "").strip()
+        # 兼容两种历史格式：裸桶串 / `bucket|count|iso`
+        sent_bucket = raw.split("|", 1)[0] if raw else ""
+    except Exception as exc:  # noqa: BLE001 - 读不到按「未发」处理，宁可多一条也不静默
+        logger.warning("读取买不起告警小时桶失败（按未发处理）：%s", exc)
+        sent_bucket = ""
+    if sent_bucket == bucket:
+        # 同一小时已推送过：本轮只累加计数（已在 _record_buyout_round 里完成）
+        return False
     try:
         from .alerts import AlertManager
 
         AlertManager(store).send(
             "WARNING", BUYOUT_WARN_EVENT,
             f"[{tenant}] 近 {BUYOUT_WINDOW_HOURS} 小时已有 {count} 轮因「买不起」筛空"
-            f"（连续 {STREAK_TO_ALERT} 轮会升级为 ERROR 告警，不会自动暂停；"
+            f"（最近一轮 {label}；同因同租户每小时只聚合推送一条，"
+            f"逐轮时间戳见 `{BUYOUT_ROUNDS_KEY.format(tenant_id=tenant)}`；"
+            f"连续 {STREAK_TO_ALERT} 轮会升级为 ERROR 告警，不会自动暂停；"
             f"质量类拒绝不计入且会清零连续计数）："
             f"{result.message()}",
             incident_key=f"{BUYOUT_WARN_EVENT}:{tenant}:{moment.date().isoformat()}",
         )
     except Exception as exc:  # noqa: BLE001 - 告警失败不得把交易链路打断
         logger.warning("买不起频繁告警发送失败（计数照常）：%s", exc)
+        return False
+    try:
+        store.set_setting(key, f"{bucket}|{count}|{moment.isoformat()}")
+    except Exception as exc:  # noqa: BLE001 - 写失败只影响下一小时去重，不阻断交易
+        logger.warning("写入买不起告警小时桶失败（下一轮可能重复推送）：%s", exc)
+    return True
 
 
 def _insufficient_alerted_today(store, tenant: str, moment: datetime) -> bool:
