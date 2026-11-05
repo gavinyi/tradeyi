@@ -378,6 +378,90 @@ def test_today_real_buy_entries_filters_tenant_strategy_env_and_day(tmp_path):
     assert rows[0]["intent_key"].endswith(":REAL")
 
 
+def test_rejected_real_intent_does_not_count_as_opened_entry(tmp_path):
+    """热修 2026-11-05（audit 201604）：REJECTED 不算「已开笔数」。
+
+    生产事故：COIN REAL intent 被回撤熔断 REJECT，probe_guard 却计成
+    「今日实盘已开 1 笔」，把实盘锁死一整天（44 次误拦）。
+    """
+    store = TradingStore(tmp_path / "rejected.db")
+    today = datetime.now(NY).date().isoformat()
+    with store.connection() as conn:
+        for status in ("REJECTED", "FAILED", "CANCELLED_ALL", "SHADOW_EXPIRED"):
+            conn.execute(
+                "INSERT INTO order_intents (strategy_id, intent_key, symbol, side,"
+                " quantity, limit_price, status, created_at, updated_at, tenant_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("volatility_long_gamma", f"{today}:x:{status}:REAL",
+                 "US.COIN261120P140000", "BUY", 1, 14.0,
+                 status, f"{today}T15:05:32+00:00", f"{today}T15:05:33+00:00", TENANT),
+            )
+        conn.commit()
+    rows = today_real_buy_entries(
+        store, tenant_id=TENANT, strategy_id="volatility_long_gamma",
+    )
+    assert rows == [], "被拒/失败/取消的意图没有占用当日实盘名额，不得计入"
+
+
+def test_submitted_and_filled_intents_do_count(tmp_path):
+    """真正提交到券商的意图（SUBMITTED/FILLED）必须继续计入（护栏不放宽）。"""
+    store = TradingStore(tmp_path / "submitted.db")
+    today = datetime.now(NY).date().isoformat()
+    with store.connection() as conn:
+        for status in ("CREATED", "SUBMITTED", "PARTIAL_FILLED", "FILLED"):
+            conn.execute(
+                "INSERT INTO order_intents (strategy_id, intent_key, symbol, side,"
+                " quantity, limit_price, status, created_at, updated_at, tenant_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("volatility_long_gamma", f"{today}:y:{status}:REAL",
+                 "US.META261120P600000", "BUY", 1, 22.85,
+                 status, f"{today}T15:14:34+00:00", f"{today}T15:24:43+00:00", TENANT),
+            )
+        conn.commit()
+    rows = today_real_buy_entries(
+        store, tenant_id=TENANT, strategy_id="volatility_long_gamma",
+    )
+    assert len(rows) == 4, "提交/成交意图必须计入，护栏不得被这次热修放宽"
+
+
+def test_missing_tenant_fails_closed_not_full_table_scan(tmp_path):
+    """空租户必须抛错，禁止回落全库扫描（paper 成交混进 real 计数的缺口）。"""
+    store = TradingStore(tmp_path / "no-tenant.db")
+    with pytest.raises(ValueError, match="tenant_id"):
+        today_real_buy_entries(
+            store, tenant_id="", strategy_id="volatility_long_gamma",
+        )
+
+
+def test_mutation_counting_rejected_must_be_red(tmp_path):
+    """变异守卫：把状态过滤去掉（回到 REJECTED 也计数）必须红。"""
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    module = Path("src/futu_quant/capacity_precheck.py")
+    original = module.read_text(encoding="utf-8")
+    anchor = (
+        'if str(item.get("status") or "").upper() not in counted_statuses:\n'
+        "            continue\n"
+    )
+    assert anchor in original, "状态过滤锚点丢失，无法构造变异"
+    mutated = original.replace(anchor, "")
+    assert mutated != original
+    try:
+        module.write_text(mutated, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             f"{Path(__file__)}::test_rejected_real_intent_does_not_count_as_opened_entry"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0, "去掉状态过滤后守卫仍绿 —— 误拦缺陷可静默复发"
+    finally:
+        module.write_text(original, encoding="utf-8")
+        shutil.rmtree(".pytest_cache", ignore_errors=True)
+
+
 # --------------------------------------------------------------------------- #
 # 接到选约链路的边界：只作用于实盘，权益来自 portfolio_allocator 的快照
 # --------------------------------------------------------------------------- #

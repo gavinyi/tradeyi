@@ -727,12 +727,28 @@ def today_real_buy_entries(store, *, tenant_id: str, strategy_id: str,
 
     `intent_key` 带模式后缀（`:REAL`），据此**不再另建计数键** ——
     多一个计数器就多一处会和真实下单对不上的地方。
+
+    2026-11-05 热修（真金误拦 44 次的根因，audit 201604）：
+    - **只计真正提交到券商的意图**：`status ∈ {CREATED, SUBMITTED,
+      PARTIAL_FILLED, FILLED}`。REJECTED（回撤熔断/风控拒）与 FAILED、
+      CANCELLED_*、SHADOW_* 都没有占用当日实盘名额，计入会把「被拒的尝试」
+      当成「已开的仓」，把实盘锁死一整天。
+    - **租户必须有效**：`tenant_id` 为空时 fail-closed 返回空列表？不行——
+      空列表会让护栏放行（每轮都允许开 1 笔）。空租户时**抛 ValueError**，
+      让调用方显式失败（护栏宁可拦死也不能拿全库数据当真值）。
     """
+    tenant = str(tenant_id or "").strip()
+    if not tenant:
+        raise ValueError(
+            "today_real_buy_entries 缺少 tenant_id：拒绝全库扫描计数"
+            "（paper/real 混算会把模拟盘成交算进实盘名额）"
+        )
     base = today or datetime.now(NY).date()
     prefix = str(base.isoformat())
+    counted_statuses = {"CREATED", "SUBMITTED", "PARTIAL_FILLED", "FILLED"}
     result: list[dict] = []
     try:
-        rows = store.intents(limit=2000, tenant_id=tenant_id or None)
+        rows = store.intents(limit=2000, tenant_id=tenant)
     except Exception:  # noqa: BLE001 - 读不到就不放行（fail-closed，见调用方）
         return result
     for item in rows:
@@ -743,6 +759,8 @@ def today_real_buy_entries(store, *, tenant_id: str, strategy_id: str,
         if not str(item.get("intent_key") or "").upper().endswith(":REAL"):
             continue
         if not str(item.get("created_at") or "").startswith(prefix):
+            continue
+        if str(item.get("status") or "").upper() not in counted_statuses:
             continue
         result.append(item)
     return result
