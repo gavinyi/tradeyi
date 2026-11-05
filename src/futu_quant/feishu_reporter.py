@@ -16,6 +16,7 @@ from futu_quant.scheduled_tasks import (
     pending_im_delivery,
 )
 from futu_quant.store import TradingStore
+from futu_quant.tenant import DEFAULT_TENANTS
 
 logger = logging.getLogger(__name__)
 
@@ -217,12 +218,17 @@ class FeishuReporter:
         event_type: str,
         message: str,
         is_recovered: bool = False,
+        tenant_id: str | None = None,
     ) -> bool:
-        """向飞书群聊或 Webhook 发送人话化结构告警或故障恢复卡片。"""
+        """向飞书群聊或 Webhook 发送人话化结构告警或故障恢复卡片。
+
+        `tenant_id` 传入时标题带【实盘】/【模拟盘】租户标签（用户 2026-11-06 拍板）。
+        """
         from .feishu_humanize import humanize_alert
 
         status_title, lines = humanize_alert(
             event_type, severity, message, is_recovered=is_recovered,
+            tenant_id=tenant_id,
         )
 
         sev_upper = severity.upper()
@@ -403,12 +409,31 @@ class FeishuReporter:
             sim_fills = int(rev.metrics.get("模拟成交数", 0))
             real_acc_id = str(self.store.get_setting("REAL_ACCOUNT_ID", "") or "")
 
+            # 租户标签（2026-11-06 用户拍板）：复盘标题必须能看出实盘/模拟盘各成交在哪。
+            from .feishu_humanize import tenant_tag
+
             dual_track_lines = ["\n💼 **双轨账户收益核算**:"]
             if real_acc_id:
-                dual_track_lines.append(f"- 🔴 **实盘战区 (真金白银)**: 账号 `{real_acc_id}` · 实盘已实现盈亏 `{real_pnl:+,.2f} USD` (真实成交 {real_fills} 笔)")
+                real_tenants = [
+                    p.tenant_id for p in DEFAULT_TENANTS.values()
+                    if p.trading_env == "REAL" and p.is_active
+                ]
+                real_tag = " + ".join(tenant_tag(t) for t in real_tenants) or "【实盘】"
+                dual_track_lines.append(
+                    f"- {real_tag} 🔴 **实盘战区 (真金白银)**: 账号 `{real_acc_id}` · "
+                    f"实盘已实现盈亏 `{real_pnl:+,.2f} USD` (真实成交 {real_fills} 笔)"
+                )
             else:
-                dual_track_lines.append("- 🔴 **实盘战区**: 尚未启用实盘交易")
-            dual_track_lines.append(f"- 🟢 **模拟战区 (100万沙盒)**: 模拟已实现盈亏 `{sim_pnl:+,.2f} USD` (模拟成交 {sim_fills} 笔)")
+                dual_track_lines.append("- 【实盘】🔴 **实盘战区**: 尚未启用实盘交易")
+            paper_tenants = [
+                p.tenant_id for p in DEFAULT_TENANTS.values()
+                if p.trading_env == "SIMULATE" and p.is_active
+            ]
+            paper_tag = " + ".join(tenant_tag(t) for t in paper_tenants) or "【模拟盘】"
+            dual_track_lines.append(
+                f"- {paper_tag} 🟢 **模拟战区 (100万沙盒)**: 模拟已实现盈亏 "
+                f"`{sim_pnl:+,.2f} USD` (模拟成交 {sim_fills} 笔)"
+            )
             dual_track_summary = "\n".join(dual_track_lines)
         except Exception:
             pass

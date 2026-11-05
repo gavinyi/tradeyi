@@ -104,7 +104,9 @@ def fake_feishu(monkeypatch):
         def __init__(self, store=None):
             self.store = store
 
-        def send_alert_card(self, severity, event_type, message, is_recovered=False):
+        def send_alert_card(
+            self, severity, event_type, message, is_recovered=False, tenant_id=None,
+        ):
             calls.append((severity, event_type, is_recovered))
             return True
 

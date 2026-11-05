@@ -280,7 +280,10 @@ class AlertManager:
         except Exception:  # noqa: BLE001
             return 0
 
-    def _push_feishu(self, severity: str, event_type: str, message: str) -> int:
+    def _push_feishu(
+        self, severity: str, event_type: str, message: str,
+        tenant_id: str | None = None,
+    ) -> int:
         """推飞书群卡片。三态：**-1 未配置 / 0 失败 / 1 成功**。
 
         `-1` 与 `0` 必须分开：「通道空着」是配置问题，「通道坏了」是故障，
@@ -291,13 +294,16 @@ class AlertManager:
         try:
             from .feishu_reporter import FeishuReporter
             reporter = FeishuReporter(self.store)
-            ok = reporter.send_alert_card(severity, event_type, message, is_recovered=False)
+            ok = reporter.send_alert_card(
+                severity, event_type, message, is_recovered=False, tenant_id=tenant_id,
+            )
             return 1 if ok else 0
         except Exception:  # noqa: BLE001
             return 0
 
     def send(
         self, severity: str, event_type: str, message: str, incident_key: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         severity_upper = severity.upper()
         if severity_upper in {"ERROR", "CRITICAL"}:
@@ -325,7 +331,9 @@ class AlertManager:
                 or severity_upper in {"ERROR", "CRITICAL"}
                 or event_type in FEISHU_GROUP_ALERT_WHITELIST
             ):
-                feishu_delivered = self._push_feishu(severity, event_type, message)
+                feishu_delivered = self._push_feishu(
+                    severity, event_type, message, tenant_id=tenant_id,
+                )
 
         # 静音**仍然落库**（`muted=1`、三态保持 -1 未尝试），页面可见 ——
         # 静音是人工决策，不是故障，但**不该因此消失**。
@@ -437,6 +445,7 @@ class AlertManager:
 
     def recover(
         self, event_type: str, message: str = "故障已恢复", incident_key: str | None = None,
+        tenant_id: str | None = None,
     ) -> bool:
         if not self.store.recover_incident(incident_key or event_type):
             return False
@@ -447,7 +456,9 @@ class AlertManager:
             try:
                 from .feishu_reporter import FeishuReporter
                 reporter = FeishuReporter(self.store)
-                feishu_recovered = reporter.send_alert_card("INFO", event_type, message, is_recovered=True)
+                feishu_recovered = reporter.send_alert_card(
+                    "INFO", event_type, message, is_recovered=True, tenant_id=tenant_id,
+                )
             except Exception:  # silent-ok: 恢复卡片失败已由后续 feishu_state 反映，不重复抛
                 pass
 

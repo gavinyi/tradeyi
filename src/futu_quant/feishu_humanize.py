@@ -6,11 +6,35 @@
 - 📌 业务事实：具体发生了什么
 - ⚡ 资金与系统影响：对资金与交易流程的确定性影响
 - 👉 交易员行动指引：下一步建议操作与直达链接
+
+租户标签（2026-11-06 用户拍板）：所有飞书推送必须带【实盘】/【模拟盘】前缀，
+用户此前分不清哪条是实盘成交、哪条是模拟盘。统一出口：
+:func:`tenant_tag` —— 各推送点传入 tenant_id 取标签，绝不各自拼字符串。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+
+
+def tenant_tag(tenant_id: str | None) -> str:
+    """租户 → 飞书标签前缀（所有推送唯一出口，禁止各自拼）。
+
+    - 实盘租户（trading_env=REAL）→ 【实盘】
+    - 模拟租户（trading_env=SIMULATE）→ 【模拟盘】
+    - 未知/空 → 【未标记租户】（显式可见，绝不静默丢弃 —— 看不出归属本身就是问题）
+    """
+    tid = str(tenant_id or "").strip()
+    if not tid:
+        return "【未标记租户】"
+    from .tenant import DEFAULT_TENANTS
+
+    profile = DEFAULT_TENANTS.get(tid)
+    if profile is None:
+        return f"【{tid}】"
+    if profile.trading_env == "REAL":
+        return "【实盘】"
+    return "【模拟盘】"
 
 
 @dataclass(frozen=True)
@@ -223,10 +247,12 @@ def humanize_alert(
     is_recovered: bool = False,
     host: str = "localhost",
     port: int = 8501,
+    tenant_id: str | None = None,
 ) -> tuple[str, list[str]]:
     """将事件与消息深度人话化组装为飞书卡片要素。
 
     返回: (status_title, lines)
+    `tenant_id` 传入时标题带【实盘】/【模拟盘】租户标签（用户 2026-11-06 拍板）。
     """
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sev_upper = severity.upper()
@@ -250,23 +276,24 @@ def humanize_alert(
             )
 
     c_name = meta.chinese_name
+    tag = tenant_tag(tenant_id)
 
-    # 1. 标题与级别组装
+    # 1. 标题与级别组装（租户标签统一放最前，扫一眼即知归属）
     if is_recovered:
-        status_title = f"🟢 【故障自愈】{c_name}已恢复正常"
+        status_title = f"{tag}🟢 【故障自愈】{c_name}已恢复正常"
         level_text = "🟢 **当前状态**: **已恢复正常 (NORMAL)**"
     elif sev_upper in {"CRITICAL", "ERROR"} or event_type == "LEDGER_MISMATCH":
         if sev_upper == "CRITICAL" or event_type == "LEDGER_MISMATCH":
-            status_title = f"🚨 【紧急风控】{c_name}"
+            status_title = f"{tag}🚨 【紧急风控】{c_name}"
             level_text = "🔴 **告警级别**: **紧急处理 (CRITICAL)**"
         else:
-            status_title = f"⚠️ 【系统异常】{c_name}"
+            status_title = f"{tag}⚠️ 【系统异常】{c_name}"
             level_text = "🟠 **告警级别**: **系统错误 (ERROR)**"
     elif sev_upper == "WARNING":
-        status_title = f"🟡 【风险预警】{c_name}"
+        status_title = f"{tag}🟡 【风险预警】{c_name}"
         level_text = "🟡 **告警级别**: **注意预警 (WARNING)**"
     else:
-        status_title = f"ℹ️ 【系统提醒】{c_name}"
+        status_title = f"{tag}ℹ️ 【系统提醒】{c_name}"
         level_text = "🔵 **告警级别**: **日常通知 (INFO)**"
 
     # 2. 构造人话四要素
