@@ -419,7 +419,7 @@ def filter_candidates(
         ok, reason, _text, premium = evaluate_row(
             row, equity=equity, lot=lot, now=now, spot=spot, today=today, line=line,
         )
-        if premium is not None:
+        if premium is not None and (ok or reason == REASON_PREMIUM):
             if result.cheapest_premium is None or premium < result.cheapest_premium:
                 result.cheapest_premium = premium
         if ok:
