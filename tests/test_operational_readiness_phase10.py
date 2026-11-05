@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import inspect
 
 from futu_quant.operational_readiness import (
     audit_streamlit_pages, automatic_recovery_cycle, dynamic_allocation_plan,
@@ -64,6 +65,41 @@ def test_automatic_recovery_closes_stale_transient_incidents(tmp_path, monkeypat
 
     assert "ORDER_FAILED" in result["recovered"]
     assert store.incidents()[0]["status"] == "RECOVERED"
+
+
+def test_automatic_recovery_keeps_legacy_incidents_open_without_explicit_recovery(tmp_path, monkeypatch):
+    store = TradingStore(tmp_path / "legacy-pending.db")
+    monkeypatch.setenv("TRANSIENT_INCIDENT_AUTO_RECOVER_HOURS", "1")
+    stale = "2026-01-01T00:00:00+00:00"
+    for key in ("VOLATILITY_CAPACITY_PAUSED", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK"):
+        store.record_incident(key, "ERROR", "旧版本降级事件")
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE incidents SET last_seen=? WHERE incident_key=?", (stale, key)
+            )
+
+    result = automatic_recovery_cycle(store)
+
+    assert not result["recovered"]
+    assert set(result["pending"]) >= {
+        "VOLATILITY_CAPACITY_PAUSED", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK",
+    }
+
+
+def test_automatic_recovery_closes_legacy_incidents_with_explicit_recovery(tmp_path):
+    store = TradingStore(tmp_path / "legacy-recovered.db")
+    for key in ("VOLATILITY_CAPACITY_PAUSED", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK"):
+        store.record_incident(key, "ERROR", "旧版本降级事件")
+        store.operational_event("test", f"{key}_RECOVERED", "INFO", {"confirmed": True})
+
+    result = automatic_recovery_cycle(store)
+
+    assert set(result["recovered"]) >= {
+        "VOLATILITY_CAPACITY_PAUSED", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK",
+    }
+    assert not store.incidents("OPEN")
+    audits = store.audit_events(limit=20)
+    assert any(row["event_type"] == "INCIDENT_RECOVERED" for row in audits)
 
 
 def test_automatic_recovery_keeps_real_risk_incidents_open(tmp_path):

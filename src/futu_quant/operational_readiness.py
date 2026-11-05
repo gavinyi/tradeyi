@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 
 import pandas as pd
-from streamlit.string_util import validate_material_icon
-
 from .replay import run_combo_resilience_drill, run_resilience_drill
 
 
@@ -80,10 +78,16 @@ def audit_streamlit_pages(root: Path | str = ROOT) -> dict:
                     icon = keyword.value.value
                     if isinstance(icon, str) and icon.startswith(":material/"):
                         try:
-                            validate_material_icon(icon)
-                        except Exception as exc:
-                            issues.append({"页面": relative, "行号": node.lineno, "级别": "错误",
-                                           "问题": f"无效图标 {icon}：{exc}"})
+                            from streamlit.string_util import validate_material_icon
+                        except ImportError:
+                            # 旧版 Streamlit 没有该校验 API；不阻断其余巡检。
+                            validate_material_icon = None
+                        if validate_material_icon is not None:
+                            try:
+                                validate_material_icon(icon)
+                            except Exception as exc:
+                                issues.append({"页面": relative, "行号": node.lineno, "级别": "错误",
+                                               "问题": f"无效图标 {icon}：{exc}"})
         for key in sorted(form_keys.keys() & state_assignments.keys()):
             issues.append({"页面": relative, "行号": state_assignments[key], "级别": "错误",
                            "问题": f"Session State 键 {key!r} 与表单键冲突"})
@@ -289,12 +293,21 @@ def automatic_recovery_cycle(store) -> dict:
     for incident in store.incidents("OPEN"):
         key = str(incident["incident_key"])
         task = key.split(":", 1)[1] if key.startswith(("TASK_TIMEOUT:", "STRATEGY_ERROR:")) else None
+        explicit_recovery = _has_explicit_recovery(store, key)
         if task and latest.get(task, {}).get("status") == "SUCCESS":
-            if store.recover_incident(key):
-                recovered.append(key)
-        elif _transient_incident_recovered(store, key, incident, now, stale_hours):
-            if store.recover_incident(key):
-                recovered.append(key)
+            should_recover = True
+        elif key in {"VOLATILITY_CAPACITY_PAUSED", "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK"}:
+            # 风控降级事件不得靠“长时间没再发生”推断恢复，必须有成功真值。
+            should_recover = explicit_recovery
+        else:
+            should_recover = _transient_incident_recovered(store, key, incident, now, stale_hours)
+        if should_recover and store.recover_incident(key):
+            store.audit(
+                "INCIDENT_RECOVERED",
+                {"incident_key": key, "evidence": "explicit_recovery" if explicit_recovery else "task_success"},
+                actor="service:operational_readiness",
+            )
+            recovered.append(key)
         else:
             pending.append(key)
     result = {
@@ -305,6 +318,23 @@ def automatic_recovery_cycle(store) -> dict:
     }
     store.operational_event("recovery", "AUTO_RECOVERY", "HEALTHY" if not pending else "WARNING", result)
     return result
+
+
+def _has_explicit_recovery(store, key: str) -> bool:
+    """仅接受明确恢复事件，禁止用 stale 时间窗口推断风控降级已恢复。"""
+    recovery_type = f"{key}_RECOVERED"
+    if key == "VOLATILITY_CAPACITY_PAUSED":
+        # 旧全局暂停键明确为 false 也是恢复真值；不存在/异常值不算恢复。
+        if str(store.get_setting("volatility_new_entries_paused", "")).strip().lower() == "false":
+            return True
+    return any(
+        str(row.get("event_type", "")) == recovery_type
+        and str(row.get("status", "")).upper() in {"OK", "SUCCESS", "RECOVERED", "INFO"}
+        for row in store.operational_events(limit=5000)
+    ) or any(
+        str(row.get("event_type", "")) == recovery_type
+        for row in store.alerts(limit=5000)
+    )
 
 
 def _transient_incident_recovered(

@@ -39,15 +39,15 @@ from futu_quant.volatility_pause import (
 
 NY = ZoneInfo("America/New_York")
 TENANT = "futu_real_master"
-#: 2026-11-02 实盘真实权益（$6,646）→ 容量线 $199.38。
+#: 2026-11-02 实盘真实权益�?6,646）→ 容量�?$199.38�?
 REAL_EQUITY = 6646.0
-#: 现价（AMZN 量级）
+#: 现价（AMZN 量级�?
 SPOT = 250.0
 
 
 def _quote(**overrides) -> dict:
-    """一张「刚好通过」的候选：权利金 $190、价差 2.7%、深度 40/35 张、10 秒前报价、
-    到期 18 天（≥14 天）、平价（虚值 0%）。"""
+    """一张「刚好通过」的候选：权利�?$190、价�?2.7%、深�?40/35 张�?0 秒前报价�?
+    到期 18 天（�?4 天）、平价（虚�?0%）�?""
     row = {
         "code": "US.AMZN261120C250000",
         "option_type": "CALL",
@@ -77,7 +77,7 @@ class _Broker:
 
 
 # --------------------------------------------------------------------------- #
-# 六条判定 + 两条硬门槛
+# 六条判定 + 两条硬门�?
 # --------------------------------------------------------------------------- #
 
 
@@ -97,7 +97,7 @@ def test_minimum_premium_uses_ask_not_mid():
 
 
 def test_premium_over_capacity_rejected_with_reason():
-    # ask 6.55 → $655，超过 $398.76 容量线（正是 2026-11-02 被拒的实盘那张）。
+    # ask 6.55 �?$655，超�?$398.76 容量线（正是 2026-11-02 被拒的实盘那张）�?
     result = _fc(_frame(_quote(ask_price=6.55, bid_price=6.50)))
     assert result.empty
     assert result.reasons == {REASON_PREMIUM: 1}
@@ -105,6 +105,34 @@ def test_premium_over_capacity_rejected_with_reason():
     assert result.needed_equity == pytest.approx(10916.67, abs=1.0)
     assert "需要权益约 $10,917" in result.message()
 
+
+def test_mixed_capacity_and_quality_uses_capacity_candidate_only():
+    cheap_quality = _quote(
+        code="US.AMZN261120C260000", strike_price=260.0,
+        ask_price=0.54, bid_price=0.30,
+    )
+    over_capacity = _quote(
+        code="US.AMZN261120C250000", ask_price=6.55, bid_price=6.50,
+    )
+    result = _fc(_frame(cheap_quality, over_capacity))
+    assert result.empty
+    assert result.reasons[REASON_PREMIUM] == 1
+    assert result.cheapest_premium == pytest.approx(655.0)
+    assert result.needed_equity == pytest.approx(10916.67, abs=1.0)
+    assert "$54" not in result.message()
+    assert "$655" in result.message()
+
+
+def test_pure_quality_rejection_message_names_top_reason_without_capacity_claim():
+    # 低价但价差过宽：不应伪装成容量不足或盘口缺失�?
+    result = _fc(_frame(_quote(ask_price=0.54, bid_price=0.30)))
+    assert result.empty
+    assert result.cheapest_premium is None
+    assert result.reasons == {REASON_SPREAD: 1}
+    message = result.message()
+    assert "盘口价差过宽" in message
+    assert "容量不足" not in message
+    assert "没有可用盘口" not in message
 
 def test_spread_over_ten_percent_rejected():
     result = _fc(_frame(_quote(bid_price=1.50, ask_price=1.90)))
@@ -157,7 +185,7 @@ def test_dte_unknown_rejected():
 
 
 def test_moneyness_beyond_six_percent_rejected():
-    # +8% 虚值（AMZN 252 → 272）：$199 能买到的正是这类「彩票区」。
+    # +8% 虚值（AMZN 252 �?272）：$199 能买到的正是这类「彩票区」�?
     far = _quote(strike_price=250.0 * (1 + MAX_MONEYNESS_DISTANCE + 0.02))
     result = _fc(_frame(far))
     assert result.empty
@@ -166,10 +194,10 @@ def test_moneyness_beyond_six_percent_rejected():
 
 
 def test_put_moneyness_measured_in_its_own_direction():
-    # PUT 虚值 = 行权价低于现价：245/250 = −2% → 通过
+    # PUT 虚�?= 行权价低于现价：245/250 = �?% �?通过
     near_put = _quote(option_type="PUT", strike_price=245.0)
     assert not _fc(_frame(near_put)).empty
-    # PUT 行权价 250*0.9 = 225 → 虚值 10% → 拒绝
+    # PUT 行权�?250*0.9 = 225 �?虚�?10% �?拒绝
     far_put = _quote(option_type="PUT", strike_price=225.0)
     assert _fc(_frame(far_put)).reasons == {REASON_MONEYNESS: 1}
 
@@ -182,7 +210,7 @@ def test_passing_candidate_kept_and_message_reports_capacity():
     assert list(result.eligible["code"]) == ["US.AMZN261120C250000"]
     assert result.reasons[REASON_PREMIUM] == 1
     assert result.cheapest_premium == pytest.approx(190.0)
-    assert "容量预检通过 1 张" in result.message()
+    assert "容量预检通过 1 �? in result.message()
 
 
 def test_is_real_account_reads_trading_env():
@@ -192,16 +220,16 @@ def test_is_real_account_reads_trading_env():
 
 
 # --------------------------------------------------------------------------- #
-# 连续空轮 → 复用现有暂停键；只解除自己置的暂停
+# 连续空轮 �?复用现有暂停键；只解除自己置的暂�?
 # --------------------------------------------------------------------------- #
 
 
 def _empty_round():
-    """「容量不足」的空轮：候选**买不起**（`PREMIUM_OVER_CAPACITY`）。
+    """「容量不足」的空轮：候�?*买不�?*（`PREMIUM_OVER_CAPACITY`）�?
 
-    2026-11-04 归因改动后，只有这一类空轮计入连续计数；完全没有候选、
-    或只被虚值/DTE/价差挡住的轮次属于 `quality_only`，见
-    `tests/test_capacity_streak_attribution.py`。
+    2026-11-04 归因改动后，只有这一类空轮计入连续计数；完全没有候选�?
+    或只被虚�?DTE/价差挡住的轮次属�?`quality_only`，见
+    `tests/test_capacity_streak_attribution.py`�?
     """
     return filter_candidates(
         _frame(_quote(ask_price=6.55, bid_price=6.50)), equity=REAL_EQUITY, spot=SPOT,
@@ -209,7 +237,7 @@ def _empty_round():
 
 
 def test_three_empty_rounds_alert_but_never_pause(tmp_path):
-    """G 方案（2026-11-04）：连续买不起只升级 ERROR 告警，**不再暂停新开仓**。"""
+    """G 方案�?026-11-04）：连续买不起只升级 ERROR 告警�?*不再暂停新开�?*�?""
     store = TradingStore(tmp_path / "capacity.db")
     for expected_streak in (1, 2, 3):
         state = record_selection_round(store, TENANT, _empty_round())
@@ -219,7 +247,7 @@ def test_three_empty_rounds_alert_but_never_pause(tmp_path):
     assert store.get_setting(MARKER_KEY.format(tenant_id=TENANT), "") == ""
     assert any(
         "VOLATILITY_CAPACITY_EXHAUSTED" in str(row) for row in store.alerts(limit=50)
-    ), "不暂停不等于不告警：必须留 ERROR"
+    ), "不暂停不等于不告警：必须�?ERROR"
 
 
 def test_two_empty_rounds_do_not_alert(tmp_path):
@@ -245,7 +273,7 @@ def test_manual_pause_is_never_auto_released(tmp_path):
 
 
 def test_legacy_precheck_pause_auto_released_when_candidate_fits(tmp_path):
-    """遗留状态清理：旧版本置的容量暂停（marker=true）在出现合格候选时被解除。"""
+    """遗留状态清理：旧版本置的容量暂停（marker=true）在出现合格候选时被解除�?""
     store = TradingStore(tmp_path / "capacity.db")
     set_volatility_new_entries_paused(store, TENANT, True)
     store.set_setting(MARKER_KEY.format(tenant_id=TENANT), "true")
@@ -279,12 +307,12 @@ def test_missing_tenant_refuses_to_write_global_key(tmp_path):
 def test_currency_blocked_message_is_not_mistaken_for_capacity_shortage():
     result = filter_candidates(pd.DataFrame(), equity=0.0, spot=SPOT)
     result.currency_blocked = True
-    assert "币种无法确认为 USD" in result.message()
+    assert "币种无法确认�?USD" in result.message()
     assert "容量不足" not in result.message()
 
 
 # --------------------------------------------------------------------------- #
-# 小账户试探护栏：单笔 1 张 / 单日 1 笔 / 当日累计权利金 ≤ 压力损失预算
+# 小账户试探护栏：单笔 1 �?/ 单日 1 �?/ 当日累计权利�?�?压力损失预算
 # --------------------------------------------------------------------------- #
 
 
@@ -296,7 +324,7 @@ def test_probe_guard_rejects_more_than_one_lot():
     ok, reason, _ = probe_entry_guard(
         [], quantity=2, price=100.0, multiplier=100, premium_limit=398.0,
     )
-    assert ok is False and "1 张" in reason
+    assert ok is False and "1 �? in reason
 
 
 def test_probe_guard_rejects_second_entry_same_day():
@@ -308,12 +336,12 @@ def test_probe_guard_rejects_second_entry_same_day():
 
 
 def test_probe_guard_enforces_daily_premium_cap():
-    # 单笔 $500 > 预算 $398 → 拒（当日已开 0 笔时先撞这条；日限 1 笔时它守的是「本单自己」
-    # 也不能超过当日权利金上限，等价于买不起）。
+    # 单笔 $500 > 预算 $398 �?拒（当日已开 0 笔时先撞这条；日�?1 笔时它守的是「本单自己�?
+    # 也不能超过当日权利金上限，等价于买不起）�?
     ok, reason, detail = probe_entry_guard(
         [], quantity=1, price=5.0, multiplier=100, premium_limit=398.0,
     )
-    assert ok is False and "累计权利金" in reason
+    assert ok is False and "累计权利�? in reason
     assert detail["premium_limit"] == 398.0
 
 
@@ -353,7 +381,7 @@ def test_today_real_buy_entries_filters_tenant_strategy_env_and_day(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# 接到选约链路的边界：只作用于实盘，权益来自 portfolio_allocator 的快照
+# 接到选约链路的边界：只作用于实盘，权益来�?portfolio_allocator 的快�?
 # --------------------------------------------------------------------------- #
 
 
@@ -388,17 +416,17 @@ def test_roll_precheck_uses_allocator_equity_and_filters_real_candidates(tmp_pat
     )
     assert kept.empty
     assert result.equity == pytest.approx(REAL_EQUITY)
-    # 容量线 = min(权益×6%, 压力损失预算)。测试库用的是**默认预算**
-    # （`ensure_default_budgets` 里 volatility 默认 max_loss_ratio=3% → $199.38），
-    # 所以这里生效值是 199.38 —— 正是「预检不得比风控更宽」这条规则的体现；
-    # 生产库该租户预算是 6%，生效值才是 $398.76。
+    # 容量�?= min(权益×6%, 压力损失预算)。测试库用的�?*默认预算**
+    # （`ensure_default_budgets` �?volatility 默认 max_loss_ratio=3% �?$199.38），
+    # 所以这里生效值是 199.38 —�?正是「预检不得比风控更宽」这条规则的体现�?
+    # 生产库该租户预算�?6%，生效值才�?$398.76�?
     assert result.line == pytest.approx(199.38, abs=0.01)
     assert result.loss_limit == pytest.approx(199.38, abs=0.01)
     assert result.reasons == {REASON_PREMIUM: 1}
 
 
 def test_paper_tenant_never_gets_capacity_pause(tmp_path):
-    """实盘人工暂停只影响实盘；模拟盘既不会被影响，也不会被容量预检暂停。"""
+    """实盘人工暂停只影响实盘；模拟盘既不会被影响，也不会被容量预检暂停�?""
     store = TradingStore(tmp_path / "capacity.db")
     assert is_real_account(_AccountBroker("SIMULATE")) is False
     set_volatility_new_entries_paused(store, TENANT, True)
@@ -410,23 +438,23 @@ def test_paper_tenant_never_gets_capacity_pause(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# 容量线对齐 6%：不得比压力损失预算更宽（Product/Reviewer 2026-11-03 定案）
+# 容量线对�?6%：不得比压力损失预算更宽（Product/Reviewer 2026-11-03 定案�?
 # --------------------------------------------------------------------------- #
 
 
 def test_capacity_line_is_six_percent_but_never_wider_than_loss_budget():
     assert capacity_line(REAL_EQUITY) == pytest.approx(398.76, abs=0.01)
-    # 租户把 max_loss_ratio 调到比 6% 更紧 → 容量线必须跟着收紧
+    # 租户�?max_loss_ratio 调到�?6% 更紧 �?容量线必须跟着收紧
     assert capacity_line(REAL_EQUITY, loss_limit=300.0) == pytest.approx(300.0)
-    # 预算比 6% 更宽 → 仍按 6% 收口，容量线不跟着放大
+    # 预算�?6% 更宽 �?仍按 6% 收口，容量线不跟着放大
     assert capacity_line(REAL_EQUITY, loss_limit=1651.0) == pytest.approx(398.76, abs=0.01)
-    # 没有预算 / 预算为 0 → 退回 6%
+    # 没有预算 / 预算�?0 �?退�?6%
     assert capacity_line(REAL_EQUITY, loss_limit=None) == pytest.approx(398.76, abs=0.01)
     assert capacity_line(REAL_EQUITY, loss_limit=0) == pytest.approx(398.76, abs=0.01)
 
 
 def test_filter_uses_loss_budget_when_tighter_than_six_percent():
-    # ask 3.50 → $350：6% 线（$398.76）下通过；预算只有 $300 时必须拒
+    # ask 3.50 �?$350�?% 线（$398.76）下通过；预算只�?$300 时必须拒
     row = _quote(ask_price=3.50, bid_price=3.45)
     assert not _fc(_frame(row)).empty
     tightened = filter_candidates(

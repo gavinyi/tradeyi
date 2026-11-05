@@ -362,7 +362,15 @@ class CapacityPrecheck:
         needed = self.needed_equity
         cheapest = self.cheapest_premium
         if cheapest is None:
-            return "容量预检未通过：候选合约没有可用盘口，无法估算最小权利金"
+            # 纯质量拒绝轮没有容量证据：显示数量最多的真实拒绝原因，
+            # 禁止误报为容量不足或盘口缺失。
+            if self.reasons:
+                top_reason, top_count = max(
+                    self.reasons.items(), key=lambda item: item[1]
+                )
+                reason_text = _REASON_TEXT.get(top_reason, top_reason)
+                return f"容量预检未通过：{reason_text}（{top_count} 张）"
+            return "容量预检未通过：没有可评估的候选合约"
         detail = f"最便宜候选 ${cheapest:.0f}"
         if needed is not None:
             detail += f"，需要权益约 ${needed:,.0f} 才能承载"
