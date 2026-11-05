@@ -178,6 +178,14 @@ def resolve_real_account_limits(
         tenant_profile = resolve_tenant(account_id=str(account_id), env="REAL")
         tenant_id = tenant_profile.tenant_id if tenant_profile else ""
         profile_resolution = load_limit_profile(store, tenant_id) if tenant_id else None
+        if profile_resolution and profile_resolution.source == "derived:limit_profile":
+            # 故障恢复必须真实调用 recover：若此前发生过旧键回落，恢复时关闭对应 incident。
+            from .alerts import AlertManager
+            AlertManager(store).recover(
+                "LIMIT_PROFILE_LEGACY_FALLBACK",
+                f"账户 {account_id} 限额配置已恢复，已使用租户派生配置",
+                incident_key=f"LIMIT_PROFILE_LEGACY_FALLBACK:{account_id}",
+            )
     except Exception as exc:
         tenant_id = ""
         profile_resolution = None
@@ -506,6 +514,13 @@ def check_real_trade(
         return RealTradeDecision(False, "券商连接环境不是 REAL", {})
     if not settings.real_trading_enabled:
         return RealTradeDecision(False, "实盘总开关未开启", {})
+
+    # REAL 闸门必须与券商实际交易环境一致；paper broker 不得借 settings=REAL 进入实盘链路。
+    broker_env = str(metadata.get("trading_env") or metadata.get("broker_trading_env") or "").upper()
+    if broker_env and broker_env != "REAL":
+        return RealTradeDecision(False, f"券商连接环境不是 REAL（实际为 {broker_env}）", {
+            "broker_trading_env": broker_env,
+        })
 
     target_account = str(metadata.get("account_id") or settings.real_account_id or "").strip()
     if not target_account:

@@ -86,7 +86,7 @@ def test_real_limits_ignore_legacy_top_level_amounts_once_derived(monkeypatch, t
     )
     monkeypatch.setattr(
         tenant_module, "resolve_tenant",
-        lambda **_: SimpleNamespace(tenant_id=REAL_TENANT),
+        lambda *args, **_: SimpleNamespace(tenant_id=REAL_TENANT, trading_env="REAL", account_id=REAL_ACCOUNT),
     )
 
     before = real_trading.resolve_real_account_limits(store, _settings(), REAL_ACCOUNT)
@@ -228,6 +228,37 @@ def test_legacy_fallback_writes_queryable_audit_event(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # 4. store 不支持 runtime_config 读（第三轮全量真回归）与批预算零值告警
 # ---------------------------------------------------------------------------
+
+
+def test_legacy_fallback_incident_recovers_on_derived_profile(monkeypatch, tmp_path):
+    """旧键回落后恢复到派生配置，必须真实调用 AlertManager.recover。"""
+    store = TradingStore(tmp_path / "legacy-recover.db")
+    _publish_real_profile(store)
+    store.record_equity(REAL_EQUITY, 0.0, REAL_EQUITY, env=f"REAL_{REAL_ACCOUNT}")
+    store.set_setting(
+        f"real_account_config:{REAL_ACCOUNT}",
+        '{"enabled": true, "max_order_notional": 1000, "max_daily_notional": 2500}',
+    )
+    monkeypatch.setattr(
+        tenant_module, "resolve_tenant",
+        lambda *args, **_: SimpleNamespace(tenant_id=REAL_TENANT, account_id=REAL_ACCOUNT,
+                                    trading_env="REAL"),
+    )
+    calls = []
+
+    class _Alerts:
+        def recover(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return True
+
+    monkeypatch.setattr("futu_quant.alerts.AlertManager", lambda _store: _Alerts())
+    limits = real_trading.resolve_real_account_limits(store, _settings(), REAL_ACCOUNT)
+
+    assert limits.limit_profile_unresolved is False
+    assert calls, "派生配置恢复时未调用 AlertManager.recover"
+    args, kwargs = calls[0]
+    assert args[0] == "LIMIT_PROFILE_LEGACY_FALLBACK"
+    assert kwargs["incident_key"] == f"LIMIT_PROFILE_LEGACY_FALLBACK:{REAL_ACCOUNT}"
 
 
 def test_store_without_runtime_reader_falls_back_to_legacy_and_records():

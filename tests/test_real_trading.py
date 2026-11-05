@@ -43,6 +43,21 @@ def test_real_session_requires_correct_confirmation_code(tmp_path, monkeypatch):
     assert reason == "实盘确认会话有效"
 
 
+def test_real_gate_rejects_paper_broker_even_with_real_settings(tmp_path, monkeypatch):
+    """paper broker 不能仅凭 settings=REAL 进入实盘闸门。"""
+    settings = replace(real_settings(monkeypatch), real_require_manual_confirm=False)
+    store = TradingStore(tmp_path / "paper-broker.db")
+
+    decision = check_real_trade(
+        store, settings, "core_satellite", "US.SPY", "BUY", 1, 100,
+        {"trading_env": "SIMULATE"},
+    )
+
+    assert decision.allowed is False
+    assert "不是 REAL" in decision.reason
+    assert decision.details["broker_trading_env"] == "SIMULATE"
+
+
 def test_real_trade_gate_blocks_without_session(tmp_path, monkeypatch):
     settings = replace(
         real_settings(monkeypatch),

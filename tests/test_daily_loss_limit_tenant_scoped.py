@@ -35,6 +35,7 @@ import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 
@@ -270,6 +271,24 @@ def test_fallback_event_is_whitelisted_for_push():
         "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK 不在飞书白名单 —— "
         "退回 .env 的告警用户收不到，风控降级会静默发生"
     )
+
+
+def test_zero_daily_loss_limit_is_preserved_and_not_env_fallback(tmp_path, monkeypatch):
+    """零值是有效急停线，不能被当作缺失值或静默替换为 .env。"""
+    store = TradingStore(tmp_path / "zero-limit.db")
+    alerts = _AlertsRecorder()
+    monkeypatch.setattr(
+        run_service, "resolve_risk_limits",
+        lambda _store, _broker: SimpleNamespace(max_daily_loss=0.0),
+    )
+
+    limit, source = run_service.resolve_daily_loss_limit(
+        store, _Broker(PAPER_ACCOUNT, "SIMULATE"), alerts, account_id=PAPER_ACCOUNT,
+    )
+
+    assert limit == 0.0
+    assert source == "resolved"
+    assert not any(call[1] == "DAILY_LOSS_LIMIT_RESOLVE_FALLBACK" for call in alerts.calls)
 
 
 def test_helper_resolves_without_network_when_alerts_recorded(tmp_path):
