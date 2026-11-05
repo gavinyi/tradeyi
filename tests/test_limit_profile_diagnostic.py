@@ -57,13 +57,15 @@ def test_real_limit_profile_missing_equity_is_unresolved(monkeypatch, tmp_path):
 
     store = TradingStore(tmp_path / "missing-equity.db")
     store.set_setting("real_account_config:281756481476169109", '{"enabled": true}')
-    monkeypatch.setattr(tenant, "resolve_tenant", lambda **_: SimpleNamespace(tenant_id="futu_real_master"))
+    monkeypatch.setattr(
+        tenant, "resolve_tenant", lambda *_args, **_kwargs: SimpleNamespace(tenant_id="futu_real_master", trading_env="REAL", account_id="281756481476169109")
+    )
     monkeypatch.setattr(profile_store, "load_limit_profile", lambda *_: SimpleNamespace(
         source="derived:limit_profile", profile=LimitProfile()))
-    monkeypatch.setattr(store, "equity_history", lambda **_: [])
+    monkeypatch.setattr(store, "equity_history", lambda *, limit=1, env=None: [])
     settings = SimpleNamespace(real_max_order_notional=1000.0, real_max_daily_notional=2500.0,
                                real_allowed_strategies=("core_satellite",),
-                               real_require_manual_confirm=False)
+                               real_require_manual_confirm=False, trading_env="REAL")
     limits = real_trading.resolve_real_account_limits(store, settings, "281756481476169109")
     assert limits.limit_profile_unresolved is True
     assert "equity" in limits.limit_profile_reason
@@ -79,7 +81,9 @@ def test_real_limit_profile_stale_equity_is_unresolved(monkeypatch, tmp_path):
 
     store = TradingStore(tmp_path / "stale-equity.db")
     store.set_setting("real_account_config:281756481476169109", '{"enabled": true}')
-    monkeypatch.setattr(tenant, "resolve_tenant", lambda **_: SimpleNamespace(tenant_id="futu_real_master"))
+    monkeypatch.setattr(
+        tenant, "resolve_tenant", lambda *_args, **_kwargs: SimpleNamespace(tenant_id="futu_real_master", trading_env="REAL", account_id="281756481476169109")
+    )
     monkeypatch.setattr(profile_store, "load_limit_profile", lambda *_: SimpleNamespace(
         source="derived:limit_profile", profile=LimitProfile()))
     stale_at = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
@@ -92,7 +96,7 @@ def test_real_limit_profile_stale_equity_is_unresolved(monkeypatch, tmp_path):
     monkeypatch.setattr(store, "equity_history", equity_history)
     limits = real_trading.resolve_real_account_limits(store, SimpleNamespace(
         real_max_order_notional=1000.0, real_max_daily_notional=2500.0,
-        real_allowed_strategies=("core_satellite",), real_require_manual_confirm=False),
+        real_allowed_strategies=("core_satellite",), real_require_manual_confirm=False, trading_env="REAL"),
         "281756481476169109")
     assert limits.limit_profile_unresolved is True
     assert "过期" in limits.limit_profile_reason
