@@ -389,6 +389,39 @@ if overview_tabs[1].open:
             st.bar_chart(funnel, x="阶段", y="数量")
         else:
             st.info("暂无足够的扫描数据。")
+
+        st.markdown("---")
+        st.markdown("**🚫 候选拦截明细（含租户，让模拟盘「为什么没下单」可见）**")
+        st.caption(
+            "数据来源：`decision_logs` 的 `CANDIDATE_BLOCKED`（雷达候选全被入场过滤器拒绝时落库，"
+            "与实盘 `LIVE_MAX_ORDER_NOTIONAL` 前置拦截审计同源的更早一层）。"
+            "展示**全部租户**的拦截——模拟盘（paper）的拦截此前只在库里、界面看不到，这里补齐。"
+        )
+        blocked_rows = [
+            item for item in scanner_decisions
+            if str(item.get("decision", "")).upper() == "CANDIDATE_BLOCKED"
+        ]
+        if blocked_rows:
+            blocked_view = china_time_columns(pd.DataFrame(blocked_rows[:100])).rename(columns={
+                "symbol": "正股代码", "reason": "拦截原因", "created_at": "时间（中国）",
+                "tenant_id": "租户",
+            })
+            blocked_view["租户"] = blocked_view.get("租户", "").fillna("").map(
+                lambda tid: {
+                    "futu_real_master": "实盘 (real)",
+                    "futu_paper_sandbox": "模拟盘 (paper)",
+                }.get(str(tid), str(tid) or "未标记(旧数据)")
+            )
+            st.dataframe(
+                translate_common_values(
+                    blocked_view[["时间（中国）", "租户", "正股代码", "拦截原因"]]
+                    if all(col in blocked_view.columns for col in ("时间（中国）", "租户", "正股代码", "拦截原因"))
+                    else blocked_view
+                ),
+                hide_index=True, height=300,
+            )
+        else:
+            st.info("暂无候选拦截记录（所有触发标的的候选均已放行或未触发信号）。")
 if overview_tabs[2].open:
     with overview_tabs[2]:
         decision_view = pd.DataFrame(decisions[:100]) if decisions else pd.DataFrame()
