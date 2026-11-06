@@ -396,20 +396,18 @@ def _maybe_create_tenant_campaign(
     retry_until_raw = store.get_setting(
         _tenant_scoped_setting_key("volatility_candidate_retry_until", tenant_id, symbol), "",
     )
-    retry_signal_z = _setting_float(
-        store,
-        _tenant_scoped_setting_key("volatility_candidate_retry_z", tenant_id, symbol), 0,
-    )
     try:
         retry_until = datetime.fromisoformat(str(retry_until_raw))
     except (TypeError, ValueError):
         retry_until = None
     now = datetime.now(NY)
-    if (
-        retry_until is not None
-        and now < retry_until
-        and float(item.regime["zscore_20d"]) < retry_signal_z + .5
-    ):
+    # 同因冷却只认时间（2026-11-07 自激循环修复）：旧条件带
+    # `z < retry_z + 0.5` 的「信号增强即旁路」——强信号日（AMD +10%、SPY z=5.8）
+    # z 轻松越线 → 每轮重评 → 容量拒绝 → 重写 retry_until+更高 z → 再被旁路，
+    # 自激循环（AMD 单日 43 轮重复评估实测）。同因冷却的语义就是「刚被拒过，
+    # 等冷却窗口结束再试」——信号更强不改变「上一轮已被拒」这个事实，窗口照走。
+    # 信号真正变强的差异化由重评后的候选层重新把关，不需要在这里放行。
+    if retry_until is not None and now < retry_until:
         remaining = max(1, int((retry_until - now).total_seconds() // 60) + 1)
         row.update({
             "campaign_created": False, "campaign_code": "",
@@ -717,6 +715,7 @@ def _maybe_create_tenant_campaign(
         _tenant_scoped_setting_key("volatility_candidate_retry_until", tenant_id, symbol),
         (datetime.now(NY) + timedelta(seconds=retry_seconds)).isoformat(),
     )
+    # retry_z 键保留写入：观测/审计用途（冷却门已改为只认时间，不再读它做旁路）。
     store.set_setting(
         _tenant_scoped_setting_key("volatility_candidate_retry_z", tenant_id, symbol),
         str(item.regime["zscore_20d"]),

@@ -268,6 +268,91 @@ def test_rejected_candidate_enters_cooldown_until_signal_strengthens(monkeypatch
     assert "冷却中" in second[0]["campaign_reason"]
 
 
+def test_cooldown_survives_signal_strengthening(monkeypatch):
+    """自激循环修复（2026-11-07）：同因冷却只认时间——z 越过写入值 +0.5 不得旁路。
+
+    事故：AMD 单日 43 轮重复评估——强信号日（NVDA z=3.2、SPY z=5.8）z 轻松
+    越过 `retry_z + 0.5` 逃逸线 → 每轮重评 → 容量拒绝 → 重写更高 z → 再旁路。
+    修复后冷却窗口内信号再强也照走，差异化交给重评后的候选层。
+    """
+    broker = FakeBroker()
+    store = FakeStore()
+    roll_calls = []
+
+    class FakeAlertManager:
+        def __init__(self, _store):
+            pass
+
+        def send(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(scanner, "load_volatility_campaigns", lambda *_a, **_k: [])
+    monkeypatch.setattr(scanner, "AlertManager", FakeAlertManager)
+    monkeypatch.setattr(
+        scanner, "volatility_threshold_profile",
+        lambda _bars: {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
+    )
+
+    z_values = iter([2.5, 9.9])  # 第二轮信号暴涨（远超旧逃逸线 retry_z+0.5）
+
+    def activation(*_args):
+        return {
+            "active": True, "reason": "全部条件通过", "checks": [],
+            "intraday_return": .05, "zscore_20d": next(z_values),
+            "atr_ratio": 2.5, "volume_ratio": 3.0, "direction_score": 3,
+        }
+
+    monkeypatch.setattr(scanner, "complete_volatility_activation", activation)
+
+    def reject(_broker, seed, _store):
+        roll_calls.append(seed)
+        return {**seed, "_roll_diagnostics": {}}, "IV 成本过高"
+
+    monkeypatch.setattr(scanner, "roll_campaign", reject)
+
+    scanner.scan_volatility_watchlist(broker, store, ("US.AMD",))
+    strengthened = scanner.scan_volatility_watchlist(broker, store, ("US.AMD",))
+
+    assert len(roll_calls) == 1, "冷却期内信号暴涨（z 2.5→9.9）不得旁路冷却重新评估"
+    assert "冷却中" in strengthened[0]["campaign_reason"]
+
+
+def test_mutation_restoring_z_escape_must_be_red():
+    """变异：把冷却门改回带 z 逃逸的旧条件 → 自激循环守卫必须红。"""
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    module = Path("src/futu_quant/volatility_scanner.py")
+    original = module.read_text(encoding="utf-8")
+    anchor = "    if retry_until is not None and now < retry_until:\n"
+    assert anchor in original, "冷却门锚点丢失，无法构造变异"
+    mutated = original.replace(
+        anchor,
+        "    if retry_until is not None and now < retry_until and float(\n"
+        "        item.regime['zscore_20d']\n"
+        "    ) < _setting_float(\n"
+        "        store,\n"
+        "        _tenant_scoped_setting_key(\n"
+        "            'volatility_candidate_retry_z', tenant_id, symbol\n"
+        "        ), 0,\n"
+        "    ) + .5:\n",
+    )
+    assert mutated != original
+    try:
+        module.write_text(mutated, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             f"{Path(__file__)}::test_cooldown_survives_signal_strengthening"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0, "z 逃逸恢复后守卫仍绿 —— 自激循环可静默复发"
+    finally:
+        module.write_text(original, encoding="utf-8")
+        shutil.rmtree(".pytest_cache", ignore_errors=True)
+
+
 def test_scanner_limits_broker_snapshot_to_scanned_symbols(monkeypatch):
     broker = FakeBroker()
     store = FakeStore()
