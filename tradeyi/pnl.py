@@ -8,6 +8,8 @@ def position_pnl(entry_price, exit_price, quantity, side="long"):
     price falls, so its result is the negated price move times the quantity.
     """
     move = exit_price - entry_price
+    if side == "short":
+        move = -move
     return move * quantity
 
 
@@ -18,5 +20,5 @@ def weighted_average_cost(fills):
     """
     if not fills:
         raise ValueError("fills is empty")
-    prices = [price for price, _ in fills]
-    return sum(prices) / len(prices)
+    total_quantity = sum(quantity for _, quantity in fills)
+    return sum(price * quantity for price, quantity in fills) / total_quantity
