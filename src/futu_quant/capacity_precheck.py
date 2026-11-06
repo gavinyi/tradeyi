@@ -681,24 +681,29 @@ def record_selection_round(
 
 def probe_entry_guard(
     todays_entries: list[dict], *, quantity: int, price: float,
-    multiplier: float, premium_limit: float,
+    multiplier: float, premium_limit: float, daily_limit: int | None = None,
 ) -> tuple[bool, str, dict]:
-    """单笔 1 张 / 单日 1 笔 / 当日累计权利金上限 三条护栏。
+    """单笔 1 张 / 单日 N 笔 / 当日累计权利金上限 三条护栏（探针专用）。
 
-    `todays_entries`：今日该租户、该策略、REAL 环境下的 BUY 意图（含本单之前的全部），
-    由调用方从 `order_intents` 取（不新建计数键，避免第二套真值）。
+    2026-11-06 语义归位（Product 判据 + Chief a+b 方案）：本护栏**只管真探针单**
+    （提交源显式 probe 标记、无 campaign_id、注定不成交价），策略扫描器的正常
+    BUY 不再经过本函数——普通开仓走 `daily_entries` 派生线与全部门禁。
 
+    `daily_limit`：单日笔数上限。缺省回落 `DAILY_ENTRY_LIMIT` 常量（=1）；
+    租户级配置键 `probe_daily_entry_limit` 由调用方从 `limit_profile:{tenant}`
+    注册链读出后传入（页面 45 可视、变更走配置中心审计），**禁止散键**。
     `premium_limit` 直接传**压力损失预算**里的 `loss_limit`（权益 × max_loss_ratio），
-    与 6% 风控同源 —— Product 明确「不新增第二套真值」。
+    与风控同源 —— Product 明确「不新增第二套真值」。
     """
+    effective_daily_limit = int(daily_limit) if daily_limit is not None else DAILY_ENTRY_LIMIT
     if int(quantity) != PROBE_LOT:
         return False, f"小账户试探只允许单笔 {PROBE_LOT} 张，本单 {quantity} 张", {
             "quantity": int(quantity), "probe_lot": PROBE_LOT,
         }
-    if len(todays_entries) >= DAILY_ENTRY_LIMIT:
+    if len(todays_entries) >= effective_daily_limit:
         return False, (
-            f"今日实盘已开 {len(todays_entries)} 笔，达到单日上限 {DAILY_ENTRY_LIMIT} 笔"
-        ), {"today_entries": len(todays_entries), "daily_limit": DAILY_ENTRY_LIMIT}
+            f"今日实盘已开 {len(todays_entries)} 笔，达到单日上限 {effective_daily_limit} 笔"
+        ), {"today_entries": len(todays_entries), "daily_limit": effective_daily_limit}
     spent = 0.0
     for item in todays_entries:
         try:

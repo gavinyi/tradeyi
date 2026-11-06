@@ -310,7 +310,9 @@ def test_currency_blocked_message_is_not_mistaken_for_capacity_shortage():
 
 
 # --------------------------------------------------------------------------- #
-# 小账户试探护栏：单笔 1 张 / 单日 1 笔 / 当日累计权利金 ≤ 压力损失预算
+# 小账户试探护栏（**探针专用**，2026-11-06 双语义拆分）：单笔 1 张 /
+# 单日 N 笔（租户级 probe_daily_entry_limit，默认 1）/ 权利金 ≤ 压力预算。
+# 普通 BUY 不再经过本护栏 —— 见 tests/test_probe_guard_semantics.py。
 # --------------------------------------------------------------------------- #
 
 
@@ -331,6 +333,23 @@ def test_probe_guard_rejects_second_entry_same_day():
     )
     assert ok is False and "单日上限" in reason
     assert detail["today_entries"] == DAILY_ENTRY_LIMIT
+
+
+def test_probe_guard_daily_limit_is_configurable():
+    """方案 a：日上限可配置（租户级 probe_daily_entry_limit 经参数传入），默认仍 1。"""
+    # 上限 3：已有 2 笔 → 放行；第 4 笔拒（金额取 $0.01 探针价，不撞权利金线）。
+    intent = {"quantity": 1, "limit_price": 0.01}
+    ok, reason, _ = probe_entry_guard(
+        [intent, intent], quantity=1, price=0.01,
+        multiplier=100, premium_limit=398.0, daily_limit=3,
+    )
+    assert ok is True and reason == ""
+    ok, reason, detail = probe_entry_guard(
+        [intent] * 3, quantity=1, price=0.01,
+        multiplier=100, premium_limit=398.0, daily_limit=3,
+    )
+    assert ok is False and "单日上限" in reason
+    assert detail["daily_limit"] == 3
 
 
 def test_probe_guard_enforces_daily_premium_cap():

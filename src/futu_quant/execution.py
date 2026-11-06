@@ -344,6 +344,56 @@ class ExecutionManager:
                 intent.get("broker_order_id"),
             )
         if mode == "REAL":
+            # 【探针专用护栏 · 双语义拆分】Product 2026-11-06 判据：只有提交源
+            # 显式带 `probe_test=True`（scripts/probe_order_submit_cancel.py 等
+            # 探针专用入口）才是真探针单——1 笔/日限制**只管这类单**。
+            # 策略扫描器的正常 BUY 一律不带该标记，走下方实盘闸门/风控/派生线全链，
+            # 不再受探针门约束（拆分前 404 次误拦的根因就是两者共用这道门）。
+            # 独立 event_type `LOW_COST_PROBE_GUARD`（与普通开仓拦截分离计数）。
+            if metadata.get("probe_test") is True:
+                from .capacity_precheck import probe_entry_guard, today_real_buy_entries
+                from .tenant import resolve_tenant
+                from .portfolio_allocator import AccountCurrencyMismatch, strategy_budget_usage
+                try:
+                    probe_tenant_id = tenant_id or (
+                        resolve_tenant(account_id=str(broker_account_id), env="REAL").tenant_id
+                        if broker_account_id else ""
+                    )
+                except Exception:  # noqa: BLE001 - 解析不出租户 → 探针单也 fail-closed
+                    probe_tenant_id = ""
+                # premium_limit 与普通开仓同源：压力损失预算（loss_limit）。
+                # 探针价 $0.01×100=$1 远小于预算；取不到预算时按 0（fail-closed，
+                # 不是「不限制」——币种不可信时一笔也不批）。
+                probe_premium_limit = 0.0
+                try:
+                    _usage, _equity = strategy_budget_usage(self.store, self.broker)
+                    _budget = _usage[_usage["strategy_id"] == strategy_id]
+                    if not _budget.empty:
+                        probe_premium_limit = float(_budget.iloc[0]["loss_limit"])
+                except AccountCurrencyMismatch:
+                    probe_premium_limit = 0.0
+                except Exception:  # noqa: BLE001 - 预算读不到 → 0，fail-closed
+                    probe_premium_limit = 0.0
+                allowed, probe_reason, probe_detail = probe_entry_guard(
+                    today_real_buy_entries(
+                        self.store,
+                        tenant_id=probe_tenant_id,
+                        strategy_id=strategy_id,
+                    ),
+                    quantity=int(quantity), price=float(price),
+                    multiplier=float(metadata.get("multiplier") or 1),
+                    premium_limit=probe_premium_limit,
+                )
+                if not allowed:
+                    self.store.update_intent(intent["id"], "REJECTED", error=probe_reason)
+                    self.store.audit(
+                        "LOW_COST_PROBE_GUARD",
+                        {"intent_id": intent["id"], "reason": probe_reason,
+                         "probe": True, "probe_guard": probe_detail,
+                         "tenant_id": tenant_id, "symbol": symbol},
+                        strategy_id, actor="service:execution",
+                    )
+                    return ExecutionResult(intent["id"], "REJECTED", probe_reason)
             real_decision = check_real_trade(
                 self.store, self.broker.settings, strategy_id, symbol, side,
                 int(quantity), float(price), metadata,
