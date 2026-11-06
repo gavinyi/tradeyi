@@ -28,12 +28,13 @@ DEFAULT_BUDGETS = [
 ]
 
 
-def ensure_default_budgets(store) -> list[dict]:
-    current = store.strategy_risk_budgets()
+def ensure_default_budgets(store, tenant_id: str = "futu_real_master") -> list[dict]:
+    """按租户确保默认预算存在（迁移 25 后每租户独立一套）。"""
+    current = store.strategy_risk_budgets(tenant_id)
     if not current:
-        store.save_strategy_risk_budgets(DEFAULT_BUDGETS)
+        store.save_strategy_risk_budgets(DEFAULT_BUDGETS, tenant_id=tenant_id)
         store.set_setting("strategy_budget_schema_version", "2")
-        current = store.strategy_risk_budgets()
+        current = store.strategy_risk_budgets(tenant_id)
     elif int(store.get_setting("strategy_budget_schema_version", "1") or 1) < 2:
         migrated = []
         for item in current:
@@ -41,9 +42,9 @@ def ensure_default_budgets(store) -> list[dict]:
             if row["strategy_id"] == "core_satellite" and abs(float(row["capital_ratio"]) - 0.55) < 1e-9:
                 row["capital_ratio"] = 0.65
             migrated.append(row)
-        store.save_strategy_risk_budgets(migrated)
+        store.save_strategy_risk_budgets(migrated, tenant_id=tenant_id)
         store.set_setting("strategy_budget_schema_version", "2")
-        current = store.strategy_risk_budgets()
+        current = store.strategy_risk_budgets(tenant_id)
     return current
 
 
@@ -122,7 +123,13 @@ def _report_currency_problem(store, broker, status: str, actual: str) -> None:
 
 
 def strategy_budget_usage(store, broker) -> tuple[pd.DataFrame, float]:
-    budgets = ensure_default_budgets(store)
+    # 预算租户化（2026-11-07，迁移 25）：按 broker 租户取各自预算行——
+    # 实盘/模拟不再共用一张表（此前 paper 改预算会同步放大实盘，反之亦然）。
+    from .tenant import tenant_of_broker
+
+    _tenant, _ = tenant_of_broker(broker, strict=False)
+    tenant_id = str(_tenant or "futu_real_master")
+    budgets = ensure_default_budgets(store, tenant_id)
     try:
         account = broker.account_info()
         positions = broker.positions()
@@ -250,7 +257,12 @@ def strategy_budget_allowed(
                 "模拟盘账户 %s 资产快照币种无法判定：放行，但美元限额可能失真，请核对 accinfo_query。",
                 getattr(broker, "account_id", "?"),
             )
-    budget = store.strategy_risk_budget(strategy_id)
+    from .tenant import tenant_of_broker as _tenant_of
+
+    _budget_tenant, _ = _tenant_of(broker, strict=False)
+    budget = store.strategy_risk_budget(
+        strategy_id, tenant_id=str(_budget_tenant or "futu_real_master"),
+    )
     if budget is None:
         return True, "未配置三维策略预算，沿用原有资金配额", {}
     if not budget["enabled"]:

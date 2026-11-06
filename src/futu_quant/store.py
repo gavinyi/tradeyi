@@ -1662,7 +1662,12 @@ class TradingStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def save_strategy_risk_budgets(self, budgets: list[dict]) -> None:
+    def save_strategy_risk_budgets(self, budgets: list[dict], tenant_id: str = "futu_real_master") -> None:
+        """保存某租户的策略风险预算（2026-11-07 租户化，迁移 25）。
+
+        `tenant_id` 缺省回落实盘租户：存量调用方行为不变；租户化调用方必须显式传，
+        防止跨租户污染。
+        """
         enabled_total = sum(
             float(item["capital_ratio"]) for item in budgets if item.get("enabled", True)
         )
@@ -1677,27 +1682,35 @@ class TradingStore:
         with self.connection() as connection:
             connection.executemany(
                 """INSERT INTO strategy_risk_budgets
-                (strategy_id,capital_ratio,max_loss_ratio,option_premium_ratio,enabled,updated_at)
-                VALUES(?,?,?,?,?,?) ON CONFLICT(strategy_id) DO UPDATE SET
+                (strategy_id,tenant_id,capital_ratio,max_loss_ratio,option_premium_ratio,enabled,updated_at)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT(strategy_id,tenant_id) DO UPDATE SET
                 capital_ratio=excluded.capital_ratio,max_loss_ratio=excluded.max_loss_ratio,
                 option_premium_ratio=excluded.option_premium_ratio,enabled=excluded.enabled,
                 updated_at=excluded.updated_at""",
-                [(item["strategy_id"], float(item["capital_ratio"]),
+                [(item["strategy_id"], str(tenant_id or "futu_real_master"),
+                  float(item["capital_ratio"]),
                   float(item["max_loss_ratio"]), float(item["option_premium_ratio"]),
                   int(item.get("enabled", True)), now) for item in budgets],
             )
-        self.audit("STRATEGY_RISK_BUDGETS_CHANGED", {"budgets": budgets}, actor="service:store")
+        self.audit(
+            "STRATEGY_RISK_BUDGETS_CHANGED",
+            {"tenant_id": str(tenant_id or "futu_real_master"), "budgets": budgets},
+            actor="service:store",
+        )
 
-    def strategy_risk_budgets(self) -> list[dict]:
+    def strategy_risk_budgets(self, tenant_id: str = "futu_real_master") -> list[dict]:
+        """读取某租户的策略风险预算（租户化，迁移 25；缺省回落实盘租户）。"""
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(
-                "SELECT * FROM strategy_risk_budgets ORDER BY strategy_id"
+                "SELECT * FROM strategy_risk_budgets WHERE tenant_id=? ORDER BY strategy_id",
+                (str(tenant_id or "futu_real_master"),),
             ).fetchall()]
 
-    def strategy_risk_budget(self, strategy_id: str) -> dict | None:
+    def strategy_risk_budget(self, strategy_id: str, tenant_id: str = "futu_real_master") -> dict | None:
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM strategy_risk_budgets WHERE strategy_id=?", (strategy_id,)
+                "SELECT * FROM strategy_risk_budgets WHERE strategy_id=? AND tenant_id=?",
+                (strategy_id, str(tenant_id or "futu_real_master")),
             ).fetchone()
         return dict(row) if row else None
 

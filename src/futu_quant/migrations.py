@@ -404,6 +404,40 @@ MIGRATIONS = (
         CREATE INDEX IF NOT EXISTS idx_real_delivery_approval_lookup
             ON real_universe_delivery_approvals(tenant_id, symbol, consumed_at, expires_at);
     """),
+    # 压力损失预算表租户化（2026-11-07 用户拍板「开啊，这么大的BUG」）：
+    # strategy_risk_budgets 原以 strategy_id 单列主键、无租户列——实盘与模拟盘
+    # 共用同一行预算，改一处两租户同时变（限额地图 20261107 坐实）。
+    # 迁移：①PK 改 (strategy_id, tenant_id)；②存量行归 futu_real_master
+    # （实盘行语义不变）；③再补一行 futu_paper_sandbox 的副本（同值起步，
+    # 此后两租户可独立调整，互不污染）。
+    Migration(25, "strategy_risk_budgets_tenant_scope", """
+        CREATE TABLE strategy_risk_budgets_legacy AS
+        SELECT * FROM strategy_risk_budgets;
+        DROP TABLE strategy_risk_budgets;
+        CREATE TABLE strategy_risk_budgets (
+            strategy_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'futu_real_master',
+            capital_ratio REAL NOT NULL,
+            max_loss_ratio REAL NOT NULL,
+            option_premium_ratio REAL NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(strategy_id, tenant_id)
+        );
+        INSERT INTO strategy_risk_budgets
+            (strategy_id, tenant_id, capital_ratio, max_loss_ratio,
+             option_premium_ratio, enabled, updated_at)
+        SELECT strategy_id, 'futu_real_master', capital_ratio, max_loss_ratio,
+               option_premium_ratio, enabled, updated_at
+        FROM strategy_risk_budgets_legacy;
+        INSERT INTO strategy_risk_budgets
+            (strategy_id, tenant_id, capital_ratio, max_loss_ratio,
+             option_premium_ratio, enabled, updated_at)
+        SELECT strategy_id, 'futu_paper_sandbox', capital_ratio, max_loss_ratio,
+               option_premium_ratio, enabled, updated_at
+        FROM strategy_risk_budgets_legacy;
+        DROP TABLE strategy_risk_budgets_legacy;
+    """),
 )
 
 
