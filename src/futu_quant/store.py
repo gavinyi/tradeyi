@@ -434,12 +434,14 @@ class TradingStore:
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS strategy_risk_budgets (
-                    strategy_id TEXT PRIMARY KEY,
+                    strategy_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'futu_real_master',
                     capital_ratio REAL NOT NULL,
                     max_loss_ratio REAL NOT NULL,
                     option_premium_ratio REAL NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(strategy_id, tenant_id)
                 );
                 CREATE TABLE IF NOT EXISTS portfolio_stress_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

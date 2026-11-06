@@ -407,14 +407,28 @@ MIGRATIONS = (
     # 压力损失预算表租户化（2026-11-07 用户拍板「开啊，这么大的BUG」）：
     # strategy_risk_budgets 原以 strategy_id 单列主键、无租户列——实盘与模拟盘
     # 共用同一行预算，改一处两租户同时变（限额地图 20261107 坐实）。
-    # 迁移：①PK 改 (strategy_id, tenant_id)；②存量行归 futu_real_master
-    # （实盘行语义不变）；③再补一行 futu_paper_sandbox 的副本（同值起步，
-    # 此后两租户可独立调整，互不污染）。
+    #
+    # **三条路径都安全**（Tester 7f66e49 全量抓到：全新库无旧表，纯重建式迁移
+    # 会被 `no such table` 卡死；纯 ADD COLUMN 又会撞旧表单列主键，paper 副本
+    # 插入违反 UNIQUE）——三段式：
+    # ① `CREATE TABLE IF NOT EXISTS`（旧形态）：全新库保证表存在（空表）；
+    # ② `ALTER TABLE ADD COLUMN tenant_id`：旧库补列；已是新形态的库报
+    #    duplicate column，由 `apply_migrations` 的既有容忍分支放行；
+    # ③ 重建到复合主键新表：从（已补列的）旧表拷贝，tenant_id 原样保留
+    #    （全新库 0 行 → 0 拷贝，运行时由 `ensure_default_budgets` 按租户
+    #    初始化），再补 paper 副本 + 唯一索引（store 层 upsert 依赖）。
     Migration(25, "strategy_risk_budgets_tenant_scope", """
-        CREATE TABLE strategy_risk_budgets_legacy AS
-        SELECT * FROM strategy_risk_budgets;
-        DROP TABLE strategy_risk_budgets;
-        CREATE TABLE strategy_risk_budgets (
+        CREATE TABLE IF NOT EXISTS strategy_risk_budgets (
+            strategy_id TEXT PRIMARY KEY,
+            capital_ratio REAL NOT NULL,
+            max_loss_ratio REAL NOT NULL,
+            option_premium_ratio REAL NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        );
+        ALTER TABLE strategy_risk_budgets
+            ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'futu_real_master';
+        CREATE TABLE strategy_risk_budgets_tenant (
             strategy_id TEXT NOT NULL,
             tenant_id TEXT NOT NULL DEFAULT 'futu_real_master',
             capital_ratio REAL NOT NULL,
@@ -424,19 +438,23 @@ MIGRATIONS = (
             updated_at TEXT NOT NULL,
             PRIMARY KEY(strategy_id, tenant_id)
         );
-        INSERT INTO strategy_risk_budgets
+        INSERT INTO strategy_risk_budgets_tenant
             (strategy_id, tenant_id, capital_ratio, max_loss_ratio,
              option_premium_ratio, enabled, updated_at)
-        SELECT strategy_id, 'futu_real_master', capital_ratio, max_loss_ratio,
+        SELECT strategy_id, tenant_id, capital_ratio, max_loss_ratio,
                option_premium_ratio, enabled, updated_at
-        FROM strategy_risk_budgets_legacy;
+        FROM strategy_risk_budgets;
+        DROP TABLE strategy_risk_budgets;
+        ALTER TABLE strategy_risk_budgets_tenant
+            RENAME TO strategy_risk_budgets;
         INSERT INTO strategy_risk_budgets
             (strategy_id, tenant_id, capital_ratio, max_loss_ratio,
              option_premium_ratio, enabled, updated_at)
         SELECT strategy_id, 'futu_paper_sandbox', capital_ratio, max_loss_ratio,
                option_premium_ratio, enabled, updated_at
-        FROM strategy_risk_budgets_legacy;
-        DROP TABLE strategy_risk_budgets_legacy;
+        FROM strategy_risk_budgets WHERE tenant_id = 'futu_real_master';
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_strategy_risk_budgets_strategy_tenant
+            ON strategy_risk_budgets(strategy_id, tenant_id);
     """),
 )
 
