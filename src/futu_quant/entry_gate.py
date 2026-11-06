@@ -97,9 +97,22 @@ def resolve_entry_block_reasons(
     唯一出口：`risk_decision.blocked_by`（RiskEngine 既有闸门）作为**第一条原因**，
     再接熔断原因，按 code 去重；调用方一次写 audit（V9 走真实链路）。
     本函数仍**不判定**：只读取 RiskEngine 已给出的结论与数值。
+
+    **shadow 泄漏缺陷修复（2026-11-07，用户实盘误拦定性）**：
+    `RiskEngine` 的熔断结果里，**shadow 模式下 `blocked=False`、只有
+    `would_block=True`**（`risk_breaker.py:441` 守住了），但 `risk.py:802` 把
+    `reasons` 无条件透传，本函数原来也无条件并进输出 —— shadow 的
+    `dd_vs_peak_absolute` 由此变成 `blocked_by`，实盘被硬拦（944/933 事故）。
+
+    修复：熔断原因**只在 RiskEngine 真拒绝**（`allowed=False`，即 enforce 拦下）
+    时才并入输出；shadow 观察（`allowed=True` 且仅 `would_block`）只留给
+    `ENTRY_GATE_SHADOW` audit，不进 `blocked_by`。
     """
     reasons: list[BlockReason] = []
     seen: set[str] = set()
+    decision_allowed = (
+        bool(getattr(risk_decision, "allowed", True)) if risk_decision is not None else True
+    )
     if risk_decision is not None:
         decision_reason = str(getattr(risk_decision, "reason", "") or "风控拒绝")
         for code in tuple(getattr(risk_decision, "blocked_by", ()) or ()):
@@ -107,11 +120,20 @@ def resolve_entry_block_reasons(
                 continue
             seen.add(code)
             reasons.append(BlockReason(str(code), decision_reason))
-    for reason in signals.breaker_reasons:
-        if reason.code in seen:
-            continue
-        seen.add(reason.code)
-        reasons.append(reason)
+        # 熔断原因只属于「RiskEngine 真拒绝」的决策：shadow 观察不并入，
+        # 否则配置的 shadow 语义在聚合层泄漏成硬拦（本缺陷根因）。
+        if not decision_allowed:
+            for reason in signals.breaker_reasons:
+                if reason.code in seen:
+                    continue
+                seen.add(reason.code)
+                reasons.append(reason)
+    else:
+        for reason in signals.breaker_reasons:
+            if reason.code in seen:
+                continue
+            seen.add(reason.code)
+            reasons.append(reason)
     # 兜底（P0 fail-open 防线）：RiskEngine 已拒绝但没有任何结构化原因时，
     # 必须补一条通用原因，保证拒绝不会被聚合层“吃掉”。
     if not reasons and risk_decision is not None and getattr(risk_decision, "allowed", True) is False:

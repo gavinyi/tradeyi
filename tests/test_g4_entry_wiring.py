@@ -290,8 +290,10 @@ def test_breaker_block_codes_are_exact_prd_literals(tmp_path, monkeypatch):
     risk = _engine(store, monkeypatch, max_drawdown_pct=0.99)
     decision = risk.check(_Broker(890.0), "US.QQQ", "BUY", 1, 100, execution_mode="REAL")
     assert decision.breaker_would_block is True
-    assert decision.breaker_reasons[0].code == "dd_vs_peak_absolute"
-    # audit 里也必须出现精确码（S2 shadow 观测按它分档统计）
+    # shadow 泄漏修复后：放行决策不带熔断原因；精确码改从 audit 断言
+    # （`risk.py` 侧 operational_event 的 reasons 数组保留 code 供 S2 分档）。
+    assert decision.breaker_reasons == ()
+    # audit 里必须出现精确码（S2 shadow 观测按它分档统计）
     events = _breaker_events(store, "SHADOW")
     assert events and "dd_vs_peak_absolute" in str(events[0])
 
@@ -324,11 +326,17 @@ def test_real_shadow_records_would_block_without_blocking(tmp_path, monkeypatch)
     decision = risk.check(broker, "US.QQQ", "BUY", 1, 100, execution_mode="REAL")
     assert decision.allowed is True, "shadow 只记录、不拦"
     assert decision.breaker_would_block is True
-    assert decision.breaker_reasons, "shadow 必须带结构化原因供 audit"
-    assert decision.breaker_reasons[0].code in {DRAWDOWN_STOP, DRAWDOWN_ABSOLUTE}
+    # shadow 泄漏缺陷修复（2026-11-07）：放行决策的 breaker_reasons 必须为空——
+    # shadow 观察只走 audit（下方断言），不得以任何结构化原因进入聚合层，
+    # 否则 entry_gate 会把它并进 blocked_by 硬拦实盘（944/933 事故根因）。
+    assert decision.breaker_reasons == (), (
+        "shadow 放行决策不得携带熔断原因（聚合层泄漏形态）"
+    )
     state = store.load_risk_state(TENANT)
     assert state is not None and state["breaker_level"] == 2
-    assert _breaker_events(store, "SHADOW"), "shadow 必须写 would_block audit"
+    events = _breaker_events(store, "SHADOW")
+    assert events, "shadow 必须写 would_block audit"
+    assert "dd_vs_peak_absolute" in str(events[0]), "audit 保留精确码供 shadow 分档统计"
 
 
 def test_real_enforce_blocks_buy_with_specific_block_code(tmp_path, monkeypatch):
@@ -386,3 +394,35 @@ def test_breaker_state_key_uses_tenant_and_updates_single_row(tmp_path, monkeypa
     with store.connection() as connection:
         rows = connection.execute("SELECT COUNT(*) FROM risk_state").fetchone()[0]
     assert rows == 1, "risk_state 必须按 (tenant_id, scope) 单行 upsert"
+
+
+def test_mutation_restoring_shadow_reason_leak_must_be_red():
+    """变异红证（shadow 泄漏缺陷 944/933）：把 risk.py 放行决策的
+    breaker_reasons 清空改回透传 → shadow 放行测试必须红（缺陷复现可被抓）。"""
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    module = Path("src/futu_quant/risk.py")
+    original = module.read_text(encoding="utf-8")
+    anchor = "            breaker_reasons=(),\n"
+    assert anchor in original, "修复锚点丢失，无法构造变异"
+    mutated = original.replace(
+        anchor,
+        "            breaker_reasons=tuple(breaker_info.get(\"reasons\", ())),\n",
+    )
+    assert mutated != original
+    try:
+        module.write_text(mutated, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             f"{Path(__file__)}::test_real_shadow_records_would_block_without_blocking"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0, (
+            "shadow 原因泄漏恢复后测试仍绿 —— 实盘误拦缺陷可静默复发"
+        )
+    finally:
+        module.write_text(original, encoding="utf-8")
+        shutil.rmtree(".pytest_cache", ignore_errors=True)
