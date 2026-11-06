@@ -538,6 +538,7 @@ def _warn_frequent_buyouts(
             f"质量类拒绝不计入且会清零连续计数）："
             f"{result.message()}",
             incident_key=f"{BUYOUT_WARN_EVENT}:{tenant}:{moment.date().isoformat()}",
+            tenant_id=tenant,
         )
     except Exception as exc:  # noqa: BLE001 - 告警失败不得把交易链路打断
         logger.warning("买不起频繁告警发送失败（计数照常）：%s", exc)
@@ -665,6 +666,7 @@ def record_selection_round(
             f"**未暂停新开仓**（账户规模与单张成本量级差，暂停只会让策略长期停摆）："
             f"{result.message()}",
             incident_key=f"{INSUFFICIENT_EVENT}:{tenant}:{moment.date().isoformat()}",
+            tenant_id=tenant,
         )
     except Exception:  # noqa: BLE001 - 告警失败不得把交易链路打断
         pass

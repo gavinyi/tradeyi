@@ -265,6 +265,7 @@ class RiskEngine:
             f"纸面账户 {broker_acc or '未知'} {detail}，已过{warn_desc}"
             f"（硬停线 ${self.limits.max_daily_loss:,.0f}），仅告警、不中断验证",
             incident_key="PAPER_DAILY_LOSS_WARN",
+            tenant_id=quota_tenant if (quota_tenant := tenant_of_broker(broker, strict=False)[0]) else "",
         )
         return True
 
@@ -288,6 +289,7 @@ class RiskEngine:
         alerts = AlertManager(self.store)
         self.store.set_kill_switch(True, account_id=broker_acc)
         detail = f"{metric_label} ${loss_amount:,.0f}"
+        guard_tenant = tenant_of_broker(broker, strict=False)[0] or ""
         if self._is_paper_account(broker):
             # 硬停是真事件：文案**带账户与该分支的实际数值**（Product 要求），
             # 且此时 kill_switch 已置位、后续 BUY 会在急停门被拦住，不会反复推送。
@@ -297,6 +299,7 @@ class RiskEngine:
                 f"已达硬停线 ${self.limits.max_daily_loss:,.0f}，已停止开仓"
                 "（策略失控兜底，不是验证中断）",
                 incident_key="PAPER_DAILY_LOSS_HARD_STOP",
+                tenant_id=guard_tenant,
             )
             return True
         alerts.send(
@@ -304,6 +307,7 @@ class RiskEngine:
             f"账户 {broker_acc or '未知'} {detail}，"
             f"已达硬停线 ${self.limits.max_daily_loss:,.0f}，已自动急停并停止开仓",
             incident_key="DAILY_LOSS_KILL_SWITCH",
+            tenant_id=guard_tenant,
         )
         return True
 
@@ -414,6 +418,11 @@ class RiskEngine:
             from .risk_breaker import RiskState
 
             state = RiskState(
+                # ⚠️ tenant_id 这里是 **risk_state 表的状态行主键**（`:392` 的
+                # `state_key = tenant or broker_acc`：租户优先、账号回退的 backfill
+                # 约定，`load_risk_state`/`save_risk_state` 均按此键读写）——
+                # 不是飞书租户标签语义，勿改成纯 tenant_id（会与存量账号键行分裂，
+                # 回撤状态被重置）。字段名沿用 RiskState dataclass，不动。
                 tenant_id=state_key,
                 peak_hist=peak_hist,
                 peak_hist_at=self.store.now(),

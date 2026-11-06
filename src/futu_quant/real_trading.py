@@ -81,6 +81,17 @@ def _strict_float(value: Any) -> tuple[float | None, str]:
         return None, f"值 {value!r} 无法转换为数字"
 
 
+def _account_tenant_id(store: TradingStore, account_id: Any) -> str:
+    """账户号 → 租户 id（飞书租户标签用）；解析失败返回空串（标签走【未标记租户】）。"""
+    try:
+        from .tenant import resolve_tenant
+
+        profile = resolve_tenant(account_id=str(account_id), env="REAL")
+        return profile.tenant_id if profile else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def notify_corrupt_account_config(store: TradingStore, account_id: Any, reason: str) -> None:
     """坏键强告警（不可静音，Reviewer 第 4 条）。
 
@@ -94,12 +105,15 @@ def notify_corrupt_account_config(store: TradingStore, account_id: Any, reason: 
     """
     from .alerts import AlertManager  # 局部导入：alerts 依赖 store，避免模块环
 
+    # 租户标签（用户 2026-11-06 拍板）：实盘/模拟盘推送必须可辨。
+    _tenant = _account_tenant_id(store, account_id)
     try:
         AlertManager(store).send(
             "ERROR",
             "REAL_ACCOUNT_CONFIG_CORRUPT",
             f"实盘账户 {account_id} 的账户级配置损坏：{reason} —— 已禁止 BUY 开仓，SELL 仍走原有安全校验",
             incident_key=f"REAL_ACCOUNT_CONFIG_CORRUPT:{account_id}",
+            tenant_id=_tenant,
         )
     except Exception:  # noqa: BLE001
         pass  # silent-ok: 告警投递失败不得反过来阻断门禁判定本身
@@ -215,6 +229,7 @@ def resolve_real_account_limits(
                     "ERROR", "LIMIT_PROFILE_LEGACY_FALLBACK",
                     f"账户 {account_id} 限额配置回落旧键：{limit_profile_reason}",
                     incident_key=f"LIMIT_PROFILE_LEGACY_FALLBACK:{account_id}",
+                    tenant_id=tenant_id,
                 )
         except Exception:  # noqa: BLE001 - 告警/审计失败不得改变兼容回落结论
             logging.getLogger(__name__).exception("记录 LIMIT_PROFILE_LEGACY_FALLBACK 失败")
@@ -562,6 +577,7 @@ def check_real_trade(
                 "ERROR", "LIMIT_PROFILE_UNRESOLVED",
                 f"实盘限额派生失败，已拒绝订单：账户 {target_account}，原因：{limits.limit_profile_reason}",
                 incident_key=f"LIMIT_PROFILE_UNRESOLVED:{target_account}",
+                tenant_id=_account_tenant_id(store, target_account),
             )
         except Exception:  # 告警/审计失败不得改变 fail-closed 结果
             logging.getLogger(__name__).exception("记录 LIMIT_PROFILE_UNRESOLVED 失败")

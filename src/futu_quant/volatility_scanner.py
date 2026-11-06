@@ -358,6 +358,7 @@ def _maybe_create_tenant_campaign(
         AlertManager(store).send(
             "INFO", "VOLATILITY_SIGNAL_DETECTED",
             f"{symbol} 达到动态波动条件，雷达将生成期权自动策略。{item.regime['reason']}",
+            tenant_id=tenant_id,
         )
         store.set_setting(trigger_key, today)
         store.audit("VOLATILITY_SIGNAL_CONFIRMED", {
@@ -389,6 +390,7 @@ def _maybe_create_tenant_campaign(
                 "ERROR", "VOLATILITY_SIGNAL_CHAIN_BROKEN",
                 f"{symbol} {chain_reason}",
                 incident_key=f"volatility-campaign-intent:{tenant_id}:{symbol}:{trace_id}",
+                tenant_id=tenant_id,
             )
         return
     retry_until_raw = store.get_setting(
@@ -744,6 +746,7 @@ def _maybe_create_tenant_campaign(
             "WARNING", "VOLATILITY_CANDIDATE_FILTERED",
             f"{symbol} 触发 BUY 但候选全部被入场过滤器拒绝（非故障）：{roll_reason}（trace_id={trace_id}）",
             incident_key=f"volatility-candidate-filtered:{tenant_id}:{symbol}",
+            tenant_id=tenant_id,
         )
         store.set_setting(rejection_key, fingerprint)
 

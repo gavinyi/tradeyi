@@ -109,10 +109,13 @@ def _report_currency_problem(store, broker, status: str, actual: str) -> None:
         pass
     try:
         from .alerts import AlertManager
+        from .tenant import tenant_of_broker
 
+        _tenant, _acc = tenant_of_broker(broker, strict=False)
         AlertManager(store).send(
             "ERROR", "ACCOUNT_CURRENCY_UNVERIFIED", detail,
             incident_key=f"ACCOUNT_CURRENCY_UNVERIFIED:{account}",
+            tenant_id=str(_tenant or ""),
         )
     except Exception:  # noqa: BLE001 - 告警失败不得把交易链路打断
         pass

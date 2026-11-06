@@ -52,12 +52,13 @@ def sent(monkeypatch) -> list:
     """把真正的推送换掉：只记录，不碰网络/飞书。"""
     calls: list = []
 
-    def fake_send(self, severity, event_type, message, incident_key=None):
+    def fake_send(self, severity, event_type, message, incident_key=None, tenant_id=None):
         calls.append({
             "severity": severity,
             "event_type": event_type,
             "message": message,
             "incident_key": incident_key,
+            "tenant_id": tenant_id,
         })
 
     monkeypatch.setattr(alerts_mod.AlertManager, "send", fake_send)
