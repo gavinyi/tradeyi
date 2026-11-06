@@ -252,7 +252,7 @@ def test_corrupt_emits_alert(tmp_path, monkeypatch):
     sent: list[tuple[str, str, str, str]] = []
     monkeypatch.setattr(
         AlertManager, "send",
-        lambda self, severity, event_type, message, incident_key=None: sent.append(
+        lambda self, severity, event_type, message, incident_key=None, tenant_id=None: sent.append(
             (severity, event_type, message, incident_key)
         ),
     )
@@ -270,7 +270,7 @@ def test_corrupt_alert_uses_stable_incident_key(tmp_path, monkeypatch):
     keys: list[str] = []
     monkeypatch.setattr(
         AlertManager, "send",
-        lambda self, severity, event_type, message, incident_key=None: keys.append(
+        lambda self, severity, event_type, message, incident_key=None, tenant_id=None: keys.append(
             incident_key
         ),
     )
@@ -301,7 +301,7 @@ def test_sell_does_not_alert_when_corrupt(tmp_path, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(
         AlertManager, "send",
-        lambda self, severity, event_type, message, incident_key=None: sent.append(event_type),
+        lambda self, severity, event_type, message, incident_key=None, tenant_id=None: sent.append(event_type),
     )
 
     decision = check_real_trade(
