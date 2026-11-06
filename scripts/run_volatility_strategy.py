@@ -460,7 +460,7 @@ def run_once(
             execute_campaign(campaign)
     now = datetime.now(timezone.utc)
     maintenance_interval = max(
-        60, int(os.getenv("VOLATILITY_EXPRESSION_REVIEW_SECONDS", "300"))
+        60, int(os.getenv("VOLATILITY_EXPRESSION_REVIEW_SECONDS", "900"))
     )
     for campaign in campaigns:
         if interrupted or str(campaign.get("code", "")) in held_codes:
