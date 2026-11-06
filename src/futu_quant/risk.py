@@ -799,7 +799,12 @@ class RiskEngine:
                 return RiskDecision(False, portfolio_reason, notional)
         return RiskDecision(
             True, "风控通过", notional,
-            breaker_reasons=tuple(breaker_info.get("reasons", ())),
+            # shadow 泄漏缺陷修复（2026-11-07）：allowed=True 的放行决策里，
+            # 熔断原因**必须清空**——shadow 观察值（would_block）只能进
+            # `ENTRY_GATE_SHADOW` audit，不得进入 breaker_reasons 让聚合层
+            # 当成 blocked_by 硬拦（944/933 实盘误拦根因）。would_block 本身
+            # 仍随决策透传，供 audit/页面统计 shadow 观测。
+            breaker_reasons=(),
             breaker_unsupported=str(breaker_info.get("unsupported", "")),
             breaker_would_block=bool(breaker_info.get("would_block", False)),
         )
