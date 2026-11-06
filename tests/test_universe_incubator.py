@@ -318,7 +318,11 @@ def test_upgrade_keeps_global_pool_and_migrates_unproven_symbols_to_paper(tmp_pa
         (json.dumps(["US.AAPL", "US.PLTR", "US.CUSTOM"]), now),
     )
     connection.commit()
-    assert apply_migrations(connection, actor="service:test") == [23, 24]
+    # 动态口径：断言「23 之后的所有迁移都被应用」而非写死版本号——
+    # 新增迁移 25（预算租户化）时本用例不必再改（验证纪律：写死数量/版本在
+    # 正当新增时会假红）。迁移 23/24 是种子版本，25 起动态收集。
+    applied_after_22 = [m.version for m in MIGRATIONS if m.version > 22]
+    assert apply_migrations(connection, actor="service:test") == applied_after_22
     # 全局键一个符号都不能丢：同名双重来源（US.PLTR）也保留，迁移不猜测来源。
     symbols = json.loads(connection.execute(
         "SELECT value_json FROM runtime_config WHERE config_key='VOLATILITY_SYMBOLS'"
