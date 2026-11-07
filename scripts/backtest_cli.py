@@ -77,6 +77,7 @@ def run_backtest(args: argparse.Namespace) -> int:
     # 无价格依据的信号计入 L3 占比（不编造）。
     trades = []
     skipped_l3 = 0
+    match_errors = 0  # 撮合故障计数（含 ValueError 形态，见下方判据）
     for event in result.replayed_events:
         premium = (event.payload.get("regime") or {}).get("expected_premium")
         quote = bt_matcher.PriceQuote(
@@ -84,10 +85,21 @@ def run_backtest(args: argparse.Namespace) -> int:
             recorded_premium=float(premium) if premium else None,
             tier="L2" if premium else "L3",
         )
+        # 「无价格依据」的**唯一合法形态**：tier=L3（payload/盘口均无价格依据）
+        # 且 match_trade 以 ValueError 拒造——此时 L3 计数是数据缺口如实记录。
+        # 其余任何异常（含非 L3 语义的 ValueError，如撮合层故障恒抛）都是
+        # **故障不是缺数据**：match_errors 计数并取消豁免资格（Reviewer
+        # 2026-11-07 实跑验证：只按异常类型区分会被 ValueError 变异绕过）。
+        no_basis = quote.tier == "L3"
         try:
             trades.append(bt_matcher.match_trade(event, quote, slippage_ticks=args.slippage))
-        except ValueError:
-            skipped_l3 += 1  # L3 拒造数，仅计数进占比
+        except ValueError as exc:
+            if no_basis:
+                skipped_l3 += 1  # L3 拒造数，仅计数进占比（数据缺口）
+            else:
+                match_errors += 1  # 有价格依据却撮合失败 = 故障
+        except Exception:
+            match_errors += 1  # 非 ValueError 异常一律故障
     shares = bt_matcher.tier_shares(trades)
     total_signals = len(trades) + skipped_l3
     if total_signals:
@@ -96,7 +108,11 @@ def run_backtest(args: argparse.Namespace) -> int:
             for tier, count in {**shares, "L3": skipped_l3}.items()
         }
 
-    # 对账（L-B）：与实际成交账本逐笔对照（两租户合并读，报告按窗口过滤）
+    # 对账（L-B）：与实际成交账本逐笔对照（两租户合并读，报告按窗口过滤）。
+    # 数据可得性边界（2026-11-07 裁定 + 收官回归修正）：豁免**只对数据真空期**
+    # 生效——撮合层产不出任何模拟成交且**无撮合异常**（L3 100% 历史窗口形态）；
+    # match_errors>0 说明撮合层本身故障，豁免资格取消 → backtest_bug 照常判红
+    # （PRD 硬门槛 5：报告不是摆设，撮合故障必须转红）。
     fills = []
     for tenant in ("futu_real_master", "futu_paper_sandbox"):
         fills.extend(
@@ -106,9 +122,35 @@ def run_backtest(args: argparse.Namespace) -> int:
             }
             for row in store.fill_ledger_rows(tenant_id=tenant)
         )
-    from futu_quant.signal_backtest.ledger import reconcile, equity_curve  # 局部导入保持启动轻
-    reconcile_report = reconcile(trades, fills)
+    from futu_quant.signal_backtest.ledger import (
+        decision_agreement, equity_curve, reconcile,
+    )
+    # 豁免判据（组合态，Reviewer 2026-11-07 实跑验证后定案）：
+    # **唯一可豁免形态（真空数据期）**= replayed 为空 **或** 窗口内无实际成交
+    # ——没有对照内容，谈不上「对不上」。
+    # **故障态**（replayed 非空 + 实际成交存在 + 零撮合产出 + 无异常计数）强制
+    # available=True → 进对账落 backtest_bug：有 BUY 决策、有实际成交，撮合却
+    # 一单未出且无 L3 以外解释——无论异常类型（ValueError 变异会被 L3 计数吞掉，
+    # 故 match_errors 判据不够，必须按组合态判），报告不是摆设（PRD 硬门槛 5）。
+    simulated_fill_available = (
+        bool(result.replayed_events) and bool(fills)
+    )
+    reconcile_report = reconcile(trades, fills,
+                                 simulated_fill_available=simulated_fill_available)
     curve = equity_curve(trades, fee_per_trade_fn=bt_matcher.fee_per_trade)
+
+    # B1 决策结论对照（PRD §2 L-B 第一子项，无需价格数据）：重放放行 vs
+    # 实际下单意图同向率——「为什么没成交」第一层数据，历史窗口现在就能算。
+    intents = []
+    for tenant in ("futu_real_master", "futu_paper_sandbox"):
+        getter = getattr(store, "order_intents", None)
+        if getter is None:
+            break
+        for row in getter(tenant_id=tenant):
+            created = str(row.get("created_at") or "")
+            if args.window_start <= created <= args.window_end:
+                intents.append(row)
+    agreement = decision_agreement(result.replayed_events, intents)
 
     header = (
         f"- **数据区间**: {args.window_start} → {args.window_end}\n"
@@ -130,8 +172,20 @@ def run_backtest(args: argparse.Namespace) -> int:
         f"- 信号对齐率：{result.alignment_ratio:.2%}"
         f"（实际 {len(result.actual_events)} / 重放 {len(result.replayed_events)}"
         f" / 差异 {len(result.mismatches)}）——判据 100%（PRD L-A）",
-        f"- 成交对账率：{reconcile_report.reconcile_ratio:.2%}"
-        f"（对照 {len(reconcile_report.rows)} 笔，目标 ≥90%）",
+        # B1 三行判据（Product 2026-11-07）：方向分开看，不能只看同向率
+        f"- **B1 · actual_only**：{agreement['actual_only_count']} 条"
+        f"（实际下单、回放未放行——致命方向，必须≈0："
+        f"{'✅ 达标' if agreement['actual_only_count'] == 0 else '❌ 回放判据比生产宽松，不得收官'}）",
+        f"- **B1 · replay_only**：{agreement['replay_only_count']} 条"
+        f"（回放放行、实际未下单——「为什么没成交」答案，初步归因分布见明细）",
+        f"- **B1 · 未归因**：{agreement['unattributed_count']} 条"
+        f"（{'✅ 0 条' if agreement['unattributed_count'] == 0 else '❌ 归不了的差异 = 回放器漏判，不得收官'}）",
+        f"- B1 同向率（参考）：{agreement['agreement_ratio']:.2%}"
+        f"（重放放行 {len(result.replayed_events)} 笔中 {agreement['both_count']} 笔有对应实际下单意图）",
+        f"- 成交价格对照：{f'{reconcile_report.price_reconcile_ratio:.2%}' if reconcile_report.price_reconcile_ratio is not None else '**不适用**'}"
+        f"（{f'对照 {len(reconcile_report.price_comparison_eligible_rows())} 笔' if reconcile_report.price_reconcile_ratio is not None else '本区间无价格依据（no_price_basis），不进对账率——禁止读作「对账通过」'}）",
+        f"- no_price_basis 档：{reconcile_report.no_price_basis_count} 笔"
+        f"（v2 盘口 11-06 起积累，历史窗口无价格依据，随 v2 积累后自动启用）",
         f"- 差异原因分布：{json.dumps(reconcile_report.reason_distribution(), ensure_ascii=False)}",
         f"- **backtest_bug 占比 >0 整体标红**："
         f"{'❌ 有' if reconcile_report.has_backtest_bug else '✅ 无'}",
