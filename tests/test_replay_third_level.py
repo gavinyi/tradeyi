@@ -8,8 +8,10 @@ payload 触发依据齐备（zscore/move 非空），且只认信号层 BUY。
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from futu_quant.signal_backtest import replay as bt_replay
+from futu_quant.volatility_activation import build_activation_evidence
 
 WINDOW = ("2026-11-04T00:00:00+00:00", "2026-11-07T00:00:00+00:00")
 
@@ -140,6 +142,100 @@ def test_declared_trace_id_bare_payload_is_dangling_mismatch():
     row = result.mismatches[0]
     assert row["reason"] == "activation_evidence_missing"
     assert row.get("dangling_declaration") is True
+
+
+def test_stale_single_slot_never_masquerades_as_this_trigger():
+    """stale 单槽残留不得冒充本触发证据（Ops 2026-11-07 生产复测实锤的
+    最后一个真缺陷：1,059 条 threshold_recalc_differs 全由此来）。
+
+    形态：历史 BUY 声明 11-04 的 trace_id，单槽里残留 11-06 最后一轮
+    （active=False 三联全 False）——不一致即视为单槽 miss，落直读级
+    （payload 自洽）对齐；绝不拿过期证据把本触发判成 differs。
+    """
+    store = FakeStore([
+        _row("US.STALE", "2026-11-04T14:00:00+00:00",
+             payload_overrides={"activation_trace_id": "radar-20261104T12:US.STALE"}),
+    ])
+    # 单槽残留：11-06 最后一轮，trace_id 不同且 active=False
+    stale = build_activation_evidence(
+        "US.STALE",
+        {"active": False, "reason": "未达", "trigger_confirmed": False,
+         "volume_confirmed": False, "direction_gate": False},
+        {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
+        observed_at=datetime(2026, 11, 6, 20, 57, tzinfo=timezone.utc),
+        trace_id="radar-20261106T2057:US.STALE",
+    )
+    store.settings["volatility_activation_evidence:US.STALE"] = json.dumps(stale)
+    result = bt_replay.replay_signals(store, *WINDOW, {})
+    assert result.aligned, (
+        f"stale 单槽不得把本触发判成 differs：{result.mismatches}"
+    )
+
+
+def test_matching_trace_id_single_slot_still_authoritative():
+    """单槽 trace_id 与声明一致时仍是权威证据（一致性校验只挡 stale，不放宽）。"""
+    store = FakeStore([
+        _row("US.MATCH", "2026-11-05T14:00:00+00:00",
+             payload_overrides={"activation_trace_id": "radar-T:US.MATCH"}),
+    ])
+    slot = build_activation_evidence(
+        "US.MATCH",
+        {"active": False, "reason": "未达", "trigger_confirmed": False,
+         "volume_confirmed": False, "direction_gate": False},
+        {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
+        observed_at=datetime(2026, 11, 5, 14, 0, tzinfo=timezone.utc),
+        trace_id="radar-T:US.MATCH",
+    )
+    store.settings["volatility_activation_evidence:US.MATCH"] = json.dumps(slot)
+    result = bt_replay.replay_signals(store, *WINDOW, {})
+    assert result.mismatch_reasons().get("threshold_recalc_differs") == 1, \
+        "同 trace_id 的单槽证据必须照常参与比对（不因一致性校验放宽）"
+
+
+def test_trace_id_comparison_is_exact_not_prefix():
+    """Reviewer 口径①：一致性判定必须精确全等（strip 后），禁前缀/包含。"""
+    store = FakeStore([
+        _row("US.PFX", "2026-11-05T14:00:00+00:00",
+             payload_overrides={"activation_trace_id": "radar-A:US.PFX"}),
+    ])
+    slot = build_activation_evidence(
+        "US.PFX",
+        {"active": False, "reason": "未达", "trigger_confirmed": False,
+         "volume_confirmed": False, "direction_gate": False},
+        {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
+        observed_at=datetime(2026, 11, 5, 14, 0, tzinfo=timezone.utc),
+        trace_id="radar-A:US.PFX:EXTRA",  # 声明的前缀 + 后缀 → 不全等 → stale
+    )
+    store.settings["volatility_activation_evidence:US.PFX"] = json.dumps(slot)
+    result = bt_replay.replay_signals(store, *WINDOW, {})
+    assert result.aligned, "前缀命中不算一致：stale 残留必须落直读级对齐"
+
+
+def test_mutation_dropping_slot_consistency_check_must_be_red():
+    """Reviewer 口径③变异红证：摘掉单槽 trace_id 一致性校验 → 守卫必红。"""
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    target = Path(__file__).resolve().parents[1] / "src" / "futu_quant" / "signal_backtest" / "replay.py"
+    original = target.read_text(encoding="utf-8")
+    anchor = "            if trace_id and slot_trace != trace_id.strip():"
+    assert anchor in original, "一致性校验锚点丢失"
+    mutated = original.replace(anchor, "            if False:", 1)
+    assert mutated != original
+    try:
+        target.write_text(mutated, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             f"{Path(__file__)}::test_stale_single_slot_never_masquerades_as_this_trigger",
+             "--capture=no"],
+            capture_output=True, text=True, cwd=str(target.parents[2]),
+        )
+        assert result.returncode != 0, "一致性校验被摘后守卫仍绿——stale 残留可复发误判"
+    finally:
+        target.write_text(original, encoding="utf-8")
+        shutil.rmtree(target.parents[2] / ".pytest_cache", ignore_errors=True)
 
 
 def test_window_query_efficiency_no_full_scan():
