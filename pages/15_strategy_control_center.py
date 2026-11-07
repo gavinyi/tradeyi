@@ -72,7 +72,8 @@ def load_control_snapshot():
     )
     return (
         current_store.heartbeats(),
-        current_store.strategy_risk_budgets(),
+        # 预算租户化（迁移 25）：按当前租户读各自预算行，不再两租户共用。
+        current_store.strategy_risk_budgets(tenant_id or "futu_real_master"),
         current_store.strategy_experiments(limit=300),
         tenant_paused or current_store.get_setting("strategies_paused", "false"),
         current_store.get_setting("execution_mode", os.getenv("EXECUTION_MODE", "PAPER")),
@@ -368,7 +369,10 @@ with budget_tab:
             icon=":material/auto_fix_high:",
         ):
             rows_to_save = recommended_active_budget_rows(budget_rows)
-            store.save_strategy_risk_budgets(rows_to_save)
+            # 预算租户化（迁移 25）：写当前租户自己的预算行，不再两租户联动。
+            store.save_strategy_risk_budgets(
+                rows_to_save, tenant_id=tenant_id or "futu_real_master",
+            )
             store.audit(
                 "STRATEGY_BUDGET_PRESET_APPLIED",
                 {"actor": "streamlit_admin", "preset": "core65_volatility25"},
@@ -403,8 +407,11 @@ with budget_tab:
         if st.button("保存策略资金配额", disabled=not admin):
             rows_to_save = edited_budget.drop(columns=["strategy_group"]).to_dict("records")
             try:
-                store.save_strategy_risk_budgets(rows_to_save)
-                st.success("策略资金配额已保存，统一下单风控立即生效。")
+                # 预算租户化（迁移 25）：写当前租户自己的预算行，不再两租户联动。
+                store.save_strategy_risk_budgets(
+                    rows_to_save, tenant_id=tenant_id or "futu_real_master",
+                )
+                st.success("策略资金配额已保存（当前租户），统一下单风控立即生效。")
                 st.rerun()
             except ValueError as exc:
                 st.error(str(exc))

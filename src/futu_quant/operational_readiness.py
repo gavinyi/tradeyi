@@ -394,8 +394,9 @@ def strategy_paper_acceptance(store, strategy_id: str) -> dict:
                       for key, (value, required, passed) in gates.items()}}
 
 
-def dynamic_allocation_plan(store, record: bool = True) -> dict:
-    budgets = store.strategy_risk_budgets()
+def dynamic_allocation_plan(store, record: bool = True, tenant_id: str = "futu_real_master") -> dict:
+    """动态配额建议（预算租户化后按租户读写各自行）。"""
+    budgets = store.strategy_risk_budgets(tenant_id)
     open_incidents = " ".join(item["incident_key"] for item in store.incidents("OPEN"))
     proposed = []
     for row in budgets:
@@ -425,14 +426,19 @@ def dynamic_allocation_plan(store, record: bool = True) -> dict:
     return result
 
 
-def apply_dynamic_allocation(store, plan: dict, actor: str) -> None:
+def apply_dynamic_allocation(
+    store, plan: dict, actor: str, tenant_id: str = "futu_real_master",
+) -> None:
     rows = [{"strategy_id": item["strategy_id"],
              "capital_ratio": item["recommended_capital_ratio"],
              "max_loss_ratio": item["recommended_max_loss_ratio"],
              "option_premium_ratio": item["recommended_option_premium_ratio"],
              "enabled": bool(item["enabled"])} for item in plan["recommendations"]]
-    store.save_strategy_risk_budgets(rows)
-    store.audit("DYNAMIC_ALLOCATION_APPLIED", {"actor": actor, "budgets": rows}, actor="service:allocation")
+    store.save_strategy_risk_budgets(rows, tenant_id=tenant_id)
+    store.audit(
+        "DYNAMIC_ALLOCATION_APPLIED",
+        {"tenant_id": tenant_id, "budgets": rows}, actor="service:allocation",
+    )
 
 
 def operations_report(store) -> dict:
