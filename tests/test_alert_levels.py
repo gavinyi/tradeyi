@@ -76,12 +76,15 @@ def test_aggregation_one_push_per_window_with_count_and_times():
 
 
 def test_aggregation_escalates_past_threshold():
-    """红线 2：1 小时内超 N 次自动升级 P0 单推（恶化不吞）。"""
+    """红线 2：1 小时内超 N 次 → 该条聚合升级 P0 级（同一条消息带恶化提示，
+    推送次数不增加——PRD 2.4-1 与 2.2-2 由同一条消息同时满足）。"""
     agg = P1Aggregator(window_seconds=3600, escalate_count=20)
     states = [agg.observe("TASK_TIMEOUT", "t1", 1700_000_000 + i * 10) for i in range(25)]
     assert not any(s["escalated"] for s in states[:20])
-    assert states[20]["escalated"] and states[24]["escalated"]
-    assert all(s["should_push"] for s in states[20:]), "升级后逐条推送"
+    assert all(s["escalated"] for s in states[20:]), "超阈值后每条都标升级态"
+    assert not any(s["should_push"] for s in states[1:]), "推送次数不因升级增加"
+    summary = P1Aggregator.format_summary("TASK_TIMEOUT", states[20])
+    assert "已超阈值" in summary, "升级条必须带恶化提示"
 
 
 def test_aggregation_is_per_tenant():
@@ -96,7 +99,7 @@ def test_aggregation_is_per_tenant():
 def test_send_p0_pushes_each_time(tmp_path, monkeypatch):
     store = _fresh_store(tmp_path)
     monkeypatch.setattr("futu_quant.alerts.feishu_configured", lambda _s: True)
-    manager = _spy_manager(store)
+    manager, _restore = _spy_manager(store)
     for _ in range(3):
         manager.send("CRITICAL", "LEDGER_MISMATCH", "对账不一致")
     assert manager.pushed.count("LEDGER_MISMATCH") == 3, "P0 必须逐条推送"
@@ -105,12 +108,22 @@ def test_send_p0_pushes_each_time(tmp_path, monkeypatch):
 def test_send_p2_benign_never_pushes(tmp_path, monkeypatch):
     store = _fresh_store(tmp_path)
     monkeypatch.setattr("futu_quant.alerts.feishu_configured", lambda _s: True)
-    manager = _spy_manager(store)
+    manager, _restore = _spy_manager(store)
     manager.send("WARNING", "VOLATILITY_CANDIDATE_FILTERED", "正常拦截", benign=True)
     assert manager.pushed == []
     rows = [row for row in store.alerts(limit=10)
             if row.get("event_type") == "VOLATILITY_CANDIDATE_FILTERED"]
     assert rows, "P2 仍须落库"
+
+
+def test_send_non_whitelisted_error_still_pushes(tmp_path, monkeypatch):
+    """P0-2 契约回归：不在白名单的 ERROR 必须默认推（分级不得吞它）。"""
+    store = _fresh_store(tmp_path)
+    monkeypatch.setattr("futu_quant.alerts.feishu_configured", lambda _s: True)
+    manager, _restore = _spy_manager(store)
+    manager.send("ERROR", "PORTFOLIO_STRESS_BREACH", "组合压力超限")
+    assert manager.pushed == ["PORTFOLIO_STRESS_BREACH"], \
+        "未入白名单 ERROR 必须默认推（P0-2 契约）"
 
 
 def test_mutation_p0_aggregated_must_be_red():
@@ -168,3 +181,22 @@ class _SpyManager(al.AlertManager):
     def _push_feishu(self, severity, event_type, message, tenant_id=None):  # noqa: ANN001
         self.pushed.append(event_type)
         return 1
+
+
+def _spy_manager(store):
+    """spy 替身工厂（真 store + 推送记录；flyso 测试用）。"""
+    import futu_quant.alerts as _al
+
+    original = _al.feishu_configured
+    _al.feishu_configured = lambda _s: True
+    manager = _SpyManager(store)
+
+    class _Restore:
+        def __enter__(self):
+            return manager
+
+        def __exit__(self, *exc):
+            _al.feishu_configured = original
+            return False
+
+    return manager, _Restore()

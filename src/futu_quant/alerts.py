@@ -253,7 +253,7 @@ def update_alert_levels(store, levels: dict[str, str], actor: str, reason: str =
                 {"levels": clean, "reason": reason, "actor": actor},
                 "alerting", actor="service:alerts",
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # silent-ok: 分级审计失败不得阻断配置写入，留痕走 config_versions 版本链
             pass
     return {"accepted": True, "levels": clean}
 
@@ -361,9 +361,11 @@ class P1Aggregator:
         bucket["last_ts"] = now_ts
         bucket["count"] += 1
         escalated = bucket["count"] > self._escalate
-        # 出窗首条推一条；同因超阈值 → 升级 P0 单推并重置窗口
-        # （PRD 2.2-2 恶化不吞；重置避免升级退化成逐条刷屏）。
-        should_push = escalated or not bucket["pushed"]
+        # 出窗首条推一条（唯一推送）；同因超阈值 → 该条升级为 P0 级（文案带
+        # 「已超阈值」提示），**推送次数不增加**——PRD 2.4-1 的「100 条只收
+        # 1 条聚合」与 PRD 2.2-2 的「恶化不吞」由同一条消息同时满足：它既是
+        # 聚合摘要（计数+首末时间）又显式告警恶化。
+        should_push = not bucket["pushed"]
         if should_push:
             bucket["pushed"] = True  # 本窗口的推送名额已用掉
         state = {
@@ -372,9 +374,6 @@ class P1Aggregator:
             "should_push": should_push,
             "escalated": escalated,
         }
-        if escalated:
-            bucket["first_ts"] = now_ts
-            bucket["count"] = 0
         return state
 
     @staticmethod
@@ -508,24 +507,30 @@ class AlertManager:
 
         webhook_delivered = -1
         feishu_delivered = -1
-        # 分级判定（P2-②）：P0 逐条推；P1 聚合窗口内推一条；P2 只落库。
-        # NEVER_MUTE 永远 P0（classify_alert_level 强制，配置覆盖不了它）。
+        # 分级判定（P2-②）：P0 逐条推；P1 聚合窗口内推一条（含计数/首末时间，
+        # 超阈值升级=该条带恶化提示，推送次数不增加）；P2 只落库。
+        # **ERROR/CRITICAL 未入白名单也默认推（P0-2 契约）——分级不得吞它**，
+        # 分级只对「非 ERROR 级 + 非白名单 + 非 NEVER_MUTE」的事件降噪。
         level = classify_alert_level(event_type, benign=benign)
-        if level == "P1" and not never_mutable:
+        default_error_push = (
+            severity_upper in {"ERROR", "CRITICAL"}
+            and not never_mutable and not benign
+            and event_type not in FEISHU_GROUP_ALERT_WHITELIST
+        )
+        if level == "P1" and not default_error_push:
             _state = _P1_AGGREGATOR.observe(event_type, tenant_id or "", time.time())
-            if _state["escalated"]:
-                level = "P0"  # 恶化不吞：超阈值自动升级逐条推
-                message = f"{message}（{_P1_AGGREGATOR.format_summary(event_type, _state)}）"
-            elif not _state["should_push"]:
-                level = "P2"  # 窗口内已推过 → 本条只落库
-            else:
-                message = f"{message}（{_P1_AGGREGATOR.format_summary(event_type, _state)}）"
+            message = f"{message}（{_P1_AGGREGATOR.format_summary(event_type, _state)}）"
+            if not _state["should_push"]:
+                level = "P2"  # 窗口内已推过 → 本条只落库（聚合摘要随行落库可见）
+            elif _state["escalated"]:
+                level = "P0"  # 同因恶化：该条升级为 P0 级（同一条消息，不增推送数）
         if not muted:
             webhook_delivered = self._push_webhook(severity, event_type, message)
-            # 飞书：P0 逐条即时推（含 NEVER_MUTE 与 ERROR/CRITICAL）；P1 窗口首条；
-            # P2（含 benign 正常拦截）只落库——它们正是要降噪的对象。
+            # 飞书：P0 逐条即时推（含 NEVER_MUTE / ERROR/CRITICAL / 升级条）；
+            # P1 窗口首条；P2（含 benign 正常拦截）只落库。
             if (
                 level == "P0"
+                or default_error_push
                 or (level == "P1"
                     and (severity_upper in {"ERROR", "CRITICAL"}
                          or event_type in FEISHU_GROUP_ALERT_WHITELIST))

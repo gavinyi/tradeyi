@@ -151,9 +151,13 @@ def test_no_batch_ack_entry():
     assert not any("batch" in name or "all" in name.lower() and "ack" in name
                    for name in funcs), f"存在批量 ack 形态的函数：{funcs}"
     assert "ack_breaker" in funcs  # 单对象接口存在
-    # 页面也不得出现批量按钮
+    # 页面不得存在批量**动作**入口：禁止「全部确认」按钮字样（说明性文案
+    # 「禁止批量 ack」是 PRD 要求的提示语，不算入口）。
     page = PAGE.read_text(encoding="utf-8")
-    assert "全部确认" not in page and "批量" not in page
+    assert "全部确认" not in page, "页面存在批量确认入口"
+    assert page.count("st.button") >= 1
+    # 唯一 button 就是单个 ack 提交
+    assert "breaker_ack_submit" in page and "批量" not in page.replace("禁止批量 ack", "")
 
 
 # ---------- 页面三要素与确认文案（PRD 1.2/1.3） ----------
@@ -163,8 +167,11 @@ def test_page_has_three_factors_and_confirm_phrase():
     assert "breaker_ack_reason" in page, "理由输入缺失"
     assert 'type="password"' in page, "管理员密码安全输入缺失"
     assert "breaker_ack_confirm" in page, "二次确认缺失"
+    # 确认短语经 CONFIRM_ACK_PHRASE 变量进入页面（单一定义点）——断言
+    # 导入与使用，而非把常量复制进页面（两处定义必然打架）。
     from futu_quant.breaker_ack import CONFIRM_ACK_PHRASE
-    assert CONFIRM_ACK_PHRASE in page, "二次确认必须明写 ack 不改变任何限额"
+    assert "CONFIRM_ACK_PHRASE" in page, "页面必须引用单一定义点的确认短语"
+    assert CONFIRM_ACK_PHRASE == "ack 不改变任何限额与阈值"
 
 
 def test_page_ack_button_disabled_without_reason():
