@@ -109,6 +109,7 @@ navigation = {
         st.Page("pages/45_risk_and_limits.py", title="风险与限额", icon=":material/shield:"),
         st.Page("pages/46_account_and_env.py", title="账户与交易环境", icon=":material/account_balance:"),
         st.Page("pages/47_ops_and_notifications.py", title="通知与运维", icon=":material/campaign:"),
+        st.Page("pages/49_limit_map.py", title="限额地图", icon=":material/map:"),
     ],
 }
 if os.getenv("ENABLE_CRYPTO_MODULE", "false").lower() == "true":
