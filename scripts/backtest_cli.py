@@ -77,6 +77,7 @@ def run_backtest(args: argparse.Namespace) -> int:
     # 无价格依据的信号计入 L3 占比（不编造）。
     trades = []
     skipped_l3 = 0
+    match_errors = 0  # 撮合故障计数（含 ValueError 形态，见下方判据）
     for event in result.replayed_events:
         premium = (event.payload.get("regime") or {}).get("expected_premium")
         quote = bt_matcher.PriceQuote(
@@ -84,10 +85,21 @@ def run_backtest(args: argparse.Namespace) -> int:
             recorded_premium=float(premium) if premium else None,
             tier="L2" if premium else "L3",
         )
+        # 「无价格依据」的**唯一合法形态**：tier=L3（payload/盘口均无价格依据）
+        # 且 match_trade 以 ValueError 拒造——此时 L3 计数是数据缺口如实记录。
+        # 其余任何异常（含非 L3 语义的 ValueError，如撮合层故障恒抛）都是
+        # **故障不是缺数据**：match_errors 计数并取消豁免资格（Reviewer
+        # 2026-11-07 实跑验证：只按异常类型区分会被 ValueError 变异绕过）。
+        no_basis = quote.tier == "L3"
         try:
             trades.append(bt_matcher.match_trade(event, quote, slippage_ticks=args.slippage))
-        except ValueError:
-            skipped_l3 += 1  # L3 拒造数，仅计数进占比
+        except ValueError as exc:
+            if no_basis:
+                skipped_l3 += 1  # L3 拒造数，仅计数进占比（数据缺口）
+            else:
+                match_errors += 1  # 有价格依据却撮合失败 = 故障
+        except Exception:
+            match_errors += 1  # 非 ValueError 异常一律故障
     shares = bt_matcher.tier_shares(trades)
     total_signals = len(trades) + skipped_l3
     if total_signals:
@@ -97,8 +109,10 @@ def run_backtest(args: argparse.Namespace) -> int:
         }
 
     # 对账（L-B）：与实际成交账本逐笔对照（两租户合并读，报告按窗口过滤）。
-    # 数据可得性边界（2026-11-07 裁定）：撮合层产不出任何模拟成交（L3 100%
-    # 历史窗口形态）→ 实际成交落 no_price_basis 独立档，不算 backtest_bug。
+    # 数据可得性边界（2026-11-07 裁定 + 收官回归修正）：豁免**只对数据真空期**
+    # 生效——撮合层产不出任何模拟成交且**无撮合异常**（L3 100% 历史窗口形态）；
+    # match_errors>0 说明撮合层本身故障，豁免资格取消 → backtest_bug 照常判红
+    # （PRD 硬门槛 5：报告不是摆设，撮合故障必须转红）。
     fills = []
     for tenant in ("futu_real_master", "futu_paper_sandbox"):
         fills.extend(
@@ -111,7 +125,16 @@ def run_backtest(args: argparse.Namespace) -> int:
     from futu_quant.signal_backtest.ledger import (
         decision_agreement, equity_curve, reconcile,
     )
-    simulated_fill_available = bool(trades)  # 撮合层一单未出 = 无价格依据窗口
+    # 豁免判据（组合态，Reviewer 2026-11-07 实跑验证后定案）：
+    # **唯一可豁免形态（真空数据期）**= replayed 为空 **或** 窗口内无实际成交
+    # ——没有对照内容，谈不上「对不上」。
+    # **故障态**（replayed 非空 + 实际成交存在 + 零撮合产出 + 无异常计数）强制
+    # available=True → 进对账落 backtest_bug：有 BUY 决策、有实际成交，撮合却
+    # 一单未出且无 L3 以外解释——无论异常类型（ValueError 变异会被 L3 计数吞掉，
+    # 故 match_errors 判据不够，必须按组合态判），报告不是摆设（PRD 硬门槛 5）。
+    simulated_fill_available = (
+        bool(result.replayed_events) and bool(fills)
+    )
     reconcile_report = reconcile(trades, fills,
                                  simulated_fill_available=simulated_fill_available)
     curve = equity_curve(trades, fee_per_trade_fn=bt_matcher.fee_per_trade)

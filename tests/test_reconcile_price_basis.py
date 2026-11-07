@@ -92,16 +92,37 @@ def test_price_ratio_only_over_eligible_rows():
 # ---------- 数据可得性守卫（纪律③：有价可撮却落 no_price_basis → 红） ----------
 
 def test_availability_guard_contradiction_is_explicit():
-    """撮合层有产出（trades 非空）时 simulated_fill_available 必为 True——
-    CLI 接线断言：available = bool(trades)，两者矛盾形态不可能出现。"""
+    """CLI 可得性判定必须是组合态（replayed×fills），绑定对照内容两侧。"""
     from pathlib import Path
     from futu_quant.signal_backtest import ledger as lb
 
     src = (Path(__file__).resolve().parents[1] / "scripts" / "backtest_cli.py"
            ).read_text(encoding="utf-8")
-    assert "simulated_fill_available = bool(trades)" in src, \
-        "CLI 可得性判定必须直接绑定撮合产出（有 trade 就有对照集，矛盾不可达）"
+    assert "bool(result.replayed_events) and bool(fills)" in src, \
+        "CLI 可得性判定必须组合态绑定（replayed 与 fills 两侧对照内容）"
     assert lb.REASON_NO_SIMULATED_FILL in lb.ALL_REASONS
+
+
+def test_match_error_cancels_exemption():
+    """回归守卫（Tester 2026-11-07 收官全量实证）：撮合层故障不得被豁免吞掉。
+
+    最终形态（Reviewer 组合态判据）：豁免唯一条件 = replayed 空或 fills 空
+    （真空数据期）；「replayed 非空 + 实际成交存在 + 零撮合产出」无论异常
+    类型一律 available=True → backtest_bug（PRD 硬门槛 5）。AST 钉死
+    available 判据必须同时看 replayed 与 fills（组合态），不许退回单看
+    bool(trades)（那正是被变异绕过的旧形态）。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "backtest_cli.py"
+           ).read_text(encoding="utf-8")
+    assert "simulated_fill_available = (" in src
+    assert "bool(result.replayed_events) and bool(fills)" in src, \
+        "豁免判据必须是组合态（replayed×fills），禁退回 bool(trades) 单条件"
+    assert "except ValueError:" in src
+    assert "match_errors += 1" in src
+    # 异常计数分支先于 available 判定执行
+    assert src.index("match_errors += 1") < src.index("simulated_fill_available =")
 
 
 # ---------- B1 决策结论对照 ----------
