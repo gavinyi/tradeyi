@@ -97,12 +97,17 @@ def test_aggregation_is_per_tenant():
 # ---------- send() 分级接线 ----------
 
 def test_send_p0_pushes_each_time(tmp_path, monkeypatch):
+    """P0/NEVER_MUTE 档必须逐条推（聚合只管 P1 档）。
+
+    消息内容带序号：真 store 的同文去重（ALERT_DEDUPE_SECONDS）是既有正确
+    行为，本守卫验证的是「分级不吞 P0」，不是去重——两者不能混测。
+    """
     store = _fresh_store(tmp_path)
     monkeypatch.setattr("futu_quant.alerts.feishu_configured", lambda _s: True)
     manager, _restore = _spy_manager(store)
-    for _ in range(3):
-        manager.send("CRITICAL", "LEDGER_MISMATCH", "对账不一致")
-    assert manager.pushed.count("LEDGER_MISMATCH") == 3, "P0 必须逐条推送"
+    for index in range(3):
+        manager.send("CRITICAL", "LEDGER_MISMATCH", f"对账不一致 #{index}")
+    assert manager.pushed.count("LEDGER_MISMATCH") == 3, "P0 必须逐条推送（聚合不得触碰 P0 档）"
 
 
 def test_send_p2_benign_never_pushes(tmp_path, monkeypatch):
