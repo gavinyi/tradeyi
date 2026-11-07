@@ -125,17 +125,32 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
         #    一条一存）——存档上线后历史 BUY 的权威重放依据；
         # 2) 存档缺失退回单槽键 `volatility_activation_evidence:<symbol>`（只留
         #    最近一次，只能对齐「证据尚存」的窗口）；
-        # 3) 两级都缺失（存档功能上线前的历史窗口，归因报告主因）→ **decision_logs
-        #    直读复验**：BUY 决策行本身是生产在判定时刻写下的原始结论，带当时
-        #    payload 顶层指标（zscore/move/profile）。直读该行 + payload 自洽性
-        #    校验（zscore/move 与触发依据齐备且非空）= 第三级权威取证——不是
-        #    「放宽容差」，而是把「当时判定的原始记录」作为对齐依据本身。
+        # 3) 两级都缺失 **且 payload 未声明 trace_id**（存档功能上线前的历史窗口，
+        #    归因报告主因）→ **decision_logs 直读复验**：BUY 决策行本身是生产在
+        #    判定时刻写下的原始结论，带当时 payload 顶层指标（zscore/move/profile）。
+        #    直读该行 + payload 自洽性校验（zscore/move 齐备非空）= 第三级取证。
+        # **fail-closed 边界（Tester 2026-11-07 实证抓出的洗绿缺口）**：payload
+        # 声明了 trace_id 却查不到存档 → 证据声明与实存不一致，记 mismatch
+        # （证据缺失），**直读级不得越权兜底**——否则「存档说不该开仓」的 BUY
+        # 会被原始行洗绿（历史教训复发形态）。
         # 三级全 miss → 记 mismatch（真数据缺口，fail-closed）。
         trace_id = str(event.payload.get("activation_trace_id") or "")
         evidence: dict = {}
         if trace_id:
             evidence = load_activation_evidence_archive(store, trace_id) or {}
-        if not evidence:
+            if not evidence:
+                # 第一级落空但 trace_id 已声明：先试单槽，仍无 → fail-closed，
+                # 直读级不越权（见上方边界注释）。
+                evidence_raw = store.get_setting(
+                    f"volatility_activation_evidence:{event.symbol}", "",
+                )
+                if evidence_raw:
+                    try:
+                        parsed = json.loads(evidence_raw)
+                        evidence = parsed if isinstance(parsed, dict) else {}
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        evidence = {}
+        else:
             evidence_raw = store.get_setting(
                 f"volatility_activation_evidence:{event.symbol}", "",
             )
@@ -145,8 +160,11 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
                     evidence = parsed if isinstance(parsed, dict) else {}
                 except (TypeError, ValueError, json.JSONDecodeError):
                     evidence = {}
-        if not evidence and event.strategy_id == SCANNER_STRATEGY:
-            # 第三级：decision_logs 直读复验（存档上线前历史窗口的唯一依据）。
+        if (not evidence and not trace_id
+                and event.strategy_id == SCANNER_STRATEGY):
+            # 第三级：decision_logs 直读复验——**只对未声明 trace_id 的历史 BUY**
+            # （存档功能上线前窗口）生效；声明了 trace_id 的 BUY 证据缺失必须
+            # 走 mismatch，不洗绿。
             # BUY 行 payload 顶层触发依据齐备 = 生产当时判定自洽，直接对齐。
             regime = event.payload.get("regime") or {}
             zscore = event.payload.get("zscore_20d", regime.get("zscore_20d"))

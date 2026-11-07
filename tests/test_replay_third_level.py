@@ -38,10 +38,13 @@ class FakeStore:
         self.settings[key] = value
 
 
-def _row(symbol, created, *, zscore=2.6, move=0.05, regime=None):
+def _row(symbol, created, *, zscore=2.6, move=0.05, regime=None,
+         payload_overrides: dict | None = None):
     payload = {"activation_trace_id": ""} if regime is None else {"regime": regime}
     if regime is None:
         payload.update({"zscore_20d": zscore, "intraday_return": move})
+    if payload_overrides:
+        payload.update(payload_overrides)
     return {
         "strategy_id": "volatility_scanner", "symbol": symbol, "decision": "BUY",
         "created_at": created, "tenant_id": "t1",
@@ -83,8 +86,15 @@ def test_third_level_requires_trigger_evidence_fail_closed():
 
 
 def test_archive_level_still_wins_over_direct_read():
-    """存档在 → 仍走第一级（权威证据复验，直读只是兜底不覆盖它）。"""
-    store = FakeStore([_row("US.AMD", "2026-11-05T14:00:00+00:00")])
+    """存档在 → 仍走第一级（权威证据复验，直读只是兜底不覆盖它）。
+
+    正确形态：BUY 行声明 trace_id，存档按该 trace_id 落键且 active=False ——
+    第一级必须以其为准判 threshold_recalc_differs，直读级不得洗绿。
+    """
+    store = FakeStore([
+        _row("US.AMD", "2026-11-05T14:00:00+00:00",
+             payload_overrides={"activation_trace_id": "radar-REAL:US.AMD"}),
+    ])
     from futu_quant.volatility_activation import (
         build_activation_evidence, save_activation_evidence_archive,
     )
@@ -94,11 +104,23 @@ def test_archive_level_still_wins_over_direct_read():
                    "volume_confirmed": False, "direction_gate": False},
         {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
         observed_at=datetime(2026, 11, 5, 14, 0, tzinfo=timezone.utc),
-        trace_id="",
+        trace_id="radar-REAL:US.AMD",
     ))
     result = bt_replay.replay_signals(store, *WINDOW, {})
     # 存档说 active=False → threshold_recalc_differs（直读级不会把它洗成 aligned）
     assert result.mismatch_reasons().get("threshold_recalc_differs") == 1
+
+
+def test_declared_trace_id_without_archive_is_fail_closed():
+    """fail-closed 边界（Tester 2026-11-07 实证缺口）：payload 声明了 trace_id
+    但存档查不到 → 证据缺失记 mismatch，直读级不得越权兜底洗绿。"""
+    store = FakeStore([
+        _row("US.LOST", "2026-11-05T14:00:00+00:00",
+             payload_overrides={"activation_trace_id": "radar-GONE:US.LOST"}),
+    ])
+    result = bt_replay.replay_signals(store, *WINDOW, {})
+    assert not result.aligned
+    assert result.mismatch_reasons().get("activation_evidence_missing") == 1
 
 
 def test_window_query_efficiency_no_full_scan():
