@@ -6,7 +6,7 @@
 - Tab B「调参会不会变好」：基准 vs 候选；**自校验未过时禁用**（拿不可信结果
   做决策是 PRD 红线）；
 - 参数全部预填默认值，什么都不改点一下就能跑；
-- 全程只读（TradingStore(read_only=True)），不占实盘行情接口。
+- 全程只读（open_trading_store(read_only=True)），不占实盘行情接口。
 
 注意：本页是 `scripts/backtest_cli.py` 的 UI 壳，核心判定全部复用
 `futu_quant.signal_backtest`——页面不重复实现判定逻辑。
@@ -19,12 +19,10 @@ import pandas as pd
 import streamlit as st
 
 from futu_quant.config import Settings
-from futu_quant.signal_backtest import ledger as bt_ledger
-from futu_quant.signal_backtest import matcher as bt_matcher
 from futu_quant.signal_backtest import replay as bt_replay
-from futu_quant.store import TradingStore
 from futu_quant.ui import (
     china_time_columns,
+    open_trading_store,
     render_sidebar,
     render_sidebar_tenant_switcher,
 )
@@ -81,7 +79,7 @@ if not submitted:
     st.info("预填默认参数（近 30 天窗口），直接点「跑回测」即可。")
     st.stop()
 
-store = TradingStore(read_only=True)
+store = open_trading_store(read_only=True)
 config = {"thresholds": {"entry_zscore": float(entry_z), "minimum_underlying_move": float(minimum_move)}}
 
 # 结果落盘可回看（Product 条件②）：每次运行写到 data/backtests/<label>/，

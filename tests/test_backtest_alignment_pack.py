@@ -56,8 +56,8 @@ def test_archive_saved_per_trace_id_on_active_round(tmp_path):
     save_activation_evidence_archive(store, first)
     save_activation_evidence_archive(store, second)
     # 两条 trace 各自可取（不覆盖）——这正是单槽键做不到的
-    assert load_activation_evidence_archive(store, "radar-T1:US.NVDA")["trace_id"].endswith("T1")
-    assert load_activation_evidence_archive(store, "radar-T2:US.NVDA")["trace_id"].endswith("T2")
+    assert load_activation_evidence_archive(store, "radar-T1:US.NVDA")["trace_id"] == "radar-T1:US.NVDA"
+    assert load_activation_evidence_archive(store, "radar-T2:US.NVDA")["trace_id"] == "radar-T2:US.NVDA"
 
 
 def test_archive_prefix_is_dedicated_key():
@@ -175,8 +175,9 @@ def test_tab_b_disabled_on_real_mismatch(tmp_path):
 def test_tab_b_disabled_on_forged_alignment_ratio():
     """伪造对齐率 <100%（直接构造 ReplayResult 篡改）→ aligned 必须为 False。"""
     forged = bt_replay.ReplayResult()
-    forged.actual_events = [type(bt_replay.SignalEvent)(
-        "2026-11-01T14:00:00+00:00", "US.X", "BUY", "t1", {}, "volatility_scanner",
+    forged.actual_events = [bt_replay.SignalEvent(
+        created_at="2026-11-01T14:00:00+00:00", symbol="US.X", decision="BUY",
+        tenant_id="t1", payload={}, strategy_id="volatility_scanner",
     )]
     forged.replayed_events = []  # 宣称对齐了却拿不出重放事件
     assert forged.aligned is True  # 构造基线：空 mismatches 才算对齐
