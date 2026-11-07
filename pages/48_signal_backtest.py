@@ -22,15 +22,17 @@ from futu_quant.config import Settings
 from futu_quant.signal_backtest import replay as bt_replay
 from futu_quant.ui import (
     china_time_columns,
+    get_current_tenant,
     open_trading_store,
     render_sidebar,
-    render_sidebar_tenant_switcher,
 )
 
 settings = Settings.load_cached()
 broker = None  # 回测全程只读，不需要 broker
 render_sidebar(settings)
-_current_tenant = render_sidebar_tenant_switcher(settings)
+# 只读读取当前租户（get_current_tenant 不注册 widget）：租户切换器由全局侧边栏
+# 唯一渲染——本页不得再渲染第二个切换 widget（2026-11-07 用户实测 DuplicateElementKey 炸页）。
+_current_tenant = get_current_tenant(settings)
 _tenant_id = str(_current_tenant.get("tenant_id") or "")
 
 st.title("信号回测")

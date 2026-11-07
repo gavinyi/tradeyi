@@ -102,6 +102,32 @@ def test_page_summary_fields_complete():
         assert field in source, f"summary.json 缺字段 {field}"
 
 
+def test_page_never_renders_tenant_switcher():
+    """租户切换器是全局侧边栏的唯一 widget：页面只许 get_current_tenant 只读。
+
+    回归锚（2026-11-07 用户实测）：页 48 调 render_sidebar_tenant_switcher
+    → StreamlitDuplicateElementKey key='sidebar_active_tenant_id' → 页面打不开。
+    """
+    source = _page_source()
+    assert "render_sidebar_tenant_switcher" not in source, \
+        "页面不得重复渲染全局租户切换器（DuplicateElementKey 炸页）"
+    assert "get_current_tenant" in source, "页面必须只读读取当前租户"
+
+
+def test_tenant_switcher_rendered_only_by_global_sidebar():
+    """全仓守卫：render_sidebar_tenant_switcher 只允许 app.py（全局侧边栏）调用。
+
+    任何 pages/*.py 出现该调用 → 必红（DuplicateElementKey 级缺陷，炸整个页面）。
+    """
+    offenders = []
+    for page in (ROOT / "pages").glob("*.py"):
+        if "render_sidebar_tenant_switcher(" in page.read_text(encoding="utf-8"):
+            offenders.append(page.name)
+    assert not offenders, (
+        f"以下页面重复渲染全局租户切换器（必炸 DuplicateElementKey）：{offenders}"
+    )
+
+
 def test_mutation_dropping_persist_must_be_red():
     """变异：摘掉落盘 write_text → 落盘守卫必红。"""
     import shutil
