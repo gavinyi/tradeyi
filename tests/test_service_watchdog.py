@@ -10,11 +10,14 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import re
+import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_service_alive.py"
+AUDIT = Path(__file__).resolve().parents[1] / "scripts" / "scheduled_log_audit.py"
 
 
 def _load():
@@ -216,3 +219,155 @@ def test_docstring_is_raw_string_for_windows_paths():
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert source.startswith('r"""'), "模块 docstring 应为 raw string，避免 \\T 这类转义告警"
+
+
+# ============================================================================
+# PRD 包1 差量守卫（2026-11-07，wt-watchdog）：分级推送 / 双闸自动重启 /
+# 看门狗自身心跳（红线 2）/ 只碰 stop 文件（红线 1）
+# ============================================================================
+
+def test_classify_levels_prd_thresholds():
+    module = _load()
+    assert module.HEARTBEAT_WARN_PUSH_MINUTES == 15.0
+    assert module.HEARTBEAT_CRITICAL_MINUTES == 30.0
+    # 心跳新鲜 → 无分级；≥15<30 WARNING；≥30 CRITICAL；读不到 CRITICAL
+    assert module.classify_heartbeat_levels({"t1": 3.0}) == []
+    kinds = {t: sev for t, sev in module.classify_heartbeat_levels(
+        {"a": 16.0, "b": 45.0, "c": None})}
+    assert kinds == {"a": "WARNING", "b": "CRITICAL", "c": "CRITICAL"}
+
+
+def test_classification_is_heartbeat_age_not_cpu_time():
+    """PRD 1.4：判据是「心跳是否更新」。心跳刚更新（哪怕任务跑了很久）→ 零分级。"""
+    module = _load()
+    assert module.classify_heartbeat_levels({"t1": 1.0}) == []
+
+
+def test_auto_restart_requires_command_line_gate():
+    """双闸之一：--auto-restart 未传 → 不读配置、不动作。"""
+    module = _load()
+
+    class Boom:
+        def connection(self):
+            raise AssertionError("命令行闸未开就不得读 runtime_config")
+
+    original_argv = sys.argv
+    try:
+        sys.argv = ["check_service_alive.py"]
+        note = module._auto_restart(Boom(), [])
+        assert "不动作" in note
+    finally:
+        sys.argv = original_argv
+
+
+def test_auto_restart_config_default_off():
+    module = _load()
+
+    class FakeStore:
+        def __init__(self, row):
+            self._row = row
+
+        def connection(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, *_a, **_k):
+            class R:
+                def fetchone(self_inner):
+                    return self._row
+            return R()
+
+    import json as _json
+    assert module._auto_restart_enabled(FakeStore(None)) is False
+    assert module._auto_restart_enabled(
+        FakeStore({"value_json": _json.dumps({"value": "false"})})) is False
+    assert module._auto_restart_enabled(
+        FakeStore({"value_json": _json.dumps({"value": "true"})})) is True
+
+
+def test_auto_restart_only_touches_stop_files():
+    """红线 1：重启动作 = 只写既有 stop 文件；不得出现任何下单/账本/配置触碰点。"""
+    source = SCRIPT.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_auto_restart")
+    seg = ast.get_source_segment(source, fn)
+    assert "write_text" in seg, "重启动作必须只经 stop 文件写入"
+    for banned in ("place_limit_order", "cancel_order", "set_virtual", "upsert_campaign",
+                   "submit_limit", "INSERT INTO order", "INSERT INTO fill",
+                   "INSERT INTO virtual"):
+        assert banned not in seg, f"看门狗出现了被禁触碰点：{banned}"
+    assert module_stop_files() == (
+        "tenant-worker-supervisor.stop", "trading-service.stop",
+    )
+
+
+def module_stop_files():
+    return _load().AUTO_RESTART_STOP_FILES
+
+
+def test_watchdog_self_heartbeat_wired():
+    """红线 2：看门狗每次运行必须上报自身心跳（只 upsert 自己那一行）。"""
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert 'WATCHDOG_SELF_HEARTBEAT_ID = "service_watchdog"' in source
+    assert "_watchdog_self_heartbeat(" in source, "main 必须调用自身心跳上报"
+    tree = ast.parse(source)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_watchdog_self_heartbeat")
+    seg = ast.get_source_segment(source, fn)
+    assert "heartbeat(" in seg and "WATCHDOG_SELF_HEARTBEAT_ID" in seg
+
+
+def test_watchdog_touches_only_its_own_heartbeat_row():
+    """红线 1+2 交叉：自身心跳函数里不得出现其他写路径。"""
+    source = SCRIPT.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_watchdog_self_heartbeat")
+    seg = ast.get_source_segment(source, fn)
+    for banned in ("set_setting", "operational_event", "decision(", "INSERT INTO"):
+        assert banned not in seg, f"自身心跳函数出现越权写：{banned}"
+
+
+def test_ops_audit_watches_the_watcher():
+    """谁看着看门狗：Ops 30 分钟巡检必须读 service_watchdog 心跳并告警。"""
+    source = AUDIT.read_text(encoding="utf-8")
+    assert 'heartbeat_status("service_watchdog")' in source, "巡检未接看门狗存活检查"
+    assert "30.0" in source, "巡检必须有 30 分钟停滞阈值"
+    assert "外部看门狗失联" in source, "失联告警文案必须存在"
+
+
+def test_mutation_dropping_age_classification_must_be_red():
+    """变异：分级判定被摘成恒空 → 守卫必红。"""
+    import shutil
+    import subprocess
+
+    original = SCRIPT.read_text(encoding="utf-8")
+    anchor = "    kinds = {tenant: sev for tenant, sev in levels}"
+    if anchor not in original:
+        anchor = "    levels: list[tuple[str, str]] = []\n"
+    assert anchor in original, "分级函数锚点丢失"
+    mutated = original.replace(
+        anchor,
+        "    levels: list[tuple[str, str]] = []\n    return levels\n    if False:\n        " + anchor,
+        1,
+    )
+    assert mutated != original
+    try:
+        SCRIPT.write_text(mutated, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             f"{Path(__file__)}::test_classify_levels_prd_thresholds",
+             "--capture=no"],
+            capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[1]),
+        )
+        assert result.returncode != 0, "分级判定被摘掉后守卫仍绿——分级推送可静默失效"
+    finally:
+        SCRIPT.write_text(original, encoding="utf-8")
+        shutil.rmtree(Path(__file__).resolve().parents[1] / ".pytest_cache",
+                      ignore_errors=True)
