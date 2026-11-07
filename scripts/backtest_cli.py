@@ -96,7 +96,9 @@ def run_backtest(args: argparse.Namespace) -> int:
             for tier, count in {**shares, "L3": skipped_l3}.items()
         }
 
-    # 对账（L-B）：与实际成交账本逐笔对照（两租户合并读，报告按窗口过滤）
+    # 对账（L-B）：与实际成交账本逐笔对照（两租户合并读，报告按窗口过滤）。
+    # 数据可得性边界（2026-11-07 裁定）：撮合层产不出任何模拟成交（L3 100%
+    # 历史窗口形态）→ 实际成交落 no_price_basis 独立档，不算 backtest_bug。
     fills = []
     for tenant in ("futu_real_master", "futu_paper_sandbox"):
         fills.extend(
@@ -106,9 +108,26 @@ def run_backtest(args: argparse.Namespace) -> int:
             }
             for row in store.fill_ledger_rows(tenant_id=tenant)
         )
-    from futu_quant.signal_backtest.ledger import reconcile, equity_curve  # 局部导入保持启动轻
-    reconcile_report = reconcile(trades, fills)
+    from futu_quant.signal_backtest.ledger import (
+        decision_agreement, equity_curve, reconcile,
+    )
+    simulated_fill_available = bool(trades)  # 撮合层一单未出 = 无价格依据窗口
+    reconcile_report = reconcile(trades, fills,
+                                 simulated_fill_available=simulated_fill_available)
     curve = equity_curve(trades, fee_per_trade_fn=bt_matcher.fee_per_trade)
+
+    # B1 决策结论对照（PRD §2 L-B 第一子项，无需价格数据）：重放放行 vs
+    # 实际下单意图同向率——「为什么没成交」第一层数据，历史窗口现在就能算。
+    intents = []
+    for tenant in ("futu_real_master", "futu_paper_sandbox"):
+        getter = getattr(store, "order_intents", None)
+        if getter is None:
+            break
+        for row in getter(tenant_id=tenant):
+            created = str(row.get("created_at") or "")
+            if args.window_start <= created <= args.window_end:
+                intents.append(row)
+    agreement = decision_agreement(result.replayed_events, intents)
 
     header = (
         f"- **数据区间**: {args.window_start} → {args.window_end}\n"
@@ -130,8 +149,20 @@ def run_backtest(args: argparse.Namespace) -> int:
         f"- 信号对齐率：{result.alignment_ratio:.2%}"
         f"（实际 {len(result.actual_events)} / 重放 {len(result.replayed_events)}"
         f" / 差异 {len(result.mismatches)}）——判据 100%（PRD L-A）",
-        f"- 成交对账率：{reconcile_report.reconcile_ratio:.2%}"
-        f"（对照 {len(reconcile_report.rows)} 笔，目标 ≥90%）",
+        # B1 三行判据（Product 2026-11-07）：方向分开看，不能只看同向率
+        f"- **B1 · actual_only**：{agreement['actual_only_count']} 条"
+        f"（实际下单、回放未放行——致命方向，必须≈0："
+        f"{'✅ 达标' if agreement['actual_only_count'] == 0 else '❌ 回放判据比生产宽松，不得收官'}）",
+        f"- **B1 · replay_only**：{agreement['replay_only_count']} 条"
+        f"（回放放行、实际未下单——「为什么没成交」答案，初步归因分布见明细）",
+        f"- **B1 · 未归因**：{agreement['unattributed_count']} 条"
+        f"（{'✅ 0 条' if agreement['unattributed_count'] == 0 else '❌ 归不了的差异 = 回放器漏判，不得收官'}）",
+        f"- B1 同向率（参考）：{agreement['agreement_ratio']:.2%}"
+        f"（重放放行 {len(result.replayed_events)} 笔中 {agreement['both_count']} 笔有对应实际下单意图）",
+        f"- 成交价格对照：{f'{reconcile_report.price_reconcile_ratio:.2%}' if reconcile_report.price_reconcile_ratio is not None else '**不适用**'}"
+        f"（{f'对照 {len(reconcile_report.price_comparison_eligible_rows())} 笔' if reconcile_report.price_reconcile_ratio is not None else '本区间无价格依据（no_price_basis），不进对账率——禁止读作「对账通过」'}）",
+        f"- no_price_basis 档：{reconcile_report.no_price_basis_count} 笔"
+        f"（v2 盘口 11-06 起积累，历史窗口无价格依据，随 v2 积累后自动启用）",
         f"- 差异原因分布：{json.dumps(reconcile_report.reason_distribution(), ensure_ascii=False)}",
         f"- **backtest_bug 占比 >0 整体标红**："
         f"{'❌ 有' if reconcile_report.has_backtest_bug else '✅ 无'}",
