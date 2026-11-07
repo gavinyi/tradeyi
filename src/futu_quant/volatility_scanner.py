@@ -751,7 +751,7 @@ def _maybe_create_tenant_campaign(
             "WARNING", "VOLATILITY_CANDIDATE_FILTERED",
             f"{symbol} 触发 BUY 但候选全部被入场过滤器拒绝（非故障）：{roll_reason}（trace_id={trace_id}）",
             incident_key=f"volatility-candidate-filtered:{tenant_id}:{symbol}",
-            tenant_id=tenant_id,
+            tenant_id=tenant_id, benign=True,
         )
         store.set_setting(rejection_key, fingerprint)
 

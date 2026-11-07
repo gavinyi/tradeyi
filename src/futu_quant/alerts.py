@@ -127,6 +127,137 @@ def is_never_mutable(event_type: str) -> bool:
     return event_type in ALERT_NEVER_MUTE or event_type.startswith(ALERT_NEVER_MUTE_PREFIXES)
 
 
+#: 「正常拦截」类事件（复盘文案三项之一，2026-11-07 用户拍板）：按设计拒绝、
+#: 非故障——统一加【正常拦截】前缀且不推飞书群（落库可见），与真故障分开，
+#: 消除「系统坏了」和「今天不买」的告警疲劳。**只允许经 mark_benign 标注**，
+#: 禁止在各调用点手写前缀（口径集中一处，防两处默认值打架）。
+BENIGN_PREFIX = "【正常拦截】"
+
+
+def mark_benign(message: str) -> str:
+    """给正常拦截类告警文案加统一前缀（幂等：重复调用不叠前缀）。"""
+    text = str(message)
+    return text if text.startswith(BENIGN_PREFIX) else f"{BENIGN_PREFIX}{text}"
+
+
+# ============================================================================
+# 告警分级推送（P2-②，2026-11-07，PRD prd_p2_batch_20261107.md §2）
+# 分级判据**不是技术严重性**，是「这条消息需不需要人立刻动手」：
+#   P0 立即——真金敞口/风控门禁/对账不匹配/急停/确认码/限额异常/下单失败：
+#       逐条即时推，不聚合、不可静默；
+#   P1 聚合——同因同租户反复出现（筛空/限流类）：每小时最多一条，带计数与首末时间；
+#   P2 落库——正常拦截/信息类：只在库与页面可见。
+# 防漏报三红线（PRD 2.2）：ALERT_NEVER_MUTE 永远 P0（配置成 P1/P2 → 必红）；
+#   聚合必须带计数与首末时间，1 小时内同因超 ESCALATE_COUNT 自动升级 P0 单推；
+#   降级必须走配置变更留审计（update_alert_levels，复用 mutate_runtime_config）。
+# ============================================================================
+
+#: 分级清单存放键（配置变更留审计的通道）。
+ALERT_LEVELS_KEY = "alert_levels"
+#: P1 聚合窗口（秒）与升级阈值（PRD 2.2-2，建议 N=20）。
+P1_AGGREGATION_WINDOW_SECONDS = 3600
+P1_ESCALATE_COUNT = 20
+
+#: P0 默认清单 = 不可静音清单 + 白名单的真金/门禁类 + 显式枚举的即时类。
+#: **只增不减**：任何出现在 ALERT_NEVER_MUTE 的事件天然 P0（classify 强制）。
+P0_EVENT_TYPES = frozenset({
+    "DAILY_LOSS_KILL_SWITCH", "KILL_SWITCH_ENGAGED", "LEDGER_MISMATCH",
+    "RISK_REJECTED", "REAL_TRADE_REJECTED", "ORDER_ENV_MISMATCH",
+    "HARD_STOP_LIMIT_INVALID", "VOLATILITY_STOP_LIMIT_MISSING",
+    "VOLATILITY_STOP_LIMIT_INVALID", "COMBO_LEGGING_EXPOSURE",
+    "STRATEGY_INTERRUPTED_WITH_OPEN_OPTIONS", "OPTION_LIFECYCLE_RISK",
+    "OPEND_DISCONNECTED", "ALERT_DELIVERY_FAILED", "ALERT_CHANNEL_NOT_CONFIGURED",
+    "SERVICE_CYCLE_ERROR", "PROCESS_TERMINATED", "PROCESS_HEARTBEAT_TIMEOUT",
+})
+
+#: P1 默认清单（同因同租户聚合）：反复出现的观测类/筛空类。
+P1_EVENT_TYPES = frozenset({
+    "VOLATILITY_CAPACITY_BUYOUT_FREQUENT", "PAPER_DAILY_LOSS_WARN",
+    "TASK_TIMEOUT", "OPEND_UNAVAILABLE", "RESEARCH_BACKFILL_FALLBACK",
+})
+
+
+def classify_alert_level(event_type: str, *, benign: bool = False) -> str:
+    """返回 "P0" / "P1" / "P2"（配置可降级 P1→P2，但 NEVER_MUTE 永远 P0，红线 1）。"""
+    name = str(event_type or "")
+    if is_never_mutable(name) or name in P0_EVENT_TYPES:
+        return "P0"
+    if benign or name in BENIGN_EVENT_TYPES:
+        return "P2"
+    levels = _configured_levels()
+    if name in levels:
+        return str(levels[name])
+    if name in P1_EVENT_TYPES:
+        return "P1"
+    return "P2"
+
+
+#: 默认 P2（正常拦截/信息类）——与 mark_benign 的调用点同源。
+BENIGN_EVENT_TYPES = frozenset({
+    "VOLATILITY_CANDIDATE_FILTERED", "ML_SCORING_MODE_INFO",
+})
+
+#: 运行期配置的分级覆盖（update_alert_levels 写入后由 load_alert_levels 读回注入）。
+_CONFIGURED_LEVELS_CACHE: dict[str, str] = {}
+
+
+def _configured_levels() -> dict[str, str]:
+    return dict(_CONFIGURED_LEVELS_CACHE)
+
+
+def load_alert_levels(store) -> dict[str, str]:
+    """从 runtime_config 读分级覆盖并注入运行期缓存（非法值拒绝：只认 P0/P1/P2）。"""
+    raw = ""
+    try:
+        raw = store.get_setting(ALERT_LEVELS_KEY, "")
+    except Exception:  # noqa: BLE001 - 读不到按默认分级，不阻断告警
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    valid = {}
+    for event_type, level in payload.items():
+        if str(level) in {"P0", "P1", "P2"} and isinstance(event_type, str):
+            valid[str(event_type)] = str(level)
+    _CONFIGURED_LEVELS_CACHE.clear()
+    _CONFIGURED_LEVELS_CACHE.update(valid)
+    return dict(valid)
+
+
+def update_alert_levels(store, levels: dict[str, str], actor: str, reason: str = "") -> dict:
+    """降级/升级登记（PRD 2.2-3：配置变更留审计，禁止代码静默降级）。
+
+    NEVER_MUTE 事件配成 P1/P2 → 整体拒绝（红线 1：分级不得覆盖不可静音）。
+    """
+    rejected: dict[str, str] = {}
+    clean: dict[str, str] = {}
+    for event_type, level in dict(levels).items():
+        if str(level) not in {"P0", "P1", "P2"}:
+            rejected[event_type] = f"非法级别 {level}"
+        elif is_never_mutable(str(event_type)) and str(level) != "P0":
+            rejected[event_type] = "不可静音事件必须保持 P0"
+        else:
+            clean[str(event_type)] = str(level)
+    if rejected:
+        return {"accepted": False, "rejected": rejected}
+    store.mutate_runtime_config(
+        ALERT_LEVELS_KEY, [], lambda _current: json.dumps(clean, sort_keys=True), actor,
+    )
+    if reason:
+        try:
+            store.audit(
+                "ALERT_LEVELS_UPDATED",
+                {"levels": clean, "reason": reason, "actor": actor},
+                "alerting", actor="service:alerts",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return {"accepted": True, "levels": clean}
+
+
 def parse_mute_list(raw) -> tuple[set[str], list[str]]:
     """解析静音清单，返回 ``(生效项, 被拒绝项)``。
 
@@ -206,6 +337,57 @@ def update_mute_list(
         except Exception:  # noqa: BLE001 - 留痕失败不能阻断配置写入
             pass  # silent-ok: 静音清单审计失败不得阻断配置写入
     return accepted, []
+
+
+class P1Aggregator:
+    """同因同租户小时聚合（PRD 2.2-2）：窗口内只出一条，带计数与首末时间。
+
+    纯内存态（进程内聚合足够：告警发出方就是本进程）。超阈值自动升级 P0 单推。
+    """
+
+    def __init__(self, window_seconds: int = 3600, escalate_count: int = 20):
+        self._window = int(window_seconds)
+        self._escalate = int(escalate_count)
+        self._buckets: dict[tuple[str, str], dict] = {}
+
+    def observe(self, event_type: str, tenant_id: str, now_ts: float) -> dict:
+        """记录一次出现；返回本窗口聚合态（含是否应推送/是否升级）。"""
+        key = (str(event_type), str(tenant_id or ""))
+        bucket = self._buckets.get(key)
+        if bucket is None or now_ts - bucket["first_ts"] > self._window:
+            bucket = {"first_ts": now_ts, "last_ts": now_ts, "count": 0,
+                      "pushed": False}
+            self._buckets[key] = bucket
+        bucket["last_ts"] = now_ts
+        bucket["count"] += 1
+        escalated = bucket["count"] > self._escalate
+        # 出窗首条推一条；同因超阈值 → 升级 P0 单推并重置窗口
+        # （PRD 2.2-2 恶化不吞；重置避免升级退化成逐条刷屏）。
+        should_push = escalated or not bucket["pushed"]
+        if should_push:
+            bucket["pushed"] = True  # 本窗口的推送名额已用掉
+        state = {
+            "count": bucket["count"],
+            "first_ts": bucket["first_ts"], "last_ts": bucket["last_ts"],
+            "should_push": should_push,
+            "escalated": escalated,
+        }
+        if escalated:
+            bucket["first_ts"] = now_ts
+            bucket["count"] = 0
+        return state
+
+    @staticmethod
+    def format_summary(event_type: str, state: dict) -> str:
+        """聚合条目文案（必须带计数与首末时间——PRD 2.2-2，守卫钉死）。"""
+        from datetime import datetime
+        first = datetime.fromtimestamp(state["first_ts"]).strftime("%H:%M")
+        last = datetime.fromtimestamp(state["last_ts"]).strftime("%H:%M")
+        return (f"{event_type}：本窗口 {state['count']} 次（首次 {first}，最近 {last}）"
+                + ("——已超阈值，升级为逐条推送" if state["escalated"] else ""))
+
+
+_P1_AGGREGATOR = P1Aggregator()
 
 
 class AlertManager:
@@ -303,8 +485,12 @@ class AlertManager:
 
     def send(
         self, severity: str, event_type: str, message: str, incident_key: str | None = None,
-        tenant_id: str | None = None,
+        tenant_id: str | None = None, benign: bool = False,
     ) -> None:
+        if benign:
+            # 正常拦截（按设计拒绝、非故障）：统一前缀 + 不推飞书群（落库可见）。
+            # 白名单/ERROR 默认推送对 benign 事件不生效——它们正是要降噪的对象。
+            message = mark_benign(message)
         severity_upper = severity.upper()
         if severity_upper in {"ERROR", "CRITICAL"}:
             # 原实现在此处对「事故已 OPEN 且不在白名单」直接 return —— 那个分支让事件
@@ -322,14 +508,27 @@ class AlertManager:
 
         webhook_delivered = -1
         feishu_delivered = -1
+        # 分级判定（P2-②）：P0 逐条推；P1 聚合窗口内推一条；P2 只落库。
+        # NEVER_MUTE 永远 P0（classify_alert_level 强制，配置覆盖不了它）。
+        level = classify_alert_level(event_type, benign=benign)
+        if level == "P1" and not never_mutable:
+            _state = _P1_AGGREGATOR.observe(event_type, tenant_id or "", time.time())
+            if _state["escalated"]:
+                level = "P0"  # 恶化不吞：超阈值自动升级逐条推
+                message = f"{message}（{_P1_AGGREGATOR.format_summary(event_type, _state)}）"
+            elif not _state["should_push"]:
+                level = "P2"  # 窗口内已推过 → 本条只落库
+            else:
+                message = f"{message}（{_P1_AGGREGATOR.format_summary(event_type, _state)}）"
         if not muted:
             webhook_delivered = self._push_webhook(severity, event_type, message)
-            # 飞书：**ERROR 及以上默认推**（本次要修的核心 —— ERROR 过去默认不推群），
-            # 同时保留白名单，因为 `PAPER_DAILY_LOSS_WARN` 这类 WARNING 是刻意要人看见的。
+            # 飞书：P0 逐条即时推（含 NEVER_MUTE 与 ERROR/CRITICAL）；P1 窗口首条；
+            # P2（含 benign 正常拦截）只落库——它们正是要降噪的对象。
             if (
-                never_mutable
-                or severity_upper in {"ERROR", "CRITICAL"}
-                or event_type in FEISHU_GROUP_ALERT_WHITELIST
+                level == "P0"
+                or (level == "P1"
+                    and (severity_upper in {"ERROR", "CRITICAL"}
+                         or event_type in FEISHU_GROUP_ALERT_WHITELIST))
             ):
                 feishu_delivered = self._push_feishu(
                     severity, event_type, message, tenant_id=tenant_id,

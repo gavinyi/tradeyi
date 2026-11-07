@@ -130,8 +130,8 @@ with st.container(horizontal=True):
     st.metric("版本漂移", int(control["version_drift"].sum()), border=True)
     st.metric("全局策略状态", "已暂停" if strategies_paused == "true" else "运行", border=True)
 
-service_tab, overview_tab, budget_tab, attribution_tab, experiment_tab, protocol_tab = st.tabs(
-    ["服务控制", "策略调度", "策略资金", "收益归因", "实验版本", "插件协议"]
+service_tab, breaker_tab, overview_tab, budget_tab, attribution_tab, experiment_tab, protocol_tab = st.tabs(
+    ["服务控制", "熔断确认(ack)", "策略调度", "策略资金", "收益归因", "实验版本", "插件协议"]
 )
 
 with service_tab:
@@ -299,6 +299,78 @@ with service_tab:
             "只剩订单对账与风控引擎仍在跑。**该开关只作用于当前租户，不影响其他租户。**"
             "若只想停开新仓、保留已有持仓的退出管理，请改用波动率策略页的「暂停新开仓」开关。"
         )
+
+with breaker_tab:
+    # 熔断确认（ack）—— 红区（PRD prd_p2_batch_20261107.md §1）：
+    # ack 只表示「人已看过报警并决定继续」，不是解除熔断/放宽阈值。
+    from futu_quant.alerts import AlertManager
+    from futu_quant.breaker_ack import (
+        CONFIRM_ACK_PHRASE, AckRequest, BreakerAckLog, ack_breaker,
+    )
+
+    st.subheader("熔断确认（ack）")
+    st.warning(
+        "**ack 只表示「我看了、我决定继续」**——不解除熔断、不重置回撤、不放宽任何阈值。"
+        f"二次确认文案：{CONFIRM_ACK_PHRASE}。禁止批量 ack；ack 只对当次触发有效。",
+        icon=":material/gpp_maybe:",
+    )
+    _ack_tenant = str(tenant_id or "")
+    _ack_log = BreakerAckLog(store, _ack_tenant)
+    _open_incidents = [
+        row for row in (store.incidents() if hasattr(store, "incidents") else [])
+        if str(row.get("status") or "").upper() == "OPEN"
+    ]
+    if not _open_incidents:
+        st.success("当前租户无 OPEN 状态熔断/事故——无需 ack。")
+    else:
+        _choices = {
+            f"{row.get('incident_key')}（{str(row.get('created_at') or '')[:19]}）": row
+            for row in _open_incidents
+        }
+        _selected_label = st.selectbox("选择要确认的熔断（一次只能一个）", options=sorted(_choices))
+        _incident = _choices[_selected_label]
+        _incident_key = str(_incident.get("incident_key") or "")
+        _incident_version = str(_incident.get("created_at") or "")
+        st.markdown(f"**触发原因**：{_incident.get('message') or '（无明细）'}")
+        st.caption(
+            f"影响面：该熔断当前拦截相关策略的新开仓/对应操作；"
+            f"确认前建议先核对持仓浮亏与当日回撤。"
+        )
+        _ack_reason = st.text_area(
+            "确认理由（必填，≥10 字，落审计）",
+            key="breaker_ack_reason", height=80,
+        )
+        _ack_password = st.text_input(
+            "管理员密码", type="password", key="breaker_ack_password",
+        )
+        _ack_confirmed = st.checkbox(
+            f"我已二次确认：{CONFIRM_ACK_PHRASE}", key="breaker_ack_confirm",
+        )
+        if st.button(
+            "确认（ack）",
+            key="breaker_ack_submit", type="primary",
+            disabled=(len(_ack_reason.strip()) < 10 or not _ack_confirmed or not _ack_password),
+        ):
+            try:
+                entry = ack_breaker(
+                    store, AlertManager(store),
+                    AckRequest(
+                        tenant_id=_ack_tenant, incident_key=_incident_key,
+                        incident_version=_incident_version, reason=_ack_reason,
+                        admin_password=_ack_password, confirmed=_ack_confirmed,
+                    ),
+                    incident_open=True,
+                    context={"severity": _incident.get("severity"), "message": _incident.get("message")},
+                )
+                st.success(f"ack 已记录（{entry['acked_at'][:19]}），审计含理由与事故版本。")
+            except PermissionError as exc:
+                st.error(f"ack 被拒绝：{exc}")
+    with st.expander("ack 历史记录（append-only，可追溯）"):
+        _entries = _ack_log.entries()
+        if _entries:
+            st.dataframe(pd.DataFrame(_entries[::-1]), hide_index=True)
+        else:
+            st.caption("当前租户暂无 ack 记录。")
 
 with overview_tab:
     st.info(
