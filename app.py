@@ -83,6 +83,7 @@ navigation = {
         st.Page("pages/16_options_combo_execution.py", title="期权组合执行", icon=":material/schema:"),
         st.Page("pages/13_options_data_backtest.py", title="期权数据回测", icon=":material/analytics:"),
         st.Page("pages/48_signal_backtest.py", title="信号回测", icon=":material/backup:"),
+        st.Page("pages/49_limit_map.py", title="限额地图", icon=":material/map:"),
     ],
     "风控与审批": [
         st.Page("pages/7_risk_center.py", title="风控中心", icon=":material/shield:"),
@@ -109,6 +110,7 @@ navigation = {
         st.Page("pages/45_risk_and_limits.py", title="风险与限额", icon=":material/shield:"),
         st.Page("pages/46_account_and_env.py", title="账户与交易环境", icon=":material/account_balance:"),
         st.Page("pages/47_ops_and_notifications.py", title="通知与运维", icon=":material/campaign:"),
+        st.Page("pages/49_limit_map.py", title="限额地图", icon=":material/map:"),
     ],
 }
 if os.getenv("ENABLE_CRYPTO_MODULE", "false").lower() == "true":
