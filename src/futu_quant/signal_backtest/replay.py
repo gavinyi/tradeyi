@@ -136,30 +136,36 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
         # 三级全 miss → 记 mismatch（真数据缺口，fail-closed）。
         trace_id = str(event.payload.get("activation_trace_id") or "")
         evidence: dict = {}
+
+        def _single_slot() -> dict:
+            """读单槽键；**stale 残留不冒充本触发证据**（Ops 2026-11-07 生产复测
+            实锤的最后一个真缺陷）：单槽只留每标的最近一次证据，历史 BUY 的
+            trace_id 指向更早的触发——单槽内 trace_id 与 BUY 声明不一致即视为
+            miss（过期证据冒充会把 1,059 条历史 BUY 误判 threshold_recalc_differs）。
+            存档反证守卫不受影响：第一级按 trace_id 精确命中仍以存档为准。"""
+            raw = store.get_setting(
+                f"volatility_activation_evidence:{event.symbol}", "",
+            )
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+            if not isinstance(parsed, dict):
+                return {}
+            slot_trace = str(parsed.get("trace_id") or "").strip()
+            if trace_id and slot_trace != trace_id.strip():
+                return {}  # stale 残留：精确全等比较（Reviewer 口径①，禁前缀/包含），
+                # 不参与比对，落入直读级（payload 自洽）
+            return parsed
+
         if trace_id:
             evidence = load_activation_evidence_archive(store, trace_id) or {}
             if not evidence:
-                # 第一级落空但 trace_id 已声明：先试单槽，仍无 → fail-closed，
-                # 直读级不越权（见上方边界注释）。
-                evidence_raw = store.get_setting(
-                    f"volatility_activation_evidence:{event.symbol}", "",
-                )
-                if evidence_raw:
-                    try:
-                        parsed = json.loads(evidence_raw)
-                        evidence = parsed if isinstance(parsed, dict) else {}
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        evidence = {}
+                evidence = _single_slot()
         else:
-            evidence_raw = store.get_setting(
-                f"volatility_activation_evidence:{event.symbol}", "",
-            )
-            if evidence_raw:
-                try:
-                    parsed = json.loads(evidence_raw)
-                    evidence = parsed if isinstance(parsed, dict) else {}
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    evidence = {}
+            evidence = _single_slot()
         if (not evidence and event.strategy_id == SCANNER_STRATEGY):
             # 第三级：decision_logs 直读复验——两类形态均适用（2026-11-07 生产复测
             # 拍板放宽，Ops 归因：窗口 1,211 条 BUY 全部声明 trace_id 但存档键
