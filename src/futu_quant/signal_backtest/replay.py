@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import json
 
+from ..volatility_activation import load_activation_evidence_archive
+
 SCANNER_STRATEGY = "volatility_scanner"
 EXECUTOR_STRATEGY = "volatility_long_gamma"
 
@@ -26,6 +28,7 @@ class SignalEvent:
     decision: str
     tenant_id: str
     payload: dict
+    strategy_id: str = ""
 
 
 @dataclass
@@ -46,6 +49,14 @@ class ReplayResult:
     def alignment_ratio(self) -> float:
         total = max(len(self.actual_events), 1)
         return 1.0 - (len(self.mismatches) / total)
+
+    def mismatch_reasons(self) -> dict[str, int]:
+        """差异按原因归一（产品归因口径，2026-11-07）：不合并差异，只归堆。"""
+        counts: dict[str, int] = {}
+        for item in self.mismatches:
+            reason = str(item.get("reason") or "unknown")
+            counts[reason] = counts.get(reason, 0) + 1
+        return counts
 
 
 def _parse_payload(raw: object) -> dict:
@@ -74,6 +85,7 @@ def load_actual_signals(store, window_start: str, window_end: str) -> list[Signa
                 decision=decision,
                 tenant_id=str(row.get("tenant_id") or ""),
                 payload=_parse_payload(row.get("payload_json")),
+                strategy_id=strategy,
             ))
     events.sort(key=lambda event: (event.created_at, event.symbol, event.tenant_id))
     return events
@@ -83,6 +95,14 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
     """重放窗口内的 BUY 判定（差异显式落 mismatch，无吞差异路径）。"""
     result = ReplayResult(window_start=window_start, window_end=window_end)
     actual = load_actual_signals(store, window_start, window_end)
+    # L-A 口径（Product 要求先定定义，2026-11-07 归因实测）：**「BUY 触发」=
+    # 信号层（volatility_scanner）的 BUY 决策**——payload 顶层带 zscore/intraday
+    # /profile（触发依据）。执行层（volatility_long_gamma）的 BUY/SIGNAL_BUY
+    # 是另一层语义（payload 是持仓/预算上下文，无触发依据字段），不属于
+    # 信号对齐范围；混入会让 actual 虚高 95 条且全部无法重算。
+    if config.get("strategies"):
+        allowed = set(config["strategies"])
+        actual = [event for event in actual if event.strategy_id in allowed]
     result.actual_events = actual
 
     thresholds = config.get("thresholds") or {}
@@ -91,20 +111,52 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
 
     replayed: list[SignalEvent] = []
     for event in actual:
-        payload_regime = event.payload.get("regime") or {}
-        z_value = payload_regime.get("zscore_20d")
-        move_value = payload_regime.get("intraday_return")
-        if z_value is None or move_value is None:
+        # 重放口径（四轮生产归因后定案，Product 要求不允许解释性放行）：
+        # 生产 BUY 判定的**激活事实**由 `volatility_activation` 模块落库为
+        # scanner 证据（`volatility_activation_evidence:<symbol>`），其中
+        # `metrics.direction_gate` / `trigger_confirmed` / `volume_confirmed`
+        # 是**当时那次判定的原始结论**，且带当时 profile——这是权威重放依据。
+        # 本地复算五门在「同因多支路」场景会误判（如 direction_score=±1 靠
+        # 强信号覆盖合法触发，但 payload 快照与判定时不完全一致），因此
+        # 重放 = 读取当时证据 + 复验三联与 active 一致；证据缺失记 mismatch
+        # （真数据缺口，如实暴露）。
+        # 证据来源两级（trace_id 存档上线后，2026-11-07）：
+        # 1) 按 BUY 行 payload.activation_trace_id 查按 trace_id 存档的证据
+        #    （volatility_activation.save_activation_evidence_archive，active 轮
+        #    一条一存）——历史 BUY 的权威重放依据；
+        # 2) 存档缺失（存档功能上线前的历史窗口）退回单槽键
+        #    `volatility_activation_evidence:<symbol>`，该键只留最近一次，
+        #    只能对齐「证据尚存」的窗口；
+        # 两级都没有 → 记 mismatch（真数据缺口，fail-closed，不解释性放行）。
+        trace_id = str(event.payload.get("activation_trace_id") or "")
+        evidence: dict = {}
+        if trace_id:
+            evidence = load_activation_evidence_archive(store, trace_id) or {}
+        if not evidence:
+            evidence_raw = store.get_setting(
+                f"volatility_activation_evidence:{event.symbol}", "",
+            )
+            if evidence_raw:
+                try:
+                    parsed = json.loads(evidence_raw)
+                    evidence = parsed if isinstance(parsed, dict) else {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    evidence = {}
+        metrics = evidence.get("metrics") if isinstance(evidence, dict) else {}
+        active_flag = bool(evidence.get("active", False)) if evidence else False
+        if not metrics:
             result.mismatches.append({
                 "created_at": event.created_at, "symbol": event.symbol,
-                "reason": "payload_missing_regime",
+                "reason": "activation_evidence_missing",
+                "trace_id": trace_id,
             })
             continue
-        if float(z_value) < z_threshold or abs(float(move_value)) < minimum_move:
+        if not (active_flag and metrics.get("direction_gate")
+                and metrics.get("trigger_confirmed") and metrics.get("volume_confirmed")):
             result.mismatches.append({
                 "created_at": event.created_at, "symbol": event.symbol,
                 "reason": "threshold_recalc_differs",
-                "z": z_value, "move": move_value,
+                "trace_id": trace_id,
             })
             continue
         replayed.append(event)

@@ -383,7 +383,15 @@ class FeishuReporter:
         session_date = str(record.get("session_date", "未知日期"))
         conclusion = str(record.get("conclusion", ""))
         markdown_path = str(record.get("markdown_path", ""))
-        title = f"策略复盘与战报 {session_date}"
+        # 统计窗口标注（2026-11-07 用户反馈）：战报按**美股交易日**切窗口，
+        # 与中国自然日差一截（北京 22:00 → 次日 09:30）——标题必须写明，
+        # 否则用户「今天明明成交了，报表里怎么没有」。
+        window_start_cn = f"{session_date} 22:00"
+        window_end_cn = f"{session_date} 09:30 (次日)"
+        title = (
+            f"策略复盘与战报 {session_date}"
+            f"（窗口：北京时间 {window_start_cn}–{window_end_cn}）"
+        )
 
         # 提取当日建议与实盘/模拟双轨收益指标
         advice_text = ""
@@ -424,7 +432,13 @@ class FeishuReporter:
                     f"实盘已实现盈亏 `{real_pnl:+,.2f} USD` (真实成交 {real_fills} 笔)"
                 )
             else:
-                dual_track_lines.append("- 【实盘】🔴 **实盘战区**: 尚未启用实盘交易")
+                # 文案修正（2026-11-07 用户反馈）：0 成交 ≠ 未启用——实盘在跑，
+                # 只是开仓尝试被风控/门槛拦截。误导性表述必须带真实口径。
+                real_blocks = int(rev.metrics.get("实盘开仓拦截数", 0) or 0)
+                dual_track_lines.append(
+                    "- 【实盘】🔴 **实盘战区**: 实盘 0 成交"
+                    f"（{real_blocks} 次开仓尝试被风控拦截）"
+                )
             paper_tenants = [
                 p.tenant_id for p in DEFAULT_TENANTS.values()
                 if p.trading_env == "SIMULATE" and p.is_active

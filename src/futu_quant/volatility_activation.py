@@ -51,6 +51,35 @@ def save_activation_evidence(store, evidence: dict[str, Any]) -> None:
     )
 
 
+# 按 trace_id 存档（回测 L-A 对齐前置，2026-11-07）：单槽键 `evidence_key` 是
+# 覆盖型——每标的只留最近一次，历史 BUY 无法对到当次证据。存档键按 trace_id
+# 一条一存，**只在 active 触发轮写入**（量小且恰是重放需要的），不覆盖不清理。
+ARCHIVE_KEY_PREFIX = "volatility_activation_evidence_archive"
+
+
+def archive_key(trace_id: str) -> str:
+    return f"{ARCHIVE_KEY_PREFIX}:{trace_id}"
+
+
+def save_activation_evidence_archive(store, evidence: dict[str, Any]) -> None:
+    """把当轮证据按 trace_id 存档，供回放按 `payload.activation_trace_id` 复验。"""
+    store.set_setting(
+        archive_key(str(evidence["trace_id"])),
+        json.dumps(evidence, ensure_ascii=False, sort_keys=True),
+    )
+
+
+def load_activation_evidence_archive(store, trace_id: str) -> dict[str, Any] | None:
+    raw = store.get_setting(archive_key(str(trace_id)), "")
+    if not raw:
+        return None
+    try:
+        evidence = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return evidence if isinstance(evidence, dict) else None
+
+
 def load_activation_evidence(
     store,
     symbol: str,

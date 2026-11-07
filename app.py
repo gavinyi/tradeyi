@@ -82,6 +82,7 @@ navigation = {
         st.Page("pages/28_options_pnl_ledger.py", title="期权盈亏台账", icon=":material/price_check:"),
         st.Page("pages/16_options_combo_execution.py", title="期权组合执行", icon=":material/schema:"),
         st.Page("pages/13_options_data_backtest.py", title="期权数据回测", icon=":material/analytics:"),
+        st.Page("pages/48_signal_backtest.py", title="信号回测", icon=":material/backup:"),
     ],
     "风控与审批": [
         st.Page("pages/7_risk_center.py", title="风控中心", icon=":material/shield:"),
