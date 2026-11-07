@@ -10466,6 +10466,36 @@
     "surface": "primary"
   },
   {
+    "key": "notification.alert_levels",
+    "aliases": [
+      "alert_levels"
+    ],
+    "category": "⑪ 通知与可观测性",
+    "title": "告警分级推送配置",
+    "description": "告警分级覆盖（P0立即/P1聚合/P2落库；不可静音事件强制P0，降级须留审计）",
+    "value_type": "json",
+    "default": {},
+    "scope": "global",
+    "storage": "runtime_config",
+    "risk_level": "MEDIUM",
+    "editable": true,
+    "requires_admin": true,
+    "requires_confirmation": false,
+    "activation": "immediate",
+    "consumers": [
+      "alerts.AlertManager"
+    ],
+    "tags": [
+      "告警",
+      "通知",
+      "分级",
+      "飞书"
+    ],
+    "runtime_key": "alert_levels",
+    "user_area": "ops_notify",
+    "surface": "primary"
+  },
+  {
     "key": "notification.daily_review_im_pending",
     "aliases": [
       "DAILY_STRATEGY_REVIEW_IM_PENDING"

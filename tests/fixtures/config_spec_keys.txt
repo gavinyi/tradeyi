@@ -280,6 +280,7 @@ ml.model.path
 ml.threshold
 ml.weight
 notification.alert_mute_list
+notification.alert_levels
 notification.daily_review_im_pending
 okx.api.key
 okx.base.url

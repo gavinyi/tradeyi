@@ -85,7 +85,8 @@ def test_mutation_dropping_one_tenant_arg_must_be_red():
 
     module = ROOT / "src/futu_quant/volatility_scanner.py"
     original = module.read_text(encoding="utf-8")
-    anchor = 'incident_key=f"volatility-candidate-filtered:{tenant_id}:{symbol}",\n            tenant_id=tenant_id,\n        )'
+    anchor = ('incident_key=f"volatility-candidate-filtered:{tenant_id}:{symbol}",\n'
+              '            tenant_id=tenant_id, benign=True,\n        )')
     assert anchor in original, "tenant_id 实参锚点丢失，无法构造变异"
     mutated = original.replace(anchor, 'incident_key=f"volatility-candidate-filtered:{tenant_id}:{symbol}",\n        )')
     try:
