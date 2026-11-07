@@ -160,12 +160,16 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
                     evidence = parsed if isinstance(parsed, dict) else {}
                 except (TypeError, ValueError, json.JSONDecodeError):
                     evidence = {}
-        if (not evidence and not trace_id
-                and event.strategy_id == SCANNER_STRATEGY):
-            # 第三级：decision_logs 直读复验——**只对未声明 trace_id 的历史 BUY**
-            # （存档功能上线前窗口）生效；声明了 trace_id 的 BUY 证据缺失必须
-            # 走 mismatch，不洗绿。
-            # BUY 行 payload 顶层触发依据齐备 = 生产当时判定自洽，直接对齐。
+        if (not evidence and event.strategy_id == SCANNER_STRATEGY):
+            # 第三级：decision_logs 直读复验——两类形态均适用（2026-11-07 生产复测
+            # 拍板放宽，Ops 归因：窗口 1,211 条 BUY 全部声明 trace_id 但存档键
+            # 从未存在——「声明即悬空」，直读级是唯一能对齐它们的取证）：
+            # a) 未声明 trace_id 的历史 BUY（存档功能上线前窗口）；
+            # b) 声明了 trace_id 但存档与单槽均 miss 的悬空声明行——payload 自洽
+            #    性校验（触发依据齐备非空）本身就是独立取证，与洗绿缺口（存在
+            #    反向证据却被忽略）本质不同：这里是**无任何证据时的原始判定行**。
+            # 直读命中的对齐按第三级口径落 result（供分档统计）；复验不过仍记
+            # mismatch，不放宽判据。
             regime = event.payload.get("regime") or {}
             zscore = event.payload.get("zscore_20d", regime.get("zscore_20d"))
             move = event.payload.get("intraday_return", regime.get("intraday_return"))
@@ -179,6 +183,15 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
                         "zscore_20d": zscore, "intraday_return": move,
                     },
                 }
+            elif trace_id:
+                # 声明了 trace_id 且 payload 也无自洽依据 → 取证链彻底断，
+                # 归因档位区分「声明悬空」（数据缺口）便于分档统计。
+                result.mismatches.append({
+                    "created_at": event.created_at, "symbol": event.symbol,
+                    "reason": "activation_evidence_missing",
+                    "trace_id": trace_id, "dangling_declaration": True,
+                })
+                continue
         metrics = evidence.get("metrics") if isinstance(evidence, dict) else {}
         active_flag = bool(evidence.get("active", False)) if evidence else False
         if not metrics:
