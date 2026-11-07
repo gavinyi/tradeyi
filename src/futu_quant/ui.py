@@ -451,6 +451,41 @@ def get_tenant_broker(settings=None):
     )
 
 
+def _reconciliation_banner_rows(
+    flags: dict[str, str], *, tenant_id: str | None, account_id: str | None,
+) -> list[str]:
+    """对账横幅的**纯判定**（可独立测试，2026-11-07 假横幅修复）。
+
+    生产事故：全库标志无一 true，横幅却弹——旧实现用 `settings_with_prefix`
+    只拿键名列表做租户过滤，**值判定被键名推导挤掉**。本函数契约：
+    - 只认 `value` 显式为 `"true"` 的键（false/空/缺失一律不算）；
+    - 策略暂停键需带当前租户或账户前缀（或无前缀全局键）；
+    - 返回人话明细行；空列表 = 不弹横幅。
+    """
+    rows: list[str] = []
+
+    def _flag_true(key: str) -> bool:
+        return str(flags.get(key, "")).strip().lower() == "true"
+
+    for key in (f"recovery_blocked:{account_id}" if account_id else None,
+                f"recovery_blocked:{tenant_id}" if tenant_id else None,
+                "recovery_blocked"):
+        if key and _flag_true(key):
+            rows.append("存在被阻断的标的（恢复阻断标志已置位），策略暂不新增仓位。")
+            break
+
+    disabled = sorted({
+        key.split(":")[-1]
+        for key, value in flags.items()
+        if key.startswith("strategy_reconciliation_disabled")
+        and str(value).strip().lower() == "true"
+        and (not tenant_id or tenant_id in key or not account_id or str(account_id) in key)
+    })
+    if disabled:
+        rows.append(f"当前租户策略 [{'、'.join(disabled)}] 存在持仓差异已被暂停！")
+    return rows
+
+
 def render_sidebar(settings=None) -> str:
     """Render shared environment information and top sidebar tenant switcher."""
     st.markdown(MOBILE_RESPONSIVE_CSS, unsafe_allow_html=True)
@@ -464,24 +499,22 @@ def render_sidebar(settings=None) -> str:
         tid = current_tenant.get("tenant_id") or current_tenant.get("id")
         acc = current_tenant.get("acc_id")
 
-        has_blocked_symbol = any(
-            str(store.get_setting(k, "")).lower() == "true"
-            for k in [f"recovery_blocked:{acc}", f"recovery_blocked:{tid}", "recovery_blocked"]
+        flags = dict(store.settings_with_prefix("recovery_blocked"))
+        flags.update(store.settings_with_prefix("strategy_reconciliation_disabled"))
+        banner_rows = _reconciliation_banner_rows(
+            flags, tenant_id=tid, account_id=acc,
         )
-        # 同一策略可能同时存在多种前缀变体（如 20170229: 与 futu_paper_sandbox:），
-        # 按策略名去重后再展示，避免同一名重复出现。
-        disabled_strats = list(dict.fromkeys(
-            k.split(":")[-1] for k in store.settings_with_prefix("strategy_reconciliation_disabled")
-            if str(store.get_setting(k, "")).lower() == "true" and (not tid or tid in k or not acc or str(acc) in k)
-        ))
-        if has_blocked_symbol or disabled_strats:
-            if disabled_strats:
-                strat_txt = f"[{'、'.join(disabled_strats)}]"
+        if banner_rows:
+            if any("持仓差异" in row for row in banner_rows):
+                disabled = [
+                    token for row in banner_rows
+                    for token in row.replace("[", "").replace("]", "").split()
+                    if any(ch.isalpha() or ch == "_" for ch in token)
+                ]
+                strat_txt = f"[{'、'.join(disabled)}]" if disabled else ""
                 msg = (f"🚨 **对账异常警示**：当前租户策略 {strat_txt} 存在持仓差异已被暂停！"
                        "请前往风控与对账中心核查平账。")
             else:
-                # 只有标的级/全局阻断、没有具体策略被暂停时，不弹空横幅，
-                # 改为明确的「存在阻断标的」文案，避免用户看到一句没有信息量的话。
                 msg = ("🚨 **对账异常警示**：当前租户存在被阻断的标的（恢复阻断标志已置位），"
                        "策略暂不新增仓位。请前往风控与对账中心核查平账。")
             st.sidebar.error(msg)

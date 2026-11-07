@@ -20,6 +20,26 @@ def _store(tmp_path) -> TradingStore:
     return TradingStore(tmp_path / "bt.db", bootstrap=True)
 
 
+def _seed_active_evidence(store, symbol: str, trace_id: str) -> None:
+    """按 trace_id 存档一份 active 证据（2026-11-07 新口径：replay 只认证据，
+    缺失即 fail-closed mismatch——测试种子必须与生产写入方同构）。"""
+    from datetime import datetime, timezone
+
+    from futu_quant.volatility_activation import (
+        build_activation_evidence, save_activation_evidence_archive,
+    )
+
+    evidence = build_activation_evidence(
+        symbol,
+        {"active": True, "reason": "达到动态波动监测条件", "trigger_confirmed": True,
+         "volume_confirmed": True, "direction_gate": True},
+        {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
+        observed_at=datetime(2026, 11, 6, 14, 0, tzinfo=timezone.utc),
+        trace_id=trace_id,
+    )
+    save_activation_evidence_archive(store, evidence)
+
+
 def _seed_decision(store, symbol: str, created: str, *, z: float, move: float,
                    decision: str = "BUY", tenant: str = "futu_real_master",
                    payload: dict | None = None) -> None:
@@ -45,10 +65,15 @@ def _seed_decision(store, symbol: str, created: str, *, z: float, move: float,
 def test_replay_aligns_actual_and_replayed_events(tmp_path):
     """L-A 对齐：窗口内 BUY 逐条复现，无 payload 缺失即零 mismatch。"""
     store = _store(tmp_path)
-    _seed_decision(store, "US.AMD", "2026-11-06T14:00:00+00:00", z=2.5, move=0.05)
-    _seed_decision(store, "US.QQQ", "2026-11-06T15:00:00+00:00", z=2.4, move=0.04)
+    _seed_decision(store, "US.AMD", "2026-11-06T14:00:00+00:00", z=2.5, move=0.05,
+                   payload={"zscore_20d": 2.5, "activation_trace_id": "radar-AMD"})
+    _seed_decision(store, "US.QQQ", "2026-11-06T15:00:00+00:00", z=2.4, move=0.04,
+                   payload={"zscore_20d": 2.4, "activation_trace_id": "radar-QQQ"})
     _seed_decision(store, "US.NVDA", "2026-11-06T16:00:00+00:00", z=2.2, move=0.01,
                    decision="HOLD")  # 非 BUY，不进对齐集
+    # 两级取证口径：BUY 行的 trace_id 必须能查到按 trace_id 存档的 active 证据
+    _seed_active_evidence(store, "US.AMD", "radar-AMD")
+    _seed_active_evidence(store, "US.QQQ", "radar-QQQ")
 
     result = bt_replay.replay_signals(
         store, WINDOW_START, WINDOW_END,
@@ -61,9 +86,28 @@ def test_replay_aligns_actual_and_replayed_events(tmp_path):
 
 
 def test_replay_flags_threshold_recalc_difference(tmp_path):
-    """阈值重算不一致 → 必须显式 mismatch（回放器不吞差异）。"""
+    """阈值重算不一致 → 必须显式 mismatch（回放器不吞差异）。
+
+    种子带 trace_id 存档证据但 active=False（激活不成立）——按 2026-11-07
+    两级取证口径，证据在但三联/active 不一致归 `threshold_recalc_differs`；
+    证据完全缺失归 `activation_evidence_missing`，两因不得互相覆盖。
+    """
     store = _store(tmp_path)
-    _seed_decision(store, "US.AMD", "2026-11-06T14:00:00+00:00", z=2.0, move=0.03)
+    _seed_decision(store, "US.AMD", "2026-11-06T14:00:00+00:00", z=2.0, move=0.03,
+                   payload={"zscore_20d": 2.0, "activation_trace_id": "radar-INACTIVE"})
+    from datetime import datetime, timezone
+
+    from futu_quant.volatility_activation import (
+        build_activation_evidence, save_activation_evidence_archive,
+    )
+    save_activation_evidence_archive(store, build_activation_evidence(
+        "US.AMD",
+        {"active": False, "reason": "未达动态波动监测条件", "trigger_confirmed": False,
+         "volume_confirmed": False, "direction_gate": False},
+        {"entry_zscore": 2.0, "minimum_underlying_move": 0.02},
+        observed_at=datetime(2026, 11, 6, 14, 0, tzinfo=timezone.utc),
+        trace_id="radar-INACTIVE",
+    ))
     result = bt_replay.replay_signals(
         store, WINDOW_START, WINDOW_END,
         {"thresholds": {"entry_zscore": 2.3, "minimum_underlying_move": 0.02}},

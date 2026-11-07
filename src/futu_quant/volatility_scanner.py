@@ -16,7 +16,9 @@ from .config import (
     resolve_volatility_radar_budget, upsert_campaign,
 )
 from .volatility_optimizer import complete_volatility_activation, volatility_threshold_profile
-from .volatility_activation import build_activation_evidence, save_activation_evidence
+from .volatility_activation import (
+    build_activation_evidence, save_activation_evidence, save_activation_evidence_archive,
+)
 from .volatility_chain import campaign_intent_chain_status
 from .volatility_orphans import retain_campaign_if_at_risk
 from .volatility_roll import roll_campaign
@@ -258,6 +260,10 @@ def scan_market_layer(
                 trace_id=f"{scan_trace_id}:{symbol}",
             )
             save_activation_evidence(store, evidence)
+            # 按 trace_id 存档（回测 L-A 前置）：只在 active 轮写，历史 BUY 才能
+            # 对到当次证据；存档失败不阻断扫描（外层 try 兜底）。
+            if evidence.get("active"):
+                save_activation_evidence_archive(store, evidence)
             row = {
                 "symbol": symbol, "active": bool(regime["active"]),
                 "reason": regime["reason"], "checks": regime["checks"],

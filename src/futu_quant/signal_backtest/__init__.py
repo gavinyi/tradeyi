@@ -7,3 +7,7 @@
 
 只读铁律与确定性约束见各模块 docstring。
 """
+
+from . import ledger, matcher, replay  # noqa: F401  再导出：页面静态导入守卫要求包顶层可见子模块名
+
+__all__ = ["ledger", "matcher", "replay"]
