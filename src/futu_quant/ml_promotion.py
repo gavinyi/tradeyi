@@ -163,7 +163,14 @@ def check_shadow_period(
         if float(shadow_hit_rate) < float(active_hit_rate):
             return GateResult("G3", False,
                               f"分歧部分事后表现差于现役（{shadow_hit_rate:.2f} < {active_hit_rate:.2f}）")
-    return GateResult("G3", True, f"影子期 {days:.1f} 天，分歧率 {ratio:.0%}")
+        return GateResult("G3", True,
+                          f"影子期 {days:.1f} 天，分歧率 {ratio:.0%}，"
+                          f"分歧表现 {shadow_hit_rate:.2f} ≥ 现役 {active_hit_rate:.2f}")
+    # hit_rate 缺失（双 None）：G3 弱化通过——Reviewer 2026-11-07 非阻断跟进项，
+    # 页 42 展示时必须显式标注此弱化（缺口实况，不许静默冒充完整校验）。
+    return GateResult("G3", True,
+                      f"影子期 {days:.1f} 天，分歧率 {ratio:.0%}"
+                      "【弱化判定：hit_rate 未提供，分歧表现对比跳过——页面须显式标注】")
 
 
 # ---- G4：人工审批（红线 2 的执行点） ----
