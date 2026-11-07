@@ -71,6 +71,9 @@ def test_replay_aligns_actual_and_replayed_events(tmp_path):
                    payload={"zscore_20d": 2.4, "activation_trace_id": "radar-QQQ"})
     _seed_decision(store, "US.NVDA", "2026-11-06T16:00:00+00:00", z=2.2, move=0.01,
                    decision="HOLD")  # 非 BUY，不进对齐集
+    # 两级取证口径：BUY 行的 trace_id 必须能查到按 trace_id 存档的 active 证据
+    _seed_active_evidence(store, "US.AMD", "radar-AMD")
+    _seed_active_evidence(store, "US.QQQ", "radar-QQQ")
 
     result = bt_replay.replay_signals(
         store, WINDOW_START, WINDOW_END,
