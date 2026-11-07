@@ -83,6 +83,12 @@ class PromotionDecision:
 
 # ---- G1：打分有效性（专防 ml_score 全 0.5 复发） ----
 
+#: 离散度下限：不同取值必须占样本的至少这个比例（0.35）。rule 打分的历史形态
+#（11 个离散值 × 大量重复，2026-11-07 Tester 实证）离散**个数**够、离散**占比**
+# 极低——对照组照样失效。个数与占比双判据都过才算有区分度。
+MIN_DISTINCT_RATIO = 0.35
+
+
 def check_score_distinctiveness(scores: list[float]) -> GateResult:
     values = [float(v) for v in scores if v is not None]
     if len(values) < MIN_DISTINCT_VALUES:
@@ -93,6 +99,14 @@ def check_score_distinctiveness(scores: list[float]) -> GateResult:
         return GateResult("G1", False,
                           f"分数无区分度：{len(distinct)} 个离散取值（<{MIN_DISTINCT_VALUES}）"
                           "——历史事故形态（ml_score 全 0.5）")
+    # 占比判据（Tester 2026-11-07 实证缺口）：11 个离散值配 110 个样本 = 占比 0.10
+    # ——rule 打分只有 11 档的历史形态，AUC 再好看也没有分组能力。
+    ratio = len(distinct) / len(values)
+    if ratio < MIN_DISTINCT_RATIO:
+        return GateResult("G1", False,
+                          f"分数离散度不足：{len(distinct)} 个离散值 / {len(values)} 个样本"
+                          f" = {ratio:.0%}（<{MIN_DISTINCT_RATIO:.0%}）——少数档位反复重复，"
+                          "对照组失效（rule 打分 11 档历史形态）")
     ordered = sorted(values)
     def _pct(p: float) -> float:
         index = min(len(ordered) - 1, max(0, int(p * (len(ordered) - 1))))
@@ -102,7 +116,8 @@ def check_score_distinctiveness(scores: list[float]) -> GateResult:
         return GateResult("G1", False,
                           f"分位数未展开：P25=P50=P75={p50}——分布退化，对照组失效")
     return GateResult("G1", True,
-                      f"{len(distinct)} 个离散取值，P25={p25} P50={p50} P75={p75}")
+                      f"{len(distinct)} 个离散取值（占比 {ratio:.0%}），"
+                      f"P25={p25} P50={p50} P75={p75}")
 
 
 # ---- G2：样本外 AUC（训练集 AUC 不算数——红线 1 的执行点） ----
@@ -157,12 +172,16 @@ def check_approval(approval: dict | None) -> GateResult:
     """审批记录四要素：approved_by / approved_at / report_ref / admin_verified。"""
     if not isinstance(approval, dict) or not approval:
         return GateResult("G4", False, "无审批记录——不得自动晋级（红线 2）")
-    required = ("approved_by", "approved_at", "report_ref", "admin_verified")
-    missing = [key for key in required if not approval.get(key)]
+    # admin_verified=False 是「校验没过」，不是「字段缺失」——两者文案不同
+    # （Tester 2026-11-07：断言「管理员」落在 False 分支上）。
+    missing = [key for key in ("approved_by", "approved_at", "report_ref")
+               if not approval.get(key)]
+    if "admin_verified" not in approval:
+        missing.append("admin_verified")
     if missing:
         return GateResult("G4", False, f"审批记录缺字段：{', '.join(missing)}")
     if not approval.get("admin_verified"):
-        return GateResult("G4", False, "管理员校验未通过（admin_verified=false）")
+        return GateResult("G4", False, "管理员密码校验未通过（admin_verified=false）")
     return GateResult("G4", True,
                       f"{approval.get('approved_by')} 于 {str(approval.get('approved_at'))[:19]} 批准（报告 {approval.get('report_ref')}）")
 
