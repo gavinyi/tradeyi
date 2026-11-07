@@ -111,16 +111,35 @@ def test_archive_level_still_wins_over_direct_read():
     assert result.mismatch_reasons().get("threshold_recalc_differs") == 1
 
 
-def test_declared_trace_id_without_archive_is_fail_closed():
-    """fail-closed 边界（Tester 2026-11-07 实证缺口）：payload 声明了 trace_id
-    但存档查不到 → 证据缺失记 mismatch，直读级不得越权兜底洗绿。"""
+def test_declared_trace_id_without_archive_payload_self_consistent_aligns():
+    """悬空声明（存档 11-06 上线前窗口的 1,211 条形态）：声明 trace_id 但两级
+    miss 且 payload 自洽 → 直读复验对齐（Chief 2026-11-07 裁定放宽）。
+
+    与洗绿缺口的本质区别：这里**无任何证据可查**，BUY 行自身是原始判定；
+    存档有权威反证的形态（上一条守卫）仍判差异，不在此放宽范围。
+    """
     store = FakeStore([
         _row("US.LOST", "2026-11-05T14:00:00+00:00",
              payload_overrides={"activation_trace_id": "radar-GONE:US.LOST"}),
     ])
     result = bt_replay.replay_signals(store, *WINDOW, {})
+    assert result.aligned, result.mismatches
+    assert len(result.replayed_events) == 1
+
+
+def test_declared_trace_id_bare_payload_is_dangling_mismatch():
+    """声明了 trace_id 且 payload 也无自洽依据 → 取证链彻底断，
+    落 dangling_declaration 档（fail-closed 不放宽，供分档统计）。"""
+    store = FakeStore([
+        {"strategy_id": "volatility_scanner", "symbol": "US.BARE2", "decision": "BUY",
+         "created_at": "2026-11-05T14:00:00+00:00", "tenant_id": "t1",
+         "payload_json": json.dumps({"activation_trace_id": "radar-X:US.BARE2"})},
+    ])
+    result = bt_replay.replay_signals(store, *WINDOW, {})
     assert not result.aligned
-    assert result.mismatch_reasons().get("activation_evidence_missing") == 1
+    row = result.mismatches[0]
+    assert row["reason"] == "activation_evidence_missing"
+    assert row.get("dangling_declaration") is True
 
 
 def test_window_query_efficiency_no_full_scan():
