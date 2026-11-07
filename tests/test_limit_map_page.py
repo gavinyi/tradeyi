@@ -66,3 +66,32 @@ def test_page_uses_readonly_store_entry():
     source = _source()
     assert "open_trading_store" in source
     assert "TradingStore(" not in source.replace("open_trading_store", "")
+
+
+def test_app_menu_registers_limit_map_exactly_once():
+    """app.py 菜单注册计数必须 =1（2026-11-07 深夜双注册炸页回归：
+    两处 st.Page 同 title → StreamlitDuplicateElementKey → 整个 app 打不开）。
+    Streamlit 显式注册制：页面文件存在不等于进菜单，注册也只许一次。"""
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+    count = app_source.count("49_limit_map")
+    assert count == 1, (
+        f"app.py 中 49_limit_map 出现 {count} 次（必须恰好 1 次）："
+        "0=菜单漏注册（页面不可见），>1=重复注册（DuplicateElementKey 炸页）"
+    )
+
+
+def test_all_page_link_targets_exist():
+    """全仓 page_link/st.Page 目标文件必须真实存在（2026-11-07 第二处炸页：
+    页 49 链接 pages/7_risk_and_limits.py 不存在——生产实际是 7_risk_center.py）。
+    Streamlit 对 st.page_link 坏目标是运行时炸页（StreamlitPageNotFoundError）。"""
+    import re
+
+    pages_dir = ROOT / "pages"
+    page_files = {p.name for p in pages_dir.glob("*.py")}
+    offenders: list[str] = []
+    for page in sorted(pages_dir.glob("*.py")):
+        for target in re.findall(r"pages/[\w]+\.py",
+                                 page.read_text(encoding="utf-8", errors="ignore")):
+            if target.split("/")[-1] not in page_files:
+                offenders.append(f"{page.name} -> {target}")
+    assert not offenders, f"以下 page_link/st.Page 目标文件不存在（运行时炸页）：{offenders}"

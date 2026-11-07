@@ -115,7 +115,7 @@ with entry_cols[0]:
     st.page_link("pages/43_unified_config_center.py", label="统一配置中心（风控边界/熔断）",
                  icon=":material/tune:")
 with entry_cols[1]:
-    st.page_link("pages/7_risk_and_limits.py", label="风险与限额（全局 RISK_*/REAL_*）",
+    st.page_link("pages/7_risk_center.py", label="风险与限额（全局 RISK_*/REAL_*）",
                  icon=":material/shield:")
 with entry_cols[2]:
     st.page_link("pages/44_strategy_center.py", label="策略中心（预算表，租户独立）",
