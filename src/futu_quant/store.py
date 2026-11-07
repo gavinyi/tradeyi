@@ -3368,6 +3368,27 @@ class TradingStore:
                 (str(strategy_id), int(limit)),
             ).fetchall()]
 
+    def decisions_in_window(
+        self, strategy_id: str, window_start: str, window_end: str,
+        *, decision: str | None = None, limit: int = 200_000,
+    ) -> list[dict]:
+        """按窗口直读决策日志（回测第三级取证用，SQL 侧过滤，只读语义）。
+
+        为什么单独一个方法：`decisions_for_strategy` 只按 id 倒序限行，取不到
+        「窗口内全部」——历史窗口（存档功能上线前）的 BUY 无 trace_id、无存档，
+        重放必须直读原始判定行。decision 传 None 时不过滤判定类型。
+        """
+        sql = ("SELECT * FROM decision_logs WHERE strategy_id=? "
+               "AND created_at>=? AND created_at<=?")
+        params: list[object] = [str(strategy_id), str(window_start), str(window_end)]
+        if decision:
+            sql += " AND UPPER(decision)=?"
+            params.append(str(decision).upper())
+        with self.connection() as connection:
+            return [dict(row) for row in connection.execute(
+                sql + " ORDER BY id ASC LIMIT ?", (*params, int(limit)),
+            ).fetchall()]
+
     def audit_events(self, limit: int = 1000) -> list[dict]:
         with self.connection() as connection:
             return [dict(row) for row in connection.execute(

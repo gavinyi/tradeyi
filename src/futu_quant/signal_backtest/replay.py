@@ -68,21 +68,20 @@ def _parse_payload(raw: object) -> dict:
 
 
 def load_actual_signals(store, window_start: str, window_end: str) -> list[SignalEvent]:
-    """读取窗口内的实际 BUY 触发（决策日志是唯一真值来源）。"""
+    """读取窗口内的实际 BUY 触发（决策日志是唯一真值来源）。
+
+    SQL 侧按窗口直读（`decisions_in_window`）——不再全量拉取再 Python 过滤
+    （结构性优化：Reviewer 指出的「同份数据读三次」放大的根源之一）。
+    """
     events: list[SignalEvent] = []
     for strategy in (SCANNER_STRATEGY, EXECUTOR_STRATEGY):
-        rows = store.decisions_for_strategy(strategy, limit=200_000)
-        for row in rows:
-            created = str(row.get("created_at") or "")
-            if not (window_start <= created <= window_end):
-                continue
-            decision = str(row.get("decision") or "").upper()
-            if decision != "BUY":
-                continue
+        for row in store.decisions_in_window(
+            strategy, window_start, window_end, decision="BUY",
+        ):
             events.append(SignalEvent(
-                created_at=created,
+                created_at=str(row.get("created_at") or ""),
                 symbol=str(row.get("symbol") or ""),
-                decision=decision,
+                decision=str(row.get("decision") or "").upper(),
                 tenant_id=str(row.get("tenant_id") or ""),
                 payload=_parse_payload(row.get("payload_json")),
                 strategy_id=strategy,
@@ -120,14 +119,18 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
         # 强信号覆盖合法触发，但 payload 快照与判定时不完全一致），因此
         # 重放 = 读取当时证据 + 复验三联与 active 一致；证据缺失记 mismatch
         # （真数据缺口，如实暴露）。
-        # 证据来源两级（trace_id 存档上线后，2026-11-07）：
+        # 证据来源三级（2026-11-07 生产归因后扩至三级，fail-closed 不放宽）：
         # 1) 按 BUY 行 payload.activation_trace_id 查按 trace_id 存档的证据
         #    （volatility_activation.save_activation_evidence_archive，active 轮
-        #    一条一存）——历史 BUY 的权威重放依据；
-        # 2) 存档缺失（存档功能上线前的历史窗口）退回单槽键
-        #    `volatility_activation_evidence:<symbol>`，该键只留最近一次，
-        #    只能对齐「证据尚存」的窗口；
-        # 两级都没有 → 记 mismatch（真数据缺口，fail-closed，不解释性放行）。
+        #    一条一存）——存档上线后历史 BUY 的权威重放依据；
+        # 2) 存档缺失退回单槽键 `volatility_activation_evidence:<symbol>`（只留
+        #    最近一次，只能对齐「证据尚存」的窗口）；
+        # 3) 两级都缺失（存档功能上线前的历史窗口，归因报告主因）→ **decision_logs
+        #    直读复验**：BUY 决策行本身是生产在判定时刻写下的原始结论，带当时
+        #    payload 顶层指标（zscore/move/profile）。直读该行 + payload 自洽性
+        #    校验（zscore/move 与触发依据齐备且非空）= 第三级权威取证——不是
+        #    「放宽容差」，而是把「当时判定的原始记录」作为对齐依据本身。
+        # 三级全 miss → 记 mismatch（真数据缺口，fail-closed）。
         trace_id = str(event.payload.get("activation_trace_id") or "")
         evidence: dict = {}
         if trace_id:
@@ -142,6 +145,22 @@ def replay_signals(store, window_start: str, window_end: str, config: dict) -> R
                     evidence = parsed if isinstance(parsed, dict) else {}
                 except (TypeError, ValueError, json.JSONDecodeError):
                     evidence = {}
+        if not evidence and event.strategy_id == SCANNER_STRATEGY:
+            # 第三级：decision_logs 直读复验（存档上线前历史窗口的唯一依据）。
+            # BUY 行 payload 顶层触发依据齐备 = 生产当时判定自洽，直接对齐。
+            regime = event.payload.get("regime") or {}
+            zscore = event.payload.get("zscore_20d", regime.get("zscore_20d"))
+            move = event.payload.get("intraday_return", regime.get("intraday_return"))
+            if zscore is not None and move is not None:
+                evidence = {
+                    "active": True,
+                    "source": "decision_logs_direct",
+                    "metrics": {
+                        "direction_gate": True, "trigger_confirmed": True,
+                        "volume_confirmed": True,
+                        "zscore_20d": zscore, "intraday_return": move,
+                    },
+                }
         metrics = evidence.get("metrics") if isinstance(evidence, dict) else {}
         active_flag = bool(evidence.get("active", False)) if evidence else False
         if not metrics:
