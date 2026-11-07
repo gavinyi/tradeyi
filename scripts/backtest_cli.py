@@ -20,6 +20,7 @@ if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from futu_quant.signal_backtest import matcher as bt_matcher  # noqa: E402
+from futu_quant.signal_backtest import optimizer as bt_optimizer  # noqa: E402
 from futu_quant.signal_backtest import replay as bt_replay  # noqa: E402
 from futu_quant.store import TradingStore  # noqa: E402
 
@@ -164,16 +165,119 @@ def run_backtest(args: argparse.Namespace) -> int:
     return 0 if self_check_passed and not reconcile_report.has_backtest_bug else 1
 
 
+def _evaluate_arm_factory(store, slippage: int):
+    """构造组合评估器：复用 replay/matcher/ledger 既有纯函数（寻优不新增撮合口径）。
+
+    一组参数 → 该参数在窗口内的重放（replay_signals）→ L2 撮合 → 含费净值。
+    与 run_backtest 的撮合口径逐行同源（PRD 2.2 第 5 条：成本计入）。
+    """
+    from futu_quant.signal_backtest.ledger import equity_curve
+
+    def evaluate_arm(params: dict, window_start: str, window_end: str):
+        config = {"thresholds": {
+            "entry_zscore": float(params.get("entry_zscore", 2.0)),
+            "minimum_underlying_move": float(params.get("minimum_move", 0.02)),
+        }}
+        result = bt_replay.replay_signals(store, window_start, window_end, config)
+        trades = []
+        for event in result.replayed_events:
+            premium = (event.payload.get("regime") or {}).get("expected_premium")
+            quote = bt_matcher.PriceQuote(
+                bid_price=None, ask_price=None,
+                recorded_premium=float(premium) if premium else None,
+                tier="L2" if premium else "L3",
+            )
+            try:
+                trades.append(bt_matcher.match_trade(event, quote, slippage_ticks=slippage))
+            except ValueError:
+                continue  # L3 拒造数：该组参数按「无可评估成交」计
+        curve = equity_curve(trades, fee_per_trade_fn=bt_matcher.fee_per_trade)
+        final_equity = curve[-1][1] if curve else 10_000.0
+        return bt_optimizer.ArmResult(
+            params=dict(params), trades=len(trades),
+            pnl=round(final_equity - 10_000.0, 2),
+            extra={"alignment": result.aligned},
+        )
+
+    return evaluate_arm
+
+
+def run_optimize(args: argparse.Namespace) -> int:
+    """寻优子命令（PRD 包2）：参数空间事前落盘 → 样本内寻优 → 样本外验证 → 衰减报告。
+
+    只读铁律：不写 runtime_config / limit_profile / 任何配置（PRD 2.3 硬性禁止，
+    AST 守卫钉死）；产物只有报告文件。
+    """
+    out_dir = _ensure_output_dir(args.label, args.force)
+    store = TradingStore(args.db, read_only=True)
+
+    axes: dict[str, list] = {"entry_zscore": args.entry_zscore_values,
+                             "minimum_move": args.minimum_move_values}
+    space = bt_optimizer.declare_parameter_space(
+        axes, declared_at=f"{args.window_start}->{args.window_end}", name=args.label,
+    )
+    (out_dir / "parameter_space.json").write_text(
+        bt_optimizer.space_declaration_json(space), encoding="utf-8",
+    )
+
+    train_start, train_end, verify_start, verify_end = bt_optimizer.split_window(
+        args.window_start, args.window_end, train_ratio=args.train_ratio,
+    )
+    evaluate_arm = _evaluate_arm_factory(store, args.slippage)
+    train_results = bt_optimizer.evaluate_grid(space, train_start, train_end, evaluate_arm)
+    out_results = bt_optimizer.evaluate_grid(space, verify_start, verify_end, evaluate_arm)
+
+    report = bt_optimizer.OptimizerReport(
+        space=space, train_window=(train_start, train_end),
+        verify_window=(verify_start, verify_end),
+        train_results=train_results, out_of_sample=out_results,
+        random_baseline_pnl=bt_optimizer.random_pick_baseline(space, train_results),
+    )
+    rec = report.recommendation()
+    lines = [
+        "# 参数寻优报告",
+        "",
+        f"- **第一屏结论（衰减）**: {report.decay_verdict()}",
+        f"- **参数空间**: N={space.size} 组（事前声明，axes={json.dumps({k: list(v) for k, v in space.axes.items()}, ensure_ascii=False)}），声明落盘 parameter_space.json",
+        f"- **窗口切分**: 训练 {train_start} → {train_end}（前 {args.train_ratio:.0%}）/ 验证 {verify_start} → {verify_end}",
+        f"- **样本内最优**: {json.dumps(rec.get('params', {}), ensure_ascii=False)}，pnl {rec.get('train_pnl', '-')}（{rec.get('train_trades', '-')} 笔）",
+        f"- **样本外重跑**: pnl {rec.get('oos_pnl', '-')}（{rec.get('oos_trades', '-')} 笔），衰减率 {f'{report.decay_ratio:.0%}' if report.decay_ratio is not None else 'N/A'}",
+        f"- **随机基准**（N 组里随机挑一组的期望 pnl）: {report.random_baseline_pnl}",
+        f"- **推荐资格**: {'✅ 可进入推荐位' if rec.get('eligible') else '❌ ' + str(rec.get('reason'))}",
+        f"- **交付完整性**: {'✅ 含样本外列' if report.is_deliverable else '❌ 缺样本外列（PRD 2.3：视为未交付）'}",
+        "",
+        "## 产品红线",
+        "",
+        "1. 寻优只出报告，不写任何生产配置——改参数必须人工审批；",
+        "2. 回测/寻优结论不得用于放宽风控/质量门槛；",
+        "3. 衰减 >60% = 过拟合，不建议采用。",
+    ]
+    report_path = out_dir / "report.md"
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"寻优报告已写入 {report_path}")
+    print(report.decay_verdict())
+    return 0 if report.is_deliverable else 1
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="历史信号回测 CLI（只读）")
     sub = parser.add_subparsers(dest="command", required=True)
     run_parser = sub.add_parser("run", help="跑一次回测并生成报告")
     _window_args(run_parser)
+    opt_parser = sub.add_parser("optimize", help="参数寻优（样本内寻优+样本外验证+衰减报告）")
+    _window_args(opt_parser)
+    opt_parser.add_argument("--entry-zscore-values", type=float, nargs="+",
+                            default=[1.8, 2.0, 2.2, 2.5], help="入场 Z 阈值取值集（事前声明）")
+    opt_parser.add_argument("--minimum-move-values", type=float, nargs="+",
+                            default=[0.015, 0.02, 0.03], help="最小涨跌取值集（事前声明）")
+    opt_parser.add_argument("--train-ratio", type=float, default=0.7, help="训练段占比")
     return parser
 
 
 def main() -> int:
     args = _build_parser().parse_args()
+    if args.command == "optimize":
+        return run_optimize(args)
     return run_backtest(args)
 
 

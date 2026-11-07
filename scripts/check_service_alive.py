@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -76,6 +77,81 @@ LOG_STALE_MINUTES = 60
 #: 连续失败第几次起升级为 CRITICAL（第一次只 WARNING，压住抖动）。
 ESCALATE_AFTER = 2
 STATE_FILE_NAME = "watchdog_state.json"
+
+# —— PRD 包1 分级与自动重启差量（2026-11-07，wt-watchdog）——
+# PRD 1.2：15 分钟 WARNING（推送）/ 30 分钟 ERROR 即时推送 / 超 30 分钟且开关开启
+# 可自动重启（默认关）。现有 5 分钟判活只记 problems + 连续失败升级，缺分级推送；
+# 这里补齐：按「心跳年龄」直接分级，不依赖计划任务 10 分钟节拍的连续计数。
+HEARTBEAT_WARN_PUSH_MINUTES = 15.0   # ≥15min：WARNING 级飞书推送
+HEARTBEAT_CRITICAL_MINUTES = 30.0    # ≥30min：CRITICAL 级飞书即时推送
+#: 看门狗自身心跳行（红线 2「不得引入新单点」：它挂了要能被发现）。
+#: 每次 --push 运行写一次；Ops 巡检（scheduled_log_audit）读同一行做存活检查。
+WATCHDOG_SELF_HEARTBEAT_ID = "service_watchdog"
+WATCHDOG_SELF_STALE_MINUTES = 30.0   # 自身心跳超过它 = 计划任务挂了
+AUTO_RESTART_CONFIG_KEY = "service_watchdog_auto_restart"  # 默认缺省 = 关
+#: 允许自动重启动作触碰的 stop 文件（仅这两个，别的任何文件都不许写）。
+AUTO_RESTART_STOP_FILES = ("tenant-worker-supervisor.stop", "trading-service.stop")
+
+
+def _watchdog_self_heartbeat(store) -> None:
+    """看门狗自身存活上报（红线 2）：只 upsert 自己那一行心跳，不碰其他任何表。
+
+    失败静默（上报不成功不能反过来弄崩检测主链路），Ops 巡检侧会因
+    心跳缺失/停滞而报「看门狗挂了」——失败形态本身就是被发现的一条路径。
+    """
+    try:
+        store.heartbeat(
+            WATCHDOG_SELF_HEARTBEAT_ID, "RUNNING",
+            "外部存活检测运行中（计划任务每 10 分钟）", os.getpid(),
+        )
+    except Exception:  # noqa: BLE001 - silent-ok：见 docstring
+        pass
+
+
+def _auto_restart_enabled(store) -> bool:
+    """自动重启双闸之一：runtime_config 开关（默认缺省 = 关，铁律不动摇）。"""
+    try:
+        with store.connection() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM runtime_config WHERE config_key=?",
+                (AUTO_RESTART_CONFIG_KEY,),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - 读不到 = 不允许
+        return False
+    if not row:
+        return False
+    try:
+        value = json.loads(row["value_json"] if not isinstance(row, str) else row)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(value, dict):
+        value = value.get("value")
+    return str(value).strip().lower() == "true"
+
+
+def _auto_restart(store, problems: list[str]) -> str:
+    """可选自动重启（PRD 1.2 第三级，默认关）。
+
+    双闸全开才动作：①runtime_config `service_watchdog_auto_restart=true`
+    ②命令行 `--auto-restart`。动作 = 只触碰既有 stop 文件（复用 stop.bat
+    级联语义），**绝不**写 pid/订单/账本/配置；重启由 start.bat 语义在下一拍
+    由用户/既有自愈链完成（本脚本不直接拉起进程，遵守 2026-10-24 铁律）。
+    """
+    if "--auto-restart" not in sys.argv:
+        return "开关未开（--auto-restart 未传），不动作"
+    if not _auto_restart_enabled(store):
+        return "runtime_config 开关未开，不动作"
+    touched: list[str] = []
+    for name in AUTO_RESTART_STOP_FILES:
+        target = DATA / name
+        try:
+            target.write_text(
+                datetime.now(timezone.utc).isoformat(), encoding="utf-8",
+            )
+            touched.append(name)
+        except OSError as exc:
+            return f"stop 文件写入失败（不动作）：{name}: {exc}"
+    return f"已请求停止并级联重启（stop 文件：{', '.join(touched)}）；重启后首件事是既有对账"
 
 
 def _read_pid(path: Path) -> int | None:
@@ -288,11 +364,41 @@ def _push(message: str, *, severity: str, recovered: bool) -> str:
         return f"推送异常（不影响退出码）：{exc}"
 
 
+def classify_heartbeat_levels(ages: dict[str, float | None]) -> list[tuple[str, str]]:
+    """按心跳年龄分级（PRD 1.2）：返回 [(tenant, severity)]，可为空。
+
+    独立于连续失败计数：计划任务 10 分钟一拍，等连续 2 次才推送会错过
+    PRD 的「15 分钟 WARNING」节奏——分级直接看年龄，一拍内就能定级。
+    """
+    levels: list[tuple[str, str]] = []
+    for tenant, age in ages.items():
+        if age is None:
+            levels.append((tenant, "CRITICAL"))
+        elif age >= HEARTBEAT_CRITICAL_MINUTES:
+            levels.append((tenant, "CRITICAL"))
+        elif age >= HEARTBEAT_WARN_PUSH_MINUTES:
+            levels.append((tenant, "WARNING"))
+    return levels
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="生产服务外部存活检测（只读、只告警、不自愈）")
+    parser = argparse.ArgumentParser(description="生产服务外部存活检测（只读、只告警、默认不自愈）")
     parser.add_argument("--push", action="store_true", help="异常/恢复时推飞书")
     parser.add_argument("--quiet", action="store_true", help="正常时也打印一行摘要")
+    parser.add_argument(
+        "--auto-restart", action="store_true",
+        help="CRITICAL 时允许按 runtime_config 开关请求级联重启（双闸，默认关）",
+    )
     args = parser.parse_args()
+
+    # 红线 2：看门狗自身存活上报（只 upsert 自己的心跳行，不碰其他任何表）
+    _self_store = _open_store_readonly()
+    if _self_store is not None:
+        _watchdog_self_heartbeat(_self_store)
+        try:
+            _self_store.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     try:
         problems = collect_problems()
@@ -300,17 +406,43 @@ def main() -> int:
         print(f"[watchdog] 检测未完成：{exc}")
         return 2
 
+    # PRD 分级：按心跳年龄直接定级（不依赖计划任务节拍的连续计数）
+    ages = {tenant: heartbeat_age_minutes(tenant) for tenant in TENANTS}
+    levels = classify_heartbeat_levels(ages)
     state = load_state(DATA)
     failures = int(state.get("consecutive_failures") or 0)
     alerted = bool(state.get("alerted"))
+    level_alerted = bool(state.get("level_alerted"))
 
-    if not problems:
-        if alerted and args.push:
+    if not problems and not levels:
+        if (alerted or level_alerted) and args.push:
             print(f"[watchdog] {_push('生产服务存活检测已恢复正常。', severity='INFO', recovered=True)}")
-        save_state(DATA, {"consecutive_failures": 0, "alerted": False})
+        save_state(DATA, {"consecutive_failures": 0, "alerted": False, "level_alerted": False})
         if args.quiet:
             print("[watchdog] 正常：进程存活、心跳新鲜")
         return 0
+
+    # —— 分级推送（15min WARNING / 30min CRITICAL，PRD 1.2）——
+    worst = "CRITICAL" if any(sev == "CRITICAL" for _, sev in levels) else "WARNING"
+    level_detail = "\n".join(
+        f"- 租户 {tenant}：{'读不到服务心跳' if heartbeat_age_minutes(tenant) is None else f'心跳已 {heartbeat_age_minutes(tenant):.0f} 分钟未更新'}（分级 {sev}）"
+        for tenant, sev in levels
+    )
+    if args.push and levels and (worst == "CRITICAL" or not level_alerted):
+        print(f"[watchdog] 分级推送（{worst}）：{_push(f'生产服务心跳分级告警：\n{level_detail}', severity=worst, recovered=False)}")
+
+    # —— 可选自动重启（双闸：--auto-restart + runtime_config，默认关）——
+    restart_note = ""
+    if any(sev == "CRITICAL" for _, sev in levels):
+        _rs_store = _open_store_readonly()
+        if _rs_store is not None:
+            restart_note = _auto_restart(_rs_store, problems)
+            try:
+                _rs_store.close()
+            except Exception:  # noqa: BLE001
+                pass
+            if restart_note.startswith("已请求"):
+                print(f"[watchdog] 自动重启：{restart_note}")
 
     failures += 1
     print("[watchdog] 发现异常" + (f"（连续第 {failures} 次）" if failures > 1 else "") + "：")
@@ -318,14 +450,18 @@ def main() -> int:
         print(f"  - {item}")
     print("[watchdog] 请从桌面双击 start.bat 启动生产（本脚本不会自动拉起）")
 
-    should_alert = failures >= ESCALATE_AFTER
+    should_alert = failures >= ESCALATE_AFTER or worst == "CRITICAL"
     if args.push and should_alert:
-        severity = "CRITICAL"
+        severity = "CRITICAL" if worst == "CRITICAL" else "CRITICAL"
         print(f"[watchdog] {_push('生产服务存活检测失败：\n' + '\n'.join(f'- {i}' for i in problems), severity=severity, recovered=False)}")
     elif args.push:
         print(f"[watchdog] 首次异常只记录不推送（连续 {ESCALATE_AFTER} 次才升级 CRITICAL）")
 
-    save_state(DATA, {"consecutive_failures": failures, "alerted": alerted or should_alert})
+    save_state(DATA, {
+        "consecutive_failures": failures,
+        "alerted": alerted or should_alert,
+        "level_alerted": bool(levels),
+    })
     return 1
 
 

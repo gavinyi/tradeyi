@@ -524,6 +524,33 @@ def inspect_and_alert():
     except Exception:
         pass
 
+    # 3.5 检查外部看门狗自身存活（PRD 包1 红线 2「不得引入新单点」：看门狗挂了要能被发现）
+    # 看门狗每次运行写 strategy_heartbeats 行 `service_watchdog`；30 分钟没更新 = 计划任务挂了。
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+
+        _row = store.heartbeat_status("service_watchdog")
+        _stale = False
+        if _row is None:
+            _stale = True
+            _detail = "从未上报（计划任务未注册或从未运行）"
+        else:
+            _raw = str(_row.get("updated_at") or "")
+            _stamp = _dt.fromisoformat(_raw.replace("Z", "+00:00"))
+            if _stamp.tzinfo is None:
+                _stamp = _stamp.replace(tzinfo=_tz.utc)
+            _age_min = (_dt.now(_tz.utc) - _stamp).total_seconds() / 60.0
+            if _age_min > 30.0:
+                _stale = True
+                _detail = f"心跳已 {_age_min:.0f} 分钟未更新（阈值 30 分钟）"
+        if _stale:
+            issues.append(
+                f"🚨 **外部看门狗失联**：service_watchdog {_detail} —— "
+                "服务死了将无人报警，请检查计划任务 TradeyiWatchdog 是否注册并运行"
+            )
+    except Exception as e:
+        issues.append(f"检查外部看门狗存活异常: {e}")
+
     # 4.1 检查三账对账与策略挂起熔断状态 (防静默熔断)
     try:
         disabled_map = store.settings_with_prefix("strategy_reconciliation_disabled")
